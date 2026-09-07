@@ -1,0 +1,64 @@
+[project]
+name = "interview-prep-fastapi-backend"
+version = "0.1.0"
+description = "Modular FastAPI backend for interview preparation"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "pydantic>=2.7,<3",
+  "pydantic-settings>=2.2,<3",
+  "python-multipart>=0.0.9",
+  "aio-pika>=9.4,<10",
+  "celery>=5.4,<6",
+  "python-socketio>=5.11,<6",
+  "sqlalchemy[asyncio]>=2.0,<3",
+  "asyncpg>=0.29,<1",
+  "alembic>=1.13,<2",
+  "psycopg2-binary>=2.9,<3",
+  "PyJWT[crypto]>=2.8,<3",
+  "bcrypt>=4.1,<5",
+  "httpx>=0.27,<1",
+  "boto3>=1.34,<2",
+  "openai>=1,<3",
+]
+
+[project.optional-dependencies]
+embeddings = []
+infra = [
+]
+matching = [
+  "pgvector>=0.2.5,<1",
+  "numpy>=1.26,<3",
+  "scikit-learn>=1.4,<2",
+  "PyPDF2>=3,<4",
+  "python-docx>=1.1,<2",
+  "python-dotenv>=1,<2",
+  "httpx>=0.27,<1",
+]
+ml = [
+  "spacy>=3.7,<4",
+  "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl",
+]
+dev = [
+  "pytest>=8,<9",
+  "pytest-asyncio>=0.23,<1",
+  "httpx>=0.27,<1",
+  "ruff>=0.5,<1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+exclude = [
+  "src/modules/matching/engine",
+  "src/modules/matching/rag",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]

@@ -1,0 +1,6 @@
+{
+  "resume_text": "Python FastAPI PostgreSQL",
+  "job_description": "Requires Python and REST API",
+  "algorithms": ["requirements", "cosine", "bm25"],
+  "async_processing": true
+}

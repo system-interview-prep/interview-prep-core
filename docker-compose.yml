@@ -1,0 +1,76 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-interview}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-interview_password}
+    ports: ["5672:5672", "15672:15672"]
+    volumes: ["rabbitmq_data:/var/lib/rabbitmq"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  postgres-db:
+    image: paradedb/paradedb:0.25.3-pg16@sha256:a40200f412a0384d2d04c5a1d7cde554d346cb1109b37acf6385ba4c119e2c5f
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: matching_db
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d matching_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      target: api
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-interview}:${RABBITMQ_PASSWORD:-interview_password}@rabbitmq:5672/
+      CELERY_BROKER_URL: amqp://${RABBITMQ_USER:-interview}:${RABBITMQ_PASSWORD:-interview_password}@rabbitmq:5672/
+      DATABASE_URL: postgresql://user:password@postgres-db:5432/matching_db
+      # Docker Desktop on Windows/macOS needs polling to reliably notice bind-mounted edits.
+      WATCHFILES_FORCE_POLLING: "true"
+    ports: ["5000:5000"]
+    command: ["sh", "-c", "python -m alembic upgrade head && exec uvicorn src.main:asgi_app --host 0.0.0.0 --port 5000 --reload --reload-dir /app/src"]
+    volumes: ["./src:/app/src", "./tests:/app/tests", "./migrations:/app/migrations", "./alembic.ini:/app/alembic.ini:ro", "./pyproject.toml:/app/pyproject.toml:ro", "app_data:/app/data"]
+    depends_on:
+      rabbitmq: {condition: service_healthy}
+      postgres-db: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build:
+      context: .
+      target: worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-interview}:${RABBITMQ_PASSWORD:-interview_password}@rabbitmq:5672/
+      CELERY_BROKER_URL: amqp://${RABBITMQ_USER:-interview}:${RABBITMQ_PASSWORD:-interview_password}@rabbitmq:5672/
+      DATABASE_URL: postgresql://user:password@postgres-db:5432/matching_db
+    command: ["celery", "-A", "src.workers.celery_app:celery_app", "worker", "--loglevel=info", "--concurrency=1", "--queues=celery,cv-processing,jp-processing,matching"]
+    volumes: ["./src:/app/src", "./tests:/app/tests", "./pyproject.toml:/app/pyproject.toml:ro", "model_cache:/models", "app_data:/app/data"]
+    depends_on:
+      rabbitmq: {condition: service_healthy}
+      postgres-db: {condition: service_healthy}
+      backend: {condition: service_healthy}
+
+volumes:
+  rabbitmq_data:
+  pgdata:
+  model_cache:
+  app_data:
