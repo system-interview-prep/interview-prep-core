@@ -1,9 +1,8 @@
 import asyncio
-from pathlib import Path
-
 from sqlalchemy import text
 
 from src.infrastructure.database import SessionFactory
+from src.infrastructure.r2 import get_object
 from src.workers.celery_app import celery_app
 from src.workers.mineru import extract_markdown
 
@@ -22,18 +21,11 @@ async def _parse_cv(cv_id: str) -> dict:
             {"id": cv_id},
         )
         await db.commit()
-        row = (
-            await db.execute(
-                text("SELECT filename, content_type FROM user_cvs WHERE id = :id"), {"id": cv_id}
-            )
-        ).mappings().one_or_none()
+        row = (await db.execute(text("SELECT filename, s3_key FROM user_cvs WHERE id = :id"), {"id": cv_id})).mappings().one_or_none()
         if not row:
             return {"status": "missing"}
-        path = Path("/app/data/cvs") / f"{cv_id}{Path(row['filename']).suffix.lower()}"
         try:
-            if not path.is_file():
-                raise FileNotFoundError("Uploaded file is unavailable to the worker")
-            raw_text = await extract_markdown(path, row["filename"], cv_id)
+            raw_text = await extract_markdown(get_object(row["s3_key"]), row["filename"], cv_id)
             if not raw_text.strip():
                 raise ValueError("MinerU returned no extractable text")
             await db.execute(

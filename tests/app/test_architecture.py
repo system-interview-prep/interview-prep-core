@@ -25,7 +25,6 @@ def test_modules_do_not_reach_into_other_module_internals() -> None:
         if len(relative.parts) < 2:
             continue
         owner = relative.parts[0]
-        # Some migrated legacy files carried a UTF-8 BOM from PowerShell/Windows.
         tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
         for node in ast.walk(tree):
             imported = ""

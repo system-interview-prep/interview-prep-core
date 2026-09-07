@@ -8,7 +8,7 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import current_user
 from src.infrastructure.database import get_db
+from src.infrastructure.r2 import delete_object, get_object, public_url, put_object
 
 router = APIRouter(prefix="/admin/job-profiles", tags=["job-profiles"])
 
@@ -80,10 +81,6 @@ def _upload(row: dict) -> dict:
         "createdAt": row["created_at"].isoformat(),
         "updatedAt": row["updated_at"].isoformat(),
     }
-
-
-def _upload_path(upload_id: str, filename: str) -> Path:
-    return Path("/app/data/job-profiles") / f"{upload_id}{Path(filename).suffix.lower()}"
 
 
 _SELECT = """
@@ -163,10 +160,9 @@ async def upload_jd(
         return _upload(existing_row)
 
     upload_id = str(uuid4())
-    target = _upload_path(upload_id, filename)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(content)
+    storage_key = f"job-profiles/{user['sub']}/{upload_id}{suffix}"
     try:
+        put_object(storage_key, content, file.content_type or "application/octet-stream")
         await db.execute(
             text(
                 "INSERT INTO job_profiles (id, owner_user_id, item_type, filename, content_type, size, "
@@ -179,15 +175,15 @@ async def upload_jd(
                 "filename": filename,
                 "content_type": file.content_type or "application/octet-stream",
                 "size": len(content),
-                "s3_key": f"job-profiles/{user['sub']}/{target.name}",
-                "url": f"/admin/job-profiles/uploads/{upload_id}/download",
+                "s3_key": storage_key,
+                "url": public_url(storage_key) or f"/admin/job-profiles/uploads/{upload_id}/download",
                 "checksum": checksum,
             },
         )
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        target.unlink(missing_ok=True)
+        delete_object(storage_key)
         raise HTTPException(status_code=409, detail="This JD has already been uploaded") from None
 
     from src.workers.celery_app import celery_app
@@ -206,12 +202,17 @@ async def get_upload(
 @router.get("/uploads/{upload_id}/download")
 async def download_upload(
     upload_id: str, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
-) -> FileResponse:
+) -> Response:
     upload = await _get_upload(db, user["sub"], upload_id)
-    target = _upload_path(upload_id, upload["filename"])
-    if not target.is_file():
+    result = await db.execute(text("SELECT s3_key FROM job_profiles WHERE id = :id"), {"id": upload_id})
+    storage_key = result.scalar_one_or_none()
+    if not storage_key:
         raise HTTPException(status_code=404, detail="JD file not found")
-    return FileResponse(target, media_type=upload["contentType"], filename=upload["filename"])
+    try:
+        content = get_object(storage_key)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="JD file not found") from exc
+    return Response(content, media_type=upload["contentType"], headers={"Content-Disposition": f'attachment; filename="{upload["filename"]}"'})
 
 
 @router.get("")

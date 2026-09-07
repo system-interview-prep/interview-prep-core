@@ -3,13 +3,14 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import current_user
 from src.infrastructure.database import get_db
+from src.infrastructure.r2 import delete_object, get_object, public_url, put_object
 
 router = APIRouter(prefix="/users/me/cvs", tags=["user-cvs"])
 
@@ -25,11 +26,6 @@ _ALLOWED_CONTENT_TYPES = {
 _ALLOWED_SUFFIXES = {".pdf", ".doc", ".docx", ".png", ".jpg", ".jpeg", ".webp"}
 
 
-def _storage_path(cv_id: str, filename: str) -> Path:
-    suffix = Path(filename).suffix.lower()
-    return Path("/app/data/cvs") / f"{cv_id}{suffix}"
-
-
 def _cv(row: dict) -> dict:
     return {
         "id": row["id"],
@@ -39,6 +35,7 @@ def _cv(row: dict) -> dict:
         "contentType": row["content_type"],
         "size": row["size"],
         "s3Key": row["s3_key"],
+        "storageKey": row["s3_key"],
         "url": row["url"],
         "status": row["status"],
         "score": row["score"],
@@ -81,11 +78,9 @@ async def upload_cv(
         return _cv(existing_row)
 
     cv_id = str(uuid4())
-    target = _storage_path(cv_id, filename)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(content)
-    s3_key = f"cvs/{user['sub']}/{target.name}"
+    storage_key = f"cvs/{user['sub']}/{cv_id}{suffix}"
     try:
+        put_object(storage_key, content, file.content_type or "application/octet-stream")
         await db.execute(
             text("""
                 INSERT INTO user_cvs (id, user_id, checksum, filename, content_type, size, s3_key, url, status)
@@ -93,12 +88,12 @@ async def upload_cv(
             """),
             {"id": cv_id, "user_id": user["sub"], "checksum": checksum, "filename": filename,
              "content_type": file.content_type or "application/octet-stream", "size": len(content),
-             "s3_key": s3_key, "url": f"/users/me/cvs/{cv_id}/download"},
+             "s3_key": storage_key, "url": public_url(storage_key) or f"/users/me/cvs/{cv_id}/download"},
         )
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        target.unlink(missing_ok=True)
+        delete_object(storage_key)
         raise HTTPException(status_code=409, detail="This CV has already been uploaded") from None
     from src.workers.celery_app import celery_app
 
@@ -135,16 +130,18 @@ async def get_cv(cv_id: str, user: dict = Depends(current_user), db: AsyncSessio
 
 
 @router.get("/{cv_id}/download")
-async def download_cv(cv_id: str, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)) -> FileResponse:
+async def download_cv(cv_id: str, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)) -> Response:
     cv = await _get(db, user["sub"], cv_id)
-    target = _storage_path(cv_id, cv["filename"])
-    if not target.is_file():
-        raise HTTPException(status_code=404, detail="CV file not found")
-    return FileResponse(target, media_type=cv["contentType"], filename=cv["filename"])
+    try:
+        content = get_object(cv["s3Key"])
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="CV file not found") from exc
+    return Response(content, media_type=cv["contentType"], headers={"Content-Disposition": f'attachment; filename="{cv["filename"]}"'})
 
 
 @router.delete("/{cv_id}")
 async def delete_cv(cv_id: str, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)) -> dict:
+    cv = await _get(db, user["sub"], cv_id)
     result = await db.execute(
         text("DELETE FROM user_cvs WHERE id = :id AND user_id = :user_id"),
         {"id": cv_id, "user_id": user["sub"]},
@@ -152,4 +149,8 @@ async def delete_cv(cv_id: str, user: dict = Depends(current_user), db: AsyncSes
     await db.commit()
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="CV not found")
+    try:
+        delete_object(cv["s3Key"])
+    except Exception:
+        pass
     return {"success": True}

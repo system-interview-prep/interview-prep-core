@@ -17,9 +17,11 @@ class Settings(BaseSettings):
     jwt_expires_minutes: int = 1440
     google_oauth_userinfo_url: str = "https://www.googleapis.com/oauth2/v3/userinfo"
 
-    aws_region: str = "us-east-1"
-    s3_endpoint: str | None = None
-    s3_bucket: str = "interview-prep"
+    r2_endpoint_url: str | None = None
+    r2_bucket_name: str | None = None
+    r2_access_key_id: str | None = None
+    r2_secret_access_key: str | None = None
+    r2_public_domain: str = ""
     rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
     celery_broker_url: str = "amqp://guest:guest@localhost:5672/"
     celery_result_backend: str = "rpc://"

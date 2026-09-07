@@ -1,9 +1,9 @@
 import asyncio
-from pathlib import Path
 
 from sqlalchemy import text
 
 from src.infrastructure.database import SessionFactory
+from src.infrastructure.r2 import get_object
 from src.workers.celery_app import celery_app
 from src.workers.mineru import extract_markdown
 
@@ -27,17 +27,14 @@ async def _parse_job_profile(upload_id: str) -> dict:
         await db.commit()
         row = (
             await db.execute(
-                text("SELECT filename FROM job_profiles WHERE id = :id AND item_type = 'JP_UPLOAD'"),
+                text("SELECT filename, s3_key FROM job_profiles WHERE id = :id AND item_type = 'JP_UPLOAD'"),
                 {"id": upload_id},
             )
         ).mappings().one_or_none()
         if not row:
             return {"status": "missing"}
-        path = Path("/app/data/job-profiles") / f"{upload_id}{Path(row['filename']).suffix.lower()}"
         try:
-            if not path.is_file():
-                raise FileNotFoundError("Uploaded JD file is unavailable to the worker")
-            raw_text = await extract_markdown(path, row["filename"], upload_id)
+            raw_text = await extract_markdown(get_object(row["s3_key"]), row["filename"], upload_id)
             if not raw_text.strip():
                 raise ValueError("MinerU returned no extractable text")
             await db.execute(

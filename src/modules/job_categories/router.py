@@ -69,14 +69,13 @@ async def list_categories(
     cursor: str | None = None,
 ) -> dict:
     del cursor
-    result = await db.execute(
-        text(
-            "SELECT id, name, description, created_at, updated_at FROM job_categories "
-            "WHERE (:q IS NULL OR lower(name) LIKE lower(:like_q)) "
-            "ORDER BY created_at DESC LIMIT :limit"
-        ),
-        {"q": q, "like_q": f"%{q}%" if q else None, "limit": limit},
-    )
+    query = "SELECT id, name, description, created_at, updated_at FROM job_categories"
+    params: dict[str, object] = {"limit": limit}
+    if q and q.strip():
+        query += " WHERE lower(name) LIKE lower(:query)"
+        params["query"] = f"%{q.strip()}%"
+    query += " ORDER BY created_at DESC LIMIT :limit"
+    result = await db.execute(text(query), params)
     return {"items": [_category(row) for row in result.mappings().all()]}
 
 

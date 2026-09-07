@@ -18,7 +18,7 @@ def _error(response: httpx.Response, context: str) -> str:
     return f"MinerU {context} failed: {message}"
 
 
-async def extract_markdown(path: Path, filename: str, data_id: str) -> str:
+async def extract_markdown(document: Path | bytes, filename: str, data_id: str) -> str:
     """Parse a locally stored document through MinerU Precision Extract API."""
     settings = get_settings()
     if not settings.mineru_api_key:
@@ -48,7 +48,8 @@ async def extract_markdown(path: Path, filename: str, data_id: str) -> str:
         if not batch_id or len(upload_urls) != 1:
             raise RuntimeError("MinerU did not return an upload URL")
 
-        upload_response = await client.put(upload_urls[0], content=path.read_bytes())
+        content = document if isinstance(document, bytes) else document.read_bytes()
+        upload_response = await client.put(upload_urls[0], content=content)
         if upload_response.status_code not in (200, 201):
             raise RuntimeError(_error(upload_response, "file upload"))
 
