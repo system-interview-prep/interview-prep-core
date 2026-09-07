@@ -1,7 +1,8 @@
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -10,7 +11,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_host: str = "0.0.0.0"
     app_port: int = 5000
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+    cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     jwt_secret: str = "development-only-secret-change-me"
     jwt_algorithm: str = "HS256"
@@ -26,12 +27,6 @@ class Settings(BaseSettings):
     celery_broker_url: str = "amqp://guest:guest@localhost:5672/"
     celery_result_backend: str = "rpc://"
     database_url: str = "postgresql://user:password@localhost:5432/matching_db"
-    vector_dimension: int = 1024
-    bm25_weight: float = 0.4
-    semantic_weight: float = 0.6
-    rrf_k: int = 60
-    use_gpu: bool = False
-    model_cache_dir: str = "models_cache"
     openai_api_key: str | None = None
     llm_provider: str = "openai"
     llm_model: str = "gpt-5.4-mini"
@@ -48,7 +43,7 @@ class Settings(BaseSettings):
     mineru_timeout_seconds: int = 300
 
     rabbitmq_cv_queue: str = "cv-processing"
-    rabbitmq_jp_queue: str = "jp-processing"
+    rabbitmq_jd_queue: str = "jd-processing"
     rabbitmq_matching_queue: str = "matching"
     rabbitmq_max_attempts: int = 3
 

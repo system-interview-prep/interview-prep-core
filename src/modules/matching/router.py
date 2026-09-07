@@ -19,9 +19,9 @@ router = APIRouter(prefix="/api/v1/matching", tags=["matching"])
 )
 async def match(payload: MatchRequest, response: Response) -> MatchAccepted | MatchResult:
     if payload.async_processing:
-        task = match_cv_to_jd.delay(payload.model_dump())
+        task = match_cv_to_jd.delay(payload.model_dump(by_alias=True))
         response.status_code = status.HTTP_202_ACCEPTED
-        return MatchAccepted(task_id=task.id)
+        return MatchAccepted(taskId=task.id)
     result = await run_match(payload)
     response.status_code = status.HTTP_200_OK
     return MatchResult(result=result)

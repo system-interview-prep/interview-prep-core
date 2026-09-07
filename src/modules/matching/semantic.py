@@ -30,7 +30,7 @@ class SemanticMatcher:
         resume_text: str,
         job_description: str,
         position: str | None = None,
-        job_id: str | None = None,
+        job_description_id: str | None = None,
         cv_id: str | None = None,
     ) -> dict[str, Any]:
         vectors = self.embedder.embed_texts([resume_text, job_description])
@@ -47,7 +47,7 @@ class SemanticMatcher:
                 "embedding_model": model,
                 "embedding_dimension": len(vectors[0]),
                 "job_position": position,
-                "job_id": job_id,
+                "job_description_id": job_description_id,
                 "cv_id": cv_id,
             },
             "individual_scores": {

@@ -105,7 +105,7 @@ class AlgorithmManager:
 
     def process_resumes_parallel(self, resume_texts: List[str],
                                  job_description: str, algorithm_names: List[str],
-                                 position: str = None, job_id: str = None,
+                                 position: str = None, job_description_id: str = None,
                                  cv_id: str = None, options: dict = None) -> Dict[str, Any]:
         """Process resumes using multiple algorithms in parallel"""
         self.initialize_algorithms(algorithm_names)
@@ -114,7 +114,7 @@ class AlgorithmManager:
         if not available_algorithms:
             raise Exception("No algorithms available for processing")
 
-        logger.info(f"Processing {len(resume_texts)} resumes with {len(available_algorithms)} algorithms (job_id={job_id}, cv_id={cv_id})")
+        logger.info(f"Processing {len(resume_texts)} resumes with {len(available_algorithms)} algorithms (job_description_id={job_description_id}, cv_id={cv_id})")
 
         results: Dict[str, Any] = {
             'metadata': {
@@ -136,8 +136,8 @@ class AlgorithmManager:
                 if hasattr(alg, 'process_batch'):
                     sig = inspect.signature(alg.process_batch)
                     kwargs = {}
-                    if 'job_id' in sig.parameters:
-                        kwargs['job_id'] = job_id
+                    if 'job_description_id' in sig.parameters:
+                        kwargs['job_description_id'] = job_description_id
                     if 'cv_id' in sig.parameters:
                         kwargs['cv_id'] = cv_id
                     if 'chunk_level' in sig.parameters:
@@ -146,8 +146,8 @@ class AlgorithmManager:
                 else:
                     sig = inspect.signature(alg.process_single)
                     kwargs = {}
-                    if 'job_id' in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-                        kwargs['job_id'] = job_id
+                    if 'job_description_id' in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+                        kwargs['job_description_id'] = job_description_id
                     if 'cv_id' in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
                         kwargs['cv_id'] = cv_id
                     if 'chunk_level' in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):

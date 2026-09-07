@@ -1,8 +1,9 @@
+from datetime import date
 from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,17 +15,28 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 class RegisterRequest(BaseModel):
-    email: str = Field(min_length=3)
-    password: str | None = Field(default=None, min_length=6)
-    name: str = "User"
-    dob: str | None = None
-    role: str = "CANDIDATE"
-    provider: str = "local"
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=128)
+    name: str = Field(default="User", max_length=255)
+    dob: date | None = None
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        value = value.strip()
+        if "@" not in value or value.startswith("@") or value.endswith("@"):
+            raise ValueError("Invalid email address")
+        return value
 
 
 class LoginRequest(BaseModel):
-    email: str = Field(min_length=3)
-    password: str | None = None
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        return RegisterRequest.validate_email(value)
 
 
 class GoogleLoginRequest(BaseModel):
@@ -41,8 +53,6 @@ async def register(payload: RegisterRequest, db: AsyncSession = Depends(get_db))
     existing = await db.execute(text("SELECT id FROM users WHERE lower(email) = :email"), {"email": email})
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email is already registered")
-    if payload.provider == "local" and not payload.password:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Password is required")
     user_id = str(uuid4())
     await db.execute(
         text("""INSERT INTO users (id, email, password, name, role, provider, dob)
@@ -50,18 +60,15 @@ async def register(payload: RegisterRequest, db: AsyncSession = Depends(get_db))
         {
             "id": user_id,
             "email": email,
-            "password": hash_password(payload.password) if payload.password else None,
+            "password": hash_password(payload.password),
             "name": payload.name.strip() or "User",
-            "role": payload.role,
-            "provider": payload.provider,
+            "role": "CANDIDATE",
+            "provider": "local",
             "dob": payload.dob,
         },
     )
     await db.commit()
-    result = {"message": "User registered successfully"}
-    if payload.provider == "google":
-        result["access_token"] = create_access_token(user_id, email, payload.role)
-    return result
+    return {"message": "User registered successfully"}
 
 
 @router.post("/login")
@@ -71,9 +78,7 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)) -> di
         {"email": payload.email.lower()},
     )
     row = result.mappings().one_or_none()
-    if not row or (
-        row["provider"] == "local" and not verify_password(payload.password or "", row["password"])
-    ):
+    if not row or row["provider"] != "local" or not verify_password(payload.password, row["password"]):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     return {
         "access_token": create_access_token(row["id"], row["email"], row["role"]),
@@ -109,6 +114,11 @@ async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(g
         {"email": email},
     )
     row = existing.mappings().one_or_none()
+    if row is not None and row["provider"] != "google":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email is already registered with password login",
+        )
     if row is None:
         user_id = str(uuid4())
         name = str(google_profile.get("name") or "Google User").strip() or "Google User"
@@ -120,8 +130,12 @@ async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(g
         )
         await db.commit()
         row = {
-            "id": user_id, "email": email, "name": name, "role": "CANDIDATE",
-            "provider": "google", "picture": picture,
+            "id": user_id,
+            "email": email,
+            "name": name,
+            "role": "CANDIDATE",
+            "provider": "google",
+            "picture": picture,
         }
     return {
         "access_token": create_access_token(row["id"], row["email"], row["role"]),

@@ -10,7 +10,7 @@ celery_app = Celery(
     include=[
         "src.workers.tasks.matching",
         "src.workers.tasks.cv",
-        "src.workers.tasks.job_profile",
+        "src.workers.tasks.job_description",
     ],
 )
 celery_app.conf.update(
@@ -21,6 +21,6 @@ celery_app.conf.update(
     task_routes={
         "matching.*": {"queue": settings.rabbitmq_matching_queue},
         "cv.*": {"queue": settings.rabbitmq_cv_queue},
-        "job_profile.*": {"queue": settings.rabbitmq_jp_queue},
+        "job_description.*": {"queue": settings.rabbitmq_jd_queue},
     },
 )

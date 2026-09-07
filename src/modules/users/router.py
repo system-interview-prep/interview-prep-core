@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -6,12 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.security import current_user
 from src.infrastructure.database import get_db
 
-router = APIRouter(prefix="/user", tags=["users"])
+router = APIRouter(prefix="/users", tags=["users"])
 
 
 class ProfilePatch(BaseModel):
     name: str | None = Field(default=None, max_length=255)
-    dob: str | None = None
+    dob: date | None = None
 
 
 def _profile(row: dict) -> dict:
@@ -23,7 +25,7 @@ def _profile(row: dict) -> dict:
         "provider": row["provider"],
         "dob": row["dob"].isoformat() if row["dob"] else None,
         "picture": row["picture"],
-        "created_at": row["created_at"].isoformat(),
+        "createdAt": row["created_at"].isoformat(),
     }
 
 
@@ -38,12 +40,12 @@ async def _load_profile(db: AsyncSession, user_id: str) -> dict:
     return _profile(row)
 
 
-@router.get("/profile")
+@router.get("/me")
 async def get_profile(user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)) -> dict:
     return await _load_profile(db, user["sub"])
 
 
-@router.patch("/profile")
+@router.patch("/me")
 async def update_profile(
     payload: ProfilePatch, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
 ) -> dict:

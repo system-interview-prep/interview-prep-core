@@ -18,7 +18,7 @@ class MatchingFacade:
         job_description: str,
         algorithms: list[str],
         position: str | None = None,
-        job_id: str | None = None,
+        job_description_id: str | None = None,
         cv_id: str | None = None,
     ) -> dict[str, Any]:
         # ``algorithms`` remains in the API temporarily for old clients, but the
@@ -28,7 +28,7 @@ class MatchingFacade:
             resume_text=resume_text,
             job_description=job_description,
             position=position,
-            job_id=job_id,
+            job_description_id=job_description_id,
             cv_id=cv_id,
         )
 

@@ -7,8 +7,17 @@ from src.core.config import get_settings
 
 def _settings():
     settings = get_settings()
-    if not all((settings.r2_endpoint_url, settings.r2_bucket_name, settings.r2_access_key_id, settings.r2_secret_access_key)):
-        raise RuntimeError("R2_ENDPOINT_URL, R2_BUCKET_NAME, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are required")
+    if not all(
+        (
+            settings.r2_endpoint_url,
+            settings.r2_bucket_name,
+            settings.r2_access_key_id,
+            settings.r2_secret_access_key,
+        )
+    ):
+        raise RuntimeError(
+            "R2_ENDPOINT_URL, R2_BUCKET_NAME, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are required"
+        )
     return settings
 
 

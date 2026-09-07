@@ -13,6 +13,6 @@ async def run_match(payload: MatchRequest) -> dict:
         job_description=payload.job_description,
         algorithms=payload.algorithms,
         position=payload.position,
-        job_id=payload.job_id,
+        job_description_id=payload.job_description_id,
         cv_id=payload.cv_id,
     )

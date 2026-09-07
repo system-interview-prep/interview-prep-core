@@ -10,7 +10,12 @@ def test_category_models_and_mapper() -> None:
     now = datetime.now(UTC)
     assert CategoryInput(name=" Engineering ").name == " Engineering "
     assert CategoryPatch().model_dump(exclude_unset=True) == {}
-    assert _category({"id": "c1", "name": "Engineering", "description": "", "created_at": now, "updated_at": now})["createdAt"] == now.isoformat()
+    assert (
+        _category(
+            {"id": "c1", "name": "Engineering", "description": "", "created_at": now, "updated_at": now}
+        )["createdAt"]
+        == now.isoformat()
+    )
     with pytest.raises(ValidationError):
         CategoryInput(name="")
 
@@ -20,8 +25,11 @@ async def test_category_list_omits_null_search_parameter() -> None:
     captured = {}
 
     class Result:
-        def mappings(self): return self
-        def all(self): return []
+        def mappings(self):
+            return self
+
+        def all(self):
+            return []
 
     class Database:
         async def execute(self, statement, params):

@@ -34,8 +34,7 @@ def _cv(row: dict) -> dict:
         "filename": row["filename"],
         "contentType": row["content_type"],
         "size": row["size"],
-        "s3Key": row["s3_key"],
-        "storageKey": row["s3_key"],
+        "storageKey": row["storage_key"],
         "url": row["url"],
         "status": row["status"],
         "score": row["score"],
@@ -48,7 +47,7 @@ def _cv(row: dict) -> dict:
 
 
 _SELECT = """
-    SELECT id, user_id, filename, content_type, size, s3_key, url, status, score,
+    SELECT id, user_id, filename, content_type, size, storage_key, url, status, score,
            error, parse_source, raw_text, created_at, updated_at
     FROM user_cvs
 """
@@ -61,7 +60,9 @@ async def upload_cv(
     filename = Path(file.filename or "").name
     suffix = Path(filename).suffix.lower()
     if not filename or (file.content_type not in _ALLOWED_CONTENT_TYPES and suffix not in _ALLOWED_SUFFIXES):
-        raise HTTPException(status_code=422, detail="Only PDF, DOC, DOCX, PNG, JPEG, and WEBP files are allowed")
+        raise HTTPException(
+            status_code=422, detail="Only PDF, DOC, DOCX, PNG, JPEG, and WEBP files are allowed"
+        )
     content = await file.read(_MAX_FILE_SIZE + 1)
     if not content:
         raise HTTPException(status_code=422, detail="File is empty")
@@ -83,12 +84,22 @@ async def upload_cv(
         put_object(storage_key, content, file.content_type or "application/octet-stream")
         await db.execute(
             text("""
-                INSERT INTO user_cvs (id, user_id, checksum, filename, content_type, size, s3_key, url, status)
-                VALUES (:id, :user_id, :checksum, :filename, :content_type, :size, :s3_key, :url, 'PENDING')
+                INSERT INTO user_cvs
+                    (id, user_id, checksum, filename, content_type, size, storage_key, url, status)
+                VALUES
+                    (:id, :user_id, :checksum, :filename, :content_type, :size,
+                     :storage_key, :url, 'PENDING')
             """),
-            {"id": cv_id, "user_id": user["sub"], "checksum": checksum, "filename": filename,
-             "content_type": file.content_type or "application/octet-stream", "size": len(content),
-             "s3_key": storage_key, "url": public_url(storage_key) or f"/users/me/cvs/{cv_id}/download"},
+            {
+                "id": cv_id,
+                "user_id": user["sub"],
+                "checksum": checksum,
+                "filename": filename,
+                "content_type": file.content_type or "application/octet-stream",
+                "size": len(content),
+                "storage_key": storage_key,
+                "url": public_url(storage_key) or f"/users/me/cvs/{cv_id}/download",
+            },
         )
         await db.commit()
     except IntegrityError:
@@ -130,17 +141,25 @@ async def get_cv(cv_id: str, user: dict = Depends(current_user), db: AsyncSessio
 
 
 @router.get("/{cv_id}/download")
-async def download_cv(cv_id: str, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)) -> Response:
+async def download_cv(
+    cv_id: str, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
+) -> Response:
     cv = await _get(db, user["sub"], cv_id)
     try:
-        content = get_object(cv["s3Key"])
+        content = get_object(cv["storageKey"])
     except Exception as exc:
         raise HTTPException(status_code=404, detail="CV file not found") from exc
-    return Response(content, media_type=cv["contentType"], headers={"Content-Disposition": f'attachment; filename="{cv["filename"]}"'})
+    return Response(
+        content,
+        media_type=cv["contentType"],
+        headers={"Content-Disposition": f'attachment; filename="{cv["filename"]}"'},
+    )
 
 
 @router.delete("/{cv_id}")
-async def delete_cv(cv_id: str, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)) -> dict:
+async def delete_cv(
+    cv_id: str, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
+) -> dict:
     cv = await _get(db, user["sub"], cv_id)
     result = await db.execute(
         text("DELETE FROM user_cvs WHERE id = :id AND user_id = :user_id"),
@@ -150,7 +169,7 @@ async def delete_cv(cv_id: str, user: dict = Depends(current_user), db: AsyncSes
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="CV not found")
     try:
-        delete_object(cv["s3Key"])
+        delete_object(cv["storageKey"])
     except Exception:
         pass
     return {"success": True}

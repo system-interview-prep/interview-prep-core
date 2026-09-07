@@ -1,4 +1,5 @@
 import asyncio
+
 from sqlalchemy import text
 
 from src.infrastructure.database import SessionFactory
@@ -21,11 +22,22 @@ async def _parse_cv(cv_id: str) -> dict:
             {"id": cv_id},
         )
         await db.commit()
-        row = (await db.execute(text("SELECT filename, s3_key FROM user_cvs WHERE id = :id"), {"id": cv_id})).mappings().one_or_none()
+        row = (
+            (
+                await db.execute(
+                    text("SELECT filename, storage_key FROM user_cvs WHERE id = :id"),
+                    {"id": cv_id},
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
         if not row:
             return {"status": "missing"}
         try:
-            raw_text = await extract_markdown(get_object(row["s3_key"]), row["filename"], cv_id)
+            raw_text = await extract_markdown(
+                get_object(row["storage_key"]), row["filename"], cv_id
+            )
             if not raw_text.strip():
                 raise ValueError("MinerU returned no extractable text")
             await db.execute(
@@ -39,7 +51,9 @@ async def _parse_cv(cv_id: str) -> dict:
             return {"status": "DONE", "cv_id": cv_id}
         except Exception as exc:
             await db.execute(
-                text("UPDATE user_cvs SET status = 'FAILED', error = :error, updated_at = now() WHERE id = :id"),
+                text(
+                    "UPDATE user_cvs SET status = 'FAILED', error = :error, updated_at = now() WHERE id = :id"
+                ),
                 {"id": cv_id, "error": str(exc)[:1000]},
             )
             await db.commit()

@@ -10,14 +10,22 @@ from src.infrastructure.database import postgres_lifespan
 from src.infrastructure.rabbitmq import rabbitmq_lifespan
 from src.infrastructure.socketio import sio
 from src.modules.auth import build_module as build_auth_module
+from src.modules.chat import build_module as build_chat_module
 from src.modules.health import build_module as build_health_module
+from src.modules.interview_questions import build_module as build_interview_questions_module
 from src.modules.job_categories import build_module as build_job_categories_module
-from src.modules.job_profiles import build_module as build_job_profiles_module
+from src.modules.job_descriptions import build_module as build_job_descriptions_module
 from src.modules.matching import build_module as build_matching_module
+from src.modules.notifications import build_module as build_notifications_module
+from src.modules.scoring import build_module as build_scoring_module
 from src.modules.sessions import build_module as build_sessions_module
-from src.modules.users import build_module as build_users_module
+from src.modules.signaling import _events as _signaling_events
 from src.modules.user_cvs import build_module as build_user_cvs_module
+from src.modules.users import build_module as build_users_module
 from src.modules.video_calls import build_module as build_video_calls_module
+from src.modules.voice import build_module as build_voice_module
+
+del _signaling_events
 
 MODULES = [
     build_health_module(),
@@ -25,10 +33,15 @@ MODULES = [
     build_users_module(),
     build_user_cvs_module(),
     build_job_categories_module(),
-    build_job_profiles_module(),
+    build_job_descriptions_module(),
     build_matching_module(),
     build_sessions_module(),
+    build_chat_module(),
+    build_interview_questions_module(),
+    build_scoring_module(),
+    build_voice_module(),
     build_video_calls_module(),
+    build_notifications_module(),
 ]
 
 

@@ -43,3 +43,17 @@ def test_modules_do_not_reach_into_other_module_internals() -> None:
                 violations.append(f"{path}: {imported}")
 
     assert violations == []
+
+
+def test_every_source_module_has_a_matching_test_directory() -> None:
+    source_modules = {
+        path.name
+        for path in Path("src/modules").iterdir()
+        if path.is_dir() and not path.name.startswith("__")
+    }
+    tested_modules = {
+        path.name
+        for path in Path("tests/modules").iterdir()
+        if path.is_dir() and not path.name.startswith("__")
+    }
+    assert source_modules <= tested_modules

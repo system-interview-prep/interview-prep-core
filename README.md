@@ -20,7 +20,7 @@ src/
     users/
     user_cvs/
     job_categories/
-    job_profiles/
+    job_descriptions/
     matching/            # algorithms + RAG + public matching facade
     interview_questions/
     sessions/
@@ -67,7 +67,8 @@ ParadeDB cung cấp BM25 cho lexical ranking, còn pgvector lưu embedding từ 
 
 ```bash
 # API contract + architecture tests (API image)
-docker compose run --rm --no-deps backend pytest -q
+docker build --target test -t interview-prep-fastapi-tests .
+docker run --rm interview-prep-fastapi-tests
 
 # Matching engine integration (cần extra matching)
 pip install -e ".[dev,matching]"

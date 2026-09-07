@@ -42,3 +42,9 @@ async def current_user(
         return {"sub": str(payload["sub"]), "email": str(payload["email"]), "role": str(payload["role"])}
     except (jwt.InvalidTokenError, KeyError) as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized") from exc
+
+
+async def require_admin(user: Annotated[dict[str, str], Depends(current_user)]) -> dict[str, str]:
+    if user.get("role") != "ADMIN":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return user

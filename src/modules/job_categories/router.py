@@ -6,7 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.security import current_user
+from src.core.security import require_admin
 from src.infrastructure.database import get_db
 
 router = APIRouter(prefix="/admin/job-categories", tags=["job-categories"])
@@ -45,7 +45,7 @@ async def _get(db: AsyncSession, category_id: str) -> dict:
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create(
-    payload: CategoryInput, _: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
+    payload: CategoryInput, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ) -> dict:
     category_id = str(uuid4())
     try:
@@ -62,7 +62,7 @@ async def create(
 
 @router.get("")
 async def list_categories(
-    _: dict = Depends(current_user),
+    _: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=50, ge=1, le=200),
     q: str | None = None,
@@ -81,7 +81,7 @@ async def list_categories(
 
 @router.get("/{category_id}")
 async def get_category(
-    category_id: str, _: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
+    category_id: str, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ) -> dict:
     return await _get(db, category_id)
 
@@ -90,17 +90,17 @@ async def get_category(
 async def update(
     category_id: str,
     payload: CategoryPatch,
-    _: dict = Depends(current_user),
+    _: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     values = payload.model_dump(exclude_unset=True)
     if values:
         await db.execute(
-        text(
-            "UPDATE job_categories SET name = COALESCE(:name, name), "
-            "description = COALESCE(:description, description), updated_at = now() "
-            "WHERE id = :id"
-        ),
+            text(
+                "UPDATE job_categories SET name = COALESCE(:name, name), "
+                "description = COALESCE(:description, description), updated_at = now() "
+                "WHERE id = :id"
+            ),
             {"id": category_id, "name": values.get("name"), "description": values.get("description")},
         )
         await db.commit()
@@ -109,7 +109,7 @@ async def update(
 
 @router.delete("/{category_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove(
-    category_id: str, _: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
+    category_id: str, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ) -> None:
     result = await db.execute(text("DELETE FROM job_categories WHERE id = :id"), {"id": category_id})
     await db.commit()

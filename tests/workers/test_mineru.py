@@ -1,5 +1,4 @@
 import io
-from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZipFile
 

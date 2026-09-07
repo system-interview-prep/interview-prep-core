@@ -23,5 +23,5 @@ CMD ["celery", "-A", "src.workers.celery_app:celery_app", "worker", "--loglevel=
 
 FROM base AS test
 
-RUN pip install ".[dev]"
+RUN pip install ".[dev,matching]"
 CMD ["pytest", "-q"]

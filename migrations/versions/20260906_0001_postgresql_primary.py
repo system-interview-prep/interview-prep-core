@@ -208,7 +208,7 @@ def upgrade() -> None:
     op.execute("""
         CREATE TABLE job_profiles_vector (
             job_id VARCHAR(255) PRIMARY KEY REFERENCES job_profiles(id) ON DELETE CASCADE,
-            job_vector vector(1024), bert_vector vector(768), distilbert_vector vector(768),
+            job_vector vector(1024),
             checksum VARCHAR(64), version INTEGER NOT NULL DEFAULT 1, job_text TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
@@ -216,7 +216,7 @@ def upgrade() -> None:
     op.execute("""
         CREATE TABLE cv_profiles_vector (
             cv_id VARCHAR(255) PRIMARY KEY REFERENCES user_cvs(id) ON DELETE CASCADE,
-            cv_vector vector(1024), bert_vector vector(768), distilbert_vector vector(768),
+            cv_vector vector(1024),
             checksum VARCHAR(64), version INTEGER NOT NULL DEFAULT 1, cv_text TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )

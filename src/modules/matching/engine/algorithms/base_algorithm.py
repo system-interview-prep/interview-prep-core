@@ -27,12 +27,12 @@ class BaseAlgorithm(ABC):
     
     @abstractmethod
     def process_single(self, resume_text: str, job_description: str, 
-                       position: str = None, job_id: str = None, cv_id: str = None) -> dict:
+                       position: str = None, job_description_id: str = None, cv_id: str = None) -> dict:
         """Process a single resume against a job description"""
         raise NotImplementedError("Each algorithm must implement process_single")
 
     def process_batch(self, resume_texts: list, job_description: str, 
-                      position: str = None, job_id: str = None, cv_id: str = None) -> list:
+                      position: str = None, job_description_id: str = None, cv_id: str = None) -> list:
         """Process multiple resumes in batch, utilizing any algorithm-level optimizations."""
         if not self.is_loaded:
             self.load_model()
@@ -46,8 +46,8 @@ class BaseAlgorithm(ABC):
                     import inspect
                     sig = inspect.signature(self.process_single)
                     kwargs = {}
-                    if 'job_id' in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-                        kwargs['job_id'] = job_id
+                    if 'job_description_id' in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+                        kwargs['job_description_id'] = job_description_id
                     if 'cv_id' in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
                         kwargs['cv_id'] = cv_id
                     result = self.process_single(resume_text, job_description, position, **kwargs)
