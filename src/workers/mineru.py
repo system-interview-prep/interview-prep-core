@@ -1,7 +1,6 @@
 import asyncio
 import io
 import json
-from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -10,26 +9,9 @@ from zipfile import BadZipFile, ZipFile
 import httpx
 
 from src.core.config import get_settings
+from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
 
 _MAX_ARCHIVE_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
-
-
-@dataclass(frozen=True)
-class DocumentArtifacts:
-    """Immutable subset of MinerU output needed for parsing and audit."""
-
-    markdown: str
-    content_list: list[Any] = field(default_factory=list)
-    middle: dict[str, Any] | list[Any] | None = None
-    extractor_version: str | None = None
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "markdown": self.markdown,
-            "contentList": self.content_list,
-            "middle": self.middle,
-            "extractorVersion": self.extractor_version,
-        }
 
 
 def _error(response: httpx.Response, context: str) -> str:
@@ -107,7 +89,12 @@ async def extract_document_artifacts(
     }
     base_url = settings.mineru_base_url.rstrip("/")
     headers = {"Authorization": f"Bearer {settings.mineru_api_key}"}
-    timeout = httpx.Timeout(60.0, connect=20.0)
+    timeout = httpx.Timeout(
+        connect=settings.mineru_http_connect_timeout_seconds,
+        read=settings.mineru_http_read_timeout_seconds,
+        write=settings.mineru_http_write_timeout_seconds,
+        pool=settings.mineru_http_pool_timeout_seconds,
+    )
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
         response = await client.post(f"{base_url}/file-urls/batch", headers=headers, json=request_body)
         if response.status_code != 200:

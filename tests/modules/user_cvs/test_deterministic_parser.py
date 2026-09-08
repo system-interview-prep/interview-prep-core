@@ -1,10 +1,10 @@
 import pytest
 from pydantic import ValidationError
 
-from src.modules.matching.schemas import CanonicalResume, EmploymentEntry, PartialDate
-from src.modules.user_cvs.parsing.deterministic import DeterministicResumeParser
-from src.modules.user_cvs.parsing.source import EvidenceMapper, build_source_document
-from src.workers.mineru import DocumentArtifacts
+from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
+from src.modules.user_cvs.parsing.domain.deterministic import DeterministicResumeParser
+from src.modules.user_cvs.parsing.domain.source import EvidenceMapper, build_source_document
+from src.modules.user_cvs.domain.schemas import CanonicalResume, EmploymentEntry, PartialDate
 
 SHA256 = "b" * 64
 
@@ -91,7 +91,7 @@ def test_deterministic_parser_extracts_grounded_skills_language_and_separate_pii
             {"type": "text", "text": "Tiếng Anh: B2", "page_idx": 1, "bbox": [0, 20, 200, 40]},
             {
                 "type": "text",
-                "text": "candidate@example.com | 0901 234 567",
+                "text": "Họ và tên: Nguyễn Văn A\nNgày sinh: 04/12/1998\ncandidate@example.com | 0901 234 567",
                 "page_idx": 1,
                 "bbox": [0, 50, 300, 70],
             },
@@ -109,9 +109,66 @@ def test_deterministic_parser_extracts_grounded_skills_language_and_separate_pii
     assert result.resume.languages[0].level == "B2"
     assert result.identity.emails[0].value == "candidate@example.com"
     assert result.identity.phones[0].value == "0901 234 567"
+    assert result.identity.full_name and result.identity.full_name.value == "Nguyễn Văn A"
+    assert result.identity.date_of_birth and result.identity.date_of_birth.value == "1998-12-04"
+    classifications = {item.code: item for item in result.resume.career_classifications}
+    assert classifications["technology.software-engineering.backend"].is_primary is True
+    assert classifications["technology.software-engineering.backend"].confidence == 0.75
+    assert classifications["technology"].evidence_refs
     assert "candidate@example.com" not in result.resume.model_dump_json()
     for evidence in result.resume.evidence:
         assert source.text[evidence.char_start : evidence.char_end] == evidence.text
+
+
+def test_deterministic_parser_extracts_structured_sections_with_grounded_evidence() -> None:
+    source = _source(
+        [
+            {"type": "title", "text": "Skills"},
+            {"type": "text", "text": "Python, Docker"},
+            {"type": "title", "text": "Experience"},
+            {
+                "type": "text",
+                "text": "Backend Engineer | Acme Corp | Jan 2020 - Present",
+                "page_idx": 0,
+                "bbox": [0, 40, 400, 60],
+            },
+            {"type": "text", "text": "Built Python APIs with Docker."},
+            {"type": "title", "text": "Education"},
+            {
+                "type": "text",
+                "text": "Example University | Bachelor of Computer Science | 2016 - 2020",
+            },
+            {"type": "title", "text": "Projects"},
+            {"type": "text", "text": "Hiring Platform\nBuilt with Python"},
+            {"type": "title", "text": "Certifications"},
+            {"type": "text", "text": "AWS Certified Developer | 2024 - 2027"},
+        ]
+    )
+
+    result = DeterministicResumeParser().parse(source, extraction_version="mineru-3.0.0")
+
+    employment = result.resume.employment[0]
+    assert employment.job_title == "Backend Engineer"
+    assert employment.organization == "Acme Corp"
+    assert employment.start_date and employment.start_date.value == "2020-01"
+    assert employment.is_current is True
+    assert employment.responsibilities == ["Built Python APIs with Docker."]
+    assert set(employment.skill_claim_ids) == {"claim-skill-python", "claim-skill-docker"}
+    assert result.resume.education[0].institution == "Example University"
+    assert result.resume.education[0].degree == "Bachelor of Computer Science"
+    assert result.resume.projects[0].name == "Hiring Platform"
+    assert result.resume.projects[0].skill_claim_ids == ["claim-skill-python"]
+    assert result.resume.certifications[0].name == "AWS Certified Developer"
+    assert result.resume.certifications[0].issued_date.value == "2024"
+    assert result.resume.certifications[0].expires_date.value == "2027"
+    evidence_ids = {evidence.evidence_id for evidence in result.resume.evidence}
+    owners = [
+        *result.resume.employment,
+        *result.resume.education,
+        *result.resume.projects,
+        *result.resume.certifications,
+    ]
+    assert all(owner.evidence_refs and set(owner.evidence_refs).issubset(evidence_ids) for owner in owners)
 
 
 def test_canonical_resume_rejects_dangling_evidence_reference() -> None:

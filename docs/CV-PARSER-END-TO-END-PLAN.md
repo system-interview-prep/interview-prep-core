@@ -27,24 +27,25 @@ LLM được phép tham gia candidate extraction và relation linking. LLM khôn
 
 ## 2. Khoảng cách của code hiện tại
 
-Luồng hiện tại trong `src/workers/tasks/cv.py` là:
+Foundation hiện tại đã nối được:
 
 ```text
-R2 file -> MinerU -> full.md -> user_cvs.raw_text -> DONE
+upload -> R2 -> Celery -> MinerU artifacts -> canonical source/evidence
+       -> deterministic parser -> Pydantic validation -> user_cvs.parsed_data JSONB
 ```
 
 Các khoảng trống chính:
 
 - `is_ocr=True` cho mọi tài liệu, chưa phân biệt digital PDF/DOCX với scan.
-- MinerU ZIP có structured layout artifacts nhưng `src/workers/mineru.py` chỉ đọc Markdown rồi bỏ phần còn lại.
-- `user_cvs.parsed_data` đã có trong migration nhưng worker chưa ghi.
-- Không có parse-run provenance, schema/prompt/model version, field confidence, evidence validation hoặc human review state.
-- `DONE` hiện chỉ có nghĩa OCR trả text, dễ bị hiểu nhầm là canonical CV đã sẵn sàng matching.
+- MinerU artifacts và canonical evidence đã giữ page, reading order, bbox và exact offsets; chưa benchmark độ đúng layout trên corpus thật.
+- Worker đã ghi canonical schema/parser/extraction version vào `parsed_data`; chưa có bảng `cv_parse_runs` để giữ lịch sử immutable của nhiều lần parse.
+- Deterministic baseline mới trích xuất skill alias, CEFR, email và phone; employment, education, projects và certifications vẫn route `review_required`.
+- `DONE` là trạng thái aggregate ghi thành công; readiness nằm trong `parsedData.parsing.status`, nhưng cần state machine riêng để tránh nhầm lẫn.
 - Raw CV chứa PII; scoring hiện vẫn đọc `raw_text` để embedding.
 
 ## 3. Contract dữ liệu cần chốt trước
 
-Canonical Resume v2.1 phải là contract giữa parser, database và matcher. Ngoài các model đã có ở `src/modules/matching/schemas.py`, cần hoàn thiện:
+Canonical Resume v2.1 phải là contract giữa parser, database và matcher. Schema CV thuộc `src/modules/user_cvs/schemas.py`; matcher chỉ phụ thuộc contract này thay vì sở hữu nó. Cần tiếp tục hoàn thiện:
 
 - `DocumentRevision`: document ID, SHA-256, MIME đã phát hiện, số trang, extraction version.
 - `PartialDate`: value và precision `year|month|day`; không ép dữ liệu chỉ có năm thành ngày giả.

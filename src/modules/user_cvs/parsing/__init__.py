@@ -1,15 +1,20 @@
-from src.modules.user_cvs.parsing.deterministic import (
-    DeterministicParseResult,
+from src.modules.user_cvs.parsing.domain.deterministic import (
+    CefrLanguageExtractor,
     DeterministicResumeParser,
-    ResumeIdentity,
+    RegexIdentityExtractor,
+    TaxonomySkillExtractor,
 )
-from src.modules.user_cvs.parsing.source import EvidenceMapper, SourceBlock, SourceDocument
+from src.modules.user_cvs.parsing.domain.source import EvidenceMapper, SourceBlock, SourceDocument
+from src.modules.user_cvs.domain.schemas import ParsedResume, ResumeIdentity
 
 __all__ = [
-    "DeterministicParseResult",
+    "CefrLanguageExtractor",
     "DeterministicResumeParser",
     "EvidenceMapper",
+    "ParsedResume",
+    "RegexIdentityExtractor",
     "ResumeIdentity",
     "SourceBlock",
     "SourceDocument",
+    "TaxonomySkillExtractor",
 ]

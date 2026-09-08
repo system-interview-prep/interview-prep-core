@@ -4,6 +4,8 @@
 
 Kế hoạch CV parser evidence-first từ upload đến matching: [docs/CV-PARSER-END-TO-END-PLAN.md](docs/CV-PARSER-END-TO-END-PLAN.md).
 
+Luồng CV ingestion/parser đang triển khai: [docs/CV-PARSER-IMPLEMENTATION.md](docs/CV-PARSER-IMPLEMENTATION.md).
+
 Backend FastAPI hợp nhất từ:
 
 - `interview-prep-backend`: API nghiệp vụ, S3, RabbitMQ, Socket.IO.

@@ -3,8 +3,8 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
-from src.modules.matching.schemas import EvidenceSpan
-from src.workers.mineru import DocumentArtifacts
+from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
+from src.modules.user_cvs.domain.schemas import EvidenceSpan
 
 
 @dataclass(frozen=True)

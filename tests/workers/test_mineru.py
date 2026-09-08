@@ -51,6 +51,10 @@ def _settings(api_key="test-key"):
         mineru_base_url="https://mineru.example/api/v4",
         mineru_model_version="vlm",
         mineru_language="auto",
+        mineru_http_connect_timeout_seconds=20,
+        mineru_http_read_timeout_seconds=120,
+        mineru_http_write_timeout_seconds=120,
+        mineru_http_pool_timeout_seconds=20,
         mineru_poll_interval_seconds=0,
         mineru_timeout_seconds=10,
     )
