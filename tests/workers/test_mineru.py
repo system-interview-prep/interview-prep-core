@@ -56,11 +56,44 @@ def _settings(api_key="test-key"):
     )
 
 
-def _archive(markdown="# Parsed JD\nPython"):
+def _archive(markdown="# Parsed JD\nPython", *, content_list=None, middle=None):
     buffer = io.BytesIO()
     with ZipFile(buffer, "w") as archive:
         archive.writestr("result/full.md", markdown)
+        if content_list is not None:
+            import json
+
+            archive.writestr("result/cv_content_list.json", json.dumps(content_list))
+        if middle is not None:
+            import json
+
+            archive.writestr("result/cv_middle.json", json.dumps(middle))
     return buffer.getvalue()
+
+
+def test_read_document_artifacts_keeps_layout_data() -> None:
+    content_list = [
+        {"type": "text", "text": "Skills", "page_idx": 0, "bbox": [1, 2, 3, 4]},
+        {"type": "text", "text": "Python", "page_idx": 1, "bbox": [5, 6, 7, 8]},
+    ]
+    artifacts = mineru.read_document_artifacts(
+        _archive("Skills\nPython", content_list=content_list, middle={"_version_name": "3.0.0"})
+    )
+
+    assert artifacts.markdown == "Skills\nPython"
+    assert artifacts.content_list == content_list
+    assert artifacts.middle == {"_version_name": "3.0.0"}
+    assert artifacts.extractor_version == "3.0.0"
+
+
+def test_read_document_artifacts_rejects_invalid_content_list_json() -> None:
+    buffer = io.BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        archive.writestr("result/full.md", "Skills")
+        archive.writestr("result/cv_content_list.json", "{invalid")
+
+    with pytest.raises(RuntimeError, match="invalid JSON"):
+        mineru.read_document_artifacts(buffer.getvalue())
 
 
 @pytest.mark.asyncio

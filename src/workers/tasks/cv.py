@@ -1,11 +1,14 @@
 import asyncio
+import json
 
 from sqlalchemy import text
 
 from src.infrastructure.database import SessionFactory
-from src.infrastructure.r2 import get_object
+from src.infrastructure.r2 import get_object, put_object
+from src.modules.user_cvs.parsing.deterministic import DeterministicResumeParser
+from src.modules.user_cvs.parsing.source import build_source_document
 from src.workers.celery_app import celery_app
-from src.workers.mineru import extract_markdown
+from src.workers.mineru import extract_document_artifacts
 
 
 @celery_app.task(name="cv.parse", bind=True)
@@ -25,7 +28,7 @@ async def _parse_cv(cv_id: str) -> dict:
         row = (
             (
                 await db.execute(
-                    text("SELECT filename, storage_key FROM user_cvs WHERE id = :id"),
+                    text("SELECT filename, storage_key, checksum FROM user_cvs WHERE id = :id"),
                     {"id": cv_id},
                 )
             )
@@ -35,20 +38,45 @@ async def _parse_cv(cv_id: str) -> dict:
         if not row:
             return {"status": "missing"}
         try:
-            raw_text = await extract_markdown(
+            artifacts = await extract_document_artifacts(
                 get_object(row["storage_key"]), row["filename"], cv_id
             )
-            if not raw_text.strip():
+            if not artifacts.markdown.strip():
                 raise ValueError("MinerU returned no extractable text")
+            artifact_key = f"{row['storage_key']}.mineru.json"
+            put_object(
+                artifact_key,
+                json.dumps(artifacts.as_dict(), ensure_ascii=False).encode("utf-8"),
+                "application/json",
+            )
+            source = build_source_document(
+                artifacts,
+                document_id=cv_id,
+                document_sha256=row["checksum"],
+            )
+            parsed = DeterministicResumeParser().parse(
+                source,
+                extraction_version=artifacts.extractor_version or "mineru-unknown",
+                source_artifact_key=artifact_key,
+            )
             await db.execute(
                 text(
                     "UPDATE user_cvs SET status = 'DONE', raw_text = :raw_text, "
-                    "parse_source = 'mineru', updated_at = now() WHERE id = :id"
+                    "parsed_data = CAST(:parsed_data AS jsonb), "
+                    "parse_source = 'mineru+deterministic-v1', updated_at = now() WHERE id = :id"
                 ),
-                {"id": cv_id, "raw_text": raw_text},
+                {
+                    "id": cv_id,
+                    "raw_text": source.text,
+                    "parsed_data": parsed.resume.model_dump_json(by_alias=True),
+                },
             )
             await db.commit()
-            return {"status": "DONE", "cv_id": cv_id}
+            return {
+                "status": "DONE",
+                "cv_id": cv_id,
+                "canonical_status": parsed.resume.parsing.status if parsed.resume.parsing else None,
+            }
         except Exception as exc:
             await db.execute(
                 text(

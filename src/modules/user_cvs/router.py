@@ -41,6 +41,7 @@ def _cv(row: dict) -> dict:
         "error": row["error"],
         "parseSource": row["parse_source"],
         "rawText": row["raw_text"],
+        "parsedData": row.get("parsed_data"),
         "createdAt": row["created_at"].isoformat(),
         "updatedAt": row["updated_at"].isoformat(),
     }
@@ -48,7 +49,7 @@ def _cv(row: dict) -> dict:
 
 _SELECT = """
     SELECT id, user_id, filename, content_type, size, storage_key, url, status, score,
-           error, parse_source, raw_text, created_at, updated_at
+           error, parse_source, raw_text, parsed_data, created_at, updated_at
     FROM user_cvs
 """
 
