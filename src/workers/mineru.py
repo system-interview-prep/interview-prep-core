@@ -1,12 +1,17 @@
 import asyncio
 import io
+import json
 from pathlib import Path
 from time import monotonic
+from typing import Any
 from zipfile import BadZipFile, ZipFile
 
 import httpx
 
 from src.core.config import get_settings
+from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
+
+_MAX_ARCHIVE_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
 
 
 def _error(response: httpx.Response, context: str) -> str:
@@ -18,7 +23,57 @@ def _error(response: httpx.Response, context: str) -> str:
     return f"MinerU {context} failed: {message}"
 
 
-async def extract_markdown(document: Path | bytes, filename: str, data_id: str) -> str:
+def _find_member(names: list[str], suffixes: tuple[str, ...]) -> str | None:
+    return next((name for name in names if name.lower().endswith(suffixes)), None)
+
+
+def _read_json_member(archive: ZipFile, name: str | None) -> Any:
+    if name is None:
+        return None
+    try:
+        return json.loads(archive.read(name).decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"MinerU result archive contains invalid JSON: {name}") from exc
+
+
+def read_document_artifacts(archive_bytes: bytes) -> DocumentArtifacts:
+    """Read MinerU output without extracting untrusted archive paths to disk."""
+    try:
+        with ZipFile(io.BytesIO(archive_bytes)) as archive:
+            if sum(item.file_size for item in archive.infolist()) > _MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+                raise RuntimeError("MinerU result archive exceeds the uncompressed size limit")
+            names = archive.namelist()
+            markdown_name = _find_member(names, ("/full.md", "full.md"))
+            markdown_name = markdown_name or _find_member(names, (".md",))
+            if not markdown_name:
+                raise RuntimeError("MinerU result archive does not contain Markdown")
+            markdown = archive.read(markdown_name).decode("utf-8-sig")
+
+            content_name = _find_member(names, ("_content_list_v2.json", "content_list_v2.json"))
+            content_name = content_name or _find_member(
+                names, ("_content_list.json", "content_list.json")
+            )
+            middle_name = _find_member(names, ("_middle.json", "middle.json"))
+            content_list = _read_json_member(archive, content_name) or []
+            middle = _read_json_member(archive, middle_name)
+            if not isinstance(content_list, list):
+                raise RuntimeError("MinerU content list must be a JSON array")
+            if middle is not None and not isinstance(middle, (dict, list)):
+                raise RuntimeError("MinerU middle output must be a JSON object or array")
+            extractor_version = middle.get("_version_name") if isinstance(middle, dict) else None
+            return DocumentArtifacts(
+                markdown=markdown,
+                content_list=content_list,
+                middle=middle,
+                extractor_version=str(extractor_version) if extractor_version else None,
+            )
+    except BadZipFile as exc:
+        raise RuntimeError("MinerU returned an invalid result archive") from exc
+
+
+async def extract_document_artifacts(
+    document: Path | bytes, filename: str, data_id: str
+) -> DocumentArtifacts:
     """Parse a locally stored document through MinerU Precision Extract API."""
     settings = get_settings()
     if not settings.mineru_api_key:
@@ -34,7 +89,12 @@ async def extract_markdown(document: Path | bytes, filename: str, data_id: str) 
     }
     base_url = settings.mineru_base_url.rstrip("/")
     headers = {"Authorization": f"Bearer {settings.mineru_api_key}"}
-    timeout = httpx.Timeout(60.0, connect=20.0)
+    timeout = httpx.Timeout(
+        connect=settings.mineru_http_connect_timeout_seconds,
+        read=settings.mineru_http_read_timeout_seconds,
+        write=settings.mineru_http_write_timeout_seconds,
+        pool=settings.mineru_http_pool_timeout_seconds,
+    )
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
         response = await client.post(f"{base_url}/file-urls/batch", headers=headers, json=request_body)
         if response.status_code != 200:
@@ -78,17 +138,11 @@ async def extract_markdown(document: Path | bytes, filename: str, data_id: str) 
                 raise RuntimeError("MinerU completed without a result archive")
             archive_response = await client.get(zip_url)
             archive_response.raise_for_status()
-            try:
-                with ZipFile(io.BytesIO(archive_response.content)) as archive:
-                    markdown_name = next(
-                        (name for name in archive.namelist() if name.endswith("/full.md")), None
-                    )
-                    markdown_name = markdown_name or next(
-                        (name for name in archive.namelist() if name.endswith(".md")), None
-                    )
-                    if not markdown_name:
-                        raise RuntimeError("MinerU result archive does not contain Markdown")
-                    return archive.read(markdown_name).decode("utf-8-sig")
-            except BadZipFile as exc:
-                raise RuntimeError("MinerU returned an invalid result archive") from exc
+            return read_document_artifacts(archive_response.content)
     raise TimeoutError(f"MinerU extraction timed out after {settings.mineru_timeout_seconds} seconds")
+
+
+async def extract_markdown(document: Path | bytes, filename: str, data_id: str) -> str:
+    """Backward-compatible Markdown-only wrapper."""
+    artifacts = await extract_document_artifacts(document, filename, data_id)
+    return artifacts.markdown

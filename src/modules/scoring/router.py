@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import current_user
 from src.infrastructure.database import get_db
+from src.modules.scoring.calculation import score_value
 
 router = APIRouter(prefix="/ai", tags=["scoring"])
 
@@ -15,14 +16,6 @@ router = APIRouter(prefix="/ai", tags=["scoring"])
 class ScoreRequest(BaseModel):
     cvId: str = Field(min_length=1)
     jobDescriptionId: str = Field(min_length=1)
-
-
-def _score_value(result: dict) -> float:
-    for key in ("overall_score", "overallScore", "score", "similarity"):
-        value = result.get(key)
-        if isinstance(value, (int, float)):
-            return max(0.0, min(1.0, float(value)))
-    return 0.0
 
 
 @router.post("/score-cv-jp")
@@ -64,7 +57,7 @@ async def score_cv_job(
         cv_id=payload.cvId,
         job_description_id=payload.jobDescriptionId,
     )
-    score = _score_value(result)
+    score = score_value(result)
     output = {
         "cvId": payload.cvId,
         "jobDescriptionId": payload.jobDescriptionId,

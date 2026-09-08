@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     mineru_base_url: str = "https://mineru.net/api/v4"
     mineru_model_version: str = "vlm"
     mineru_language: str = "en"
+    mineru_http_connect_timeout_seconds: float = Field(default=20.0, gt=0)
+    mineru_http_read_timeout_seconds: float = Field(default=120.0, gt=0)
+    mineru_http_write_timeout_seconds: float = Field(default=120.0, gt=0)
+    mineru_http_pool_timeout_seconds: float = Field(default=20.0, gt=0)
     mineru_poll_interval_seconds: float = 2.0
     mineru_timeout_seconds: int = 300
 
