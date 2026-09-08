@@ -1,5 +1,9 @@
 # Interview Prep FastAPI Backend
 
+Đánh giá phạm vi và lộ trình nâng cấp CV–JD matching: [docs/CV-JD-MATCHING-ASSESSMENT.md](docs/CV-JD-MATCHING-ASSESSMENT.md).
+
+Kế hoạch CV parser evidence-first từ upload đến matching: [docs/CV-PARSER-END-TO-END-PLAN.md](docs/CV-PARSER-END-TO-END-PLAN.md).
+
 Backend FastAPI hợp nhất từ:
 
 - `interview-prep-backend`: API nghiệp vụ, S3, RabbitMQ, Socket.IO.
