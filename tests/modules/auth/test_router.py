@@ -1,18 +1,43 @@
+import importlib
+
 import pytest
-from fastapi import HTTPException
 from pydantic import ValidationError
 
-from src.modules.auth.router import GoogleLoginRequest, LoginRequest, RegisterRequest, _public_user, login
+from src.modules.auth.rate_limit import login_rate_limiter
+from src.modules.auth.router import GoogleLoginRequest, LoginRequest, RegisterRequest, _public_user
+from src.modules.auth.service import EmailAlreadyExistsError, InvalidCredentialsError
 
 
-def test_auth_models_validate_required_credentials() -> None:
-    assert RegisterRequest(email="USER@EXAMPLE.COM", password="secret123").email == "USER@EXAMPLE.COM"
-    assert LoginRequest(email="user@example.com", password="secret").password == "secret"
-    assert GoogleLoginRequest(accessToken="token").accessToken == "token"
+@pytest.fixture(autouse=True)
+def reset_login_rate_limiter() -> None:
+    login_rate_limiter.clear()
+
+
+def test_auth_models_normalize_and_validate_credentials() -> None:
+    payload = RegisterRequest(
+        name="  Nguyễn Minh Anh  ",
+        email=" USER@EXAMPLE.COM ",
+        password="Strong123",
+    )
+    assert payload.name == "Nguyễn Minh Anh"
+    assert payload.email == "user@example.com"
+    assert payload.role == "CANDIDATE"
+    assert LoginRequest(email=" USER@EXAMPLE.COM ", password="secret").email == "user@example.com"
+    assert GoogleLoginRequest(token="token").token == "token"
+    assert GoogleLoginRequest(accessToken="legacy-token").token == "legacy-token"
+
+    invalid_registrations = [
+        {"name": "", "email": "user@example.com", "password": "Strong123"},
+        {"name": "User", "email": "invalid", "password": "Strong123"},
+        {"name": "User", "email": "user@example.com", "password": "lowercase1"},
+        {"name": "User", "email": "user@example.com", "password": "UPPERCASE1"},
+        {"name": "User", "email": "user@example.com", "password": "NoNumberHere"},
+    ]
+    for invalid in invalid_registrations:
+        with pytest.raises(ValidationError):
+            RegisterRequest(**invalid)
     with pytest.raises(ValidationError):
-        RegisterRequest(email="no", password="123")
-    with pytest.raises(ValidationError):
-        GoogleLoginRequest(accessToken="")
+        GoogleLoginRequest(token=" ")
 
 
 def test_auth_public_user_excludes_sensitive_columns() -> None:
@@ -22,7 +47,8 @@ def test_auth_public_user_excludes_sensitive_columns() -> None:
         "name": "User",
         "role": "CANDIDATE",
         "provider": "local",
-        "password": "secret",
+        "password_hash": "secret",
+        "avatar_url": "https://images.test/user.png",
     }
     assert _public_user(row) == {
         "id": "u1",
@@ -30,35 +56,57 @@ def test_auth_public_user_excludes_sensitive_columns() -> None:
         "name": "User",
         "role": "CANDIDATE",
         "provider": "local",
+        "picture": "https://images.test/user.png",
+        "avatar": "https://images.test/user.png",
     }
 
 
 @pytest.mark.parametrize(
     ("path", "payload"),
     [
-        ("/auth/register", {"email": "x", "password": "123"}),
+        ("/auth/register", {"name": "User", "email": "x", "password": "123"}),
         ("/auth/login", {"email": "x"}),
-        ("/auth/google", {"accessToken": ""}),
+        ("/auth/google", {"token": ""}),
     ],
 )
-def test_auth_routes_reject_invalid_payloads(client, path: str, payload: dict) -> None:
-    assert client.post(path, json=payload).status_code == 422
+def test_auth_routes_reject_invalid_payloads_with_standard_error(client, path: str, payload: dict) -> None:
+    response = client.post(path, json=payload)
+    assert response.status_code == 422
+    assert response.json()["statusCode"] == 422
+    assert response.json()["message"]
 
 
-@pytest.mark.asyncio
-async def test_password_login_rejects_google_only_account() -> None:
-    class Result:
-        def mappings(self):
-            return self
+def test_register_conflict_uses_frontend_error_contract(client, monkeypatch) -> None:
+    auth_router = importlib.import_module("src.modules.auth.router")
 
-        def one_or_none(self):
-            return {"id": "u1", "email": "u@example.com", "password": None, "name": "U",
-                    "role": "CANDIDATE", "provider": "google"}
+    class Service:
+        async def register(self, _payload):
+            raise EmailAlreadyExistsError
 
-    class Db:
-        async def execute(self, *_args, **_kwargs):
-            return Result()
+    monkeypatch.setattr(auth_router, "_service", lambda _db: Service())
+    response = client.post(
+        "/auth/register",
+        json={"name": "User", "email": "user@example.com", "password": "Strong123"},
+    )
+    assert response.status_code == 409
+    assert response.json() == {"message": "Email đã được đăng ký.", "statusCode": 409}
 
-    with pytest.raises(HTTPException) as error:
-        await login(LoginRequest(email="u@example.com", password="anything"), Db())
-    assert error.value.status_code == 401
+
+def test_login_rate_limit_blocks_sixth_failed_attempt(client, monkeypatch) -> None:
+    auth_router = importlib.import_module("src.modules.auth.router")
+
+    class Service:
+        async def login(self, _email, _password):
+            raise InvalidCredentialsError
+
+    monkeypatch.setattr(auth_router, "_service", lambda _db: Service())
+    payload = {"email": "user@example.com", "password": "wrong-password"}
+
+    for _ in range(5):
+        response = client.post("/auth/login", json=payload)
+        assert response.status_code == 401
+        assert response.json()["message"] == "Email hoặc mật khẩu không chính xác."
+
+    blocked = client.post("/auth/login", json=payload)
+    assert blocked.status_code == 429
+    assert blocked.json()["statusCode"] == 429

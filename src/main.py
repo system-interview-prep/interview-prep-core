@@ -2,8 +2,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import socketio
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from src.core.config import get_settings
 from src.infrastructure.database import postgres_lifespan
@@ -47,11 +49,15 @@ MODULES = [
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    # Development may start before RabbitMQ; fail-fast is intentional so readiness
-    # accurately represents whether async job submission is usable.
     async with postgres_lifespan():
         async with rabbitmq_lifespan():
             yield
+
+
+def _message(detail: object) -> str:
+    if isinstance(detail, dict):
+        return str(detail.get("message") or detail.get("detail") or "Yêu cầu không hợp lệ.")
+    return str(detail)
 
 
 def create_app() -> FastAPI:
@@ -62,8 +68,28 @@ def create_app() -> FastAPI:
         allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["*"],
+        allow_headers=["Authorization", "Content-Type"],
     )
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"message": _message(exc.detail), "statusCode": exc.status_code},
+            headers=exc.headers,
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+        first_error = exc.errors()[0] if exc.errors() else {}
+        message = str(first_error.get("msg") or "Dữ liệu không hợp lệ.")
+        if message.startswith("Value error, "):
+            message = message.removeprefix("Value error, ")
+        return JSONResponse(
+            status_code=422,
+            content={"message": message, "statusCode": 422},
+        )
+
     for app_module in MODULES:
         app.include_router(app_module.router)
     return app

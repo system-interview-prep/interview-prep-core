@@ -1,8 +1,8 @@
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.modules.user_cvs.domain.schemas import CanonicalModel, CanonicalResume, EvidenceSpan, TaxonomyRef
+from src.modules.user_cvs.schemas import CanonicalModel, CanonicalResume, EvidenceSpan, TaxonomyRef
 
 
 def _to_camel(name: str) -> str:
@@ -73,7 +73,7 @@ class LanguageRequirement(RequirementBase):
         return self
 
 
-Requirement = Annotated[Union[SkillRequirement, LanguageRequirement], Field(discriminator="type")]
+Requirement = Annotated[SkillRequirement | LanguageRequirement, Field(discriminator="type")]
 
 
 class CanonicalJob(CanonicalModel):
