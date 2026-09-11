@@ -21,7 +21,8 @@ def test_job_description_cursor_and_mappers() -> None:
     job_description = _job_description(
         {
             "id": "jp-1",
-            "category_id": "c1",
+            "primary_taxonomy_version": "internal-2026.2",
+            "primary_taxonomy_concept_id": "occupation.backend-engineer",
             "title": "Backend",
             "keywords": ["Python"],
             "description": "desc",
@@ -31,11 +32,11 @@ def test_job_description_cursor_and_mappers() -> None:
             "status": "ACTIVE",
             "created_at": now,
             "updated_at": now,
-            "category_name": "Engineering",
-            "category_description": "Tech",
+            "taxonomy_label": "Backend Engineering",
+            "taxonomy_kind": "occupation",
         }
     )
-    assert job_description["category"]["name"] == "Engineering"
+    assert job_description["primaryTaxonomy"]["conceptId"] == "occupation.backend-engineer"
     assert job_description["structuredData"] == {"seniority": "mid"}
     assert JobDescriptionPatch().model_dump(exclude_unset=True) == {}
     assert (
