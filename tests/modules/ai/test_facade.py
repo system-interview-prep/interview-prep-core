@@ -15,9 +15,10 @@ async def test_generate_text_uses_responses_without_storage(monkeypatch) -> None
             return SimpleNamespace(output_text=" answer ")
 
     monkeypatch.setattr(facade, "_client", lambda: SimpleNamespace(responses=Responses()))
-    assert await facade.generate_text(instructions="system", input_text="hello") == "answer"
+    assert await facade.generate_text(instructions="system", input_text="hello", temperature=0.0) == "answer"
     assert captured["store"] is False
     assert captured["instructions"] == "system"
+    assert captured["temperature"] == 0.0
 
 
 @pytest.mark.asyncio
