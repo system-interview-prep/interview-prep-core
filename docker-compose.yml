@@ -62,7 +62,7 @@ services:
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-interview}:${RABBITMQ_PASSWORD:-interview_password}@rabbitmq:5672/
       CELERY_BROKER_URL: amqp://${RABBITMQ_USER:-interview}:${RABBITMQ_PASSWORD:-interview_password}@rabbitmq:5672/
       DATABASE_URL: postgresql://user:password@postgres-db:5432/matching_db
-    command: ["celery", "-A", "src.workers.celery_app:celery_app", "worker", "--loglevel=info", "--concurrency=1", "--queues=celery,cv-processing,jp-processing,matching"]
+    command: ["celery", "-A", "src.workers.celery_app:celery_app", "worker", "--loglevel=info", "--concurrency=1", "--queues=celery,cv-processing,jd-processing,matching"]
     volumes: ["./src:/app/src", "./tests:/app/tests", "./pyproject.toml:/app/pyproject.toml:ro"]
     depends_on:
       rabbitmq: {condition: service_healthy}

@@ -10,6 +10,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
+from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.security import require_admin
 from src.infrastructure.database import get_db
 from src.infrastructure.r2 import delete_object, get_object, public_url, put_object
+from src.modules.job_descriptions.domain.schemas import CanonicalJobDescription
 
 router = APIRouter(prefix="/admin/job-descriptions", tags=["job-descriptions"])
 
@@ -43,25 +45,20 @@ class UploadPatch(BaseModel):
 
 class FinalizeUpload(BaseModel):
     title: str = Field(min_length=1, max_length=512)
-    categoryId: str = Field(min_length=1)
+    primaryTaxonomyConceptId: str = Field(min_length=1)
     keywords: list[str] = Field(default_factory=list)
     status: Literal["ACTIVE", "DRAFT", "ARCHIVED"] = "ACTIVE"
     description: str | None = None
 
 
 def _job_description(row: dict) -> dict:
-    category = None
-    if row["category_id"] and row["category_name"]:
-        category = {
-            "id": row["category_id"],
-            "name": row["category_name"],
-            "description": row["category_description"],
-        }
+    taxonomy = None
+    if row["primary_taxonomy_concept_id"] and row["taxonomy_label"]:
+        taxonomy = {"version": row["primary_taxonomy_version"], "conceptId": row["primary_taxonomy_concept_id"], "label": row["taxonomy_label"], "kind": row["taxonomy_kind"]}
     return {
         "id": row["id"],
         "title": row["title"],
-        "categoryId": row["category_id"],
-        "category": category,
+        "primaryTaxonomy": taxonomy,
         "keywords": row["keywords"] or [],
         "description": row["description"],
         "structuredData": row.get("structured_data"),
@@ -93,12 +90,11 @@ def _upload(row: dict) -> dict:
 
 
 _SELECT = """
-    SELECT jd.id, jd.category_id, jd.title, jd.keywords, jd.description,
+    SELECT jd.id, jd.primary_taxonomy_version, jd.primary_taxonomy_concept_id, jd.title, jd.keywords, jd.description,
            jd.structured_data, jd.extracted_metadata, jd.raw_text, jd.status,
-           jd.created_at, jd.updated_at, jc.name AS category_name,
-           jc.description AS category_description
+           jd.created_at, jd.updated_at, tc.label AS taxonomy_label, tc.kind AS taxonomy_kind
     FROM job_descriptions AS jd
-    LEFT JOIN job_categories AS jc ON jc.id = jd.category_id
+    LEFT JOIN taxonomy_concepts AS tc ON tc.taxonomy_version = jd.primary_taxonomy_version AND tc.concept_id = jd.primary_taxonomy_concept_id
 """
 
 _UPLOAD_SELECT = """
@@ -214,6 +210,27 @@ async def get_upload(
     return await _get_upload(db, user["sub"], upload_id)
 
 
+@router.post("/uploads/{upload_id}/reparse")
+async def reparse_upload(
+    upload_id: str, user: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
+) -> dict:
+    """Queue a fresh extraction for an existing upload after parser rules change."""
+    await _get_upload(db, user["sub"], upload_id)
+    await db.execute(
+        text(
+            "UPDATE job_descriptions SET status = 'PENDING', error = NULL, updated_at = now() "
+            "WHERE id = :id AND owner_user_id = :uid AND item_type = 'JD_UPLOAD'"
+        ),
+        {"id": upload_id, "uid": user["sub"]},
+    )
+    await db.commit()
+
+    from src.workers.celery_app import celery_app
+
+    celery_app.send_task("job_description.parse", args=[{"upload_id": upload_id}])
+    return await _get_upload(db, user["sub"], upload_id)
+
+
 @router.patch("/uploads/{upload_id}")
 async def patch_upload(
     upload_id: str,
@@ -222,6 +239,16 @@ async def patch_upload(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     values = payload.model_dump(exclude_unset=True)
+    if "structuredData" in values and values["structuredData"] is not None:
+        try:
+            values["structuredData"] = CanonicalJobDescription.model_validate(
+                values["structuredData"]
+            ).model_dump(by_alias=True)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="structuredData must satisfy CanonicalJobDescription schema",
+            ) from exc
     if values:
         result = await db.execute(
             text(
@@ -258,17 +285,28 @@ async def finalize_upload(
     upload = await _get_upload(db, user["sub"], upload_id)
     if upload["status"] != "DONE":
         raise HTTPException(status_code=409, detail="Upload is not DONE yet")
-    category_exists = await db.execute(
-        text("SELECT 1 FROM job_categories WHERE id = :id"), {"id": payload.categoryId}
+    try:
+        CanonicalJobDescription.model_validate(upload["structuredData"] or {})
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Upload has no schema-valid structuredData; review the parsed JD first",
+        ) from exc
+    taxonomy_version = (await db.execute(
+        text("SELECT version FROM taxonomy_versions WHERE is_active ORDER BY priority DESC, published_at DESC LIMIT 1")
+    )).scalar_one_or_none()
+    taxonomy_exists = await db.execute(
+        text("SELECT 1 FROM taxonomy_concepts WHERE taxonomy_version = :version AND concept_id = :id AND kind IN ('domain', 'occupation') AND is_active"),
+        {"version": taxonomy_version, "id": payload.primaryTaxonomyConceptId}
     )
-    if category_exists.scalar_one_or_none() is None:
-        raise HTTPException(status_code=404, detail="Job category not found")
+    if taxonomy_exists.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Active taxonomy concept not found")
     keywords = [item.strip() for item in payload.keywords if item.strip()][:50]
     description = (payload.description or upload["description"] or upload["rawText"] or "").strip()
     await db.execute(
         text(
             "UPDATE job_descriptions SET item_type = 'JOB_DESCRIPTION', title = :title, "
-            "category_id = :category, "
+            "primary_taxonomy_version = :taxonomy_version, primary_taxonomy_concept_id = :taxonomy_concept_id, "
             "keywords = :keywords, description = :description, status = :status, "
             "search_text = :search_text, extraction_version = '1.0', extracted_at = now(), "
             "updated_at = now() WHERE id = :id AND owner_user_id = :uid AND item_type = 'JD_UPLOAD'"
@@ -277,7 +315,8 @@ async def finalize_upload(
             "id": upload_id,
             "uid": user["sub"],
             "title": payload.title.strip(),
-            "category": payload.categoryId,
+            "taxonomy_version": taxonomy_version,
+            "taxonomy_concept_id": payload.primaryTaxonomyConceptId,
             "keywords": keywords,
             "description": description,
             "status": payload.status,
@@ -316,19 +355,15 @@ async def list_job_descriptions(
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=12, ge=1, le=100),
     cursor: str | None = None,
-    category_id: str | None = Query(default=None, alias="categoryId"),
-    category: str | None = None,
+    taxonomy_concept_id: str | None = Query(default=None, alias="taxonomyConceptId"),
     q: str | None = None,
     order: Literal["asc", "desc"] = "desc",
 ) -> dict:
     filters = ["jd.item_type = 'JOB_DESCRIPTION'"]
     params: dict[str, object] = {"limit": limit + 1}
-    if category_id:
-        filters.append("jd.category_id = :category_id")
-        params["category_id"] = category_id
-    elif category:
-        filters.append("lower(jc.name) = lower(:category)")
-        params["category"] = category
+    if taxonomy_concept_id:
+        filters.append("jd.primary_taxonomy_concept_id = :taxonomy_concept_id")
+        params["taxonomy_concept_id"] = taxonomy_concept_id
     if q and q.strip():
         filters.append(
             "(jd.title ILIKE :query OR jd.description ILIKE :query OR jd.search_text ILIKE :query)"
