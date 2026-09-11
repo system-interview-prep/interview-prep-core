@@ -101,8 +101,9 @@ class IdentityExtractor(Protocol):
 
 
 class TaxonomySkillExtractor:
-    def __init__(self, taxonomy: dict[str, tuple[str, tuple[str, ...]]] | None = None) -> None:
+    def __init__(self, taxonomy: dict[str, tuple[str, tuple[str, ...]]] | None = None, taxonomy_version: str = TAXONOMY_VERSION) -> None:
         self._taxonomy = taxonomy or _SKILLS
+        self._taxonomy_version = taxonomy_version
 
     def extract(self, source: SourceDocument, mapper: EvidenceMapper, draft: ResumeDraft) -> None:
         for concept_id, (label, aliases) in self._taxonomy.items():
@@ -129,7 +130,7 @@ class TaxonomySkillExtractor:
                     concept=TaxonomyRef(
                         conceptId=concept_id,
                         scheme="internal",
-                        taxonomyVersion=TAXONOMY_VERSION,
+                        taxonomyVersion=self._taxonomy_version,
                         label=label,
                     ),
                     rawLabel=source.text[first.start() : first.end()],
@@ -236,11 +237,13 @@ class DeterministicResumeParser:
         claim_extractors: Iterable[ClaimExtractor] | None = None,
         identity_extractor: IdentityExtractor | None = None,
         career_classifier: DeterministicCareerClassifier | None = None,
+        taxonomy: dict[str, tuple[str, tuple[str, ...]]] | None = None,
+        taxonomy_version: str = TAXONOMY_VERSION,
     ) -> None:
         self._claim_extractors = tuple(
             claim_extractors
             or (
-                TaxonomySkillExtractor(),
+                TaxonomySkillExtractor(taxonomy, taxonomy_version),
                 CefrLanguageExtractor(),
                 EmploymentExtractor(),
                 EducationExtractor(),
