@@ -5,6 +5,7 @@ from src.modules.user_cvs.parsing.domain.source import build_source_document
 from src.modules.user_cvs.parsing.infrastructure.mineru_adapter import MinerUDocumentExtractor
 from src.modules.user_cvs.parsing.infrastructure.repository import SqlAlchemyCvParseRepository
 from src.modules.user_cvs.parsing.infrastructure.storage import R2ObjectStorage
+from src.modules.taxonomy.service import load_active_skill_taxonomy
 from src.workers.celery_app import celery_app
 from src.workers.async_runner import WorkerEventLoopRunner
 
@@ -26,11 +27,12 @@ def parse_cv(self, payload: dict) -> dict:
 
 async def _parse_cv(cv_id: str) -> dict:
     async with SessionFactory() as session:
+        taxonomy = await load_active_skill_taxonomy(session)
         pipeline = CvParsingPipeline(
             repository=SqlAlchemyCvParseRepository(session),
             storage=R2ObjectStorage(),
             extractor=MinerUDocumentExtractor(),
-            parser=DeterministicResumeParser(),
+            parser=DeterministicResumeParser(taxonomy=taxonomy.skills, taxonomy_version=taxonomy.version),
             source_builder=build_source_document,
         )
         result = await pipeline.run(cv_id)

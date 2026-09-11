@@ -45,7 +45,25 @@ _SECTION_HEADINGS = {
 }
 
 
+def _repair_utf8_mojibake(value: str) -> str:
+    """Recover UTF-8 text which an upstream extractor decoded as Windows-1252.
+
+    MinerU artifacts occasionally contain strings such as ``MÃ´ táº£``.  Repair only
+    when the conversion succeeds and removes the characteristic corruption markers;
+    ordinary Vietnamese/English text is left untouched.
+    """
+    markers = ("Ã", "Â", "Ä", "á»")
+    if not any(marker in value for marker in markers):
+        return value
+    try:
+        repaired = value.encode("cp1252").decode("utf-8")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return value
+    return repaired if sum(marker in repaired for marker in markers) < sum(marker in value for marker in markers) else value
+
+
 def normalize_text(value: str) -> str:
+    value = _repair_utf8_mojibake(value)
     value = unicodedata.normalize("NFC", value.replace("\r\n", "\n").replace("\r", "\n"))
     value = re.sub(r"[\t\f\v ]+", " ", value)
     return "\n".join(line.strip() for line in value.splitlines()).strip()

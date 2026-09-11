@@ -17,16 +17,23 @@ def _client():
     return OpenAI(api_key=api_key)
 
 
-async def generate_text(*, instructions: str, input_text: str, max_output_tokens: int = 1200) -> str:
+async def generate_text(
+    *, instructions: str, input_text: str, max_output_tokens: int = 1200, temperature: float | None = None
+) -> str:
     settings = get_settings()
 
     def call() -> str:
+        options = {
+            "model": settings.llm_model,
+            "instructions": instructions,
+            "input": input_text,
+            "max_output_tokens": max_output_tokens,
+            "store": False,
+        }
+        if temperature is not None:
+            options["temperature"] = temperature
         response = _client().responses.create(
-            model=settings.llm_model,
-            instructions=instructions,
-            input=input_text,
-            max_output_tokens=max_output_tokens,
-            store=False,
+            **options,
         )
         return str(response.output_text or "").strip()
 
