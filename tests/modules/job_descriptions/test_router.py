@@ -70,6 +70,7 @@ def test_job_description_cursor_and_mappers() -> None:
             {"files": {"file": ("jd.pdf", b"pdf", "application/pdf")}},
         ),
         ("get", "/admin/job-descriptions/uploads/up-1", {}),
+        ("get", "/admin/job-descriptions/uploads/up-1/events", {}),
         ("get", "/admin/job-descriptions/jd-1", {}),
     ],
 )

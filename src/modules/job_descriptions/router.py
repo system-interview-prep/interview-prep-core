@@ -7,31 +7,30 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from fastapi.responses import Response
-from pydantic import BaseModel, Field
-from pydantic import ValidationError
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.core.security import require_admin
-from src.infrastructure.database import get_db
+from src.infrastructure.database import SessionFactory, get_db
 from src.infrastructure.r2 import delete_object, get_object, public_url, put_object
+from src.modules.documents.facade import (
+    MAX_DOCUMENT_FILE_SIZE,
+    DocumentFileTooLarge,
+    DocumentFileValidator,
+    InvalidDocumentFile,
+)
+from src.modules.documents.sse import SSE_HEADERS, status_event_stream
 from src.modules.job_descriptions.domain.schemas import CanonicalJobDescription
 
 router = APIRouter(prefix="/admin/job-descriptions", tags=["job-descriptions"])
 
-_MAX_FILE_SIZE = 10 * 1024 * 1024
-_ALLOWED_CONTENT_TYPES = {
-    "application/pdf",
-    "application/msword",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "image/png",
-    "image/jpeg",
-    "image/webp",
-}
-_ALLOWED_SUFFIXES = {".pdf", ".doc", ".docx", ".png", ".jpg", ".jpeg", ".webp"}
+_MAX_FILE_SIZE = MAX_DOCUMENT_FILE_SIZE
+_file_validator = DocumentFileValidator()
 
 
 class JobDescriptionPatch(BaseModel):
@@ -126,6 +125,16 @@ async def _get_upload(db: AsyncSession, user_id: str, upload_id: str) -> dict:
     return _upload(row)
 
 
+async def _upload_status_snapshot(db: AsyncSession, user_id: str, upload_id: str) -> dict:
+    upload = await _get_upload(db, user_id, upload_id)
+    return {
+        "uploadId": upload["id"],
+        "status": upload["status"],
+        "error": upload["error"],
+        "updatedAt": upload["updatedAt"],
+    }
+
+
 def _decode_cursor(cursor: str) -> tuple[datetime, str]:
     try:
         value = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
@@ -145,17 +154,16 @@ def _encode_cursor(job_description: dict) -> str:
 async def upload_jd(
     user: dict = Depends(require_admin), db: AsyncSession = Depends(get_db), file: UploadFile = File(...)
 ) -> dict:
-    filename = Path(file.filename or "").name
-    suffix = Path(filename).suffix.lower()
-    if not filename or (file.content_type not in _ALLOWED_CONTENT_TYPES and suffix not in _ALLOWED_SUFFIXES):
-        raise HTTPException(
-            status_code=422, detail="Only PDF, DOC, DOCX, PNG, JPEG, and WEBP files are allowed"
-        )
     content = await file.read(_MAX_FILE_SIZE + 1)
-    if not content:
-        raise HTTPException(status_code=422, detail="File is empty")
-    if len(content) > _MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="File must not exceed 10 MB")
+    try:
+        filename, detected_content_type = _file_validator.validate(
+            file.filename or "", file.content_type, content
+        )
+    except DocumentFileTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except InvalidDocumentFile as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    suffix = Path(filename).suffix.lower()
 
     checksum = sha256(content).hexdigest()
     existing = await db.execute(
@@ -172,7 +180,7 @@ async def upload_jd(
     upload_id = str(uuid4())
     storage_key = f"job-descriptions/{user['sub']}/{upload_id}{suffix}"
     try:
-        put_object(storage_key, content, file.content_type or "application/octet-stream")
+        put_object(storage_key, content, detected_content_type)
         await db.execute(
             text(
                 "INSERT INTO job_descriptions (id, owner_user_id, item_type, filename, content_type, size, "
@@ -183,7 +191,7 @@ async def upload_jd(
                 "id": upload_id,
                 "user_id": user["sub"],
                 "filename": filename,
-                "content_type": file.content_type or "application/octet-stream",
+                "content_type": detected_content_type,
                 "size": len(content),
                 "storage_key": storage_key,
                 "url": public_url(storage_key)
@@ -208,6 +216,33 @@ async def get_upload(
     upload_id: str, user: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ) -> dict:
     return await _get_upload(db, user["sub"], upload_id)
+
+
+@router.get("/uploads/{upload_id}/events")
+async def stream_upload_status(
+    upload_id: str,
+    request: Request,
+    user: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """Stream JD-upload lifecycle changes without raw text or parsed content."""
+    await _upload_status_snapshot(db, user["sub"], upload_id)
+
+    async def load_status() -> dict:
+        async with SessionFactory() as stream_db:
+            return await _upload_status_snapshot(stream_db, user["sub"], upload_id)
+
+    settings = get_settings()
+    return StreamingResponse(
+        status_event_stream(
+            request,
+            load_status,
+            poll_interval_seconds=settings.sse_status_poll_interval_seconds,
+            heartbeat_seconds=settings.sse_heartbeat_seconds,
+        ),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
 
 
 @router.post("/uploads/{upload_id}/reparse")
