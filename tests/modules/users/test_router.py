@@ -79,3 +79,30 @@ async def test_user_service_reads_and_updates_profile() -> None:
 
     with pytest.raises(UserNotFoundError):
         await service.get_profile("missing")
+
+
+@pytest.mark.asyncio
+async def test_user_service_updates_avatar() -> None:
+    class Repository:
+        def __init__(self):
+            self.row = profile_row()
+            self.avatar_url = None
+            self.commits = 0
+
+        async def get_profile(self, user_id):
+            return self.row if user_id == "u1" else None
+
+        async def update_avatar(self, user_id, avatar_url):
+            self.avatar_url = avatar_url
+            self.row["avatar_url"] = avatar_url
+
+        async def commit(self):
+            self.commits += 1
+
+    repository = Repository()
+    service = UserService(repository)
+
+    updated = await service.update_avatar("u1", "data:image/png;base64,AAAA")
+    assert repository.avatar_url == "data:image/png;base64,AAAA"
+    assert repository.commits == 1
+    assert updated["picture"] == updated["avatar"] == "data:image/png;base64,AAAA"

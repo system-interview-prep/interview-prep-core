@@ -15,12 +15,12 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.security import require_admin
+from src.core.security import require_admin, current_user
 from src.infrastructure.database import get_db
 from src.infrastructure.r2 import delete_object, get_object, public_url, put_object
 from src.modules.job_descriptions.domain.schemas import CanonicalJobDescription
 
-router = APIRouter(prefix="/admin/job-descriptions", tags=["job-descriptions"])
+router = APIRouter(prefix="/admin/job-profiles", tags=["job-profiles"])
 
 _MAX_FILE_SIZE = 10 * 1024 * 1024
 _ALLOWED_CONTENT_TYPES = {
@@ -45,7 +45,8 @@ class UploadPatch(BaseModel):
 
 class FinalizeUpload(BaseModel):
     title: str = Field(min_length=1, max_length=512)
-    primaryTaxonomyConceptId: str = Field(min_length=1)
+    primaryTaxonomyConceptId: str | None = None
+    categoryId: str | None = None
     keywords: list[str] = Field(default_factory=list)
     status: Literal["ACTIVE", "DRAFT", "ARCHIVED"] = "ACTIVE"
     description: str | None = None
@@ -59,6 +60,8 @@ def _job_description(row: dict) -> dict:
         "id": row["id"],
         "title": row["title"],
         "primaryTaxonomy": taxonomy,
+        "categoryId": row["primary_taxonomy_concept_id"],
+        "category": {"id": row["primary_taxonomy_concept_id"], "name": row["taxonomy_label"]} if row["primary_taxonomy_concept_id"] else None,
         "keywords": row["keywords"] or [],
         "description": row["description"],
         "structuredData": row.get("structured_data"),
@@ -187,7 +190,7 @@ async def upload_jd(
                 "size": len(content),
                 "storage_key": storage_key,
                 "url": public_url(storage_key)
-                or f"/admin/job-descriptions/uploads/{upload_id}/download",
+                or f"/admin/job-profiles/uploads/{upload_id}/download",
                 "checksum": checksum,
             },
         )
@@ -292,12 +295,15 @@ async def finalize_upload(
             status_code=409,
             detail="Upload has no schema-valid structuredData; review the parsed JD first",
         ) from exc
+    concept_id = payload.primaryTaxonomyConceptId or payload.categoryId
+    if not concept_id:
+        raise HTTPException(status_code=422, detail="primaryTaxonomyConceptId or categoryId is required")
     taxonomy_version = (await db.execute(
         text("SELECT version FROM taxonomy_versions WHERE is_active ORDER BY priority DESC, published_at DESC LIMIT 1")
     )).scalar_one_or_none()
     taxonomy_exists = await db.execute(
-        text("SELECT 1 FROM taxonomy_concepts WHERE taxonomy_version = :version AND concept_id = :id AND kind IN ('domain', 'occupation') AND is_active"),
-        {"version": taxonomy_version, "id": payload.primaryTaxonomyConceptId}
+        text("SELECT 1 FROM taxonomy_concepts WHERE taxonomy_version = :version AND concept_id = :id AND kind IN ('domain', 'occupation', 'job_category') AND is_active"),
+        {"version": taxonomy_version, "id": concept_id}
     )
     if taxonomy_exists.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Active taxonomy concept not found")
@@ -316,7 +322,7 @@ async def finalize_upload(
             "uid": user["sub"],
             "title": payload.title.strip(),
             "taxonomy_version": taxonomy_version,
-            "taxonomy_concept_id": payload.primaryTaxonomyConceptId,
+            "taxonomy_concept_id": concept_id,
             "keywords": keywords,
             "description": description,
             "status": payload.status,
@@ -351,7 +357,7 @@ async def download_upload(
 
 @router.get("")
 async def list_job_descriptions(
-    _: dict = Depends(require_admin),
+    _: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=12, ge=1, le=100),
     cursor: str | None = None,
@@ -392,7 +398,7 @@ async def list_job_descriptions(
 
 @router.get("/{job_description_id}")
 async def get_job_description(
-    job_description_id: str, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
+    job_description_id: str, _: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
 ) -> dict:
     return await _get(db, job_description_id)
 

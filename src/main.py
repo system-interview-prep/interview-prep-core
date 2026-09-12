@@ -14,6 +14,7 @@ from src.infrastructure.socketio import sio
 from src.modules.auth import build_module as build_auth_module
 from src.modules.chat import build_module as build_chat_module
 from src.modules.health import build_module as build_health_module
+from src.modules.job_categories.router import build_module as build_job_categories_module
 from src.modules.interview_questions import build_module as build_interview_questions_module
 from src.modules.job_descriptions import build_module as build_job_descriptions_module
 from src.modules.matching import build_module as build_matching_module
@@ -34,6 +35,7 @@ MODULES = [
     build_auth_module(),
     build_users_module(),
     build_user_cvs_module(),
+    build_job_categories_module(),
     build_job_descriptions_module(),
     build_taxonomy_module(),
     build_matching_module(),

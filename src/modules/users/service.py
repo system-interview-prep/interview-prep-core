@@ -47,3 +47,8 @@ class UserService:
             )
             await self.repository.commit()
         return await self.get_profile(user_id)
+
+    async def update_avatar(self, user_id: str, avatar_url: str) -> dict:
+        await self.repository.update_avatar(user_id, avatar_url)
+        await self.repository.commit()
+        return await self.get_profile(user_id)
