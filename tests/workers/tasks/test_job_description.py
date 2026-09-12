@@ -2,104 +2,57 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
 from src.workers.tasks import job_description
 
 
-class _Result:
-    def __init__(self, row: dict | None = None) -> None:
-        self._row = row
-
-    def mappings(self) -> "_Result":
+class Database:
+    async def __aenter__(self):
         return self
 
-    def one_or_none(self) -> dict | None:
-        return self._row
-
-
-class _Database:
-    def __init__(self, row: dict) -> None:
-        self.row = row
-        self.statements: list[str] = []
-        self.commits = 0
-
-    async def __aenter__(self) -> "_Database":
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
+    async def __aexit__(self, *_):
         return None
 
-    async def execute(self, statement, _params=None):
-        sql = str(statement)
-        self.statements.append(sql)
-        if "SELECT filename, storage_key, checksum" in sql:
-            return _Result(self.row)
-        return SimpleNamespace(rowcount=1)
 
-    async def commit(self) -> None:
-        self.commits += 1
+class RecordingPipeline:
+    created_with = None
 
+    def __init__(self, **dependencies):
+        RecordingPipeline.created_with = dependencies
 
-def _row() -> dict:
-    return {"filename": "backend-jd.docx", "storage_key": "jd/up-1.docx", "checksum": "a" * 64}
-
-
-def _artifacts() -> DocumentArtifacts:
-    return DocumentArtifacts(
-        markdown="Job Title: Backend Engineer\nRequirements\n- Java\n",
-        content_list=[
-            {"type": "text", "text": "Job Title: Backend Engineer", "page_idx": 0},
-            {"type": "text", "text": "Requirements", "page_idx": 0},
-            {"type": "text", "text": "- Java", "page_idx": 0},
-        ],
-        extractor_version="mineru-test",
-    )
+    async def run(self, upload_id):
+        return SimpleNamespace(status="DONE", upload_id=upload_id)
 
 
 @pytest.mark.asyncio
-async def test_parse_job_description_persists_artifact_and_canonical_payload(monkeypatch) -> None:
-    db = _Database(_row())
-    written: list[tuple[str, bytes, str]] = []
+@pytest.mark.parametrize("mode", ["deterministic", "hybrid"])
+async def test_worker_selects_configured_parser_and_delegates_to_pipeline(monkeypatch, mode) -> None:
+    taxonomy = SimpleNamespace(skills={}, version="taxonomy-v1")
 
-    async def extract(*_: object) -> DocumentArtifacts:
-        return _artifacts()
+    async def load_taxonomy(_):
+        return taxonomy
 
-    monkeypatch.setattr(job_description, "SessionFactory", lambda: db)
-    monkeypatch.setattr(job_description, "get_object", lambda _: b"document")
-    monkeypatch.setattr(job_description, "extract_document_artifacts", extract)
-    monkeypatch.setattr(
-        job_description,
-        "put_object",
-        lambda key, body, content_type: written.append((key, body, content_type)),
-    )
+    monkeypatch.setattr(job_description, "SessionFactory", Database)
+    monkeypatch.setattr(job_description, "load_active_skill_taxonomy", load_taxonomy)
+    monkeypatch.setattr(job_description, "get_settings", lambda: SimpleNamespace(jd_parser_mode=mode))
+    monkeypatch.setattr(job_description, "JobDescriptionParsingPipeline", RecordingPipeline)
 
     result = await job_description._parse_job_description("up-1")
 
     assert result == {"status": "DONE", "upload_id": "up-1"}
-    assert len(written) == 1
-    assert written[0][0].endswith(".artifacts/" + "a" * 64 + "/mineru.json")
-    assert any("status = 'PARSING'" in sql for sql in db.statements)
-    assert any("status = 'DONE'" in sql and "structured_data" in sql for sql in db.statements)
-    assert db.commits == 2
+    parser = RecordingPipeline.created_with["parser"]
+    assert parser.__class__.__name__.casefold().startswith(mode)
 
 
 @pytest.mark.asyncio
-async def test_parse_job_description_records_failure_for_review(monkeypatch) -> None:
-    db = _Database(_row())
+async def test_worker_rejects_unknown_parser_mode(monkeypatch) -> None:
+    async def load_taxonomy(_):
+        return SimpleNamespace(skills={}, version="taxonomy-v1")
 
-    async def extraction_failure(*_: object) -> DocumentArtifacts:
-        raise RuntimeError("MinerU unavailable")
-
-    monkeypatch.setattr(job_description, "SessionFactory", lambda: db)
-    monkeypatch.setattr(job_description, "get_object", lambda _: b"document")
-    monkeypatch.setattr(job_description, "extract_document_artifacts", extraction_failure)
-
-    with pytest.raises(RuntimeError, match="MinerU unavailable"):
+    monkeypatch.setattr(job_description, "SessionFactory", Database)
+    monkeypatch.setattr(job_description, "load_active_skill_taxonomy", load_taxonomy)
+    monkeypatch.setattr(job_description, "get_settings", lambda: SimpleNamespace(jd_parser_mode="unsafe"))
+    with pytest.raises(ValueError, match="JD_PARSER_MODE"):
         await job_description._parse_job_description("up-1")
-
-    assert any("status = 'PARSING'" in sql for sql in db.statements)
-    assert any("status = 'FAILED'" in sql for sql in db.statements)
-    assert db.commits == 2
 
 
 @pytest.mark.asyncio

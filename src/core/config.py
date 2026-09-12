@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     # 768 covers normal cases without the latency of the former 1,024 default.
     jd_parser_max_output_tokens: int = Field(default=768, ge=128, le=2_048)
     jd_parser_mode: str = "deterministic"
+    cv_parser_max_output_tokens: int = Field(default=1_024, ge=128, le=4_096)
+    cv_parser_mode: str = "deterministic"
     embedding_provider: str = "openai"
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1024
@@ -58,6 +60,10 @@ class Settings(BaseSettings):
     mineru_http_pool_timeout_seconds: float = Field(default=20.0, gt=0)
     mineru_poll_interval_seconds: float = 2.0
     mineru_timeout_seconds: int = 300
+    # API-side database observation interval for SSE status streams. The
+    # browser holds one stream instead of independently polling resource APIs.
+    sse_status_poll_interval_seconds: float = Field(default=1.0, ge=0.25, le=10.0)
+    sse_heartbeat_seconds: float = Field(default=15.0, ge=1.0, le=60.0)
 
     rabbitmq_cv_queue: str = "cv-processing"
     rabbitmq_jd_queue: str = "jd-processing"

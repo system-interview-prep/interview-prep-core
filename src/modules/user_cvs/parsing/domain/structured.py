@@ -27,7 +27,14 @@ _MONTH_NUMBER = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
 }
-_DEGREE_RE = re.compile(r"\b(bachelor|master|ph\.?d|doctor|b\.?sc|m\.?sc|b\.?eng|mba|associate)\b", re.I)
+_DEGREE_RE = re.compile(
+    r"\b("
+    r"bachelors?|masters?|ph\.?d|doctor|b\.?sc|m\.?sc|b\.?eng|b\.?e|"
+    r"b\.?s|m\.?s|mba|associate|adp|f\.?sc|intermediate|a[ -]?levels|"
+    r"pre-?engineering|computer sciences"
+    r")\b",
+    re.I,
+)
 _SECTION_TITLES = {
     "education", "academic background", "hoc van", "giao duc",
     "projects", "selected projects", "du an", "du an tieu bieu",
@@ -78,7 +85,11 @@ def _section_blocks(source: SourceDocument, section: str) -> list[SourceBlock]:
 
 
 def _split_header(value: str) -> list[str]:
-    return [part.strip(" -–—|,") for part in re.split(r"\s*(?:\||@|\bat\b|,)\s*", value) if part.strip(" -–—|,")]
+    # Commas are common inside job titles (for example, a department suffix).
+    # Prefer explicit separators; only use commas when no stronger delimiter is
+    # present in the CV header.
+    separator = r"\s*(?:\||@|\bat\b)\s*" if re.search(r"\||@|\bat\b", value, re.I) else r"\s*,\s*"
+    return [part.strip(" -–—|,") for part in re.split(separator, value) if part.strip(" -–—|,")]
 
 
 def _is_section_title(value: str) -> bool:
