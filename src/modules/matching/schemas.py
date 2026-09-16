@@ -1,42 +1,15 @@
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
-from src.modules.user_cvs.schemas import CanonicalModel, CanonicalResume, EvidenceSpan, TaxonomyRef
-
-
-def _to_camel(name: str) -> str:
-    head, *tail = name.split("_")
-    return head + "".join(part.capitalize() for part in tail)
-
-
-class MatchRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", alias_generator=_to_camel)
-
-    resume_text: str = Field(min_length=1)
-    job_description: str = Field(min_length=1)
-    cv_id: str | None = None
-    job_description_id: str | None = None
-    position: str | None = None
-    algorithms: list[str] = Field(
-        default_factory=lambda: ["embedding_cosine"],
-        description="Deprecated compatibility field; matching always uses embedding cosine.",
-    )
-    async_processing: bool = True
-
-
-class MatchAccepted(BaseModel):
-    model_config = ConfigDict(alias_generator=_to_camel)
-
-    task_id: str
-    status: str = "PENDING"
-
-
-class MatchResult(BaseModel):
-    model_config = ConfigDict(alias_generator=_to_camel)
-
-    pipeline_version: str = "external-embedding-cosine-v1"
-    result: dict[str, Any]
+from src.modules.user_cvs.domain.schemas import ProficiencyLevel
+from src.modules.user_cvs.schemas import (
+    CanonicalModel,
+    CanonicalResume,
+    CareerClassification,
+    EvidenceSpan,
+    TaxonomyRef,
+)
 
 
 class RequirementBase(CanonicalModel):
@@ -48,15 +21,20 @@ class RequirementBase(CanonicalModel):
 class SkillRequirement(RequirementBase):
     type: Literal["skill"]
     skill: TaxonomyRef
-    operator: Literal["required", "gte"] = "required"
+    operator: Literal["required", "gte", "proficiency_gte"] = "required"
     minimum_experience_months: int | None = Field(default=None, ge=0)
+    minimum_proficiency_level: ProficiencyLevel | None = None
 
     @model_validator(mode="after")
     def experience_operator_has_value(self) -> "SkillRequirement":
         if self.operator == "gte" and self.minimum_experience_months is None:
             raise ValueError("gte skill requirements need minimumExperienceMonths")
-        if self.operator == "required" and self.minimum_experience_months is not None:
-            raise ValueError("required skill requirements must not set minimumExperienceMonths")
+        if self.operator != "gte" and self.minimum_experience_months is not None:
+            raise ValueError("only gte skill requirements may set minimumExperienceMonths")
+        if self.operator == "proficiency_gte" and self.minimum_proficiency_level is None:
+            raise ValueError("proficiency_gte requirements need minimumProficiencyLevel")
+        if self.operator != "proficiency_gte" and self.minimum_proficiency_level is not None:
+            raise ValueError("only proficiency_gte requirements may set minimumProficiencyLevel")
         return self
 
 
@@ -73,7 +51,24 @@ class LanguageRequirement(RequirementBase):
         return self
 
 
-Requirement = Annotated[SkillRequirement | LanguageRequirement, Field(discriminator="type")]
+class UnresolvedRequirement(RequirementBase):
+    """Evidence-grounded JD requirement that needs a specialized evaluator."""
+
+    type: Literal["unresolved"]
+    kind: Literal["skill", "experience", "education", "language", "other"]
+    raw_label: str = Field(min_length=1)
+    minimum_experience_months: int | None = Field(default=None, ge=0)
+
+
+Requirement = Annotated[
+    SkillRequirement | LanguageRequirement | UnresolvedRequirement,
+    Field(discriminator="type"),
+]
+
+
+class GroundedJobText(CanonicalModel):
+    text: str = Field(min_length=1)
+    evidence_refs: list[str] = Field(default_factory=list)
 
 
 class CanonicalJob(CanonicalModel):
@@ -81,36 +76,112 @@ class CanonicalJob(CanonicalModel):
     job_id: str = Field(min_length=1)
     document_id: str = Field(min_length=1)
     document_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[a-fA-F0-9]+$")
+    job_title: str | None = None
+    career_classifications: list[CareerClassification] = Field(default_factory=list)
+    seniority: Literal["intern", "junior", "mid", "senior", "lead", "manager"] | None = None
+    employment_type: Literal["full_time", "part_time", "contract", "internship"] | None = None
+    work_mode: Literal["remote", "hybrid", "on_site"] | None = None
+    location: str | None = None
+    responsibilities: list[GroundedJobText] = Field(default_factory=list)
+    benefits: list[GroundedJobText] = Field(default_factory=list)
     requirements: list[Requirement] = Field(default_factory=list)
     evidence: list[EvidenceSpan] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def references_are_consistent(self) -> "CanonicalJob":
+        evidence_ids = {item.evidence_id for item in self.evidence}
+        if len(evidence_ids) != len(self.evidence):
+            raise ValueError("evidence IDs must be unique")
+        if not {item.source_evidence_ref for item in self.requirements}.issubset(evidence_ids):
+            raise ValueError("all requirement sourceEvidenceRefs must resolve inside the job")
+        grounded_owners = [
+            *self.responsibilities,
+            *self.benefits,
+            *self.career_classifications,
+        ]
+        if any(not set(owner.evidence_refs).issubset(evidence_ids) for owner in grounded_owners):
+            raise ValueError("all job evidenceRefs must resolve inside the job")
+        if any(
+            item.document_id != self.document_id or item.document_sha256 != self.document_sha256
+            for item in self.evidence
+        ):
+            raise ValueError("evidence must belong to the job document revision")
+        return self
+
 
 class MatchingPolicy(CanonicalModel):
-    policy_version: str = Field(min_length=1)
+    policy_version: Literal["balanced-v1", "skill-focus-v1", "experience-focus-v1"] = "balanced-v1"
     must_have_mode: Literal["strict", "advisory"] = "strict"
     unknown_handling: Literal["manual_review", "penalize"] = "manual_review"
 
 
-class StructuredMatchRequest(CanonicalModel):
+class CandidatePreferences(CanonicalModel):
+    """Explicit user choices; these are not facts extracted from the CV."""
+
+    accepted_work_modes: list[Literal["remote", "hybrid", "on_site"]] = Field(
+        default_factory=list
+    )
+    accepted_locations: list[str] = Field(default_factory=list)
+    willing_to_relocate: bool | None = None
+
+
+class MatchRequest(CanonicalModel):
+    """The sole public contract for one CV-to-one-JD fit assessment."""
+
     schema_version: Literal["2.1"]
     resume: CanonicalResume
     job: CanonicalJob
-    matching_policy: MatchingPolicy
+    matching_policy: MatchingPolicy = Field(default_factory=MatchingPolicy)
+    candidate_preferences: CandidatePreferences = Field(default_factory=CandidatePreferences)
+    async_processing: bool = True
+
+
+class MatchAccepted(CanonicalModel):
+    task_id: str
+    status: Literal["PENDING"] = "PENDING"
 
 
 class RequirementResult(CanonicalModel):
     requirement_id: str
     status: Literal["met", "not_met", "unknown", "not_applicable"]
     score: float | None = Field(default=None, ge=0, le=1)
+    confidence: float = Field(ge=0, le=1)
     evidence_refs: list[str] = Field(default_factory=list)
     reason_code: str
 
 
-class StructuredMatchResult(CanonicalModel):
-    schema_version: Literal["2.1"]
+class FactorResult(CanonicalModel):
+    factor: Literal["skill", "experience", "language", "semantic"]
+    status: Literal["scored", "not_applicable", "unknown"]
+    raw_score: float | None = Field(default=None, ge=0, le=1)
+    reliability: float = Field(ge=0, le=1)
+    policy_weight: float = Field(ge=0, le=1)
+    effective_weight: float = Field(ge=0, le=1)
+    evidence_refs: list[str] = Field(default_factory=list)
+    warning_code: str | None = None
+
+
+class CompatibilityResult(CanonicalModel):
+    criterion: Literal["work_mode", "location"]
+    status: Literal["compatible", "incompatible", "unknown", "not_applicable"]
+    confidence: float = Field(ge=0, le=1)
+    reason_code: str
+
+
+class MatchResult(CanonicalModel):
+    schema_version: Literal["2.1"] = "2.1"
+    pipeline_version: Literal["one-to-one-evidence-fusion-v1"] = "one-to-one-evidence-fusion-v1"
     resume_id: str
     job_id: str
     policy_version: str
-    overall_score: float = Field(ge=0, le=1)
-    recommendation: Literal["strong_match", "review", "not_match"]
+    eligibility: Literal["eligible", "ineligible", "review_required"]
+    compatibility_status: Literal[
+        "compatible", "incompatible", "unknown", "not_applicable"
+    ] = "not_applicable"
+    suitability_score: float | None = Field(default=None, ge=0, le=1)
+    fit_band: Literal["strong_fit", "partial_fit", "review_required", "not_eligible", "insufficient_evidence"]
+    decision: Literal["assessed", "abstained"]
     requirement_results: list[RequirementResult]
+    compatibility_results: list[CompatibilityResult] = Field(default_factory=list)
+    factor_results: list[FactorResult]
+    warnings: list[str] = Field(default_factory=list)

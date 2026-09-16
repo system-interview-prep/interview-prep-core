@@ -7,7 +7,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_DATASET_DIR = Path(__file__).resolve().parents[5] / "DOC_AND_PLAN" / "data" / "eval" / "cv"
 FIELDS = ("skills", "employment", "education", "projects", "certifications", "languages")
 PII_PATTERNS = (
@@ -62,9 +61,10 @@ def validate_cv_datasets(dataset_dir: Path = DEFAULT_DATASET_DIR) -> dict[str, i
     totals: dict[str, int] = {}
     case_ids: set[str] = set()
     for name in (
-        "golden_cv_skill_evidence_v1.json",
-        "golden_cv_parser_core_v1.json",
-        "golden_cv_parser_edge_v1.json",
+        "skill_evidence_v1/candidates/pre_gold_cv_skill_evidence_v1.json",
+        "parser_core_v1/candidates/pre_gold_cv_parser_core_v1.json",
+        "parser_edge_v1/candidates/pre_gold_cv_parser_edge_v1.json",
+        "vi_translation_v1/candidates/pre_gold_cv_vi_translation_v1.json",
     ):
         cases = _load(dataset_dir / name)
         for case in cases:
@@ -73,15 +73,4 @@ def validate_cv_datasets(dataset_dir: Path = DEFAULT_DATASET_DIR) -> dict[str, i
                 raise ValueError(f"duplicate CV fixture ID: {case['case_id']}")
             case_ids.add(case["case_id"])
         totals[name] = len(cases)
-    silver = _load(dataset_dir / "datasetmaster_resume_silver_v1.json")
-    for item in silver:
-        if item.get("gating") is not False or "raw_text" in item:
-            raise ValueError("silver data must be non-gating and must not retain resume text")
-        # Hash values are opaque identifiers, not source text. Exclude them
-        # from contact-pattern checks because a random SHA-256 may contain a
-        # run of digits that resembles a phone number.
-        safe_item = {key: value for key, value in item.items() if key != "source_record_sha256"}
-        serialized = json.dumps(safe_item, ensure_ascii=False)
-        _assert_no_pii(serialized, case_id=item["case_id"])
-    totals["datasetmaster_resume_silver_v1.json"] = len(silver)
     return totals

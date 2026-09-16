@@ -74,10 +74,12 @@ def _evidence_valid(parsed: dict[str, Any], raw_text: str) -> bool:
 
 
 def _load_cases(dataset_dir: Path, manifest_name: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    manifest = json.loads((dataset_dir / manifest_name).read_text(encoding="utf-8"))
+    manifest_path = dataset_dir / manifest_name
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_dir = manifest_path.parent
     cases: list[dict[str, Any]] = []
     for descriptor in manifest["files"]:
-        items = json.loads((dataset_dir / descriptor["path"]).read_text(encoding="utf-8"))
+        items = json.loads((manifest_dir / descriptor["path"]).read_text(encoding="utf-8"))
         if len(items) != descriptor["case_count"]:
             raise ValueError(f"{descriptor['path']}: case count does not match manifest")
         cases.extend(items)
@@ -213,7 +215,7 @@ async def run_evaluation(dataset_dir: Path, manifest_name: str, parser_mode: str
 def main() -> None:
     command = argparse.ArgumentParser(description="Evaluate evidence-grounded CV parsing.")
     command.add_argument("--dataset-dir", type=Path, default=DEFAULT_DATASET_DIR)
-    command.add_argument("--manifest", default="manifest.json")
+    command.add_argument("--manifest", default="parser_core_v1/manifests/manifest.json")
     command.add_argument("--parser", choices=("deterministic", "hybrid"), default="deterministic")
     command.add_argument("--input-cost-per-million-tokens", type=float, default=0.0)
     command.add_argument("--output-cost-per-million-tokens", type=float, default=0.0)

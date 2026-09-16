@@ -16,7 +16,6 @@ from src.modules.interview_questions import build_module as build_interview_ques
 from src.modules.job_descriptions import build_module as build_job_descriptions_module
 from src.modules.matching import build_module as build_matching_module
 from src.modules.notifications import build_module as build_notifications_module
-from src.modules.scoring import build_module as build_scoring_module
 from src.modules.sessions import build_module as build_sessions_module
 from src.modules.signaling import _events as _signaling_events
 from src.modules.taxonomy import build_module as build_taxonomy_module
@@ -38,7 +37,6 @@ MODULES = [
     build_sessions_module(),
     build_chat_module(),
     build_interview_questions_module(),
-    build_scoring_module(),
     build_voice_module(),
     build_video_calls_module(),
     build_notifications_module(),

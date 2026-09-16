@@ -7,6 +7,7 @@ from src.modules.job_descriptions.evaluation.semantic_runner import (
     _read_hybrid_cache,
     _similarity,
     _write_hybrid_cache,
+    run_semantic,
 )
 from src.modules.job_descriptions.parsing.deterministic import DeterministicJobDescriptionParser
 
@@ -35,3 +36,12 @@ def test_hybrid_cache_round_trip_is_stable_and_grounded(tmp_path) -> None:
     assert json.loads(cached.model_dump_json(by_alias=True))["responsibilities"][0]["text"] == "Build APIs"
     assert path == _hybrid_cache_path(tmp_path, "case-1", raw_text)
     assert path != _hybrid_cache_path(tmp_path, "case-1", raw_text + " changed")
+
+
+def test_semantic_evaluation_defaults_to_evidence_grounded_manifest() -> None:
+    report = run_semantic()
+
+    assert report["manifest"] == "manifest.json"
+    assert report["summary"]["total"] == 8
+    assert report["summary"]["valid_evidence_cases"] == 8
+    assert report["metric_contract"]["gold_evidence_available"] is True

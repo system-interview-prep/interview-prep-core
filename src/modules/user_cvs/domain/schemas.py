@@ -84,11 +84,15 @@ class TaxonomyRef(CanonicalModel):
     label: str = Field(min_length=1)
 
 
+ProficiencyLevel = Literal["basic", "beginner", "competent", "intermediate", "advanced", "expert"]
+
+
 class SkillClaim(CanonicalModel):
     claim_id: str = Field(min_length=1)
     concept: TaxonomyRef
     raw_label: str = Field(min_length=1)
     experience_months: int | None = Field(default=None, ge=0)
+    proficiency_level: ProficiencyLevel | None = None
     evidence_refs: list[str] = Field(default_factory=list)
     assertion_source: Literal["explicit", "inferred"] = "explicit"
     confidence: float | None = Field(default=None, ge=0, le=1)

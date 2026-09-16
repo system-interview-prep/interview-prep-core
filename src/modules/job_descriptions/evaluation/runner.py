@@ -192,7 +192,7 @@ def main() -> None:
         "--mode",
         choices=("exact", "semantic"),
         default="exact",
-        help="exact is for evidence-grounded fixtures; semantic is for independently annotated paraphrase gold.",
+        help="exact compares canonical fields strictly; semantic tolerates paraphrases in the same manifest.",
     )
     command.add_argument(
         "--parser",

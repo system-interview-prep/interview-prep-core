@@ -4,10 +4,8 @@ from src.modules.matching.schemas import (
     MatchAccepted,
     MatchRequest,
     MatchResult,
-    StructuredMatchRequest,
-    StructuredMatchResult,
 )
-from src.modules.matching.service import run_match, run_structured_match
+from src.modules.matching.service import run_match
 from src.workers.tasks.matching import match_cv_to_jd
 
 router = APIRouter(prefix="/api/v1/matching", tags=["matching"])
@@ -30,10 +28,4 @@ async def match(payload: MatchRequest, response: Response) -> MatchAccepted | Ma
         return MatchAccepted(taskId=task.id)
     result = await run_match(payload)
     response.status_code = status.HTTP_200_OK
-    return MatchResult(result=result)
-
-
-@router.post("/match/structured", response_model=StructuredMatchResult)
-async def match_structured(payload: StructuredMatchRequest) -> StructuredMatchResult:
-    """Synchronous v2 endpoint; it accepts only redacted, canonical payloads."""
-    return await run_structured_match(payload)
+    return result
