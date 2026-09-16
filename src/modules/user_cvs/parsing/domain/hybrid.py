@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -26,6 +27,168 @@ from src.modules.user_cvs.parsing.domain.llm_candidate import CV_EXTRACTION_INST
 from src.modules.user_cvs.parsing.domain.source import EvidenceMapper, SourceDocument
 
 PARSER_VERSION = "hybrid-resume-v1"
+
+
+def _sanitize_date_candidate(val: Any) -> tuple[dict[str, str] | None, bool]:
+    """Sanitize date values into valid PartialDateCandidate shape or (None, is_current=True)."""
+    if val is None:
+        return None, False
+    if isinstance(val, dict):
+        raw_val = str(val.get("value", "")).strip()
+        precision = val.get("precision")
+    else:
+        raw_val = str(val).strip()
+        precision = None
+
+    if raw_val.casefold() in {"present", "current", "now", "hiện tại", "nay", "today"}:
+        return None, True
+
+    m = re.search(r"\b(\d{4}(?:-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?)?)\b", raw_val)
+    if not m:
+        m_year = re.search(r"\b(\d{4})\b", raw_val)
+        if m_year:
+            return {"value": m_year.group(1), "precision": "year"}, False
+        return None, False
+
+    clean_val = m.group(1)
+    if precision not in {"year", "month", "day"}:
+        parts = clean_val.split("-")
+        precision = "day" if len(parts) == 3 else ("month" if len(parts) == 2 else "year")
+    return {"value": clean_val, "precision": precision}, False
+
+
+def _safe_json_parse(text: str) -> dict[str, Any]:
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        pass
+    cleaned = text
+    if cleaned.count('"') % 2 != 0:
+        cleaned += '"'
+    open_braces = cleaned.count('{') - cleaned.count('}')
+    open_brackets = cleaned.count('[') - cleaned.count(']')
+    cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
+    cleaned = re.sub(r",\s*$", "", cleaned)
+    cleaned += (']' * max(0, open_brackets)) + ('}' * max(0, open_braces))
+    try:
+        data = json.loads(cleaned)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        raise
+
+
+def _sanitize_candidate_payload(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {}
+
+    for field in ("headline", "summary"):
+        item = data.get(field)
+        if isinstance(item, dict):
+            val = str(item.get("value") or "").strip()
+            quote = str(item.get("quote") or "").strip()
+            if val and quote:
+                data[field] = {"value": val[:2000], "quote": quote[:6000]}
+            else:
+                data[field] = None
+        else:
+            data[field] = None
+
+    clean_emp = []
+    for emp in data.get("employment", []):
+        if not isinstance(emp, dict):
+            continue
+        quote = str(emp.get("quote") or "").strip()
+        if not quote:
+            continue
+        title = str(emp.get("jobTitle") or emp.get("job_title") or "").strip()
+        if not title:
+            org = str(emp.get("organization") or "").strip()
+            title = org if org else "Professional"
+        emp["jobTitle"] = title[:300]
+        org = str(emp.get("organization") or "").strip()
+        emp["organization"] = org[:300] if org else None
+
+        start_date, _ = _sanitize_date_candidate(emp.get("startDate"))
+        end_date, is_curr = _sanitize_date_candidate(emp.get("endDate"))
+        emp["startDate"] = start_date
+        emp["endDate"] = end_date
+        emp["isCurrent"] = is_curr or bool(emp.get("isCurrent"))
+
+        resp = emp.get("responsibilities")
+        if isinstance(resp, str):
+            resp_list = [s.strip() for s in resp.split("\n") if s.strip()]
+        elif isinstance(resp, list):
+            resp_list = [str(s).strip() for s in resp if str(s).strip()]
+        else:
+            resp_list = []
+        emp["responsibilities"] = resp_list[:20]
+        emp["quote"] = quote[:8000]
+        clean_emp.append(emp)
+    data["employment"] = clean_emp[:20]
+
+    clean_edu = []
+    for edu in data.get("education", []):
+        if not isinstance(edu, dict):
+            continue
+        quote = str(edu.get("quote") or "").strip()
+        if not quote:
+            continue
+        inst = str(edu.get("institution") or "").strip()
+        if not inst:
+            deg = str(edu.get("degree") or "").strip()
+            inst = deg if deg else "Institution"
+        edu["institution"] = inst[:500]
+        deg = str(edu.get("degree") or "").strip()
+        edu["degree"] = deg[:300] if deg else None
+        fos = str(edu.get("fieldOfStudy") or edu.get("field_of_study") or "").strip()
+        edu["fieldOfStudy"] = fos[:300] if fos else None
+
+        start_date, _ = _sanitize_date_candidate(edu.get("startDate"))
+        end_date, _ = _sanitize_date_candidate(edu.get("endDate"))
+        edu["startDate"] = start_date
+        edu["endDate"] = end_date
+        edu["quote"] = quote[:8000]
+        clean_edu.append(edu)
+    data["education"] = clean_edu[:20]
+
+    clean_proj = []
+    for proj in data.get("projects", []):
+        if not isinstance(proj, dict):
+            continue
+        quote = str(proj.get("quote") or "").strip()
+        if not quote:
+            continue
+        name = str(proj.get("name") or "").strip()
+        proj["name"] = (name if name else "Project")[:500]
+        desc = str(proj.get("description") or "").strip()
+        proj["description"] = desc[:4000] if desc else None
+        proj["quote"] = quote[:8000]
+        clean_proj.append(proj)
+    data["projects"] = clean_proj[:30]
+
+    clean_cert = []
+    for cert in data.get("certifications", []):
+        if not isinstance(cert, dict):
+            continue
+        quote = str(cert.get("quote") or "").strip()
+        if not quote:
+            continue
+        name = str(cert.get("name") or "").strip()
+        cert["name"] = (name if name else "Certification")[:500]
+        issuer = str(cert.get("issuer") or "").strip()
+        cert["issuer"] = issuer[:300] if issuer else None
+        cid = str(cert.get("credentialId") or cert.get("credential_id") or "").strip()
+        cert["credentialId"] = cid[:300] if cid else None
+        cert["quote"] = quote[:4000]
+        clean_cert.append(cert)
+    data["certifications"] = clean_cert[:30]
+
+    return data
 
 
 class HybridResumeParser:
@@ -76,7 +239,9 @@ class HybridResumeParser:
                     max_output_tokens=get_settings().cv_parser_max_output_tokens,
                     temperature=0.0,
                 )
-            candidate = ResumeCandidate.model_validate(json.loads(output))
+            raw_data = _safe_json_parse(output)
+            sanitized_data = _sanitize_candidate_payload(raw_data)
+            candidate = ResumeCandidate.model_validate(sanitized_data)
         except (ModelServiceError, RuntimeError, json.JSONDecodeError, ValidationError, ValueError) as exc:
             return self._with_warning(baseline, "llm_fallback", f"LLM candidate rejected: {str(exc)[:300]}")
         try:
@@ -132,8 +297,15 @@ class HybridResumeParser:
         warnings: list[ParserWarning] = []
 
         def ground(kind: str, quote: str) -> str | None:
+            if not quote or not quote.strip():
+                return None
             matches = list(re.finditer(re.escape(quote), source.text))
-            if len(matches) != 1:
+            if not matches:
+                words = quote.split()
+                if words:
+                    pattern = re.compile(r"\s+".join(re.escape(w) for w in words))
+                    matches = list(pattern.finditer(source.text))
+            if not matches:
                 warnings.append(
                     ParserWarning(
                         code="llm_claim_rejected",

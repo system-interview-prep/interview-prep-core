@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     # 768 covers normal cases without the latency of the former 1,024 default.
     jd_parser_max_output_tokens: int = Field(default=768, ge=128, le=2_048)
     jd_parser_mode: str = "deterministic"
-    cv_parser_max_output_tokens: int = Field(default=1_024, ge=128, le=4_096)
+    cv_parser_max_output_tokens: int = Field(default=4_096, ge=128, le=8_192)
     cv_parser_mode: str = "deterministic"
     embedding_provider: str = "openai"
     embedding_model: str = "text-embedding-3-small"

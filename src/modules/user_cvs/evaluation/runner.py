@@ -36,16 +36,66 @@ def _normalized(value: Any) -> str:
 def _facts(payload: dict[str, Any], field: str) -> set[str]:
     items = payload.get(field, [])
     if field == "skills":
+        result = set()
+        for item in items:
+            cid = (item.get("concept") or {}).get("conceptId") or (item.get("concept") or {}).get("concept_id")
+            val = (
+                cid
+                or item.get("taxonomy_concept")
+                or item.get("rawLabel")
+                or item.get("raw_label")
+                or item.get("surface")
+            )
+            norm = _normalized(val)
+            if norm.startswith("skill-"):
+                norm = norm[6:]
+            if norm:
+                result.add(norm)
+        return result
+    if field == "employment":
         return {
-            _normalized((item.get("concept") or {}).get("conceptId") or item.get("rawLabel"))
+            "|".join(
+                _normalized(item.get(k) or item.get(alt))
+                for k, alt in (("jobTitle", "title"), ("organization", "organization"))
+            )
             for item in items
         }
+    if field == "education":
+        return {
+            "|".join(
+                _normalized(item.get(k) or item.get(alt))
+                for k, alt in (
+                    ("institution", "institution"),
+                    ("degree", "degree"),
+                    ("fieldOfStudy", "field_of_study"),
+                )
+            )
+            for item in items
+        }
+    if field == "languages":
+        result = set()
+        _MAP = {
+            "english": "en", "tiếng anh": "en",
+            "vietnamese": "vi", "tiếng việt": "vi",
+            "chinese": "zh", "tiếng trung": "zh", "mandarin": "zh",
+            "japanese": "ja", "tiếng nhật": "ja",
+            "spanish": "es", "tiếng tây ban nha": "es",
+            "french": "fr", "tiếng pháp": "fr",
+            "german": "de", "tiếng đức": "de",
+            "korean": "ko", "tiếng hàn": "ko",
+            "arabic": "ar", "tiếng ả rập": "ar",
+            "russian": "ru", "tiếng nga": "ru",
+        }
+        for item in items:
+            raw_code = str(item.get("code") or item.get("language") or "").casefold().strip()
+            code = _MAP.get(raw_code, raw_code)
+            level = item.get("level") or item.get("proficiency")
+            if code:
+                result.add(f"{_normalized(code)}|{_normalized(level)}")
+        return result
     keys = {
-        "employment": ("jobTitle", "organization"),
-        "education": ("institution", "degree", "fieldOfStudy"),
         "projects": ("name",),
         "certifications": ("name", "issuer"),
-        "languages": ("code", "level"),
     }[field]
     return {"|".join(_normalized(item.get(key)) for key in keys) for item in items}
 
@@ -97,62 +147,78 @@ async def evaluate_cases(
     quality_gates: dict[str, float] | None = None,
     input_cost_per_million_tokens: float = 0.0,
     output_cost_per_million_tokens: float = 0.0,
+    concurrency: int = 5,
 ) -> dict[str, Any]:
     fields = ("skills", "employment", "education", "projects", "certifications", "languages")
     totals = {field: defaultdict(int) for field in fields}
     results = []
     total_input_tokens = 0
     total_output_tokens = 0
-    for case in cases:
-        raw_text = case["raw_text"]
-        artifacts = DocumentArtifacts(
-            markdown=raw_text,
-            content_list=case.get("content_list") or [{"type": "text", "text": raw_text, "page_idx": 0}],
-            extractor_version="evaluation-fixture-v1",
-        )
-        source = build_source_document(
-            artifacts,
-            document_id=case["case_id"],
-            document_sha256=case.get("document_sha256", "e" * 64),
-        )
-        started = time.perf_counter()
-        parsed_or_awaitable = parser.parse(
-            source, extraction_version="evaluation-fixture-v1", source_artifact_key=None
-        )
-        parsed: ParsedResume = (
-            await parsed_or_awaitable if inspect.isawaitable(parsed_or_awaitable) else parsed_or_awaitable
-        )
-        latency_ms = (time.perf_counter() - started) * 1_000
-        actual = json.loads(parsed.resume.model_dump_json(by_alias=True))
-        expected = case["expected"]
-        field_results = {}
-        for field in fields:
-            gold, observed = _facts(expected, field), _facts(actual, field)
-            tp, fp, fn = len(gold & observed), len(observed - gold), len(gold - observed)
-            totals[field]["tp"] += tp
-            totals[field]["fp"] += fp
-            totals[field]["fn"] += fn
-            precision = tp / (tp + fp) if tp + fp else float(not gold)
-            recall = tp / (tp + fn) if tp + fn else float(not observed)
-            field_results[field] = {
-                "precision": round(precision, 4),
-                "recall": round(recall, 4),
-                "f1": round(2 * precision * recall / (precision + recall), 4) if precision + recall else 0.0,
-            }
-        warnings = actual.get("parsing", {}).get("warnings", [])
-        output_json = json.dumps(actual, ensure_ascii=False)
-        total_input_tokens += max(1, len(raw_text) // 4)
-        total_output_tokens += max(1, len(output_json) // 4)
-        results.append(
-            {
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _evaluate_single_case(case: dict[str, Any]) -> dict[str, Any]:
+        async with sem:
+            raw_text = case["raw_text"]
+            artifacts = DocumentArtifacts(
+                markdown=raw_text,
+                content_list=case.get("content_list") or [{"type": "text", "text": raw_text, "page_idx": 0}],
+                extractor_version="evaluation-fixture-v1",
+            )
+            source = build_source_document(
+                artifacts,
+                document_id=case["case_id"],
+                document_sha256=case.get("document_sha256", "e" * 64),
+            )
+            started = time.perf_counter()
+            parsed_or_awaitable = parser.parse(
+                source, extraction_version="evaluation-fixture-v1", source_artifact_key=None
+            )
+            parsed: ParsedResume = (
+                await parsed_or_awaitable if inspect.isawaitable(parsed_or_awaitable) else parsed_or_awaitable
+            )
+            latency_ms = (time.perf_counter() - started) * 1_000
+            actual = json.loads(parsed.resume.model_dump_json(by_alias=True))
+            expected = case["expected"]
+            field_results = {}
+            case_counts = {}
+            for field in fields:
+                gold, observed = _facts(expected, field), _facts(actual, field)
+                tp, fp, fn = len(gold & observed), len(observed - gold), len(gold - observed)
+                case_counts[field] = (tp, fp, fn)
+                precision = tp / (tp + fp) if tp + fp else float(not gold)
+                recall = tp / (tp + fn) if tp + fn else float(not observed)
+                field_results[field] = {
+                    "precision": round(precision, 4),
+                    "recall": round(recall, 4),
+                    "f1": round(2 * precision * recall / (precision + recall), 4) if precision + recall else 0.0,
+                }
+            warnings = actual.get("parsing", {}).get("warnings", [])
+            output_json = json.dumps(actual, ensure_ascii=False)
+            input_tokens = max(1, len(raw_text) // 4)
+            output_tokens = max(1, len(output_json) // 4)
+            return {
                 "case_id": case["case_id"],
                 "fields": field_results,
                 "evidence_valid": _evidence_valid(actual, source.text),
                 "fallback": any(item.get("code") == "llm_fallback" for item in warnings),
                 "review_required": actual.get("parsing", {}).get("status") == "review_required",
                 "latency_ms": round(latency_ms, 3),
+                "warnings": [w.get("message") for w in warnings if w.get("code") == "llm_fallback"],
+                "_case_counts": case_counts,
+                "_input_tokens": input_tokens,
+                "_output_tokens": output_tokens,
             }
-        )
+
+    case_results = await asyncio.gather(*(_evaluate_single_case(c) for c in cases))
+    for res in case_results:
+        counts = res.pop("_case_counts")
+        for field, (tp, fp, fn) in counts.items():
+            totals[field]["tp"] += tp
+            totals[field]["fp"] += fp
+            totals[field]["fn"] += fn
+        total_input_tokens += res.pop("_input_tokens")
+        total_output_tokens += res.pop("_output_tokens")
+        results.append(res)
     aggregates = {}
     for field, counts in totals.items():
         precision = counts["tp"] / (counts["tp"] + counts["fp"]) if counts["tp"] + counts["fp"] else 1.0
@@ -206,10 +272,12 @@ async def evaluate_cases(
     }
 
 
-async def run_evaluation(dataset_dir: Path, manifest_name: str, parser_mode: str, **costs) -> dict[str, Any]:
+async def run_evaluation(
+    dataset_dir: Path, manifest_name: str, parser_mode: str, concurrency: int = 5, **costs
+) -> dict[str, Any]:
     cases, gates = _load_cases(dataset_dir, manifest_name)
     parser = HybridResumeParser() if parser_mode == "hybrid" else DeterministicResumeParser()
-    return await evaluate_cases(cases, parser, quality_gates=gates, **costs)
+    return await evaluate_cases(cases, parser, quality_gates=gates, concurrency=concurrency, **costs)
 
 
 def main() -> None:
@@ -217,6 +285,7 @@ def main() -> None:
     command.add_argument("--dataset-dir", type=Path, default=DEFAULT_DATASET_DIR)
     command.add_argument("--manifest", default="parser_core_v1/manifests/manifest.json")
     command.add_argument("--parser", choices=("deterministic", "hybrid"), default="deterministic")
+    command.add_argument("--concurrency", type=int, default=5)
     command.add_argument("--input-cost-per-million-tokens", type=float, default=0.0)
     command.add_argument("--output-cost-per-million-tokens", type=float, default=0.0)
     command.add_argument("--output", type=Path)
@@ -226,6 +295,7 @@ def main() -> None:
             args.dataset_dir,
             args.manifest,
             args.parser,
+            concurrency=args.concurrency,
             input_cost_per_million_tokens=args.input_cost_per_million_tokens,
             output_cost_per_million_tokens=args.output_cost_per_million_tokens,
         )
