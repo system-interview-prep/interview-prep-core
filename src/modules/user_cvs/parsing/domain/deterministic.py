@@ -104,7 +104,7 @@ _NAME_TITLE_WORDS = {
     "scientist",
 }
 _LANGUAGE_RE = re.compile(
-    r"(?P<label>english|ti\u1ebfng\s+anh)\s*(?:[:\-|]|tr\u00ecnh\s+\u0111\u1ed9)?\s*"
+    r"(?P<label>english|ti\u1ebfng\s+anh)\s*(?:[:\-|\(]|tr\u00ecnh\s+\u0111\u1ed9)?\s*"
     r"(?P<level>[ABC][12])\b",
     re.IGNORECASE,
 )
@@ -116,6 +116,8 @@ def _evidence_id(kind: str, start: int, end: int) -> str:
 
 
 def _pattern(alias: str) -> re.Pattern[str]:
+    if alias.lower() in {"js"}:
+        return re.compile(rf"(?<![\w.]){re.escape(alias)}(?![\w])", re.IGNORECASE)
     return re.compile(rf"(?<![\w]){re.escape(alias)}(?![\w])", re.IGNORECASE)
 
 
