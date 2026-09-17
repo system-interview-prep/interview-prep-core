@@ -27,7 +27,7 @@ from src.modules.documents.facade import (
 from src.modules.documents.sse import SSE_HEADERS, status_event_stream
 from src.modules.job_descriptions.domain.schemas import CanonicalJobDescription
 
-router = APIRouter(prefix="/admin/job-profiles", tags=["job-profiles"])
+_inner_router = APIRouter(tags=["job-profiles"])
 
 _MAX_FILE_SIZE = MAX_DOCUMENT_FILE_SIZE
 _file_validator = DocumentFileValidator()
@@ -153,7 +153,7 @@ def _encode_cursor(job_description: dict) -> str:
     return base64.urlsafe_b64encode(value).decode()
 
 
-@router.post("/uploads", status_code=status.HTTP_201_CREATED)
+@_inner_router.post("/uploads", status_code=status.HTTP_201_CREATED)
 async def upload_jd(
     user: dict = Depends(require_admin), db: AsyncSession = Depends(get_db), file: UploadFile = File(...)
 ) -> dict:
@@ -214,14 +214,14 @@ async def upload_jd(
     return await _get_upload(db, user["sub"], upload_id)
 
 
-@router.get("/uploads/{upload_id}")
+@_inner_router.get("/uploads/{upload_id}")
 async def get_upload(
     upload_id: str, user: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ) -> dict:
     return await _get_upload(db, user["sub"], upload_id)
 
 
-@router.get("/uploads/{upload_id}/events")
+@_inner_router.get("/uploads/{upload_id}/events")
 async def stream_upload_status(
     upload_id: str,
     request: Request,
@@ -248,7 +248,7 @@ async def stream_upload_status(
     )
 
 
-@router.post("/uploads/{upload_id}/reparse")
+@_inner_router.post("/uploads/{upload_id}/reparse")
 async def reparse_upload(
     upload_id: str, user: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ) -> dict:
@@ -269,7 +269,7 @@ async def reparse_upload(
     return await _get_upload(db, user["sub"], upload_id)
 
 
-@router.patch("/uploads/{upload_id}")
+@_inner_router.patch("/uploads/{upload_id}")
 async def patch_upload(
     upload_id: str,
     payload: UploadPatch,
@@ -313,7 +313,7 @@ async def patch_upload(
     return await _get_upload(db, user["sub"], upload_id)
 
 
-@router.post("/uploads/{upload_id}/finalize")
+@_inner_router.post("/uploads/{upload_id}/finalize")
 async def finalize_upload(
     upload_id: str,
     payload: FinalizeUpload,
@@ -368,7 +368,7 @@ async def finalize_upload(
     return await _get(db, upload_id)
 
 
-@router.get("/uploads/{upload_id}/download")
+@_inner_router.get("/uploads/{upload_id}/download")
 async def download_upload(
     upload_id: str, user: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ) -> Response:
@@ -390,7 +390,7 @@ async def download_upload(
     )
 
 
-@router.get("")
+@_inner_router.get("")
 async def list_job_descriptions(
     _: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
@@ -431,14 +431,14 @@ async def list_job_descriptions(
     return {"items": items, "nextCursor": next_cursor}
 
 
-@router.get("/{job_description_id}")
+@_inner_router.get("/{job_description_id}")
 async def get_job_description(
     job_description_id: str, _: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
 ) -> dict:
     return await _get(db, job_description_id)
 
 
-@router.patch("/{job_description_id}")
+@_inner_router.patch("/{job_description_id}")
 async def update_job_description(
     job_description_id: str,
     payload: JobDescriptionPatch,
@@ -459,7 +459,7 @@ async def update_job_description(
     return await _get(db, job_description_id)
 
 
-@router.delete("/{job_description_id}")
+@_inner_router.delete("/{job_description_id}")
 async def delete_job_description(
     job_description_id: str, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ) -> dict:
@@ -471,3 +471,9 @@ async def delete_job_description(
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Job description not found")
     return {"message": "Deleted"}
+
+
+router = APIRouter()
+router.include_router(_inner_router, prefix="/admin/job-profiles")
+router.include_router(_inner_router, prefix="/admin/job-descriptions")
+
