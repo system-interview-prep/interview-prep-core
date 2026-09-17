@@ -115,6 +115,7 @@ class MatchingPolicy(CanonicalModel):
     unknown_handling: Literal["manual_review", "penalize"] = "manual_review"
     semantic_mode: Literal["hybrid", "dense_only", "sparse_only"] = "hybrid"
     bm25_weight: float = Field(default=0.4, ge=0.0, le=1.0)
+    bm25_provider_mode: Literal["auto", "in_memory", "paradedb"] = "auto"
 
 
 class CandidatePreferences(CanonicalModel):

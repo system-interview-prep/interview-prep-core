@@ -6,6 +6,7 @@ from collections.abc import Callable
 from functools import lru_cache
 
 from src.modules.matching.bm25 import bm25_similarity
+from src.modules.matching.bm25_provider import Bm25Provider, get_bm25_provider
 from src.modules.matching.rag.embedding import EmbeddingAdapter, build_embedding_adapter_from_env
 from src.modules.matching.schemas import (
     CanonicalJob,
@@ -53,8 +54,13 @@ PROFICIENCY_RANK = {
 class MatchingFacade:
     """The only application entry point for one CV-to-one-JD fit assessment."""
 
-    def __init__(self, embedder: EmbeddingAdapter | None = None) -> None:
+    def __init__(
+        self,
+        embedder: EmbeddingAdapter | None = None,
+        bm25_provider: Bm25Provider | None = None,
+    ) -> None:
         self._embedder = embedder
+        self._bm25_provider = bm25_provider or get_bm25_provider()
 
     def match(self, payload: MatchRequest) -> MatchResult:
         requirements = self._evaluate_requirements(payload.resume, payload.job)
@@ -375,7 +381,13 @@ class MatchingFacade:
         if not resume_text or not job_text:
             return self._unknown_semantic(policy_weight, "semantic_input_not_evidenced")
 
-        sparse_score = bm25_similarity(job_text, resume_text)
+        if payload.matching_policy.bm25_provider_mode == "in_memory":
+            sparse_score = bm25_similarity(job_text, resume_text)
+        else:
+            doc_id = payload.resume.document_id or payload.resume.resume_id
+            sparse_score = self._bm25_provider.score(
+                query_text=job_text, doc_text=resume_text, doc_id=doc_id
+            )
         mode = payload.matching_policy.semantic_mode
         bm25_w = payload.matching_policy.bm25_weight
 
