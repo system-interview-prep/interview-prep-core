@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     jwt_secret: str = "development-only-secret-change-me"
     jwt_algorithm: str = "HS256"
-    jwt_expires_minutes: int = 1440
+    jwt_expires_minutes: int = 10080
     google_oauth_userinfo_url: str = "https://www.googleapis.com/oauth2/v3/userinfo"
 
     r2_endpoint_url: str | None = None
