@@ -1,6 +1,6 @@
 import json
 
-from src.modules.job_descriptions.evaluation.runner import _source
+from src.modules.job_descriptions.evaluation.runner import DEFAULT_DATASET_DIR, _source
 from src.modules.job_descriptions.evaluation.semantic_runner import (
     _field_score,
     _hybrid_cache_path,
@@ -39,9 +39,10 @@ def test_hybrid_cache_round_trip_is_stable_and_grounded(tmp_path) -> None:
 
 
 def test_semantic_evaluation_defaults_to_evidence_grounded_manifest() -> None:
+    manifest = json.loads((DEFAULT_DATASET_DIR / "manifest.json").read_text(encoding="utf-8"))
     report = run_semantic()
 
     assert report["manifest"] == "manifest.json"
-    assert report["summary"]["total"] == 8
-    assert report["summary"]["valid_evidence_cases"] == 8
+    assert report["summary"]["total"] == manifest["total_cases"]
+    assert report["summary"]["valid_evidence_cases"] == manifest["total_cases"]
     assert report["metric_contract"]["gold_evidence_available"] is True

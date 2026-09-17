@@ -1,0 +1,2394 @@
+{
+  "evaluation": "jd-parser-semantic-deterministic-manifest",
+  "metric_contract": {
+    "matching": "one-to-one token Dice similarity; unmatched expected/observed facts score zero",
+    "semantic_score": "mean of title similarity and F1 for applicable responsibilities, requirements, benefits",
+    "method_limit": "offline lexical paraphrase proxy, not an embedding or LLM judge",
+    "not_a_pass_fail_gate": true,
+    "gold_evidence_available": true
+  },
+  "generated_at": "2026-09-16T10:34:01.787345+00:00",
+  "dataset_dir": "D:\\NCKH\\DOC_AND_PLAN\\data\\eval\\jd",
+  "manifest": "manifest.json",
+  "parser_mode": "deterministic",
+  "summary": {
+    "total": 44,
+    "macro_semantic_score": 0.5871,
+    "mean_title_similarity": 0.9576,
+    "valid_evidence_cases": 44,
+    "invalid_evidence_cases": 0,
+    "fields": {
+      "responsibilities": {
+        "evaluated_cases": 9,
+        "non_applicable_cases": 35,
+        "precision": 0.7778,
+        "recall": 0.7778,
+        "f1": 0.7778
+      },
+      "requirements": {
+        "evaluated_cases": 42,
+        "non_applicable_cases": 2,
+        "precision": 0.2199,
+        "recall": 0.2297,
+        "f1": 0.2245
+      },
+      "benefits": {
+        "evaluated_cases": 9,
+        "non_applicable_cases": 35,
+        "precision": 0.6667,
+        "recall": 0.6667,
+        "f1": 0.6667
+      }
+    }
+  },
+  "lowest_scoring_cases": [
+    {
+      "case_id": "jd-edge-pre-gold-026",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": "The title is absent; do not infer it only from listed tools."
+    },
+    {
+      "case_id": "jd-edge-pre-gold-005",
+      "title_similarity": 0.3333,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.1667,
+      "evidence_valid": true,
+      "expected_title": "Frontend Developer",
+      "actual_title": "<h1>Frontend Developer</h1><p>Requirements:</p><li>Readable content was flattened from HTML.</li>"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-014",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 0,
+          "observed_count": 11,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.3333,
+      "evidence_valid": true,
+      "expected_title": "SRE",
+      "actual_title": "SRE"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-027",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 0,
+          "observed_count": 12,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.3333,
+      "evidence_valid": true,
+      "expected_title": "Product Designer",
+      "actual_title": "Product Designer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-028",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 0,
+          "observed_count": 12,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.3333,
+      "evidence_valid": true,
+      "expected_title": "Kỹ sư Backend",
+      "actual_title": "Kỹ sư Backend"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-031",
+      "title_similarity": 0.8,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.4,
+      "evidence_valid": true,
+      "expected_title": "Lập trình viên Java",
+      "actual_title": "Lập trình viên Java - Hà Nội"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-002",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 0,
+          "observed_count": 1,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 11,
+          "precision": 0.8545,
+          "recall": 0.94,
+          "f1": 0.8952
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 0,
+          "observed_count": 1,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.4738,
+      "evidence_valid": true,
+      "expected_title": "Data Engineer",
+      "actual_title": "Data Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-001",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Backend Engineer",
+      "actual_title": "Backend Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-004",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Platform Engineer",
+      "actual_title": "Platform Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-006",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Security Analyst",
+      "actual_title": "Security Analyst"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-007",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Mobile Developer",
+      "actual_title": "Mobile Developer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-008",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "DevOps Engineer",
+      "actual_title": "DevOps Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-009",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Software Engineer",
+      "actual_title": "Software Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-010",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 11,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Backend Engineer",
+      "actual_title": "Backend Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-011",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 9,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Data Analyst",
+      "actual_title": "Data Analyst"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-012",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Web Engineer",
+      "actual_title": "Web Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-013",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Engineering Manager",
+      "actual_title": "Engineering Manager"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-015",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "ML Engineer",
+      "actual_title": "ML Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-016",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Senior Developer",
+      "actual_title": "Senior Developer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-017",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Technical Support Engineer",
+      "actual_title": "Technical Support Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-018",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Cloud Engineer",
+      "actual_title": "Cloud Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-019",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Remote Engineer",
+      "actual_title": "Remote Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-020",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Fintech Engineer",
+      "actual_title": "Fintech Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-021",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Solutions Architect",
+      "actual_title": "Solutions Architect"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-022",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Product Engineer",
+      "actual_title": "Product Engineer"
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "core-en-backend-001",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 3,
+          "observed_count": 3,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 1.0,
+      "evidence_valid": true,
+      "expected_title": "Backend Engineer",
+      "actual_title": "Backend Engineer"
+    },
+    {
+      "case_id": "core-en-platform-002",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 1.0,
+      "evidence_valid": true,
+      "expected_title": "Senior Platform Engineer",
+      "actual_title": "Senior Platform Engineer"
+    },
+    {
+      "case_id": "core-vi-game-003",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 2,
+          "observed_count": 2,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 6,
+          "precision": 0.9,
+          "recall": 0.9,
+          "f1": 0.9
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.975,
+      "evidence_valid": true,
+      "expected_title": "Unity Developer - Game Mobile [Ha Noi]",
+      "actual_title": "Unity Developer - Game Mobile [Ha Noi]"
+    },
+    {
+      "case_id": "core-en-frontend-004",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 2,
+          "observed_count": 2,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 1.0,
+      "evidence_valid": true,
+      "expected_title": "Frontend Developer",
+      "actual_title": "Frontend Developer"
+    },
+    {
+      "case_id": "edge-empty-requirements-001",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 1.0,
+      "evidence_valid": true,
+      "expected_title": "Product Designer",
+      "actual_title": "Product Designer"
+    },
+    {
+      "case_id": "edge-preferred-boundary-002",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 2,
+          "observed_count": 2,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 1.0,
+      "evidence_valid": true,
+      "expected_title": "Software Engineer",
+      "actual_title": "Software Engineer"
+    },
+    {
+      "case_id": "edge-location-workmode-003",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 1.0,
+      "evidence_valid": true,
+      "expected_title": "Office Manager",
+      "actual_title": "Office Manager"
+    },
+    {
+      "case_id": "edge-part-time-contract-004",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 1.0,
+      "evidence_valid": true,
+      "expected_title": "Data Analyst",
+      "actual_title": "Data Analyst"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-001",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Backend Engineer",
+      "actual_title": "Backend Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-002",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 0,
+          "observed_count": 1,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 11,
+          "precision": 0.8545,
+          "recall": 0.94,
+          "f1": 0.8952
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 0,
+          "observed_count": 1,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.4738,
+      "evidence_valid": true,
+      "expected_title": "Data Engineer",
+      "actual_title": "Data Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-003",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 12,
+          "precision": 0.7833,
+          "recall": 0.94,
+          "f1": 0.8545
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.9273,
+      "evidence_valid": true,
+      "expected_title": "QA Engineer",
+      "actual_title": "QA Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-004",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Platform Engineer",
+      "actual_title": "Platform Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-005",
+      "title_similarity": 0.3333,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.1667,
+      "evidence_valid": true,
+      "expected_title": "Frontend Developer",
+      "actual_title": "<h1>Frontend Developer</h1><p>Requirements:</p><li>Readable content was flattened from HTML.</li>"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-006",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Security Analyst",
+      "actual_title": "Security Analyst"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-007",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Mobile Developer",
+      "actual_title": "Mobile Developer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-008",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "DevOps Engineer",
+      "actual_title": "DevOps Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-009",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Software Engineer",
+      "actual_title": "Software Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-010",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 11,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Backend Engineer",
+      "actual_title": "Backend Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-011",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 9,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Data Analyst",
+      "actual_title": "Data Analyst"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-012",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Web Engineer",
+      "actual_title": "Web Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-013",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Engineering Manager",
+      "actual_title": "Engineering Manager"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-014",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 0,
+          "observed_count": 11,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.3333,
+      "evidence_valid": true,
+      "expected_title": "SRE",
+      "actual_title": "SRE"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-015",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "ML Engineer",
+      "actual_title": "ML Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-016",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Senior Developer",
+      "actual_title": "Senior Developer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-017",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Technical Support Engineer",
+      "actual_title": "Technical Support Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-018",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Cloud Engineer",
+      "actual_title": "Cloud Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-019",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Remote Engineer",
+      "actual_title": "Remote Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-020",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Fintech Engineer",
+      "actual_title": "Fintech Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-021",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Solutions Architect",
+      "actual_title": "Solutions Architect"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-022",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Product Engineer",
+      "actual_title": "Product Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-023",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Hardware QA Engineer",
+      "actual_title": "Hardware QA Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-024",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Data Consultant",
+      "actual_title": "Data Consultant"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-025",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Business Analyst",
+      "actual_title": "Business Analyst"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-026",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": "The title is absent; do not infer it only from listed tools."
+    },
+    {
+      "case_id": "jd-edge-pre-gold-027",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 0,
+          "observed_count": 12,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.3333,
+      "evidence_valid": true,
+      "expected_title": "Product Designer",
+      "actual_title": "Product Designer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-028",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 0,
+          "observed_count": 12,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.3333,
+      "evidence_valid": true,
+      "expected_title": "Kỹ sư Backend",
+      "actual_title": "Kỹ sư Backend"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-029",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 11,
+          "precision": 0.8485,
+          "recall": 0.9333,
+          "f1": 0.8889
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.9445,
+      "evidence_valid": true,
+      "expected_title": "Ky su Du lieu",
+      "actual_title": "Ky su Du lieu"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-030",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 11,
+          "precision": 0.8485,
+          "recall": 0.9333,
+          "f1": 0.8889
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.9445,
+      "evidence_valid": true,
+      "expected_title": "Kỹ sư Phần mềm / Software Engineer",
+      "actual_title": "Kỹ sư Phần mềm / Software Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-031",
+      "title_similarity": 0.8,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.4,
+      "evidence_valid": true,
+      "expected_title": "Lập trình viên Java",
+      "actual_title": "Lập trình viên Java - Hà Nội"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-032",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Kỹ sư kiểm thử",
+      "actual_title": "Kỹ sư kiểm thử"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-033",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "NhÃ¢n viÃªn Tester",
+      "actual_title": "NhÃ¢n viÃªn Tester"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-034",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Full-stack Engineer",
+      "actual_title": "Full-stack Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-035",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Integration Engineer",
+      "actual_title": "Integration Engineer"
+    },
+    {
+      "case_id": "jd-edge-pre-gold-036",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5,
+      "evidence_valid": true,
+      "expected_title": "Lead Engineer",
+      "actual_title": "Lead Engineer"
+    }
+  ]
+}

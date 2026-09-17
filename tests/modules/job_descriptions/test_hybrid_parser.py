@@ -93,3 +93,29 @@ async def test_hybrid_parser_uses_openai_facade_by_default(monkeypatch) -> None:
 
     assert parsed.job_title == "Backend Engineer"
     assert calls and calls[0]["max_output_tokens"] == 768
+
+
+@pytest.mark.asyncio
+async def test_hybrid_parser_handles_markdown_fences_and_whitespace_variance() -> None:
+    candidate_json = """```json
+    {
+        "jobTitle": {"value": "Backend Engineer", "quote": "Backend Engineer"},
+        "responsibilities": [
+            {"value": "Build APIs", "quote": "Build\\nreliable APIs."}
+        ],
+        "requirements": [
+            {"value": "Python", "quote": "Python   experience is required.", "kind": "skill", "priority": "must_have"}
+        ],
+        "benefits": [],
+        "extra_unknown_field": "should_be_ignored"
+    }
+    ```"""
+    parsed = await HybridJobDescriptionParser(client=FakeModelClient(candidate_json)).parse(
+        _source(), extraction_version="test"
+    )
+
+    assert parsed.job_title == "Backend Engineer"
+    assert any(item.text == "Build APIs" for item in parsed.responsibilities)
+    assert any(item.raw_label == "Python" for item in parsed.requirements)
+    evidence = {item.evidence_id: item for item in parsed.evidence}
+    assert all(ref in evidence for item in [*parsed.responsibilities, *parsed.requirements] for ref in item.evidence_refs)

@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class _CandidateModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
 
 class TextCandidate(_CandidateModel):
@@ -36,13 +36,14 @@ Use exactly this schema:
 Every quote must be copied verbatim from the supplied document. Do not infer,
 invent, translate, or summarize facts that lack a quote. If uncertain, omit it.
 
-Prefer precision over coverage: an extra item is harmful. Treat each explicit
-bullet as at most one fact. For a non-bulleted paragraph, return at most one
-combined fact of each type; do not split prose into many overlapping facts.
-Ignore company/product marketing and background. Return responsibilities only
-for activities the role performs, and requirements only from qualification or
-preferred-qualification sections. Do not repeat the same fact in different
-wording. Keep the output concise: normally no more than 5 responsibilities,
-8 requirements, and 3 benefits; exceed a cap only when the source contains
-more explicit, distinct bullets in that field.
+For jobTitle:
+- Extract the exact professional job title for the position (e.g. 'Senior Software Engineer', 'Product Manager', 'Data Analyst').
+- Do not include marketing slogans, sentences, company names, or location prefixes in jobTitle value.
+
+For responsibilities, requirements, and benefits:
+- Extract all distinct, explicit items listed in the document.
+- Treat each explicit bullet as one fact. For non-bulleted paragraphs, extract only the distinct core facts.
+- Ignore company/product marketing, introduction, and boilerplate background.
+- Return responsibilities only for activities the role performs, requirements only from qualification or preferred-qualification sections, and benefits only for employee compensation/perks.
+- Do not repeat the same fact in different wording.
 """

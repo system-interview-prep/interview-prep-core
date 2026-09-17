@@ -57,11 +57,25 @@ _HEADERS = {
         "what were looking for",
         "what we are looking for",
         "candidate requirements",
+        "candidate constraints",
+        "technical constraints",
+        "constraints",
+        "candidate profile",
+        "profile",
+        "what you need",
+        "what you will bring",
+        "who you are",
+        "ideal candidate",
         "yeu cau",
         "yeu cau ung vien",
         "yeu cau ung tuyen",
+        "yeu cau cong viec",
+        "rang buoc ung vien",
+        "tieu chuan ung vien",
+        "tieu chuan",
+        "ky nang can co",
     },
-    "preferred": {"preferred", "nice to have", "uu tien"},
+    "preferred": {"preferred", "nice to have", "plus", "bonus", "uu tien"},
     "responsibilities": {
         "responsibilities",
         "key responsibilities",
@@ -69,12 +83,16 @@ _HEADERS = {
         "duties",
         "what you will do",
         "what youll do",
+        "what you ll do",
         "the role",
+        "your role",
         "about the role",
         "about the job",
         "job description",
         "mo ta cong viec",
         "trach nhiem",
+        "nhiem vu",
+        "vai tro",
     },
     "benefits": {
         "benefits",
@@ -85,6 +103,8 @@ _HEADERS = {
         "why join us",
         "quyen loi",
         "phuc loi",
+        "dai ngo",
+        "che do dai ngo",
     },
     "location": {"location", "dia diem", "dia diem lam viec"},
     # This is a section boundary only.  Without it, a requirements section can
@@ -206,6 +226,48 @@ class DeterministicJobDescriptionParser:
                 continue
             line_priority = "preferred" if "preferred" in _key(value) else priority
             absolute_start = start + offset + relative_start
+            # Check if this line represents certification, education, or language
+            is_cert = bool(
+                re.search(
+                    r"\b(?:certified|certification|certificate|chứng chỉ|practitioner)\b",
+                    value,
+                    re.I,
+                )
+            )
+            is_edu = bool(
+                re.search(
+                    r"\b(?:bachelor|master|phd|degree|b\.s|m\.s|university|college|cử nhân|thạc sĩ|tiến sĩ|đại học|cao đẳng|tốt nghiệp)\b",
+                    value,
+                    re.I,
+                )
+            )
+            is_lang = bool(
+                re.search(
+                    r"\b(?:english|tiếng anh|ielts|toeic|toefl|b1|b2|c1|c2|japanese|tiếng nhật|jlpt|n1|n2|n3|chinese|tiếng trung)\b",
+                    value,
+                    re.I,
+                )
+            )
+
+            if is_cert or is_edu or is_lang:
+                absolute_end = absolute_start + len(value)
+                ref = _evidence_id("requirement", absolute_start, absolute_end)
+                evidence[ref] = mapper.from_offsets(
+                    evidence_id=ref, char_start=absolute_start, char_end=absolute_end
+                )
+                kind = "education" if is_edu else ("language" if is_lang else "other")
+                result.append(
+                    JobRequirement(
+                        requirementId=f"req-{kind}-{absolute_start}",
+                        kind=kind,
+                        priority=line_priority,
+                        rawLabel=value,
+                        minimumExperienceMonths=self._experience_months(value),
+                        evidenceRefs=[ref],
+                    )
+                )
+                continue
+
             found_skill = False
             for concept_id, (label, aliases) in self._taxonomy.items():
                 match = next(
@@ -248,13 +310,19 @@ class DeterministicJobDescriptionParser:
                 evidence[ref] = mapper.from_offsets(
                     evidence_id=ref, char_start=absolute_start, char_end=absolute_end
                 )
+                exp_months = self._experience_months(value)
+                kind = (
+                    "experience"
+                    if (exp_months is not None or re.search(r"\b(?:experience|kinh nghiệm)\b", value, re.I))
+                    else "other"
+                )
                 result.append(
                     JobRequirement(
-                        requirementId=f"req-other-{absolute_start}",
-                        kind="other",
+                        requirementId=f"req-{kind}-{absolute_start}",
+                        kind=kind,
                         priority=line_priority,
                         rawLabel=value,
-                        minimumExperienceMonths=self._experience_months(value),
+                        minimumExperienceMonths=exp_months,
                         evidenceRefs=[ref],
                     )
                 )
@@ -321,22 +389,20 @@ class DeterministicJobDescriptionParser:
                 if found:
                     return found.group("title").strip(" .,;:-")
         first_section = min((start for start, _ in ranges.values()), default=len(source.text))
-        return next(
-            (
-                block.text.strip()
-                for block in source.blocks
-                if block.char_start < first_section
-                and 3 <= len(block.text.strip()) <= 180
-                and not _heading(block.text)
-            ),
-            None,
-        )
+        for block in source.blocks:
+            if block.char_start >= first_section:
+                continue
+            text = block.text.strip()
+            if 3 <= len(text) <= 80 and not _heading(text) and re.search(role_words, text, re.I):
+                return text
+        return None
 
     @staticmethod
     def _experience_months(text: str) -> int | None:
         normalized = _key(text)
         match = re.search(
-            r"(?:it nhat\s*)?(\d+)\+?\s*(?:years?\s+(?:of\s+)?experience|nam\s+kinh\s+nghiem)", normalized
+            r"(?:it nhat\s*)?(\d+)\+?\s*(?:years?(?:\s+of)?(?:\s+\w+)?\s+experience|nam(?:\s+\w+)?\s+kinh\s+nghiem)",
+            normalized,
         )
         return int(match.group(1)) * 12 if match else None
 

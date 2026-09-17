@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     # Output budget for evidence-grounded JD extraction.  The independent gold
     # set needs about 647 tokens at p95 and 816 at p99 for its canonical JSON;
     # 768 covers normal cases without the latency of the former 1,024 default.
-    jd_parser_max_output_tokens: int = Field(default=768, ge=128, le=2_048)
+    jd_parser_max_output_tokens: int = Field(default=4_096, ge=128, le=8_192)
     jd_parser_mode: str = "deterministic"
     cv_parser_max_output_tokens: int = Field(default=4_096, ge=128, le=8_192)
     cv_parser_mode: str = "deterministic"

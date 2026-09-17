@@ -118,12 +118,17 @@ def _compare(raw_text: str, gold: dict[str, Any], actual: dict[str, Any]) -> dic
 
 
 def _load_golden_cases(dataset_dir: Path, manifest_name: str) -> list[dict[str, Any]]:
-    manifest = json.loads((dataset_dir / manifest_name).read_text(encoding="utf-8"))
+    manifest_path = dataset_dir / manifest_name
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     cases: list[dict[str, Any]] = []
     for descriptor in manifest["files"]:
         path = dataset_dir / descriptor["path"]
         if not path.is_file():
-            raise FileNotFoundError(f"Golden manifest references missing fixture: {path}")
+            rel_path = (manifest_path.parent / descriptor["path"]).resolve()
+            if rel_path.is_file():
+                path = rel_path
+            else:
+                raise FileNotFoundError(f"Golden manifest references missing fixture: {path}")
         file_cases = json.loads(path.read_text(encoding="utf-8"))
         if len(file_cases) != descriptor["case_count"]:
             raise ValueError(
