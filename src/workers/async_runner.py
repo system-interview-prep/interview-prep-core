@@ -19,8 +19,16 @@ class WorkerEventLoopRunner:
     def run(self, coroutine: Coroutine[Any, Any, ResultT]) -> ResultT:
         if self._loop is None or self._loop.is_closed():
             self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+        else:
+            try:
+                if asyncio.get_event_loop() != self._loop:
+                    asyncio.set_event_loop(self._loop)
+            except RuntimeError:
+                asyncio.set_event_loop(self._loop)
         return self._loop.run_until_complete(coroutine)
 
     def close(self) -> None:
         if self._loop is not None and not self._loop.is_closed():
             self._loop.close()
+            self._loop = None

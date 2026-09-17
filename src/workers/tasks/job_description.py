@@ -32,21 +32,30 @@ def parse_job_description(self, payload: dict) -> dict:
 async def _parse_job_description(upload_id: str) -> dict:
     if not upload_id:
         return {"status": "ignored"}
-    async with SessionFactory() as db:
-        taxonomy = await load_active_skill_taxonomy(db)
-        mode = get_settings().jd_parser_mode.casefold().strip()
-        if mode == "hybrid":
-            parser = HybridJobDescriptionParser(taxonomy.skills, taxonomy.version)
-        elif mode == "deterministic":
-            parser = DeterministicJobDescriptionParser(taxonomy.skills, taxonomy.version)
-        else:
-            raise ValueError("JD_PARSER_MODE must be 'deterministic' or 'hybrid'")
-        pipeline = JobDescriptionParsingPipeline(
-            repository=SqlAlchemyJobDescriptionParseRepository(db),
-            storage=R2ObjectStorage(),
-            extractor=MinerUDocumentExtractor(),
-            parser=parser,
-            source_builder=build_source_document,
-        )
-        result = await pipeline.run(upload_id)
-        return {"status": result.status, "upload_id": result.upload_id}
+    try:
+        async with SessionFactory() as db:
+            taxonomy = await load_active_skill_taxonomy(db)
+            mode = get_settings().jd_parser_mode.casefold().strip()
+            if mode == "hybrid":
+                parser = HybridJobDescriptionParser(taxonomy.skills, taxonomy.version)
+            elif mode == "deterministic":
+                parser = DeterministicJobDescriptionParser(taxonomy.skills, taxonomy.version)
+            else:
+                raise ValueError("JD_PARSER_MODE must be 'deterministic' or 'hybrid'")
+            pipeline = JobDescriptionParsingPipeline(
+                repository=SqlAlchemyJobDescriptionParseRepository(db),
+                storage=R2ObjectStorage(),
+                extractor=MinerUDocumentExtractor(),
+                parser=parser,
+                source_builder=build_source_document,
+            )
+            result = await pipeline.run(upload_id)
+            return {"status": result.status, "upload_id": result.upload_id}
+    except Exception as exc:
+        try:
+            async with SessionFactory() as err_db:
+                repo = SqlAlchemyJobDescriptionParseRepository(err_db)
+                await repo.fail(upload_id, f"Parse error: {exc}"[:1000])
+        except Exception:
+            pass
+        raise
