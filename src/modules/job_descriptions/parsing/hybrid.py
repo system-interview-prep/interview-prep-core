@@ -152,7 +152,7 @@ class HybridJobDescriptionParser:
             parsed_json = _safe_json_parse(output)
             sanitized = _sanitize_candidate_payload(parsed_json)
             candidate = JobDescriptionCandidate.model_validate(sanitized)
-        except (ModelServiceError, RuntimeError, json.JSONDecodeError, ValidationError, ValueError) as exc:
+        except (ModelServiceError, RuntimeError, json.JSONDecodeError, ValidationError, ValueError, Exception) as exc:
             return self._with_warning(baseline, "llm_fallback", f"LLM candidate rejected: {str(exc)[:300]}")
         try:
             return self._merge(baseline, source, candidate)

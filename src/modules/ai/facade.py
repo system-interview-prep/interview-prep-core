@@ -32,9 +32,18 @@ async def generate_text(
         }
         if temperature is not None:
             options["temperature"] = temperature
-        response = _client().responses.create(
-            **options,
-        )
+        try:
+            response = _client().responses.create(
+                **options,
+            )
+        except Exception as exc:
+            if "temperature" in str(exc).lower() and "temperature" in options:
+                options.pop("temperature", None)
+                response = _client().responses.create(
+                    **options,
+                )
+            else:
+                raise
         return str(response.output_text or "").strip()
 
     return await run_in_threadpool(call)

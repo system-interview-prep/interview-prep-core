@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field, field_validator
@@ -48,6 +49,8 @@ class Settings(BaseSettings):
     embedding_provider: str = "openai"
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1024
+    embedding_cache_enabled: bool = True
+    embedding_cache_dir: str = "models_cache/embedding_cache"
 
     # MinerU Precision Extract API. Set MINERU_API_KEY to enable CV parsing.
     mineru_api_key: str | None = None

@@ -242,7 +242,7 @@ class HybridResumeParser:
             raw_data = _safe_json_parse(output)
             sanitized_data = _sanitize_candidate_payload(raw_data)
             candidate = ResumeCandidate.model_validate(sanitized_data)
-        except (ModelServiceError, RuntimeError, json.JSONDecodeError, ValidationError, ValueError) as exc:
+        except (ModelServiceError, RuntimeError, json.JSONDecodeError, ValidationError, ValueError, Exception) as exc:
             return self._with_warning(baseline, "llm_fallback", f"LLM candidate rejected: {str(exc)[:300]}")
         try:
             return self._merge(baseline, source, candidate)

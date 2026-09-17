@@ -68,6 +68,27 @@ def test_embedding_uses_openai_with_configured_dimensions(monkeypatch, fake_open
     ]
 
 
+def test_embedding_cache_reuses_vectors_across_adapter_instances(tmp_path, monkeypatch, fake_openai):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    cache_dir = tmp_path / "embedding-cache"
+
+    first = OpenAIEmbeddingAdapter(
+        model_name="text-embedding-3-small",
+        dimensions=2,
+        cache_dir=cache_dir,
+    )
+    assert first.embed_texts(["CV", "JD"]) == [[0.1, 0.2], [0.3, 0.4]]
+    assert len(fake_openai[0].embedding_calls) == 1
+
+    second = OpenAIEmbeddingAdapter(
+        model_name="text-embedding-3-small",
+        dimensions=2,
+        cache_dir=cache_dir,
+    )
+    assert second.embed_texts(["CV", "JD"]) == [[0.1, 0.2], [0.3, 0.4]]
+    assert len(fake_openai[1].embedding_calls) == 0
+
+
 def test_bedrock_providers_are_rejected(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "bedrock")
     with pytest.raises(ValueError, match="Only 'openai' is supported"):

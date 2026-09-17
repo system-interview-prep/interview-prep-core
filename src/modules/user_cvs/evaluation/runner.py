@@ -273,9 +273,11 @@ async def evaluate_cases(
 
 
 async def run_evaluation(
-    dataset_dir: Path, manifest_name: str, parser_mode: str, concurrency: int = 5, **costs
+    dataset_dir: Path, manifest_name: str, parser_mode: str, concurrency: int = 5, limit: int | None = None, **costs
 ) -> dict[str, Any]:
     cases, gates = _load_cases(dataset_dir, manifest_name)
+    if limit is not None and limit > 0:
+        cases = cases[:limit]
     parser = HybridResumeParser() if parser_mode == "hybrid" else DeterministicResumeParser()
     return await evaluate_cases(cases, parser, quality_gates=gates, concurrency=concurrency, **costs)
 
@@ -286,16 +288,20 @@ def main() -> None:
     command.add_argument("--manifest", default="parser_core_v1/manifests/manifest.json")
     command.add_argument("--parser", choices=("deterministic", "hybrid"), default="deterministic")
     command.add_argument("--concurrency", type=int, default=5)
+    command.add_argument("--limit", type=int, default=None)
     command.add_argument("--input-cost-per-million-tokens", type=float, default=0.0)
     command.add_argument("--output-cost-per-million-tokens", type=float, default=0.0)
     command.add_argument("--output", type=Path)
     args = command.parse_args()
+    if args.limit is not None and args.limit < 1:
+        command.error("--limit must be at least 1")
     report = asyncio.run(
         run_evaluation(
             args.dataset_dir,
             args.manifest,
             args.parser,
             concurrency=args.concurrency,
+            limit=args.limit,
             input_cost_per_million_tokens=args.input_cost_per_million_tokens,
             output_cost_per_million_tokens=args.output_cost_per_million_tokens,
         )

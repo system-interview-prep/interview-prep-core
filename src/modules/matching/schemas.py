@@ -113,6 +113,8 @@ class MatchingPolicy(CanonicalModel):
     policy_version: Literal["balanced-v1", "skill-focus-v1", "experience-focus-v1"] = "balanced-v1"
     must_have_mode: Literal["strict", "advisory"] = "strict"
     unknown_handling: Literal["manual_review", "penalize"] = "manual_review"
+    semantic_mode: Literal["hybrid", "dense_only", "sparse_only"] = "hybrid"
+    bm25_weight: float = Field(default=0.4, ge=0.0, le=1.0)
 
 
 class CandidatePreferences(CanonicalModel):
@@ -159,6 +161,8 @@ class FactorResult(CanonicalModel):
     effective_weight: float = Field(ge=0, le=1)
     evidence_refs: list[str] = Field(default_factory=list)
     warning_code: str | None = None
+    dense_score: float | None = Field(default=None, ge=0, le=1)
+    sparse_score: float | None = Field(default=None, ge=0, le=1)
 
 
 class CompatibilityResult(CanonicalModel):

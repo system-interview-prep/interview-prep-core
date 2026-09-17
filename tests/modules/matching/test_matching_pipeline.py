@@ -187,6 +187,24 @@ def test_semantic_factor_prefers_responsibility_project_and_achievement_context(
     assert embedder.texts[1] == "Build reliable payment APIs"
 
 
+def test_matching_facade_builds_the_default_embedder_once_per_batch(monkeypatch) -> None:
+    created = []
+
+    def build_embedder():
+        embedder = StubEmbedder()
+        created.append(embedder)
+        return embedder
+
+    monkeypatch.setattr("src.modules.matching.facade.build_embedding_adapter_from_env", build_embedder)
+    facade = MatchingFacade()
+    request = MatchRequest.model_validate(_payload())
+
+    facade.match(request)
+    facade.match(request)
+
+    assert len(created) == 1
+
+
 def test_work_mode_and_location_are_compatibility_not_suitability() -> None:
     payload = _payload()
     payload["job"].update({"workMode": "on_site", "location": "Hà Nội"})

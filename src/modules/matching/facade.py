@@ -5,6 +5,7 @@ import unicodedata
 from collections.abc import Callable
 from functools import lru_cache
 
+from src.modules.matching.bm25 import bm25_similarity
 from src.modules.matching.rag.embedding import EmbeddingAdapter, build_embedding_adapter_from_env
 from src.modules.matching.schemas import (
     CanonicalJob,
@@ -20,6 +21,18 @@ from src.modules.matching.schemas import (
 )
 from src.modules.matching.semantic import cosine_similarity
 from src.modules.user_cvs.schemas import CanonicalResume
+
+ROLE_SYNONYMS = {
+    "engineer": "developer",
+    "programmer": "developer",
+    "coder": "developer",
+    "dev": "developer",
+    "architect": "lead",
+    "tester": "qa",
+    "qc": "qa",
+    "admin": "administrator",
+    "specialist": "expert",
+}
 
 POLICY_WEIGHTS = {
     "balanced-v1": {"skill": 0.30, "experience": 0.30, "semantic": 0.30, "language": 0.10},
@@ -361,33 +374,94 @@ class MatchingFacade:
         )
         if not resume_text or not job_text:
             return self._unknown_semantic(policy_weight, "semantic_input_not_evidenced")
+
+        sparse_score = bm25_similarity(job_text, resume_text)
+        mode = payload.matching_policy.semantic_mode
+        bm25_w = payload.matching_policy.bm25_weight
+
+        if mode == "sparse_only":
+            return (
+                FactorResult(
+                    factor="semantic",
+                    status="scored",
+                    rawScore=sparse_score,
+                    reliability=0.90,
+                    policyWeight=policy_weight,
+                    effectiveWeight=0.0,
+                    evidenceRefs=[item.evidence_id for item in payload.resume.evidence],
+                    sparseScore=sparse_score,
+                ),
+                None,
+            )
+
+        dense_score: float | None = None
+        dense_disabled: bool = False
         try:
-            embedder = self._embedder or build_embedding_adapter_from_env()
+            # Reuse one provider client for the facade lifetime. Apart from reducing
+            # connection setup overhead, this lets disk-cache hits stay local across
+            # every pair in a batch evaluation.
+            if self._embedder is None:
+                self._embedder = build_embedding_adapter_from_env()
+            embedder = self._embedder
             vectors = embedder.embed_texts([resume_text, job_text])
             if len(vectors) != 2:
                 raise ValueError("embedding provider returned an invalid vector count")
-            score = cosine_similarity(vectors[0], vectors[1])
-        except Exception:
+            dense_score = cosine_similarity(vectors[0], vectors[1])
+        except Exception as exc:
+            dense_score = None
+            if "disabled" in str(exc).lower():
+                dense_disabled = True
+
+        if dense_score is not None:
+            if mode == "dense_only":
+                final_score = dense_score
+            else:  # hybrid
+                final_score = (1.0 - bm25_w) * dense_score + bm25_w * sparse_score
+
+            return (
+                FactorResult(
+                    factor="semantic",
+                    status="scored",
+                    rawScore=round(final_score, 4),
+                    reliability=1.0,
+                    policyWeight=policy_weight,
+                    effectiveWeight=0.0,
+                    evidenceRefs=[item.evidence_id for item in payload.resume.evidence],
+                    denseScore=round(dense_score, 4),
+                    sparseScore=round(sparse_score, 4),
+                ),
+                None,
+            )
+
+        # When semantic is explicitly disabled, preserve the disabled semantic contract
+        if dense_disabled:
             return self._unknown_semantic(policy_weight, "semantic_scorer_unavailable")
-        return (
-            FactorResult(
-                factor="semantic",
-                status="scored",
-                rawScore=score,
-                reliability=1.0,
-                policyWeight=policy_weight,
-                effectiveWeight=0.0,
-                evidenceRefs=[item.evidence_id for item in payload.resume.evidence],
-            ),
-            None,
-        )
+
+        # Dense failed unexpectedly: graceful sparse degradation
+        if sparse_score > 0.0:
+            return (
+                FactorResult(
+                    factor="semantic",
+                    status="scored",
+                    rawScore=round(sparse_score, 4),
+                    reliability=0.85,
+                    policyWeight=policy_weight,
+                    effectiveWeight=0.0,
+                    evidenceRefs=[item.evidence_id for item in payload.resume.evidence],
+                    sparseScore=round(sparse_score, 4),
+                ),
+                "semantic_dense_provider_fallback_to_sparse",
+            )
+
+        return self._unknown_semantic(policy_weight, "semantic_scorer_unavailable")
 
     @staticmethod
     def _token_overlap(left: str | None, right: str | None) -> float:
         def tokens(value: str | None) -> set[str]:
             normalized = unicodedata.normalize("NFKD", value or "")
             ascii_value = "".join(char for char in normalized if not unicodedata.combining(char))
-            return set(re.findall(r"[a-z0-9+#.]+", ascii_value.casefold()))
+            raw_tokens = set(re.findall(r"[a-z0-9+#.]+", ascii_value.casefold()))
+            return {ROLE_SYNONYMS.get(t, t) for t in raw_tokens}
 
         left_tokens, right_tokens = tokens(left), tokens(right)
         if not left_tokens or not right_tokens:
