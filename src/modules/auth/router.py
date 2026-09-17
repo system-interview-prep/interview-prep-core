@@ -1,143 +1,76 @@
-from datetime import date
-from uuid import uuid4
-
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import text
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
-from src.core.security import create_access_token, hash_password, verify_password
 from src.infrastructure.database import get_db
+from src.modules.auth.rate_limit import login_rate_limiter
+from src.modules.auth.repository import AuthRepository
+from src.modules.auth.schemas import AuthResponse, GoogleLoginRequest, LoginRequest, RegisterRequest
+from src.modules.auth.service import (
+    AuthService,
+    EmailAlreadyExistsError,
+    InactiveAccountError,
+    InvalidCredentialsError,
+    InvalidGoogleTokenError,
+    public_user,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-class RegisterRequest(BaseModel):
-    email: str = Field(min_length=3, max_length=320)
-    password: str = Field(min_length=8, max_length=128)
-    name: str = Field(default="User", max_length=255)
-    dob: date | None = None
-
-    @field_validator("email")
-    @classmethod
-    def validate_email(cls, value: str) -> str:
-        value = value.strip()
-        if "@" not in value or value.startswith("@") or value.endswith("@"):
-            raise ValueError("Invalid email address")
-        return value
-
-
-class LoginRequest(BaseModel):
-    email: str = Field(min_length=3, max_length=320)
-    password: str = Field(min_length=1, max_length=128)
-
-    @field_validator("email")
-    @classmethod
-    def validate_email(cls, value: str) -> str:
-        return RegisterRequest.validate_email(value)
-
-
-class GoogleLoginRequest(BaseModel):
-    accessToken: str = Field(min_length=1)
-
-
 def _public_user(row: dict) -> dict:
-    return {key: row[key] for key in ("id", "email", "name", "role", "provider")}
+    """Backward-compatible public mapper; sensitive columns are always excluded."""
+    return public_user(row)
 
 
-@router.post("/register")
+def _service(db: AsyncSession) -> AuthService:
+    return AuthService(AuthRepository(db), get_settings().google_oauth_userinfo_url)
+
+
+@router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 async def register(payload: RegisterRequest, db: AsyncSession = Depends(get_db)) -> dict:
-    email = payload.email.lower()
-    existing = await db.execute(text("SELECT id FROM users WHERE lower(email) = :email"), {"email": email})
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email is already registered")
-    user_id = str(uuid4())
-    await db.execute(
-        text("""INSERT INTO users (id, email, password, name, role, provider, dob)
-        VALUES (:id, :email, :password, :name, :role, :provider, CAST(:dob AS date))"""),
-        {
-            "id": user_id,
-            "email": email,
-            "password": hash_password(payload.password),
-            "name": payload.name.strip() or "User",
-            "role": "CANDIDATE",
-            "provider": "local",
-            "dob": payload.dob,
-        },
-    )
-    await db.commit()
-    return {"message": "User registered successfully"}
-
-
-@router.post("/login")
-async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)) -> dict:
-    result = await db.execute(
-        text("SELECT id, email, password, name, role, provider FROM users WHERE lower(email) = :email"),
-        {"email": payload.email.lower()},
-    )
-    row = result.mappings().one_or_none()
-    if not row or row["provider"] != "local" or not verify_password(payload.password, row["password"]):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    return {
-        "access_token": create_access_token(row["id"], row["email"], row["role"]),
-        "user": _public_user(row),
-    }
-
-
-@router.post("/google")
-async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(get_db)) -> dict:
-    """Validate Google's access token and issue this application's JWT."""
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                get_settings().google_oauth_userinfo_url,
-                headers={"Authorization": f"Bearer {payload.accessToken}"},
-            )
-        response.raise_for_status()
-        google_profile = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Google token") from exc
+        return await _service(db).register(payload)
+    except EmailAlreadyExistsError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email đã được đăng ký.") from exc
 
-    email = str(google_profile.get("email") or "").strip().lower()
-    if not email:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Google account does not have an email",
-        )
-    if google_profile.get("email_verified") is False:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google email is not verified")
 
-    existing = await db.execute(
-        text("SELECT id, email, name, role, provider, picture FROM users WHERE lower(email) = :email"),
-        {"email": email},
-    )
-    row = existing.mappings().one_or_none()
-    if row is not None and row["provider"] != "google":
+@router.post("/login", response_model=AuthResponse)
+async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)) -> dict:
+    client_ip = request.client.host if request.client else "unknown"
+    if login_rate_limiter.is_blocked(client_ip):
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Email is already registered with password login",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Bạn đã đăng nhập sai quá nhiều lần. Vui lòng thử lại sau 1 phút.",
         )
-    if row is None:
-        user_id = str(uuid4())
-        name = str(google_profile.get("name") or "Google User").strip() or "Google User"
-        picture = google_profile.get("picture")
-        await db.execute(
-            text("""INSERT INTO users (id, email, name, role, provider, picture)
-            VALUES (:id, :email, :name, 'CANDIDATE', 'google', :picture)"""),
-            {"id": user_id, "email": email, "name": name, "picture": picture},
-        )
-        await db.commit()
-        row = {
-            "id": user_id,
-            "email": email,
-            "name": name,
-            "role": "CANDIDATE",
-            "provider": "google",
-            "picture": picture,
-        }
-    return {
-        "access_token": create_access_token(row["id"], row["email"], row["role"]),
-        "user": _public_user(row),
-    }
+    try:
+        response = await _service(db).login(payload.email, payload.password)
+    except InvalidCredentialsError as exc:
+        login_rate_limiter.record_failure(client_ip)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Email hoặc mật khẩu không chính xác.",
+        ) from exc
+    except InactiveAccountError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Tài khoản đã bị vô hiệu hóa."
+        ) from exc
+    login_rate_limiter.reset(client_ip)
+    return response
+
+
+@router.post("/google", response_model=AuthResponse)
+@router.post("/google-login", response_model=AuthResponse, include_in_schema=False)
+async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(get_db)) -> dict:
+    try:
+        return await _service(db).google_login(payload.token)
+    except InvalidGoogleTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Google token không hợp lệ."
+        ) from exc
+    except InactiveAccountError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Tài khoản đã bị vô hiệu hóa."
+        ) from exc
+    except EmailAlreadyExistsError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email đã được đăng ký.") from exc
