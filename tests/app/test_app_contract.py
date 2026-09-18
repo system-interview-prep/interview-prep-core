@@ -18,7 +18,6 @@ def test_openapi_contains_every_public_business_route(client) -> None:
         "/ai/chat",
         "/ai/history",
         "/ai/chat-voice",
-        "/ai/score-cv-jp",
         "/ai/session/{session_id}/questions/generate",
         "/interview/video-calls",
         "/interview/video-calls/start",

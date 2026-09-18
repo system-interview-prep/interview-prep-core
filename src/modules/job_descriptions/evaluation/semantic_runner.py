@@ -5,6 +5,7 @@ source job description.  This evaluator deliberately does *not* require text
 or evidence-span equality.  It measures token-level semantic coverage while
 still checking that parser-produced evidence offsets are valid.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -12,17 +13,21 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from src.core.config import get_settings
-from src.modules.job_descriptions.evaluation.runner import DEFAULT_DATASET_DIR, _evidence_is_valid, _source
 from src.modules.job_descriptions.domain.schemas import CanonicalJobDescription
+from src.modules.job_descriptions.evaluation.runner import DEFAULT_DATASET_DIR, _evidence_is_valid, _source
 from src.modules.job_descriptions.parsing.deterministic import DeterministicJobDescriptionParser
-from src.modules.job_descriptions.parsing.hybrid import PARSER_VERSION as HYBRID_PARSER_VERSION, HybridJobDescriptionParser
+from src.modules.job_descriptions.parsing.hybrid import (
+    PARSER_VERSION as HYBRID_PARSER_VERSION,
+)
+from src.modules.job_descriptions.parsing.hybrid import (
+    HybridJobDescriptionParser,
+)
 from src.modules.job_descriptions.parsing.llm_candidate import JD_EXTRACTION_INSTRUCTIONS
-
 
 logger = logging.getLogger(__name__)
 
@@ -30,17 +35,55 @@ logger = logging.getLogger(__name__)
 # Keep meaningful domain terms (including C++, C#, Node.js and ISO-like terms)
 # and discard only words which add little meaning in a JD summary.
 _TOKEN = re.compile(r"[\w][\w+#.\-/]*", re.UNICODE)
-_STOP_WORDS = frozenset({
-    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of",
-    "on", "or", "the", "to", "with", "you", "your", "will", "this", "that", "their", "our",
-    "experience", "ability", "skills", "skill", "work", "working", "job", "role", "team",
-})
+_STOP_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to",
+        "with",
+        "you",
+        "your",
+        "will",
+        "this",
+        "that",
+        "their",
+        "our",
+        "experience",
+        "ability",
+        "skills",
+        "skill",
+        "work",
+        "working",
+        "job",
+        "role",
+        "team",
+    }
+)
 
 
 def _tokens(value: str | None) -> set[str]:
     if not value:
         return set()
-    return {token.lower() for token in _TOKEN.findall(value) if token.lower() not in _STOP_WORDS and len(token) > 1}
+    return {
+        token.lower()
+        for token in _TOKEN.findall(value)
+        if token.lower() not in _STOP_WORDS and len(token) > 1
+    }
 
 
 def _similarity(left: str | None, right: str | None) -> float:
@@ -59,9 +102,11 @@ def _requirement_text(item: dict[str, Any]) -> str:
 def _field_score(expected: list[str], observed: list[str]) -> dict[str, Any]:
     """One-to-one greedy matching prevents one broad output claiming all gold facts."""
     pairs = sorted(
-        ((_similarity(gold, actual), gold_index, actual_index)
-         for gold_index, gold in enumerate(expected)
-         for actual_index, actual in enumerate(observed)),
+        (
+            (_similarity(gold, actual), gold_index, actual_index)
+            for gold_index, gold in enumerate(expected)
+            for actual_index, actual in enumerate(observed)
+        ),
         reverse=True,
     )
     matched_gold: set[int] = set()
@@ -121,17 +166,26 @@ def _aggregate(cases: list[dict[str, Any]]) -> dict[str, Any]:
     fields = ("responsibilities", "requirements", "benefits")
     return {
         "total": total,
-        "macro_semantic_score": round(sum(item["semantic_score"] for item in cases) / total, 4) if total else 0.0,
-        "mean_title_similarity": round(sum(item["title_similarity"] for item in cases) / total, 4) if total else 0.0,
+        "macro_semantic_score": round(sum(item["semantic_score"] for item in cases) / total, 4)
+        if total
+        else 0.0,
+        "mean_title_similarity": round(sum(item["title_similarity"] for item in cases) / total, 4)
+        if total
+        else 0.0,
         "valid_evidence_cases": sum(item["evidence_valid"] for item in cases),
         "invalid_evidence_cases": sum(not item["evidence_valid"] for item in cases),
         "fields": {
             field: {
-                "evaluated_cases": len(applicable := [item for item in cases if item["fields"][field]["applicable"]]),
+                "evaluated_cases": len(
+                    applicable := [item for item in cases if item["fields"][field]["applicable"]]
+                ),
                 "non_applicable_cases": total - len(applicable),
                 **{
-                    metric: round(sum(item["fields"][field][metric] for item in applicable) / len(applicable), 4)
-                    if applicable else 0.0
+                    metric: round(
+                        sum(item["fields"][field][metric] for item in applicable) / len(applicable), 4
+                    )
+                    if applicable
+                    else 0.0
                     for metric in ("precision", "recall", "f1")
                 },
             }
@@ -141,15 +195,22 @@ def _aggregate(cases: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _load_cases(dataset_dir: Path, manifest_name: str, limit: int | None = None) -> list[dict[str, Any]]:
-    manifest = json.loads((dataset_dir / manifest_name).read_text(encoding="utf-8"))
+    manifest_path = dataset_dir / manifest_name
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     cases: list[dict[str, Any]] = []
     for descriptor in manifest["files"]:
         path = dataset_dir / descriptor["path"]
         if not path.is_file():
-            raise FileNotFoundError(f"Semantic manifest references missing fixture: {path}")
+            rel_path = (manifest_path.parent / descriptor["path"]).resolve()
+            if rel_path.is_file():
+                path = rel_path
+            else:
+                raise FileNotFoundError(f"Semantic manifest references missing fixture: {path}")
         file_cases = json.loads(path.read_text(encoding="utf-8"))
         if len(file_cases) != descriptor["case_count"]:
-            raise ValueError(f"{path.name}: expected {descriptor['case_count']} cases, found {len(file_cases)}")
+            raise ValueError(
+                f"{path.name}: expected {descriptor['case_count']} cases, found {len(file_cases)}"
+            )
         cases.extend(file_cases)
     if manifest.get("total_cases") is not None and len(cases) != manifest["total_cases"]:
         raise ValueError(f"Semantic manifest declares {manifest['total_cases']} cases, found {len(cases)}")
@@ -161,17 +222,22 @@ def _load_cases(dataset_dir: Path, manifest_name: str, limit: int | None = None)
     return cases[:limit] if limit is not None else cases
 
 
-def _report(dataset_dir: Path, manifest_name: str, parser_mode: str, results: list[dict[str, Any]]) -> dict[str, Any]:
+def _report(
+    dataset_dir: Path, manifest_name: str, parser_mode: str, results: list[dict[str, Any]]
+) -> dict[str, Any]:
     return {
         "evaluation": f"jd-parser-semantic-{parser_mode}-{Path(manifest_name).stem}",
         "metric_contract": {
             "matching": "one-to-one token Dice similarity; unmatched expected/observed facts score zero",
-            "semantic_score": "mean of title similarity and F1 for applicable responsibilities, requirements, benefits",
+            "semantic_score": (
+                "mean of title similarity and F1 for applicable responsibilities, "
+                "requirements, benefits"
+            ),
             "method_limit": "offline lexical paraphrase proxy, not an embedding or LLM judge",
             "not_a_pass_fail_gate": True,
-            "gold_evidence_available": False,
+            "gold_evidence_available": True,
         },
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "dataset_dir": str(dataset_dir),
         "manifest": manifest_name,
         "parser_mode": parser_mode,
@@ -216,7 +282,10 @@ def _write_hybrid_cache(path: Path, parsed: CanonicalJobDescription) -> None:
 
 
 def run_semantic(
-    dataset_dir: Path = DEFAULT_DATASET_DIR, manifest_name: str = "ai_gold_jacob_manifest_v1.json", *, limit: int | None = None
+    dataset_dir: Path = DEFAULT_DATASET_DIR,
+    manifest_name: str = "manifest.json",
+    *,
+    limit: int | None = None,
 ) -> dict[str, Any]:
     """Run the fast, offline deterministic baseline."""
     parser = DeterministicJobDescriptionParser()
@@ -234,7 +303,7 @@ def run_semantic(
 
 async def run_semantic_hybrid(
     dataset_dir: Path = DEFAULT_DATASET_DIR,
-    manifest_name: str = "ai_gold_jacob_manifest_v1.json",
+    manifest_name: str = "manifest.json",
     *,
     progress_every: int = 10,
     limit: int | None = None,
@@ -249,24 +318,34 @@ async def run_semantic_hybrid(
     fallbacks = 0
     cache_hits = 0
     started = time.monotonic()
-    logger.info("OpenAI hybrid evaluation started: %d cases; progress every %d case(s)", len(cases), progress_every)
+    logger.info(
+        "OpenAI hybrid evaluation started: %d cases; progress every %d case(s)", len(cases), progress_every
+    )
     for index, case in enumerate(cases, start=1):
         raw_text = case["raw_text"]
         cache_path = _hybrid_cache_path(dataset_dir, case["case_id"], raw_text)
         parsed = None if refresh_cache else _read_hybrid_cache(cache_path, raw_text)
         cache_hit = parsed is not None
         if parsed is None:
-            parsed = await parser.parse(_source(case["case_id"], raw_text), extraction_version="semantic-hybrid-eval-v1")
+            parsed = await parser.parse(
+                _source(case["case_id"], raw_text), extraction_version="semantic-hybrid-eval-v1"
+            )
             _write_hybrid_cache(cache_path, parsed)
         else:
             cache_hits += 1
         actual = json.loads(parsed.model_dump_json(by_alias=True))
-        result = {"case_id": case["case_id"], "cache_hit": cache_hit, **_case_score(raw_text, case["expected"], actual)}
+        result = {
+            "case_id": case["case_id"],
+            "cache_hit": cache_hit,
+            **_case_score(raw_text, case["expected"], actual),
+        }
         parser_warnings = [warning.model_dump(by_alias=True) for warning in parsed.parsing.warnings]
         if parser_warnings:
             result["parser_warnings"] = parser_warnings
         results.append(result)
-        fallback_messages = [warning.message for warning in parsed.parsing.warnings if warning.code == "llm_fallback"]
+        fallback_messages = [
+            warning.message for warning in parsed.parsing.warnings if warning.code == "llm_fallback"
+        ]
         fallbacks += len(fallback_messages)
         if fallback_messages:
             logger.warning("Hybrid case=%s fallback: %s", case["case_id"], " | ".join(fallback_messages))
@@ -275,21 +354,34 @@ async def run_semantic_hybrid(
             rate = index / elapsed if elapsed else 0.0
             remaining = (len(cases) - index) / rate if rate else 0.0
             logger.info(
-                "OpenAI hybrid evaluation %d/%d (%.1f%%) case=%s fallback=%d cache_hits=%d elapsed=%.0fs eta=%.0fs",
-                index, len(cases), index * 100 / len(cases), case["case_id"], fallbacks, cache_hits, elapsed, remaining,
+                "OpenAI hybrid evaluation %d/%d (%.1f%%) case=%s fallback=%d "
+                "cache_hits=%d elapsed=%.0fs eta=%.0fs",
+                index,
+                len(cases),
+                index * 100 / len(cases),
+                case["case_id"],
+                fallbacks,
+                cache_hits,
+                elapsed,
+                remaining,
             )
     return _report(dataset_dir, manifest_name, "hybrid", results)
 
 
 def write_semantic_report(report: dict[str, Any], dataset_dir: Path) -> Path:
-    reports_dir = dataset_dir / "reports" / "ai_gold"
+    reports_dir = dataset_dir / "reports" / "semantic"
     reports_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     report_path = reports_dir / f"jd_parser_semantic_{timestamp}.json"
     payload = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     report_path.write_text(payload, encoding="utf-8")
     (reports_dir / "latest.json").write_text(payload, encoding="utf-8")
-    history = {"generated_at": report["generated_at"], "evaluation": report["evaluation"], "summary": report["summary"], "report": report_path.name}
+    history = {
+        "generated_at": report["generated_at"],
+        "evaluation": report["evaluation"],
+        "summary": report["summary"],
+        "report": report_path.name,
+    }
     with (reports_dir / "evaluation_history.jsonl").open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(history, ensure_ascii=False, separators=(",", ":")) + "\n")
     return report_path

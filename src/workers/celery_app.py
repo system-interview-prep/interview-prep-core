@@ -24,3 +24,17 @@ celery_app.conf.update(
         "job_description.*": {"queue": settings.rabbitmq_jd_queue},
     },
 )
+
+
+from celery.signals import worker_process_init
+
+
+@worker_process_init.connect
+def on_worker_process_init(**kwargs: object) -> None:
+    import asyncio
+    from src.infrastructure.database import engine
+
+    engine.sync_engine.dispose()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+

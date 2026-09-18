@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from src.modules.user_cvs.domain.schemas import (
+from src.modules.user_cvs.schemas import (
     CanonicalModel,
     CareerClassification,
     EvidenceSpan,

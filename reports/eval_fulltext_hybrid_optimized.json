@@ -1,0 +1,2537 @@
+{
+  "evaluation": "cv-parser-evidence-grounded-v1",
+  "generated_at": "2026-09-16T09:51:45.522039+00:00",
+  "metric_contract": {
+    "fields": "micro exact-match precision/recall/F1 over normalized canonical entity keys",
+    "evidence": "all offsets round-trip and every evidenceRef resolves",
+    "cost": "explicit character/4 token estimate; not provider billing usage"
+  },
+  "summary": {
+    "total": 60,
+    "macro_f1": 0.2861,
+    "evidence_valid_rate": 1.0,
+    "fallback_rate": 0.5333,
+    "review_required_rate": 1.0,
+    "mean_latency_ms": 10604.907,
+    "estimated_cost_usd": 0.0,
+    "estimated_input_tokens": 99485,
+    "estimated_output_tokens": 162432,
+    "fields": {
+      "skills": {
+        "precision": 0.5794,
+        "recall": 0.1196,
+        "f1": 0.1982
+      },
+      "employment": {
+        "precision": 0.7604,
+        "recall": 0.3318,
+        "f1": 0.462
+      },
+      "education": {
+        "precision": 0.5323,
+        "recall": 0.3028,
+        "f1": 0.386
+      },
+      "projects": {
+        "precision": 0.7727,
+        "recall": 0.4595,
+        "f1": 0.5763
+      },
+      "certifications": {
+        "precision": 0.1724,
+        "recall": 0.0649,
+        "f1": 0.0943
+      },
+      "languages": {
+        "precision": 1.0,
+        "recall": 0.0,
+        "f1": 0.0
+      }
+    }
+  },
+  "quality_gate": {
+    "passed": false,
+    "checks": {
+      "macro_f1": false,
+      "evidence_valid_rate": true,
+      "fallback_rate": false,
+      "review_required_rate": true,
+      "mean_latency_ms": false,
+      "estimated_cost_usd": true
+    },
+    "thresholds": {
+      "min_macro_f1": 0.5,
+      "min_evidence_valid_rate": 0.8,
+      "max_fallback_rate": 0.2,
+      "max_review_required_rate": 1.0,
+      "max_mean_latency_ms": 10000.0,
+      "max_estimated_cost_usd": 1.0
+    }
+  },
+  "cases": [
+    {
+      "case_id": "cv-fulltext-it-001",
+      "fields": {
+        "skills": {
+          "precision": 0.2609,
+          "recall": 0.1395,
+          "f1": 0.1818
+        },
+        "employment": {
+          "precision": 1.0,
+          "recall": 0.75,
+          "f1": 0.8571
+        },
+        "education": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "projects": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 11019.459,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-002",
+      "fields": {
+        "skills": {
+          "precision": 0.2727,
+          "recall": 0.1304,
+          "f1": 0.1765
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 7536.854,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-003",
+      "fields": {
+        "skills": {
+          "precision": 0.2727,
+          "recall": 0.125,
+          "f1": 0.1714
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "projects": {
+          "precision": 0.8,
+          "recall": 1.0,
+          "f1": 0.8889
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 7436.294,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-004",
+      "fields": {
+        "skills": {
+          "precision": 0.25,
+          "recall": 0.125,
+          "f1": 0.1667
+        },
+        "employment": {
+          "precision": 0.5,
+          "recall": 1.0,
+          "f1": 0.6667
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 0.7143,
+          "f1": 0.8333
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 12437.989,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-005",
+      "fields": {
+        "skills": {
+          "precision": 0.0909,
+          "recall": 0.04,
+          "f1": 0.0556
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 10398.026,
+      "warnings": [
+        "LLM candidate rejected: 2 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value=\"Senior-level consultant ...ent and system backups.\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-006",
+      "fields": {
+        "skills": {
+          "precision": 0.5,
+          "recall": 0.1818,
+          "f1": 0.2667
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 13054.08,
+      "warnings": [
+        "LLM candidate rejected: 6 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value='Leading all aspects of I...gs of $2-$3 M per year.', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-007",
+      "fields": {
+        "skills": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 7273.964,
+      "warnings": [
+        "LLM candidate rejected: 3 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value='Manager of Business Inte...tecture, and personnel.', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-008",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "employment": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "education": {
+          "precision": 0.3333,
+          "recall": 1.0,
+          "f1": 0.5
+        },
+        "projects": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 4885.639,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-009",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.3333,
+          "f1": 0.5
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 5960.195,
+      "warnings": [
+        "LLM candidate rejected: 3 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value='Worked with Tourism Bure...igned official website.', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-010",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.3333,
+          "f1": 0.5
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 4822.272,
+      "warnings": [
+        "LLM candidate rejected: 2 validation errors for ResumeCandidate\nemployment.1.jobTitle\n  String should have at least 1 character [type=string_too_short, input_value='', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_too_short\nemployment.2.jobTitle\n  String should have at least 1 "
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-011",
+      "fields": {
+        "skills": {
+          "precision": 0.4444,
+          "recall": 0.1143,
+          "f1": 0.1818
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 8016.138,
+      "warnings": [
+        "LLM candidate rejected: 1 validation error for ResumeCandidate\nemployment.0.responsibilities\n  List should have at most 20 items after validation, not 51 [type=too_long, input_value=['Migrating and managing ...cedural documentation.'], input_type=list]\n    For further information visit https://errors.pydantic.dev/2.13/v/to"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-012",
+      "fields": {
+        "skills": {
+          "precision": 0.25,
+          "recall": 0.0385,
+          "f1": 0.0667
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 7749.768,
+      "warnings": [
+        "LLM candidate rejected: 1 validation error for ResumeCandidate\neducation.1.institution\n  Input should be a valid string [type=string_type, input_value=None, input_type=NoneType]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-013",
+      "fields": {
+        "skills": {
+          "precision": 0.2,
+          "recall": 0.0588,
+          "f1": 0.0909
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 17533.147,
+      "warnings": [
+        "LLM candidate rejected: 4 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value='Aligning 100+ supply cha...nufacturing operations.', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-014",
+      "fields": {
+        "skills": {
+          "precision": 0.5,
+          "recall": 0.04,
+          "f1": 0.0741
+        },
+        "employment": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 7122.573,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-015",
+      "fields": {
+        "skills": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "employment": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "education": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.1667,
+          "recall": 0.125,
+          "f1": 0.1429
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 22516.659,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-016",
+      "fields": {
+        "skills": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "employment": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "education": {
+          "precision": 0.5,
+          "recall": 0.5,
+          "f1": 0.5
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 11528.04,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-017",
+      "fields": {
+        "skills": {
+          "precision": 0.2,
+          "recall": 0.02,
+          "f1": 0.0364
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 10994.307,
+      "warnings": [
+        "LLM candidate rejected: 6 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value='Server installations and... IT project management.', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-018",
+      "fields": {
+        "skills": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 11357.372,
+      "warnings": [
+        "LLM candidate rejected: 5 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value='Serves as the main point...ion to company leaders.', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-019",
+      "fields": {
+        "skills": {
+          "precision": 0.8333,
+          "recall": 0.0794,
+          "f1": 0.1449
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 8202.59,
+      "warnings": [
+        "LLM candidate rejected: 4 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value='Primary responsibilities...se to [ORG_1] Exchange.', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-020",
+      "fields": {
+        "skills": {
+          "precision": 0.6667,
+          "recall": 0.0513,
+          "f1": 0.0952
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 7108.694,
+      "warnings": [
+        "LLM candidate rejected: 4 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value='As the Senior Director, ...es and career services.', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-021",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.4286,
+          "f1": 0.6
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 6889.135,
+      "warnings": [
+        "LLM candidate rejected: 4 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value=\"In charge of planning, b... electronic newsletter.\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-022",
+      "fields": {
+        "skills": {
+          "precision": 0.8333,
+          "recall": 0.3125,
+          "f1": 0.4545
+        },
+        "employment": {
+          "precision": 0.6667,
+          "recall": 0.6667,
+          "f1": 0.6667
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 35429.356,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-023",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.0909,
+          "f1": 0.1667
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 6378.633,
+      "warnings": [
+        "LLM candidate rejected: 3 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value='Provide technical assist...cal support calls daily', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-024",
+      "fields": {
+        "skills": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 5409.323,
+      "warnings": [
+        "LLM candidate rejected: 12 validation errors for ResumeCandidate\nemployment.0.jobTitle\n  Input should be a valid string [type=string_type, input_value={'value': 'INFORMATION TE...R', 'precision': 'year'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nemployment.0.organiza"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-025",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.6667,
+          "f1": 0.8
+        },
+        "employment": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 6679.692,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-026",
+      "fields": {
+        "skills": {
+          "precision": 0.6667,
+          "recall": 0.1,
+          "f1": 0.1739
+        },
+        "employment": {
+          "precision": 0.5,
+          "recall": 0.5,
+          "f1": 0.5
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 8662.775,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-027",
+      "fields": {
+        "skills": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 5969.244,
+      "warnings": [
+        "LLM candidate rejected: 3 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value='Analyze the technology [...il of Graduate Schools.', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-028",
+      "fields": {
+        "skills": {
+          "precision": 0.9,
+          "recall": 0.3913,
+          "f1": 0.5455
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 16298.529,
+      "warnings": [
+        "LLM candidate rejected: 3 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value='Provide technical suppor...ternet and other media.', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-029",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.2,
+          "f1": 0.3333
+        },
+        "employment": {
+          "precision": 0.8333,
+          "recall": 0.8333,
+          "f1": 0.8333
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 8864.438,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-030",
+      "fields": {
+        "skills": {
+          "precision": 0.6667,
+          "recall": 0.2105,
+          "f1": 0.32
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 18690.903,
+      "warnings": [
+        "LLM candidate rejected: 6 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value='Perform lead worker func...duties as listed below.', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-031",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.1053,
+          "f1": 0.1905
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 11897.199,
+      "warnings": [
+        "LLM candidate rejected: 1 validation error for ResumeCandidate\nemployment.0.responsibilities\n  List should have at most 20 items after validation, not 22 [type=too_long, input_value=['Installing and configur...ing PL/SQL and COGNOS.'], input_type=list]\n    For further information visit https://errors.pydantic.dev/2.13/v/to"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-032",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.1739,
+          "f1": 0.2963
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 9268.328,
+      "warnings": [
+        "LLM candidate rejected: 4 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value='Provided application dev... Network Administrator.', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-033",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.1852,
+          "f1": 0.3125
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 10889.963,
+      "warnings": [
+        "LLM candidate rejected: 2 validation errors for ResumeCandidate\nemployment.4.jobTitle\n  Input should be a valid string [type=string_type, input_value=None, input_type=NoneType]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nemployment.5.jobTitle\n  Input should be a valid string [type=strin"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-034",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.1053,
+          "f1": 0.1905
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 16631.412,
+      "warnings": [
+        "LLM candidate rejected: 1 validation error for ResumeCandidate\nemployment.1.responsibilities\n  List should have at most 20 items after validation, not 21 [type=too_long, input_value=['Troubleshot and resolve...and [ORG_1] Dataguard.'], input_type=list]\n    For further information visit https://errors.pydantic.dev/2.13/v/to"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-035",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.381,
+          "f1": 0.5517
+        },
+        "employment": {
+          "precision": 0.6667,
+          "recall": 0.6667,
+          "f1": 0.6667
+        },
+        "education": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "projects": {
+          "precision": 0.75,
+          "recall": 0.75,
+          "f1": 0.75
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 7620.776,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-036",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.0345,
+          "f1": 0.0667
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.5,
+          "recall": 0.5,
+          "f1": 0.5
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 11148.217,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-037",
+      "fields": {
+        "skills": {
+          "precision": 0.8,
+          "recall": 0.2667,
+          "f1": 0.4
+        },
+        "employment": {
+          "precision": 0.3333,
+          "recall": 0.3333,
+          "f1": 0.3333
+        },
+        "education": {
+          "precision": 0.5,
+          "recall": 0.5,
+          "f1": 0.5
+        },
+        "projects": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 10360.888,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-038",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.1111,
+          "f1": 0.2
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 8785.25,
+      "warnings": [
+        "LLM candidate rejected: 6 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value='Hired to [ORG_1], which ... mentoring and reviews.', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-039",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.2,
+          "f1": 0.3333
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 6424.258,
+      "warnings": [
+        "LLM candidate rejected: 2 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value=\"Integrated, selected and...nical issues as needed.\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-040",
+      "fields": {
+        "skills": {
+          "precision": 0.5,
+          "recall": 0.1,
+          "f1": 0.1667
+        },
+        "employment": {
+          "precision": 0.5,
+          "recall": 1.0,
+          "f1": 0.6667
+        },
+        "education": {
+          "precision": 0.25,
+          "recall": 0.5,
+          "f1": 0.3333
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 4731.822,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-041",
+      "fields": {
+        "skills": {
+          "precision": 0.6667,
+          "recall": 0.1111,
+          "f1": 0.1905
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 17406.813,
+      "warnings": [
+        "LLM candidate rejected: 2 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  List should have at most 20 items after validation, not 21 [type=too_long, input_value=['SAP Data Validation and...ion Support Activities'], input_type=list]\n    For further information visit https://errors.pydantic.dev/2.13/v/t"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-042",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.2105,
+          "f1": 0.3478
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 11914.579,
+      "warnings": [
+        "LLM candidate rejected: Expecting ',' delimiter: line 1 column 5496 (char 5495)"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-043",
+      "fields": {
+        "skills": {
+          "precision": 0.25,
+          "recall": 0.0303,
+          "f1": 0.0541
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 20537.751,
+      "warnings": [
+        "LLM candidate rejected: Unterminated string starting at: line 1 column 20331 (char 20330)"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-044",
+      "fields": {
+        "skills": {
+          "precision": 0.6667,
+          "recall": 0.1538,
+          "f1": 0.25
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 14173.135,
+      "warnings": [
+        "LLM candidate rejected: 1 validation error for ResumeCandidate\nemployment.0.responsibilities\n  List should have at most 20 items after validation, not 34 [type=too_long, input_value=['Assisted client with ne...e and cost reductions.'], input_type=list]\n    For further information visit https://errors.pydantic.dev/2.13/v/to"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-it-045",
+      "fields": {
+        "skills": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "employment": {
+          "precision": 0.6667,
+          "recall": 0.6667,
+          "f1": 0.6667
+        },
+        "education": {
+          "precision": 0.6667,
+          "recall": 0.6667,
+          "f1": 0.6667
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 10153.788,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-046",
+      "fields": {
+        "skills": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "employment": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 9394.145,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-047",
+      "fields": {
+        "skills": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 7073.071,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-it-048",
+      "fields": {
+        "skills": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "employment": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "education": {
+          "precision": 0.5,
+          "recall": 1.0,
+          "f1": 0.6667
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 12698.937,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-eng-049",
+      "fields": {
+        "skills": {
+          "precision": 0.5,
+          "recall": 0.2,
+          "f1": 0.2857
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "projects": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 4876.778,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-eng-050",
+      "fields": {
+        "skills": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "employment": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "education": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 10303.383,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-eng-051",
+      "fields": {
+        "skills": {
+          "precision": 0.5,
+          "recall": 0.0714,
+          "f1": 0.125
+        },
+        "employment": {
+          "precision": 0.75,
+          "recall": 0.75,
+          "f1": 0.75
+        },
+        "education": {
+          "precision": 0.75,
+          "recall": 0.75,
+          "f1": 0.75
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 11469.227,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-eng-052",
+      "fields": {
+        "skills": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 26537.264,
+      "warnings": [
+        "LLM candidate rejected: 8 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value=\"Accountable for maintain...or all plant equipment.\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-eng-053",
+      "fields": {
+        "skills": {
+          "precision": 0.875,
+          "recall": 0.2692,
+          "f1": 0.4118
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 7851.694,
+      "warnings": [
+        "LLM candidate rejected: 1 validation error for ResumeCandidate\nemployment.0.responsibilities\n  List should have at most 20 items after validation, not 27 [type=too_long, input_value=[\"Development and team ma...for import and export.'], input_type=list]\n    For further information visit https://errors.pydantic.dev/2.13/v/to"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-eng-054",
+      "fields": {
+        "skills": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "employment": {
+          "precision": 0.7143,
+          "recall": 0.7143,
+          "f1": 0.7143
+        },
+        "education": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 11442.252,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-eng-055",
+      "fields": {
+        "skills": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 5372.005,
+      "warnings": [
+        "LLM candidate rejected: 2 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value='Supervised the construct...ce with specifications.', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-eng-056",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.05,
+          "f1": 0.0952
+        },
+        "employment": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "education": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "projects": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 9544.913,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-eng-057",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.1,
+          "f1": 0.1818
+        },
+        "employment": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "education": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": true,
+      "review_required": true,
+      "latency_ms": 5845.649,
+      "warnings": [
+        "LLM candidate rejected: 3 validation errors for ResumeCandidate\nemployment.0.responsibilities\n  Input should be a valid list [type=list_type, input_value='Lead designer of high pr... equipment for [ORG_1].', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type\nemployment.1.responsi"
+      ]
+    },
+    {
+      "case_id": "cv-fulltext-eng-058",
+      "fields": {
+        "skills": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "employment": {
+          "precision": 1.0,
+          "recall": 0.6667,
+          "f1": 0.8
+        },
+        "education": {
+          "precision": 0.5,
+          "recall": 0.5,
+          "f1": 0.5
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 7364.407,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-eng-059",
+      "fields": {
+        "skills": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "employment": {
+          "precision": 1.0,
+          "recall": 0.8,
+          "f1": 0.8889
+        },
+        "education": {
+          "precision": 0.3333,
+          "recall": 0.3333,
+          "f1": 0.3333
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 6953.861,
+      "warnings": []
+    },
+    {
+      "case_id": "cv-fulltext-eng-060",
+      "fields": {
+        "skills": {
+          "precision": 1.0,
+          "recall": 0.2857,
+          "f1": 0.4444
+        },
+        "employment": {
+          "precision": 0.8333,
+          "recall": 0.8333,
+          "f1": 0.8333
+        },
+        "education": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "projects": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "certifications": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "languages": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 11396.578,
+      "warnings": []
+    }
+  ]
+}

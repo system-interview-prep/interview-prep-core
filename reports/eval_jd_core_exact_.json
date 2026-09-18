@@ -1,0 +1,133 @@
+{
+  "evaluation": "jd-parser-manifest_golden_v2",
+  "generated_at": "2026-09-16T10:34:29.288360+00:00",
+  "dataset_dir": "D:\\NCKH\\DOC_AND_PLAN\\data\\eval\\jd",
+  "summary": {
+    "total": 4,
+    "passed": 1,
+    "failed": 3
+  },
+  "cases": [
+    {
+      "case_id": "core-en-backend-001",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "careerClassifications": {
+          "missing": [
+            [
+              "technology.software-engineering.backend",
+              "Backend Engineering",
+              "specialization",
+              "internal-career-2026.1",
+              true,
+              0.7,
+              "inferred"
+            ]
+          ],
+          "unexpected": [
+            [
+              "technology.software-engineering.backend",
+              "Backend Engineering",
+              "specialization",
+              "internal-career-2026.1",
+              true,
+              0.8999999999999999,
+              "inferred"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "core-en-platform-002",
+      "passed": true,
+      "evidence_valid": true,
+      "mismatches": {}
+    },
+    {
+      "case_id": "core-vi-game-003",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "careerClassifications": {
+          "missing": [
+            [
+              "technology.game-development",
+              "Game Development",
+              "specialization",
+              "internal-career-2026.1",
+              true,
+              0.7,
+              "inferred"
+            ]
+          ],
+          "unexpected": [
+            [
+              "technology.game-development",
+              "Game Development",
+              "specialization",
+              "internal-career-2026.1",
+              true,
+              0.6,
+              "inferred"
+            ]
+          ]
+        },
+        "requirements": {
+          "missing": [
+            [
+              "skill",
+              "preferred",
+              "Android/iOS plugin development for Unity",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": [
+            [
+              "skill",
+              "preferred",
+              "Unity",
+              "skill-unity",
+              "Unity",
+              null
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "core-en-frontend-004",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "careerClassifications": {
+          "missing": [
+            [
+              "technology.software-engineering.frontend",
+              "Frontend Engineering",
+              "specialization",
+              "internal-career-2026.1",
+              true,
+              0.7,
+              "inferred"
+            ]
+          ],
+          "unexpected": [
+            [
+              "technology.software-engineering.frontend",
+              "Frontend Engineering",
+              "specialization",
+              "internal-career-2026.1",
+              true,
+              0.75,
+              "inferred"
+            ]
+          ]
+        }
+      }
+    }
+  ]
+}

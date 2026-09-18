@@ -1,18 +1,10 @@
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from hashlib import sha1
 from typing import Protocol
 
-from src.modules.user_cvs.parsing.domain.source import EvidenceMapper, SourceDocument
-from src.modules.user_cvs.parsing.domain.classification import DeterministicCareerClassifier
-from src.modules.user_cvs.parsing.domain.structured import (
-    CertificationExtractor,
-    EducationExtractor,
-    EmploymentExtractor,
-    ProjectExtractor,
-)
 from src.modules.user_cvs.domain.schemas import (
     CanonicalResume,
     EvidenceSpan,
@@ -24,6 +16,14 @@ from src.modules.user_cvs.domain.schemas import (
     ResumeIdentity,
     SkillClaim,
     TaxonomyRef,
+)
+from src.modules.user_cvs.parsing.domain.classification import DeterministicCareerClassifier
+from src.modules.user_cvs.parsing.domain.source import EvidenceMapper, SourceDocument
+from src.modules.user_cvs.parsing.domain.structured import (
+    CertificationExtractor,
+    EducationExtractor,
+    EmploymentExtractor,
+    ProjectExtractor,
 )
 
 PARSER_VERSION = "deterministic-resume-v4"
@@ -41,7 +41,39 @@ _SKILLS = {
     "skill-docker": ("Docker", ("docker",)),
     "skill-kubernetes": ("Kubernetes", ("kubernetes", "k8s")),
     "skill-aws": ("AWS", ("aws", "amazon web services")),
+    "skill-azure": ("Microsoft Azure", ("azure", "microsoft azure")),
+    "skill-gcp": ("Google Cloud Platform", ("gcp", "google cloud platform")),
     "skill-git": ("Git", ("git",)),
+    "skill-sql": ("SQL", ("sql",)),
+    "skill-mysql": ("MySQL", ("mysql",)),
+    "skill-oracle": ("Oracle Database", ("oracle", "oracle database")),
+    "skill-mongodb": ("MongoDB", ("mongodb",)),
+    "skill-linux": ("Linux", ("linux",)),
+    "skill-html": ("HTML", ("html",)),
+    "skill-css": ("CSS", ("css",)),
+    "skill-php": ("PHP", ("php",)),
+    "skill-cpp": ("C++", ("c++",)),
+    "skill-csharp": ("C#", ("c#",)),
+    "skill-dotnet": (".NET", (".net", "dotnet")),
+    "skill-angular": ("Angular", ("angular", "angularjs", "angular.js")),
+    "skill-nodejs": ("Node.js", ("node.js", "nodejs")),
+    "skill-django": ("Django", ("django",)),
+    "skill-flask": ("Flask", ("flask",)),
+    "skill-tensorflow": ("TensorFlow", ("tensorflow",)),
+    "skill-numpy": ("NumPy", ("numpy",)),
+    "skill-pandas": ("pandas", ("pandas",)),
+    "skill-excel": ("Microsoft Excel", ("excel", "ms excel", "microsoft excel")),
+    "skill-ms-office": ("Microsoft Office", ("ms office", "microsoft office")),
+    "skill-autocad": ("AutoCAD", ("autocad",)),
+    "skill-jira": ("Jira", ("jira",)),
+    "skill-selenium": ("Selenium", ("selenium",)),
+    "skill-android": ("Android", ("android",)),
+    "skill-ios": ("iOS", ("ios",)),
+    "skill-unity": ("Unity", ("unity",)),
+    "skill-json": ("JSON", ("json",)),
+    "skill-xml": ("XML", ("xml",)),
+    "skill-http": ("HTTP", ("http",)),
+    "skill-rest-api": ("REST API", ("rest", "rest api", "restful api")),
 }
 
 _EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\w.-])")
@@ -57,11 +89,22 @@ _DATE_OF_BIRTH_RE = re.compile(
     re.IGNORECASE,
 )
 _NAME_TITLE_WORDS = {
-    "developer", "engineer", "designer", "manager", "intern", "student", "consultant",
-    "software", "backend", "frontend", "fullstack", "data", "scientist",
+    "developer",
+    "engineer",
+    "designer",
+    "manager",
+    "intern",
+    "student",
+    "consultant",
+    "software",
+    "backend",
+    "frontend",
+    "fullstack",
+    "data",
+    "scientist",
 }
 _LANGUAGE_RE = re.compile(
-    r"(?P<label>english|ti\u1ebfng\s+anh)\s*(?:[:\-|]|tr\u00ecnh\s+\u0111\u1ed9)?\s*"
+    r"(?P<label>english|ti\u1ebfng\s+anh)\s*(?:[:\-|\(]|tr\u00ecnh\s+\u0111\u1ed9)?\s*"
     r"(?P<level>[ABC][12])\b",
     re.IGNORECASE,
 )
@@ -73,6 +116,8 @@ def _evidence_id(kind: str, start: int, end: int) -> str:
 
 
 def _pattern(alias: str) -> re.Pattern[str]:
+    if alias.lower() in {"js"}:
+        return re.compile(rf"(?<![\w.]){re.escape(alias)}(?![\w])", re.IGNORECASE)
     return re.compile(rf"(?<![\w]){re.escape(alias)}(?![\w])", re.IGNORECASE)
 
 
@@ -101,7 +146,11 @@ class IdentityExtractor(Protocol):
 
 
 class TaxonomySkillExtractor:
-    def __init__(self, taxonomy: dict[str, tuple[str, tuple[str, ...]]] | None = None, taxonomy_version: str = TAXONOMY_VERSION) -> None:
+    def __init__(
+        self,
+        taxonomy: dict[str, tuple[str, tuple[str, ...]]] | None = None,
+        taxonomy_version: str = TAXONOMY_VERSION,
+    ) -> None:
         self._taxonomy = taxonomy or _SKILLS
         self._taxonomy_version = taxonomy_version
 
@@ -285,7 +334,7 @@ class DeterministicResumeParser:
             parsing=ParsingMetadata(
                 parserVersion=PARSER_VERSION,
                 extractionVersion=extraction_version,
-                parsedAt=datetime.now(timezone.utc),
+                parsedAt=datetime.now(UTC),
                 status="review_required",
                 sourceArtifactKey=source_artifact_key,
                 warnings=draft.warnings,

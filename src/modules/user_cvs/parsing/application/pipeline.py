@@ -1,9 +1,11 @@
+import inspect
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Protocol
 
+from src.modules.user_cvs.domain.schemas import ParsedResume
 from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
 from src.modules.user_cvs.parsing.domain.source import SourceDocument
-from src.modules.user_cvs.domain.schemas import ParsedResume
 
 
 @dataclass(frozen=True)
@@ -43,9 +45,7 @@ class ObjectStorage(Protocol):
 
 
 class DocumentExtractor(Protocol):
-    async def extract(
-        self, document: bytes, filename: str, document_id: str
-    ) -> DocumentArtifacts: ...
+    async def extract(self, document: bytes, filename: str, document_id: str) -> DocumentArtifacts: ...
 
 
 class ResumeParser(Protocol):
@@ -55,7 +55,7 @@ class ResumeParser(Protocol):
         *,
         extraction_version: str,
         source_artifact_key: str | None = None,
-    ) -> ParsedResume: ...
+    ) -> ParsedResume | Awaitable[ParsedResume]: ...
 
 
 class SourceBuilder(Protocol):
@@ -105,16 +105,20 @@ class CvParsingPipeline:
                 document_id=document.cv_id,
                 document_sha256=document.checksum,
             )
-            parsed = self._parser.parse(
+            parsed_or_awaitable = self._parser.parse(
                 source,
                 extraction_version=artifacts.extractor_version or "mineru-unknown",
                 source_artifact_key=artifact_key,
             )
+            parsed = (
+                await parsed_or_awaitable if inspect.isawaitable(parsed_or_awaitable) else parsed_or_awaitable
+            )
+            parser_version = parsed.resume.parsing.parser_version if parsed.resume.parsing else "unknown"
             await self._repository.complete(
                 document,
                 raw_text=source.text,
                 parsed=parsed,
-                parse_source="mineru+deterministic-v4",
+                parse_source=f"mineru+{parser_version}",
             )
             canonical_status = parsed.resume.parsing.status if parsed.resume.parsing else None
             return PipelineResult(

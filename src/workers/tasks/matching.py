@@ -14,11 +14,4 @@ from src.workers.celery_app import celery_app
 )
 def match_cv_to_jd(self, raw_payload: dict) -> dict:
     payload = MatchRequest.model_validate(raw_payload)
-    return get_matching_facade().match(
-        resume_text=payload.resume_text,
-        job_description=payload.job_description,
-        algorithms=payload.algorithms,
-        position=payload.position,
-        job_description_id=payload.job_description_id,
-        cv_id=payload.cv_id,
-    )
+    return get_matching_facade().match(payload).model_dump(by_alias=True)

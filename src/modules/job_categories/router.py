@@ -38,13 +38,13 @@ async def list_categories(
     query = """
         SELECT concept_id, label 
         FROM taxonomy_concepts 
-        WHERE kind = 'job_category' AND is_active = true
+        WHERE kind IN ('job_category', 'occupation') AND is_active = true
     """
     params: dict[str, object] = {"limit": limit}
     if q and q.strip():
         query += " AND lower(label) LIKE lower(:query)"
         params["query"] = f"%{q.strip()}%"
-    query += " ORDER BY concept_id DESC LIMIT :limit"
+    query += " ORDER BY label ASC LIMIT :limit"
     result = await db.execute(text(query), params)
     return {"items": [_category(row) for row in result.mappings().all()]}
 
@@ -53,7 +53,7 @@ async def get_category(
     category_id: str, _: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
 ) -> dict:
     result = await db.execute(
-        text("SELECT concept_id, label FROM taxonomy_concepts WHERE concept_id = :id AND kind = 'job_category'"),
+        text("SELECT concept_id, label FROM taxonomy_concepts WHERE concept_id = :id AND kind IN ('job_category', 'occupation')"),
         {"id": category_id},
     )
     row = result.mappings().one_or_none()

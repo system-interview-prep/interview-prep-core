@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field, field_validator
@@ -41,11 +42,15 @@ class Settings(BaseSettings):
     # Output budget for evidence-grounded JD extraction.  The independent gold
     # set needs about 647 tokens at p95 and 816 at p99 for its canonical JSON;
     # 768 covers normal cases without the latency of the former 1,024 default.
-    jd_parser_max_output_tokens: int = Field(default=768, ge=128, le=2_048)
+    jd_parser_max_output_tokens: int = Field(default=4_096, ge=128, le=8_192)
     jd_parser_mode: str = "deterministic"
+    cv_parser_max_output_tokens: int = Field(default=4_096, ge=128, le=8_192)
+    cv_parser_mode: str = "deterministic"
     embedding_provider: str = "openai"
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1024
+    embedding_cache_enabled: bool = True
+    embedding_cache_dir: str = "models_cache/embedding_cache"
 
     # MinerU Precision Extract API. Set MINERU_API_KEY to enable CV parsing.
     mineru_api_key: str | None = None
@@ -58,6 +63,10 @@ class Settings(BaseSettings):
     mineru_http_pool_timeout_seconds: float = Field(default=20.0, gt=0)
     mineru_poll_interval_seconds: float = 2.0
     mineru_timeout_seconds: int = 300
+    # API-side database observation interval for SSE status streams. The
+    # browser holds one stream instead of independently polling resource APIs.
+    sse_status_poll_interval_seconds: float = Field(default=1.0, ge=0.25, le=10.0)
+    sse_heartbeat_seconds: float = Field(default=15.0, ge=1.0, le=60.0)
 
     rabbitmq_cv_queue: str = "cv-processing"
     rabbitmq_jd_queue: str = "jd-processing"

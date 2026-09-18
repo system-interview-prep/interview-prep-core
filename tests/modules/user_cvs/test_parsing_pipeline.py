@@ -108,3 +108,30 @@ async def test_pipeline_persists_failed_state_without_partial_canonical_data() -
         await pipeline.run("cv-1")
     assert repository.completed is None
     assert repository.failure == ("cv-1", "extractor timeout")
+
+
+class AsyncDeterministicAdapter:
+    """Proves the pipeline accepts the asynchronous hybrid-parser port."""
+
+    def __init__(self) -> None:
+        self.delegate = DeterministicResumeParser()
+
+    async def parse(self, *args, **kwargs):
+        return self.delegate.parse(*args, **kwargs)
+
+
+async def test_pipeline_awaits_async_parser_and_persists_its_version() -> None:
+    document = CvDocument("cv-1", "resume.pdf", "cvs/cv-1.pdf", SHA256)
+    repository = RecordingRepository(document)
+    pipeline = CvParsingPipeline(
+        repository=repository,
+        storage=MemoryStorage(b"pdf"),
+        extractor=StubExtractor(),
+        parser=AsyncDeterministicAdapter(),
+        source_builder=build_source_document,
+    )
+
+    await pipeline.run("cv-1")
+
+    assert repository.completed is not None
+    assert repository.completed[1]["parse_source"] == "mineru+deterministic-resume-v4"
