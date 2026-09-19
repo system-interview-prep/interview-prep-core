@@ -6,6 +6,8 @@ Kế hoạch CV parser evidence-first từ upload đến matching: [docs/CV-PARS
 
 Luồng CV ingestion/parser đang triển khai: [docs/CV-PARSER-IMPLEMENTATION.md](docs/CV-PARSER-IMPLEMENTATION.md).
 
+Thiết kế interview realtime có kiểm soát (câu hỏi thích nghi, thời gian, STT Việt/Anh, latency và rubric): [docs/INTERVIEW-REALTIME-RESEARCH-AND-IMPLEMENTATION.md](docs/INTERVIEW-REALTIME-RESEARCH-AND-IMPLEMENTATION.md).
+
 Backend FastAPI hợp nhất từ:
 
 - `interview-prep-backend`: API nghiệp vụ, S3, RabbitMQ, Socket.IO.
