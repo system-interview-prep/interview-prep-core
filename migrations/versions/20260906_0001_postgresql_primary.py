@@ -177,34 +177,6 @@ def upgrade() -> None:
     )
     op.create_index("ix_scoring_history_user_created", "scoring_history", ["user_id", "created_at"])
 
-    op.create_table(
-        "interview_question_plans",
-        sa.Column(
-            "session_id",
-            sa.String(36),
-            sa.ForeignKey("interview_sessions.id", ondelete="CASCADE"),
-            primary_key=True,
-        ),
-        sa.Column("plan", postgresql.JSONB(), nullable=False, server_default="{}"),
-        *_timestamps(),
-    )
-    op.create_table(
-        "interview_questions",
-        sa.Column("id", sa.String(36), primary_key=True),
-        sa.Column(
-            "session_id",
-            sa.String(36),
-            sa.ForeignKey("interview_sessions.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column("order", sa.Integer(), nullable=False),
-        sa.Column("question", sa.Text(), nullable=False),
-        sa.Column("answer", sa.Text(), nullable=True),
-        sa.Column("metadata", postgresql.JSONB(), nullable=False, server_default="{}"),
-        *_timestamps(),
-        sa.UniqueConstraint("session_id", "order", name="uq_interview_questions_session_order"),
-    )
-
     op.execute("""
         CREATE TABLE job_profiles_vector (
             job_id VARCHAR(255) PRIMARY KEY REFERENCES job_profiles(id) ON DELETE CASCADE,
@@ -221,23 +193,11 @@ def upgrade() -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
-    op.execute("""
-        CREATE TABLE rag_knowledge_chunks (
-            chunk_id VARCHAR(255) PRIMARY KEY, document_id VARCHAR(255), text TEXT NOT NULL,
-            vector vector(1024), metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    op.create_index("ix_rag_knowledge_chunks_document", "rag_knowledge_chunks", ["document_id"])
-
 
 def downgrade() -> None:
     for table_name in (
-        "rag_knowledge_chunks",
         "cv_profiles_vector",
         "job_profiles_vector",
-        "interview_questions",
-        "interview_question_plans",
         "scoring_history",
         "video_calls",
         "chat_voice_messages",

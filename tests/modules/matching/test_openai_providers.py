@@ -47,9 +47,9 @@ def test_llm_uses_openai_responses_api(monkeypatch, fake_openai):
     monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("LLM_MODEL", "gpt-5.4-mini")
 
-    assert LLMService().generate_text("Create a question") == "OpenAI answer"
+    assert LLMService().generate_text("Summarize this matching result") == "OpenAI answer"
     assert fake_openai[0].response_calls == [
-        {"model": "gpt-5.4-mini", "input": "Create a question", "store": False}
+        {"model": "gpt-5.4-mini", "input": "Summarize this matching result", "store": False}
     ]
 
 

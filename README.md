@@ -29,8 +29,7 @@ src/
     user_cvs/
     job_categories/
     job_descriptions/
-    matching/            # algorithms + RAG + public matching facade
-    interview_questions/
+    matching/            # algorithms + semantic matching facade
     sessions/
     scoring/
     chat/

@@ -27,7 +27,7 @@ Hai đường xử lý phải tách biệt:
 - **Realtime lane:** VAD, STT, quyết định bước kế tiếp và TTS. Không chờ báo cáo chấm điểm dài.
 - **Evaluation lane:** kiểm tra evidence, chấm từng criterion, hiệu chỉnh điểm và tạo feedback. Có thể hoàn tất trễ hơn một lượt hoặc sau phiên.
 
-Hiện trạng chưa đạt yêu cầu này: `interview_questions/router.py` sinh danh sách text không có objective/rubric; `voice/router.py` chờ tuần tự text generation rồi mới chờ toàn bộ MP3; frontend dùng Web Speech API nên provider và hành vi khác nhau theo browser; timer 45 giây chỉ ở client và có thể lệch/reset.
+Legacy endpoint/module tạo danh sách câu hỏi tự do đã được gỡ bỏ để xây lại theo question-bank plan. Hiện chưa có runtime question controller thay thế. `voice/router.py` vẫn chờ tuần tự text generation rồi mới chờ toàn bộ MP3; frontend dùng Web Speech API nên provider và hành vi khác nhau theo browser; timer 45 giây chỉ ở client và có thể lệch/reset.
 
 ## 2. Hợp đồng phiên và state machine
 
@@ -430,7 +430,7 @@ Các trọng số chỉ là baseline để thí nghiệm, không phải policy �
 - metadata JSONB text filters và dynamic SQL hiện chưa có allowlist key rõ ràng; schema question bank nên dùng typed columns cho các hard constraints.
 - quality score mặc định `0.8` khi thiếu dữ liệu làm item chưa được đánh giá trông có vẻ tốt; thiếu quality phải là `UNKNOWN` hoặc không đủ điều kiện production.
 
-Do đó nên tạo module `interview_questions/retrieval` riêng, async, typed và có policy trace; không để interview phụ thuộc ngược vào `matching/rag` hiện tại. Có thể trích adapter embedding/vector dùng chung qua module AI/infrastructure sau khi sửa lifecycle và dimension contract.
+Do đó cần tạo module question-bank/retrieval riêng, async, typed và có policy trace; interview runtime không được phụ thuộc ngược vào matching/RAG legacy. Chỉ trích embedding adapter dùng chung qua infrastructure sau khi chốt lifecycle và dimension contract.
 
 ### 11.8 Thí nghiệm quyết định có cần RAG
 
