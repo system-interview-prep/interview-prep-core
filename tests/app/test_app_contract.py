@@ -13,6 +13,7 @@ def test_openapi_contains_every_public_business_route(client) -> None:
         "/admin/job-profiles/uploads",
         "/admin/job-profiles/uploads/{upload_id}",
         "/admin/job-profiles/uploads/{upload_id}/finalize",
+        "/admin/question-bank/questions/drafts",
         "/ai/session",
         "/ai/sessions",
         "/ai/chat",
