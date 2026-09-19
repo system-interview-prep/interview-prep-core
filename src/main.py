@@ -18,6 +18,7 @@ from src.modules.job_categories.router import build_module as build_job_categori
 from src.modules.job_descriptions import build_module as build_job_descriptions_module
 from src.modules.matching import build_module as build_matching_module
 from src.modules.notifications import build_module as build_notifications_module
+from src.modules.question_bank import build_module as build_question_bank_module
 from src.modules.sessions import build_module as build_sessions_module
 from src.modules.signaling import _events as _signaling_events
 from src.modules.taxonomy import build_module as build_taxonomy_module
@@ -37,6 +38,7 @@ MODULES = [
     build_job_descriptions_module(),
     build_taxonomy_module(),
     build_matching_module(),
+    build_question_bank_module(),
     build_sessions_module(),
     build_chat_module(),
     build_voice_module(),
@@ -48,6 +50,10 @@ MODULES = [
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     async with postgres_lifespan():
+        from src.infrastructure.database import engine
+        from src.modules.question_bank.schema import create_question_bank_schema
+
+        await create_question_bank_schema(engine)
         async with rabbitmq_lifespan():
             yield
 
