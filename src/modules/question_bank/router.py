@@ -153,17 +153,9 @@ def _version_response(version: object) -> dict:
     }
 
 
-async def _question_summary(db: AsyncSession, row: dict) -> dict:
-    """Build the admin-list read model without exposing runtime-only data."""
-    mappings = await db.execute(
-        text(
-            "SELECT concept_id, purpose, relevance FROM question_version_taxonomy_concepts "
-            "WHERE question_version_id = :version_id ORDER BY purpose, concept_id"
-        ),
-        {"version_id": row["question_version_id"]},
-    )
+def _taxonomy_summary(mappings) -> dict:
     taxonomy = {"roles": [], "skills": [], "primaryCompetency": None}
-    for mapping in mappings.mappings():
+    for mapping in mappings:
         item = {"conceptId": mapping["concept_id"], "relevance": float(mapping["relevance"])}
         if mapping["purpose"] == "TARGET_ROLE":
             taxonomy["roles"].append(item)
@@ -171,6 +163,11 @@ async def _question_summary(db: AsyncSession, row: dict) -> dict:
             taxonomy["skills"].append(item)
         elif mapping["purpose"] == "PRIMARY_COMPETENCY":
             taxonomy["primaryCompetency"] = item
+    return taxonomy
+
+
+async def _question_summary(row: dict, taxonomy_mappings=()) -> dict:
+    """Build the admin-list read model without exposing runtime-only data."""
     return {
         "questionId": str(row["question_id"]),
         "stableKey": row["stable_key"],
@@ -184,7 +181,7 @@ async def _question_summary(db: AsyncSession, row: dict) -> dict:
             "difficultyBand": row["difficulty_band"],
             "softAnswerSeconds": row["soft_answer_seconds"],
         },
-        "taxonomy": taxonomy,
+        "taxonomy": _taxonomy_summary(taxonomy_mappings),
         "updatedAt": row["created_at"].isoformat(),
     }
 
@@ -239,8 +236,25 @@ async def list_questions(
         ),
         params,
     )
+    row_items = rows.mappings().all()
+    version_ids = [row["question_version_id"] for row in row_items]
+    taxonomy_by_version = {version_id: [] for version_id in version_ids}
+    if version_ids:
+        mappings = await db.execute(
+            text(
+                "SELECT question_version_id, concept_id, purpose, relevance "
+                "FROM question_version_taxonomy_concepts "
+                "WHERE question_version_id = ANY(:version_ids) ORDER BY question_version_id, purpose, concept_id"
+            ),
+            {"version_ids": version_ids},
+        )
+        for mapping in mappings.mappings():
+            taxonomy_by_version[mapping["question_version_id"]].append(mapping)
     return {
-        "items": [await _question_summary(db, dict(row)) for row in rows.mappings().all()],
+        "items": [
+            await _question_summary(dict(row), taxonomy_by_version[row["question_version_id"]])
+            for row in row_items
+        ],
         "page": page,
         "pageSize": page_size,
         "total": total or 0,
@@ -266,7 +280,14 @@ async def get_question(
     item = row.mappings().one_or_none()
     if item is None:
         raise HTTPException(status_code=404, detail="Question not found.")
-    return await _question_summary(db, dict(item))
+    mappings = await db.execute(
+        text(
+            "SELECT concept_id, purpose, relevance FROM question_version_taxonomy_concepts "
+            "WHERE question_version_id = :version_id ORDER BY purpose, concept_id"
+        ),
+        {"version_id": item["question_version_id"]},
+    )
+    return await _question_summary(dict(item), mappings.mappings().all())
 
 
 @router.get("/rubrics")
