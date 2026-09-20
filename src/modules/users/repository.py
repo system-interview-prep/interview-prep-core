@@ -11,10 +11,11 @@ class UserRepository:
     async def get_profile(self, user_id: str) -> dict | None:
         result = await self.db.execute(
             text(
-                "SELECT u.id, u.email, u.name, u.role, u.provider, u.dob, u.avatar_url, "
-                "u.created_at, c.cv_scans_remaining, c.voice_mock_remaining "
-                "FROM users u LEFT JOIN user_credits c ON c.user_id = u.id "
-                "WHERE u.id = :id AND u.is_active = true"
+                "SELECT u.id, u.email, u.name, u.provider, u.dob, u.avatar_url, u.created_at, "
+                "c.cv_scans_remaining, c.voice_mock_remaining, array_agg(ura.role) AS roles "
+                "FROM users u LEFT JOIN user_credits c ON c.user_id=u.id "
+                "JOIN user_role_assignments ura ON ura.user_id=u.id "
+                "WHERE u.id=:id AND u.is_active=true GROUP BY u.id,c.cv_scans_remaining,c.voice_mock_remaining"
             ),
             {"id": user_id},
         )

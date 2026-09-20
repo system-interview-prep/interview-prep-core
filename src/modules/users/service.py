@@ -13,7 +13,7 @@ def profile_response(row: dict) -> dict:
         "id": str(row["id"]),
         "email": row["email"],
         "name": row["name"],
-        "role": row["role"],
+        "roles": list(row["roles"]),
         "provider": row.get("provider", "local"),
         "dob": row["dob"].isoformat() if row.get("dob") else None,
         "picture": avatar,
