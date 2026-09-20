@@ -10,7 +10,7 @@ Không gom nhiều file vào cùng một commit.
 Commit message phải theo Conventional Commits.
 Description phải bằng tiếng Việt.
 Chỉ commit những file do task hiện tại thay đổi.
-Push một lần sau khi toàn bộ commit thành công.
+
 Quy trình bắt buộc
 1. Kiểm tra trạng thái Git
 
@@ -109,16 +109,6 @@ git log --oneline -10
 
 để xác minh các commit vừa tạo.
 
-5. Push
-
-Nếu tất cả commit thành công và repository đã có remote/upstream hợp lệ, chạy:
-
-git push
-
-Chỉ push một lần sau khi toàn bộ commit đã hoàn thành.
-
-Nếu push thất bại:
-
 Không sửa lịch sử commit
 Không force push
 Báo lại lỗi
@@ -140,6 +130,5 @@ Sau khi hoàn thành, báo cáo:
 Số file đã commit
 Danh sách commit hash + commit message
 File nào chưa commit nếu có
-Trạng thái push
 
 Không tạo thêm thay đổi source code chỉ để phục vụ việc commit.
