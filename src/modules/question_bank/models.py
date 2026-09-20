@@ -406,3 +406,46 @@ class QuestionCalibration(QuestionBankBase):
     inter_rater_agreement: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
     slice_metrics: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     calculated_at: Mapped[datetime] = _now()
+
+
+class QuestionImport(QuestionBankBase):
+    __tablename__ = "question_imports"
+    id: Mapped[UUID] = _id()
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    file_name: Mapped[str] = mapped_column(Text, nullable=False)
+    file_format: Mapped[str] = mapped_column(String(8), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    template_version: Mapped[str] = mapped_column(String(32), nullable=False, server_default="1")
+    total_rows: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    valid_rows: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    warning_rows: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    error_rows: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    created_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    created_at: Mapped[datetime] = _now()
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    commit_idempotency_key: Mapped[str | None] = mapped_column(String(128), unique=True)
+
+
+class QuestionImportRow(QuestionBankBase):
+    __tablename__ = "question_import_rows"
+    __table_args__ = (UniqueConstraint("import_id", "row_number", name="uq_question_import_row"),)
+    id: Mapped[UUID] = _id()
+    import_id: Mapped[UUID] = mapped_column(
+        ForeignKey("question_imports.id", ondelete="CASCADE"), nullable=False
+    )
+    row_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    normalized_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    validation_errors: Mapped[list[dict]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    validation_warnings: Mapped[list[dict]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    override_reason: Mapped[str | None] = mapped_column(Text)
+    overridden_by: Mapped[str | None] = mapped_column(String(36))
+    draft_question_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    draft_question_version_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    updated_at: Mapped[datetime] = _now()
