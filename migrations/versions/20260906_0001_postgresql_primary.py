@@ -195,6 +195,7 @@ def downgrade() -> None:
         "interview_sessions",
         "job_descriptions",
         "user_cvs",
+        "user_role_assignments",
         "users",
     ):
         op.drop_table(table_name)
