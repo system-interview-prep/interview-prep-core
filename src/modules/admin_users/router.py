@@ -6,7 +6,19 @@ from src.modules.admin_users.schemas import CreateAdminUserRequest, ReplaceRoles
 from src.modules.admin_users.service import AdminUserService
 router=APIRouter(prefix="/admin/users",tags=["admin-users"])
 @router.get("")
-async def list_users(query:str|None=None,limit:int=Query(50,ge=1,le=200),_:dict=Depends(require_admin),db:AsyncSession=Depends(get_db))->dict:return {"items":await AdminUserService(db).list_users(query,limit)}
+async def list_users(
+    query: str | None = None,
+    role: str | None = None,
+    active: bool | None = None,
+    cursor: str | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return await AdminUserService(db).list_users(query, role, active, cursor, limit)
+@router.get("/{user_id}")
+async def get_user(user_id: str, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+    return await AdminUserService(db).get_user(user_id)
 @router.post("",status_code=status.HTTP_201_CREATED)
 async def create_user(payload:CreateAdminUserRequest,actor:dict=Depends(require_admin),db:AsyncSession=Depends(get_db))->dict:return await AdminUserService(db).create(payload,actor["sub"])
 @router.put("/{user_id}/roles")
