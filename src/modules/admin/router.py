@@ -27,7 +27,13 @@ async def get_admin_overview(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     # 1. Total Candidates
-    cand_res = await db.execute(text("SELECT COUNT(*) FROM users WHERE role != 'ADMIN'"))
+    cand_res = await db.execute(
+        text(
+            "SELECT COUNT(*) FROM users u "
+            "WHERE EXISTS (SELECT 1 FROM user_role_assignments ura "
+            "WHERE ura.user_id = u.id AND ura.role = 'CANDIDATE')"
+        )
+    )
     total_candidates = cand_res.scalar() or 0
 
     # 2. Total Sessions & Active / Closed
