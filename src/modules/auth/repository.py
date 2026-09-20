@@ -11,8 +11,9 @@ class AuthRepository:
     async def get_by_email(self, email: str) -> dict | None:
         result = await self.db.execute(
             text(
-                "SELECT id, email, password_hash, name, role, provider, avatar_url, google_id, is_active "
-                "FROM users WHERE lower(email) = :email"
+                "SELECT u.id, u.email, u.password_hash, u.name, u.provider, u.avatar_url, u.google_id, u.is_active, "
+                "array_agg(ura.role) AS roles FROM users u JOIN user_role_assignments ura ON ura.user_id=u.id "
+                "WHERE lower(u.email)=:email GROUP BY u.id"
             ),
             {"email": email},
         )
@@ -24,8 +25,8 @@ class AuthRepository:
         await self.db.execute(
             text(
                 "INSERT INTO users "
-                "(id, email, password_hash, name, phone, role, provider, is_active) "
-                "VALUES (:id, :email, :password_hash, :name, :phone, 'CANDIDATE', 'local', true)"
+                "(id, email, password_hash, name, phone, provider, is_active) "
+                "VALUES (:id, :email, :password_hash, :name, :phone, 'local', true)"
             ),
             {
                 "id": user_id,
@@ -36,11 +37,12 @@ class AuthRepository:
             },
         )
         await self._create_initial_credits(user_id)
+        await self._assign_role(user_id, "CANDIDATE")
         return {
             "id": user_id,
             "email": email,
             "name": name,
-            "role": "CANDIDATE",
+            "roles": ["CANDIDATE"],
             "provider": "local",
             "avatar_url": None,
         }
@@ -50,8 +52,8 @@ class AuthRepository:
         await self.db.execute(
             text(
                 "INSERT INTO users "
-                "(id, email, password_hash, name, role, provider, avatar_url, google_id, is_active) "
-                "VALUES (:id, :email, NULL, :name, 'CANDIDATE', 'google', :avatar_url, :google_id, true)"
+                "(id, email, password_hash, name, provider, avatar_url, google_id, is_active) "
+                "VALUES (:id, :email, NULL, :name, 'google', :avatar_url, :google_id, true)"
             ),
             {
                 "id": user_id,
@@ -62,11 +64,12 @@ class AuthRepository:
             },
         )
         await self._create_initial_credits(user_id)
+        await self._assign_role(user_id, "CANDIDATE")
         return {
             "id": user_id,
             "email": email,
             "name": name,
-            "role": "CANDIDATE",
+            "roles": ["CANDIDATE"],
             "provider": "google",
             "avatar_url": avatar_url,
             "google_id": google_id,
@@ -91,6 +94,9 @@ class AuthRepository:
             ),
             {"id": str(uuid4()), "user_id": user_id},
         )
+
+    async def _assign_role(self, user_id: str, role: str) -> None:
+        await self.db.execute(text("INSERT INTO user_role_assignments (user_id, role) VALUES (:user_id, :role)"), {"user_id": user_id, "role": role})
 
     async def commit(self) -> None:
         await self.db.commit()

@@ -28,7 +28,7 @@ def public_user(row: dict) -> dict:
         "id": str(row["id"]),
         "email": row["email"],
         "name": row["name"],
-        "role": row["role"],
+        "roles": list(row["roles"]),
         "provider": row.get("provider", "local"),
         "picture": avatar,
         "avatar": avatar,
@@ -37,7 +37,7 @@ def public_user(row: dict) -> dict:
 
 def auth_response(row: dict) -> dict:
     return {
-        "access_token": create_access_token(str(row["id"]), row["email"], row["role"]),
+        "access_token": create_access_token(str(row["id"]), row["email"], list(row["roles"])),
         "user": public_user(row),
     }
 

@@ -21,7 +21,9 @@ def test_auth_models_normalize_and_validate_credentials() -> None:
     )
     assert payload.name == "Nguyễn Minh Anh"
     assert payload.email == "user@example.com"
-    assert payload.role == "CANDIDATE"
+    # A public registration cannot choose a privilege.  The repository assigns
+    # the default CANDIDATE role through user_role_assignments instead.
+    assert "role" not in payload.model_dump()
     assert LoginRequest(email=" USER@EXAMPLE.COM ", password="secret").email == "user@example.com"
     assert GoogleLoginRequest(token="token").token == "token"
     assert GoogleLoginRequest(accessToken="legacy-token").token == "legacy-token"
@@ -45,7 +47,7 @@ def test_auth_public_user_excludes_sensitive_columns() -> None:
         "id": "u1",
         "email": "u@example.com",
         "name": "User",
-        "role": "CANDIDATE",
+        "roles": ["CANDIDATE"],
         "provider": "local",
         "password_hash": "secret",
         "avatar_url": "https://images.test/user.png",
@@ -54,7 +56,7 @@ def test_auth_public_user_excludes_sensitive_columns() -> None:
         "id": "u1",
         "email": "u@example.com",
         "name": "User",
-        "role": "CANDIDATE",
+        "roles": ["CANDIDATE"],
         "provider": "local",
         "picture": "https://images.test/user.png",
         "avatar": "https://images.test/user.png",

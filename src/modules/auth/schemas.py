@@ -12,7 +12,6 @@ class RegisterRequest(BaseModel):
     email: str = Field(min_length=3, max_length=320)
     password: str = Field(min_length=8, max_length=128)
     phone: str | None = Field(default=None, max_length=32)
-    role: Literal["CANDIDATE"] = "CANDIDATE"
 
     @field_validator("name")
     @classmethod
@@ -74,7 +73,7 @@ class PublicUserResponse(BaseModel):
     id: str
     email: str
     name: str
-    role: Literal["CANDIDATE", "ADMIN"]
+    roles: list[Literal["CANDIDATE", "ADMIN", "QUESTION_AUTHOR", "QUESTION_REVIEWER", "DATA_CURATOR", "QUESTION_BANK_ADMIN"]]
     provider: str
     picture: str | None = None
     avatar: str | None = None
