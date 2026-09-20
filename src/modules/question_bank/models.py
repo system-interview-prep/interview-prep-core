@@ -345,7 +345,7 @@ class QuestionEmbedding(QuestionBankBase):
     embedding_model: Mapped[str] = mapped_column(String(120), primary_key=True)
     embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    embedding: Mapped[list[float]] = mapped_column(VECTOR(1024), nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(1024), nullable=False)
     created_at: Mapped[datetime] = _now()
 
 
