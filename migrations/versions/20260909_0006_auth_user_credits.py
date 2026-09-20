@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260909_0006"
-down_revision: str | None = "20260908_0005"
+down_revision: str | None = "20260908_0004"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -25,11 +25,6 @@ def upgrade() -> None:
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
     )
     op.create_index("ix_users_google_id", "users", ["google_id"], unique=False)
-    op.create_check_constraint(
-        "ck_users_role",
-        "users",
-        "role IN ('CANDIDATE', 'ADMIN')",
-    )
 
     op.create_table(
         "user_credits",
@@ -62,7 +57,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("user_credits")
-    op.drop_constraint("ck_users_role", "users", type_="check")
     op.drop_index("ix_users_google_id", table_name="users")
     op.drop_column("users", "is_active")
     op.drop_column("users", "google_id")
