@@ -14,7 +14,12 @@ class TaxonomyAdminService:
         if not v:
             return {"version":None,"concepts":[]}
         c=(await self.db.execute(text("SELECT concept_id,label,kind,description,metadata,is_active FROM taxonomy_concepts WHERE taxonomy_version=:v ORDER BY concept_id"),{"v":v["version"]})).mappings().all()
-        return {"version":v["version"],"priority":v["priority"],"publishedAt":v["published_at"],"concepts":list(c)}
+        return {
+            "version": v["version"],
+            "priority": v["priority"],
+            "publishedAt": v["published_at"],
+            "concepts": [dict(concept) for concept in c],
+        }
     async def upsert_version(self,p:TaxonomyVersionUpsert):
         if p.activate:
             await self._ensure_activatable(p.version)
