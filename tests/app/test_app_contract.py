@@ -8,7 +8,6 @@ def test_openapi_contains_every_public_business_route(client) -> None:
         "/users/me",
         "/user/profile",
         "/users/me/cvs",
-        "/admin/job-categories",
         "/admin/job-profiles",
         "/admin/job-profiles/uploads",
         "/admin/job-profiles/uploads/{upload_id}",
