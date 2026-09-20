@@ -9,7 +9,6 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from src.core.config import get_settings
-from src.core.data_initializer import initialize_data
 from src.infrastructure.database import SessionFactory, postgres_lifespan
 from src.infrastructure.rabbitmq import rabbitmq_lifespan
 from src.infrastructure.socketio import sio
@@ -28,6 +27,7 @@ from src.modules.user_cvs import build_module as build_user_cvs_module
 from src.modules.users import build_module as build_users_module
 from src.modules.video_calls import build_module as build_video_calls_module
 from src.modules.voice import build_module as build_voice_module
+from src.seeds import run_all_seeds
 
 del _signaling_events
 
@@ -74,7 +74,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         from src.infrastructure.database import engine
 
         await bootstrap_question_bank_schema(engine)
-        await initialize_data(SessionFactory)
+        await run_all_seeds(SessionFactory)
         async with rabbitmq_lifespan():
             yield
 
