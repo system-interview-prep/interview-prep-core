@@ -1,18 +1,147 @@
 """Admin authoring API and safe active-bank read API."""
+# ruff: noqa: E501
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
+from fastapi.responses import Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.roles import QUESTION_AUTHOR, QUESTION_BANK_ADMIN, QUESTION_REVIEWER
 from src.core.security import current_user, require_roles
 from src.infrastructure.database import get_db
+from src.modules.question_bank.import_parser import csv_template, xlsx_template
+from src.modules.question_bank.import_service import QuestionImportService
 from src.modules.question_bank.schemas import ApproveRequest, CreateQuestionDraftRequest, ReviewRequest
 from src.modules.question_bank.service import QuestionBankService
 
 router = APIRouter(prefix="/admin/question-bank", tags=["question-bank"])
+
+
+def _import_response(import_run: object) -> dict:
+    return {
+        "importId": str(import_run.id),
+        "status": import_run.status,
+        "totalRows": import_run.total_rows,
+        "validRows": import_run.valid_rows,
+        "warningRows": import_run.warning_rows,
+        "errorRows": import_run.error_rows,
+    }
+
+
+@router.get("/imports/template")
+async def import_template(
+    _: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_BANK_ADMIN)),
+    format: str = Query(default="csv"),
+) -> Response:
+    if format == "xlsx":
+        return Response(
+            content=xlsx_template(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=question-bank-import-v1.xlsx"},
+        )
+    if format != "csv":
+        raise HTTPException(422, "format must be csv or xlsx.")
+    return Response(
+        content=csv_template(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=question-bank-import-v1.csv"},
+    )
+
+
+@router.post("/imports", status_code=status.HTTP_201_CREATED)
+async def upload_import(
+    file: UploadFile = File(...),
+    actor: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_BANK_ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    import_run = await QuestionImportService(db).create_csv_import(file, actor["sub"])
+    await db.commit()
+    return _import_response(import_run)
+
+
+@router.get("/imports/{import_id}")
+async def get_import(
+    import_id: UUID,
+    _: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return _import_response(await QuestionImportService(db).summary(import_id))
+
+
+@router.get("/imports/{import_id}/rows")
+async def get_import_rows(
+    import_id: UUID,
+    _: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    rows = await QuestionImportService(db).rows(import_id)
+    return {
+        "items": [
+            {
+                "rowId": str(row.id),
+                "rowNumber": row.row_number,
+                "status": row.status,
+                "payload": row.normalized_payload,
+                "errors": row.validation_errors,
+                "warnings": row.validation_warnings,
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.patch("/imports/{import_id}/rows/{row_id}")
+async def patch_import_row(
+    import_id: UUID,
+    row_id: UUID,
+    payload: dict,
+    _: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_BANK_ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    row = await QuestionImportService(db).patch_row(import_id, row_id, payload)
+    await db.commit()
+    return {"rowId": str(row.id), "status": row.status, "errors": row.validation_errors}
+
+
+@router.get("/imports/{import_id}/report")
+async def import_report(
+    import_id: UUID,
+    _: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    content = await QuestionImportService(db).report_csv(import_id)
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=question-import-{import_id}-report.csv"},
+    )
+
+
+@router.post("/imports/{import_id}/commit")
+async def commit_import(
+    import_id: UUID,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    actor: dict = Depends(require_roles(QUESTION_BANK_ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    if not idempotency_key:
+        raise HTTPException(422, "Idempotency-Key header is required.")
+    rows = await QuestionImportService(db).commit(import_id, actor["sub"], idempotency_key)
+    await db.commit()
+    return {
+        "importId": str(import_id),
+        "status": "COMMITTED",
+        "created": [
+            {
+                "rowId": str(row.id),
+                "questionId": str(row.draft_question_id),
+                "questionVersionId": str(row.draft_question_version_id),
+            }
+            for row in rows
+        ],
+    }
 
 
 def _version_response(version: object) -> dict:
@@ -97,8 +226,7 @@ async def list_questions(
     base = (
         " FROM interview_questions q JOIN LATERAL ("
         "SELECT * FROM interview_question_versions v WHERE v.question_id = q.id "
-        "ORDER BY v.created_at DESC LIMIT 1) qv ON true WHERE "
-        + where
+        "ORDER BY v.created_at DESC LIMIT 1) qv ON true WHERE " + where
     )
     total = await db.scalar(text("SELECT count(*)" + base), params)
     rows = await db.execute(
@@ -168,10 +296,14 @@ async def list_rubrics(
             {
                 "rubricId": str(row["id"]),
                 "stableKey": row["stable_key"],
-                "currentVersion": None if row["version_id"] is None else {
-                    "rubricVersionId": str(row["version_id"]), "version": row["version"],
+                "currentVersion": None
+                if row["version_id"] is None
+                else {
+                    "rubricVersionId": str(row["version_id"]),
+                    "version": row["version"],
                     "status": "APPROVED" if row["approved_at"] else "DRAFT",
-                    "criteriaCount": row["criteria_count"], "totalWeight": float(row["total_weight"]),
+                    "criteriaCount": row["criteria_count"],
+                    "totalWeight": float(row["total_weight"]),
                 },
             }
             for row in rows.mappings().all()
@@ -181,7 +313,9 @@ async def list_rubrics(
 
 @router.post("/question-versions/{version_id}/submit")
 async def submit(
-    version_id: UUID, actor: dict = Depends(require_roles(QUESTION_AUTHOR)), db: AsyncSession = Depends(get_db)
+    version_id: UUID,
+    actor: dict = Depends(require_roles(QUESTION_AUTHOR)),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
     version = await QuestionBankService(db).submit(version_id, actor["sub"])
     await db.commit()
