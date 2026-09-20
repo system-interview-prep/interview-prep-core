@@ -32,8 +32,23 @@ def _factory(session: AsyncMock):
 @pytest.mark.asyncio
 async def test_initializer_skips_when_bootstrap_credentials_are_not_configured() -> None:
     session = AsyncMock()
-    created = await initialize_data(_factory(session), Settings())
+    created = await initialize_data(
+        _factory(session),
+        Settings(bootstrap_admin_email="", bootstrap_admin_password=""),
+    )
     assert created is False
+    session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("password", ["short1A", "alllowercase1", "ALLUPPERCASE1", "NoDigitsHere"])
+async def test_initializer_rejects_weak_bootstrap_password(password: str) -> None:
+    session = AsyncMock()
+    settings = Settings(bootstrap_admin_email="admin@intervia.io", bootstrap_admin_password=password)
+
+    with pytest.raises(ValueError, match="bootstrap_admin_password"):
+        await initialize_data(_factory(session), settings)
+
     session.execute.assert_not_awaited()
 
 
