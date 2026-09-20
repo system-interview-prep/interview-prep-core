@@ -41,7 +41,7 @@ storage, a background job, and structured-domain persistence.
 
 | Priority | Modules | Current issue |
 | --- | --- | --- |
-| 1 | `job_descriptions`, `job_categories`, `auth`, `users` | SQL and authorization flow remain in HTTP routers. |
+| 1 | `job_descriptions`, `taxonomy`, `auth`, `users` | SQL and authorization flow remain in HTTP routers. |
 | 2 | `chat`, `sessions`, `video_calls`, `voice` | Controller calls AI or signalling integration directly. |
 | 3 | `notifications`, `scoring` | Small routers; isolate calculation/query services before adding features. |
 | Complete reference | `user_cvs` | Controller, model, service, repository and storage adapter are separated. |

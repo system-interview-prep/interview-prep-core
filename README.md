@@ -27,7 +27,6 @@ src/
     auth/
     users/
     user_cvs/
-    job_categories/
     job_descriptions/
     matching/            # algorithms + semantic matching facade
     sessions/
