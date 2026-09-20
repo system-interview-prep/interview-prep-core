@@ -55,32 +55,45 @@ class AdminUserService:
             array_agg(ura.role ORDER BY ura.role) AS roles FROM users u
             JOIN user_role_assignments ura ON ura.user_id = u.id WHERE u.id = :id GROUP BY u.id"""), {"id": user_id})
         row = rows.mappings().one_or_none()
-        if row is None: raise HTTPException(404, "User not found.")
+        if row is None:
+            raise HTTPException(404, "User not found.")
         return dict(row)
+
     async def create(self, payload: CreateAdminUserRequest, actor_id: str) -> dict:
-        exists=await self.db.scalar(text("SELECT 1 FROM users WHERE lower(email)=lower(:email)"),{"email":payload.email})
-        if exists: raise HTTPException(409,"Email already exists.")
-        uid=str(uuid4())
+        exists = await self.db.scalar(text("SELECT 1 FROM users WHERE lower(email)=lower(:email)"), {"email": payload.email})
+        if exists:
+            raise HTTPException(409, "Email already exists.")
+        uid = str(uuid4())
         try:
-            await self.db.execute(text("INSERT INTO users(id,email,password_hash,name,phone,provider,is_active) VALUES(:id,:email,:password,:name,:phone,'admin_created',true)"),{"id":uid,"email":payload.email,"password":hash_password(payload.temporaryPassword),"name":payload.name,"phone":payload.phone})
-            for role in payload.roles: await self.db.execute(text("INSERT INTO user_role_assignments(user_id,role,assigned_by) VALUES(:id,:role,:actor)"),{"id":uid,"role":role,"actor":actor_id})
+            await self.db.execute(text("INSERT INTO users(id,email,password_hash,name,phone,provider,is_active) VALUES(:id,:email,:password,:name,:phone,'admin_created',true)"), {"id": uid, "email": payload.email, "password": hash_password(payload.temporaryPassword), "name": payload.name, "phone": payload.phone})
+            for role in payload.roles:
+                await self.db.execute(text("INSERT INTO user_role_assignments(user_id,role,assigned_by) VALUES(:id,:role,:actor)"), {"id": uid, "role": role, "actor": actor_id})
             await self.db.execute(text("INSERT INTO user_credits(id,user_id,cv_scans_remaining,voice_mock_remaining,plan_tier) VALUES(:id,:user_id,3,1,'FREE')"), {"id": str(uuid4()), "user_id": uid})
             await self.db.commit()
         except Exception:
             await self.db.rollback()
             raise
-        return {"id":uid,"email":payload.email,"name":payload.name,"roles":payload.roles,"isActive":True}
-    async def replace_roles(self,user_id:str,roles:list[str],actor_id:str)->dict:
-        if user_id==actor_id and "ADMIN" not in roles: raise HTTPException(422,"Cannot remove your own ADMIN role.")
+        return {"id": uid, "email": payload.email, "name": payload.name, "roles": payload.roles, "isActive": True}
+
+    async def replace_roles(self, user_id: str, roles: list[str], actor_id: str) -> dict:
+        if user_id == actor_id and "ADMIN" not in roles:
+            raise HTTPException(422, "Cannot remove your own ADMIN role.")
         if "ADMIN" not in roles:
-            count=await self.db.scalar(text("SELECT count(DISTINCT user_id) FROM user_role_assignments WHERE role='ADMIN'"))
-            current=await self.db.scalar(text("SELECT 1 FROM user_role_assignments WHERE user_id=:id AND role='ADMIN'"),{"id":user_id})
-            if current and count<=1: raise HTTPException(422,"Cannot remove the last ADMIN.")
+            count = await self.db.scalar(text("SELECT count(DISTINCT user_id) FROM user_role_assignments WHERE role='ADMIN'"))
+            current = await self.db.scalar(text("SELECT 1 FROM user_role_assignments WHERE user_id=:id AND role='ADMIN'"), {"id": user_id})
+            if current and count <= 1:
+                raise HTTPException(422, "Cannot remove the last ADMIN.")
         await self.db.execute(text("DELETE FROM user_role_assignments WHERE user_id=:id"),{"id":user_id})
-        for role in roles: await self.db.execute(text("INSERT INTO user_role_assignments(user_id,role,assigned_by) VALUES(:id,:role,:actor)"),{"id":user_id,"role":role,"actor":actor_id})
-        await self.db.commit();return {"id":user_id,"roles":roles}
-    async def set_status(self,user_id:str,is_active:bool,actor_id:str)->dict:
-        if not is_active and user_id==actor_id: raise HTTPException(422,"Cannot deactivate yourself.")
-        result=await self.db.execute(text("UPDATE users SET is_active=:active,updated_at=now() WHERE id=:id"),{"id":user_id,"active":is_active})
-        if not result.rowcount: raise HTTPException(404,"User not found.")
-        await self.db.commit();return {"id":user_id,"isActive":is_active}
+        for role in roles:
+            await self.db.execute(text("INSERT INTO user_role_assignments(user_id,role,assigned_by) VALUES(:id,:role,:actor)"), {"id": user_id, "role": role, "actor": actor_id})
+        await self.db.commit()
+        return {"id": user_id, "roles": roles}
+
+    async def set_status(self, user_id: str, is_active: bool, actor_id: str) -> dict:
+        if not is_active and user_id == actor_id:
+            raise HTTPException(422, "Cannot deactivate yourself.")
+        result = await self.db.execute(text("UPDATE users SET is_active=:active,updated_at=now() WHERE id=:id"), {"id": user_id, "active": is_active})
+        if not result.rowcount:
+            raise HTTPException(404, "User not found.")
+        await self.db.commit()
+        return {"id": user_id, "isActive": is_active}
