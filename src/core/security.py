@@ -5,8 +5,11 @@ import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
+from src.infrastructure.database import get_db
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -53,7 +56,8 @@ def require_roles(*allowed_roles: str):
 
 async def current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-) -> dict[str, str]:
+    db: AsyncSession = Depends(get_db),
+) -> dict:
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Chưa xác thực.")
     settings = get_settings()
@@ -61,7 +65,21 @@ async def current_user(
         payload = jwt.decode(
             credentials.credentials, settings.jwt_secret, algorithms=[settings.jwt_algorithm]
         )
-        return {"sub": str(payload["sub"]), "email": str(payload["email"]), "roles": [str(role) for role in payload["roles"]]}
+        result = await db.execute(
+            text(
+                "SELECT u.is_active, COALESCE(array_agg(ura.role) FILTER (WHERE ura.role IS NOT NULL), "
+                "ARRAY[]::text[]) AS roles FROM users u LEFT JOIN user_role_assignments ura "
+                "ON ura.user_id = u.id WHERE u.id = :user_id GROUP BY u.is_active"
+            ),
+            {"user_id": str(payload["sub"])},
+        )
+        current = result.mappings().one_or_none()
+        if current is None or not current["is_active"]:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User is inactive or unavailable.",
+            )
+        return {"sub": str(payload["sub"]), "email": str(payload["email"]), "roles": list(current["roles"])}
     except (jwt.InvalidTokenError, KeyError) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
