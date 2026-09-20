@@ -6,20 +6,21 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from src.core.config import get_settings
-from src.infrastructure.database import postgres_lifespan
+from src.core.data_initializer import initialize_data
+from src.infrastructure.database import SessionFactory, postgres_lifespan
 from src.infrastructure.rabbitmq import rabbitmq_lifespan
 from src.infrastructure.socketio import sio
-from src.modules.admin import build_module as build_admin_module
+from src.modules.admin_users import build_module as build_admin_users_module
 from src.modules.auth import build_module as build_auth_module
 from src.modules.chat import build_module as build_chat_module
 from src.modules.health import build_module as build_health_module
-from src.modules.job_categories.router import build_module as build_job_categories_module
-from src.modules.interview_questions import build_module as build_interview_questions_module
 from src.modules.job_descriptions import build_module as build_job_descriptions_module
 from src.modules.matching import build_module as build_matching_module
 from src.modules.notifications import build_module as build_notifications_module
+from src.modules.question_bank import build_module as build_question_bank_module
 from src.modules.sessions import build_module as build_sessions_module
 from src.modules.signaling import _events as _signaling_events
 from src.modules.taxonomy import build_module as build_taxonomy_module
@@ -33,25 +34,47 @@ del _signaling_events
 MODULES = [
     build_health_module(),
     build_auth_module(),
-    build_admin_module(),
+    build_admin_users_module(),
     build_users_module(),
     build_user_cvs_module(),
-    build_job_categories_module(),
     build_job_descriptions_module(),
     build_taxonomy_module(),
     build_matching_module(),
+    build_question_bank_module(),
     build_sessions_module(),
     build_chat_module(),
-    build_interview_questions_module(),
     build_voice_module(),
     build_video_calls_module(),
     build_notifications_module(),
 ]
 
+SCHEMA_BOOTSTRAP_LOCK_KEY = 761_098_241
+
+
+async def bootstrap_question_bank_schema(engine: object) -> None:
+    """Serialize create_all bootstrap across concurrently starting replicas."""
+    from src.modules.question_bank.schema import create_question_bank_schema
+    from src.modules.taxonomy.schema import create_taxonomy_schema
+
+    async with engine.connect() as connection:
+        await connection.execute(text("SELECT pg_advisory_lock(:key)"), {"key": SCHEMA_BOOTSTRAP_LOCK_KEY})
+        try:
+            await create_taxonomy_schema(engine)
+            await create_question_bank_schema(engine)
+        finally:
+            await connection.execute(
+                text("SELECT pg_advisory_unlock(:key)"),
+                {"key": SCHEMA_BOOTSTRAP_LOCK_KEY},
+            )
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     async with postgres_lifespan():
+        from src.infrastructure.database import engine
+
+        await bootstrap_question_bank_schema(engine)
+        await initialize_data(SessionFactory)
         async with rabbitmq_lifespan():
             yield
 

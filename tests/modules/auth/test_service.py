@@ -27,7 +27,7 @@ class FakeRepository:
             "id": "user-1",
             "email": values["email"],
             "name": values["name"],
-            "role": "CANDIDATE",
+            "roles": ["CANDIDATE"],
             "provider": "local",
             "avatar_url": None,
         }
@@ -38,7 +38,7 @@ class FakeRepository:
             "id": "user-google",
             "email": values["email"],
             "name": values["name"],
-            "role": "CANDIDATE",
+            "roles": ["CANDIDATE"],
             "provider": "google",
             "avatar_url": values["avatar_url"],
             "is_active": True,
@@ -73,7 +73,7 @@ async def test_register_hashes_password_and_returns_token(monkeypatch) -> None:
     }
     assert repository.commits == 1
     assert response["access_token"] == "jwt-token"
-    assert response["user"]["role"] == "CANDIDATE"
+    assert response["user"]["roles"] == ["CANDIDATE"]
 
 
 @pytest.mark.asyncio
@@ -92,7 +92,7 @@ async def test_login_rejects_wrong_password_and_accepts_local_or_linked_google(m
         "email": "user@example.com",
         "password_hash": "hash",
         "name": "Candidate",
-        "role": "CANDIDATE",
+        "roles": ["CANDIDATE"],
         "provider": "local",
         "avatar_url": None,
         "is_active": True,
@@ -145,7 +145,7 @@ async def test_google_login_creates_candidate_and_links_existing_account(monkeyp
         "email": "user@example.com",
         "password_hash": "hash",
         "name": "Existing",
-        "role": "CANDIDATE",
+        "roles": ["CANDIDATE"],
         "provider": "local",
         "avatar_url": None,
         "google_id": None,

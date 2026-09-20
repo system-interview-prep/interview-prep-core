@@ -15,12 +15,12 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    for table_name in ("job_profiles_vector", "cv_profiles_vector"):
+    for table_name in ("job_descriptions_vector", "cv_profiles_vector"):
         op.execute(f"ALTER TABLE {table_name} DROP COLUMN IF EXISTS bert_vector")
         op.execute(f"ALTER TABLE {table_name} DROP COLUMN IF EXISTS distilbert_vector")
 
 
 def downgrade() -> None:
-    for table_name in ("job_profiles_vector", "cv_profiles_vector"):
+    for table_name in ("job_descriptions_vector", "cv_profiles_vector"):
         op.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS bert_vector vector(768)")
         op.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS distilbert_vector vector(768)")

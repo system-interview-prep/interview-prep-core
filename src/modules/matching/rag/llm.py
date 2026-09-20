@@ -1,4 +1,4 @@
-"""OpenAI integration for question generation, evaluation, follow-up, and feedback."""
+"""OpenAI text-generation adapter for the matching/RAG module."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import os
 
 
 class LLMService:
-    """Wrapper service for executing prompts through the OpenAI Responses API."""
+    """Wrapper for executing a caller-owned prompt through OpenAI Responses."""
 
     def __init__(self) -> None:
         self.provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()

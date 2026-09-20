@@ -32,21 +32,18 @@ def upgrade() -> None:
         sa.Column("email", sa.String(320), nullable=False, unique=True),
         sa.Column("password", sa.Text(), nullable=True),
         sa.Column("name", sa.String(255), nullable=False, server_default=""),
-        sa.Column("role", sa.String(32), nullable=False, server_default="CANDIDATE"),
         sa.Column("provider", sa.String(32), nullable=False, server_default="local"),
         sa.Column("dob", sa.Date(), nullable=True),
         sa.Column("picture", sa.Text(), nullable=True),
         *_timestamps(),
     )
     op.create_index("ix_users_email_lower", "users", [sa.text("lower(email)")], unique=True)
-
     op.create_table(
-        "job_categories",
-        sa.Column("id", sa.String(36), primary_key=True),
-        sa.Column("name", sa.String(255), nullable=False, unique=True),
-        sa.Column("description", sa.Text(), nullable=False, server_default=""),
-        sa.Column("status", sa.String(32), nullable=False, server_default="ACTIVE"),
-        *_timestamps(),
+        "user_role_assignments",
+        sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+        sa.Column("role", sa.String(32), primary_key=True),
+        sa.Column("assigned_by", sa.String(36), nullable=True),
+        sa.Column("assigned_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
     )
 
     op.create_table(
@@ -57,7 +54,7 @@ def upgrade() -> None:
         sa.Column("filename", sa.String(512), nullable=False),
         sa.Column("content_type", sa.String(255), nullable=False),
         sa.Column("size", sa.BigInteger(), nullable=False),
-        sa.Column("s3_key", sa.Text(), nullable=False),
+        sa.Column("storage_key", sa.Text(), nullable=False),
         sa.Column("url", sa.Text(), nullable=False),
         sa.Column("status", sa.String(32), nullable=False, server_default="PENDING"),
         sa.Column("score", sa.Float(), nullable=True),
@@ -71,18 +68,12 @@ def upgrade() -> None:
     op.create_index("ix_user_cvs_user_created", "user_cvs", ["user_id", "created_at"])
 
     op.create_table(
-        "job_profiles",
+        "job_descriptions",
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column(
             "owner_user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True
         ),
-        sa.Column(
-            "category_id",
-            sa.String(36),
-            sa.ForeignKey("job_categories.id", ondelete="RESTRICT"),
-            nullable=True,
-        ),
-        sa.Column("item_type", sa.String(32), nullable=False, server_default="JOBPROFILE"),
+        sa.Column("item_type", sa.String(32), nullable=False, server_default="JOB_DESCRIPTION"),
         sa.Column("title", sa.String(512), nullable=False, server_default=""),
         sa.Column("keywords", postgresql.ARRAY(sa.Text()), nullable=False, server_default="{}"),
         sa.Column("description", sa.Text(), nullable=False, server_default=""),
@@ -92,23 +83,22 @@ def upgrade() -> None:
         sa.Column("filename", sa.String(512), nullable=True),
         sa.Column("content_type", sa.String(255), nullable=True),
         sa.Column("size", sa.BigInteger(), nullable=True),
-        sa.Column("s3_key", sa.Text(), nullable=True),
+        sa.Column("storage_key", sa.Text(), nullable=True),
         sa.Column("url", sa.Text(), nullable=True),
         sa.Column("checksum", sa.String(64), nullable=True),
         sa.Column("parse_source", sa.String(64), nullable=True),
-        sa.Column("raw_jd_text", sa.Text(), nullable=True),
-        sa.Column("ai_profile_ui_json", postgresql.JSONB(), nullable=True),
-        sa.Column("ai_extras_json", postgresql.JSONB(), nullable=True),
-        sa.Column("ai_profile_version", sa.String(32), nullable=True),
-        sa.Column("ai_generated_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("raw_text", sa.Text(), nullable=True),
+        sa.Column("structured_data", postgresql.JSONB(), nullable=True),
+        sa.Column("extracted_metadata", postgresql.JSONB(), nullable=True),
+        sa.Column("extraction_version", sa.String(32), nullable=True),
+        sa.Column("extracted_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("error", sa.Text(), nullable=True),
         *_timestamps(),
     )
-    op.create_index("ix_job_profiles_category_created", "job_profiles", ["category_id", "created_at"])
-    op.create_index("ix_job_profiles_status_created", "job_profiles", ["status", "created_at"])
+    op.create_index("ix_job_descriptions_status_created", "job_descriptions", ["status", "created_at"])
     op.create_index(
-        "ix_job_profiles_search",
-        "job_profiles",
+        "ix_job_descriptions_search",
+        "job_descriptions",
         [sa.text("to_tsvector('simple', search_text)")],
         postgresql_using="gin",
     )
@@ -177,38 +167,10 @@ def upgrade() -> None:
     )
     op.create_index("ix_scoring_history_user_created", "scoring_history", ["user_id", "created_at"])
 
-    op.create_table(
-        "interview_question_plans",
-        sa.Column(
-            "session_id",
-            sa.String(36),
-            sa.ForeignKey("interview_sessions.id", ondelete="CASCADE"),
-            primary_key=True,
-        ),
-        sa.Column("plan", postgresql.JSONB(), nullable=False, server_default="{}"),
-        *_timestamps(),
-    )
-    op.create_table(
-        "interview_questions",
-        sa.Column("id", sa.String(36), primary_key=True),
-        sa.Column(
-            "session_id",
-            sa.String(36),
-            sa.ForeignKey("interview_sessions.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column("order", sa.Integer(), nullable=False),
-        sa.Column("question", sa.Text(), nullable=False),
-        sa.Column("answer", sa.Text(), nullable=True),
-        sa.Column("metadata", postgresql.JSONB(), nullable=False, server_default="{}"),
-        *_timestamps(),
-        sa.UniqueConstraint("session_id", "order", name="uq_interview_questions_session_order"),
-    )
-
     op.execute("""
-        CREATE TABLE job_profiles_vector (
-            job_id VARCHAR(255) PRIMARY KEY REFERENCES job_profiles(id) ON DELETE CASCADE,
-            job_vector vector(1024),
+        CREATE TABLE job_descriptions_vector (
+            job_description_id VARCHAR(255) PRIMARY KEY REFERENCES job_descriptions(id) ON DELETE CASCADE,
+            job_description_vector vector(1024),
             checksum VARCHAR(64), version INTEGER NOT NULL DEFAULT 1, job_text TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
@@ -221,31 +183,19 @@ def upgrade() -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
-    op.execute("""
-        CREATE TABLE rag_knowledge_chunks (
-            chunk_id VARCHAR(255) PRIMARY KEY, document_id VARCHAR(255), text TEXT NOT NULL,
-            vector vector(1024), metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    op.create_index("ix_rag_knowledge_chunks_document", "rag_knowledge_chunks", ["document_id"])
-
 
 def downgrade() -> None:
     for table_name in (
-        "rag_knowledge_chunks",
         "cv_profiles_vector",
-        "job_profiles_vector",
-        "interview_questions",
-        "interview_question_plans",
+        "job_descriptions_vector",
         "scoring_history",
         "video_calls",
         "chat_voice_messages",
         "chat_text_messages",
         "interview_sessions",
-        "job_profiles",
+        "job_descriptions",
         "user_cvs",
-        "job_categories",
+        "user_role_assignments",
         "users",
     ):
         op.drop_table(table_name)

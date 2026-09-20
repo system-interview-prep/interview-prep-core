@@ -12,7 +12,7 @@ def profile_row() -> dict:
         "id": "u1",
         "email": "u@example.com",
         "name": "User",
-        "role": "CANDIDATE",
+        "roles": ["CANDIDATE"],
         "provider": "local",
         "dob": None,
         "avatar_url": "https://images.test/user.png",

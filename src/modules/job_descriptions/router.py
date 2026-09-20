@@ -45,7 +45,6 @@ class UploadPatch(BaseModel):
 class FinalizeUpload(BaseModel):
     title: str = Field(min_length=1, max_length=512)
     primaryTaxonomyConceptId: str | None = None
-    categoryId: str | None = None
     keywords: list[str] = Field(default_factory=list)
     status: Literal["ACTIVE", "DRAFT", "ARCHIVED"] = "ACTIVE"
     description: str | None = None
@@ -59,8 +58,6 @@ def _job_description(row: dict) -> dict:
         "id": row["id"],
         "title": row["title"],
         "primaryTaxonomy": taxonomy,
-        "categoryId": row["primary_taxonomy_concept_id"],
-        "category": {"id": row["primary_taxonomy_concept_id"], "name": row["taxonomy_label"]} if row["primary_taxonomy_concept_id"] else None,
         "keywords": row["keywords"] or [],
         "description": row["description"],
         "structuredData": row.get("structured_data"),
@@ -330,14 +327,14 @@ async def finalize_upload(
             status_code=409,
             detail="Upload has no schema-valid structuredData; review the parsed JD first",
         ) from exc
-    concept_id = payload.primaryTaxonomyConceptId or payload.categoryId
+    concept_id = payload.primaryTaxonomyConceptId
     if not concept_id:
-        raise HTTPException(status_code=422, detail="primaryTaxonomyConceptId or categoryId is required")
+        raise HTTPException(status_code=422, detail="primaryTaxonomyConceptId is required")
     taxonomy_version = (await db.execute(
         text("SELECT version FROM taxonomy_versions WHERE is_active ORDER BY priority DESC, published_at DESC LIMIT 1")
     )).scalar_one_or_none()
     taxonomy_exists = await db.execute(
-        text("SELECT 1 FROM taxonomy_concepts WHERE taxonomy_version = :version AND concept_id = :id AND kind IN ('domain', 'occupation', 'job_category') AND is_active"),
+        text("SELECT 1 FROM taxonomy_concepts WHERE taxonomy_version = :version AND concept_id = :id AND kind IN ('domain', 'occupation', 'job_family') AND is_active"),
         {"version": taxonomy_version, "id": concept_id}
     )
     if taxonomy_exists.scalar_one_or_none() is None:

@@ -27,7 +27,7 @@ class ProfileResponse(BaseModel):
     id: str
     email: str
     name: str
-    role: str
+    roles: list[str]
     provider: str
     dob: str | None
     picture: str | None

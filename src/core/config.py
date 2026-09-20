@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expires_minutes: int = 10080
     google_oauth_userinfo_url: str = "https://www.googleapis.com/oauth2/v3/userinfo"
+    # Local/dev bootstrap only. Both values must be supplied to create the
+    # initial administrator; credentials are never hard-coded in application code.
+    bootstrap_admin_email: str | None = None
+    bootstrap_admin_password: str | None = None
 
     r2_endpoint_url: str | None = None
     r2_bucket_name: str | None = None
