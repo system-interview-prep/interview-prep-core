@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.security import current_user, require_admin
+from src.core.roles import QUESTION_AUTHOR, QUESTION_BANK_ADMIN, QUESTION_REVIEWER
+from src.core.security import current_user, require_roles
 from src.infrastructure.database import get_db
 from src.modules.question_bank.schemas import ApproveRequest, CreateQuestionDraftRequest, ReviewRequest
 from src.modules.question_bank.service import QuestionBankService
@@ -26,19 +27,19 @@ def _version_response(version: object) -> dict:
 @router.post("/questions/drafts", status_code=status.HTTP_201_CREATED)
 async def create_draft(
     payload: CreateQuestionDraftRequest,
-    admin: dict = Depends(require_admin),
+    actor: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    version = await QuestionBankService(db).create_draft(payload, admin["sub"])
+    version = await QuestionBankService(db).create_draft(payload, actor["sub"])
     await db.commit()
     return _version_response(version)
 
 
 @router.post("/question-versions/{version_id}/submit")
 async def submit(
-    version_id: UUID, admin: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
+    version_id: UUID, actor: dict = Depends(require_roles(QUESTION_AUTHOR)), db: AsyncSession = Depends(get_db)
 ) -> dict:
-    version = await QuestionBankService(db).submit(version_id, admin["sub"])
+    version = await QuestionBankService(db).submit(version_id, actor["sub"])
     await db.commit()
     return _version_response(version)
 
@@ -47,10 +48,10 @@ async def submit(
 async def review(
     version_id: UUID,
     payload: ReviewRequest,
-    admin: dict = Depends(require_admin),
+    actor: dict = Depends(require_roles(QUESTION_REVIEWER)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    review_record = await QuestionBankService(db).record_review(version_id, admin["sub"], payload)
+    review_record = await QuestionBankService(db).record_review(version_id, actor["sub"], payload)
     await db.commit()
     return {"reviewId": str(review_record.id), "decision": review_record.decision}
 
@@ -59,10 +60,10 @@ async def review(
 async def approve(
     version_id: UUID,
     payload: ApproveRequest,
-    admin: dict = Depends(require_admin),
+    actor: dict = Depends(require_roles(QUESTION_BANK_ADMIN)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    version = await QuestionBankService(db).approve(version_id, admin["sub"], payload.approval_policy_version)
+    version = await QuestionBankService(db).approve(version_id, actor["sub"], payload.approval_policy_version)
     await db.commit()
     return _version_response(version)
 

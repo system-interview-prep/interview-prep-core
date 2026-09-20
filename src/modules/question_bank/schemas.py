@@ -6,20 +6,18 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 
-class CompetencyMappingInput(BaseModel):
-    competency_id: UUID = Field(alias="competencyId")
-    relevance: Decimal = Field(ge=0, le=1)
-    is_primary: bool = Field(alias="isPrimary")
-
-
-class RoleMappingInput(BaseModel):
-    role_id: UUID = Field(alias="roleId")
+class TaxonomyMappingInput(BaseModel):
+    concept_id: str = Field(alias="conceptId", min_length=1, max_length=256)
+    purpose: str = Field(
+        pattern="^(TARGET_ROLE|TARGET_SKILL|PRIMARY_COMPETENCY|SUPPORTING_COMPETENCY)$"
+    )
     relevance: Decimal = Field(ge=0, le=1)
 
 
 class CreateQuestionDraftRequest(BaseModel):
     stable_key: str = Field(alias="stableKey", min_length=3, max_length=180)
     version: str = Field(default="1.0.0", min_length=1, max_length=32)
+    taxonomy_version: str = Field(alias="taxonomyVersion", min_length=1, max_length=80)
     question_type: str = Field(alias="questionType", min_length=1, max_length=48)
     difficulty_band: str = Field(alias="difficultyBand", min_length=1, max_length=32)
     canonical_locale: str = Field(alias="canonicalLocale", min_length=2, max_length=35)
@@ -32,8 +30,7 @@ class CreateQuestionDraftRequest(BaseModel):
     context_policy: dict = Field(alias="contextPolicy", default_factory=dict)
     personalization_policy: dict = Field(alias="personalizationPolicy", default_factory=dict)
     change_summary: str = Field(alias="changeSummary", default="")
-    competencies: list[CompetencyMappingInput] = Field(min_length=1)
-    roles: list[RoleMappingInput] = Field(default_factory=list)
+    taxonomy_mappings: list[TaxonomyMappingInput] = Field(alias="taxonomyMappings", min_length=1)
 
     @field_validator("stable_key")
     @classmethod

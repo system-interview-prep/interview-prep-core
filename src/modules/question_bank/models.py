@@ -36,68 +36,6 @@ def _now() -> Mapped[datetime]:
     return mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
-class JobFamily(QuestionBankBase):
-    __tablename__ = "job_families"
-    id: Mapped[UUID] = _id()
-    stable_key: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="ACTIVE")
-    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
-
-
-class JobRole(QuestionBankBase):
-    __tablename__ = "job_roles"
-    id: Mapped[UUID] = _id()
-    job_family_id: Mapped[UUID] = mapped_column(
-        ForeignKey("job_families.id", ondelete="RESTRICT"), nullable=False
-    )
-    stable_key: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="ACTIVE")
-
-
-class Competency(QuestionBankBase):
-    __tablename__ = "competencies"
-    id: Mapped[UUID] = _id()
-    stable_key: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    category: Mapped[str] = mapped_column(String(64), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="ACTIVE")
-    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
-
-
-class Skill(QuestionBankBase):
-    __tablename__ = "skills"
-    id: Mapped[UUID] = _id()
-    stable_key: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    skill_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    aliases: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
-    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="ACTIVE")
-
-
-class RoleCompetency(QuestionBankBase):
-    __tablename__ = "role_competencies"
-    role_id: Mapped[UUID] = mapped_column(ForeignKey("job_roles.id", ondelete="CASCADE"), primary_key=True)
-    competency_id: Mapped[UUID] = mapped_column(
-        ForeignKey("competencies.id", ondelete="CASCADE"), primary_key=True
-    )
-    importance: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
-    expected_level: Mapped[str] = mapped_column(String(32), nullable=False)
-
-
-class CompetencySkill(QuestionBankBase):
-    __tablename__ = "competency_skills"
-    competency_id: Mapped[UUID] = mapped_column(
-        ForeignKey("competencies.id", ondelete="CASCADE"), primary_key=True
-    )
-    skill_id: Mapped[UUID] = mapped_column(ForeignKey("skills.id", ondelete="CASCADE"), primary_key=True)
-    relevance: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
-    required: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
-
-
 class InterviewQuestion(QuestionBankBase):
     __tablename__ = "interview_questions"
     id: Mapped[UUID] = _id()
@@ -120,6 +58,7 @@ class InterviewQuestionVersion(QuestionBankBase):
     )
     version: Mapped[str] = mapped_column(String(32), nullable=False)
     schema_version: Mapped[str] = mapped_column(String(32), nullable=False, server_default="1.0")
+    taxonomy_version: Mapped[str] = mapped_column(String(80), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="DRAFT")
     question_type: Mapped[str] = mapped_column(String(48), nullable=False)
     difficulty_band: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -144,33 +83,14 @@ class InterviewQuestionVersion(QuestionBankBase):
     change_summary: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
 
 
-class QuestionVersionRole(QuestionBankBase):
-    __tablename__ = "question_version_roles"
+class QuestionVersionTaxonomyConcept(QuestionBankBase):
+    __tablename__ = "question_version_taxonomy_concepts"
     question_version_id: Mapped[UUID] = mapped_column(
         ForeignKey("interview_question_versions.id", ondelete="CASCADE"), primary_key=True
     )
-    role_id: Mapped[UUID] = mapped_column(ForeignKey("job_roles.id", ondelete="RESTRICT"), primary_key=True)
-    relevance: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
-
-
-class QuestionVersionCompetency(QuestionBankBase):
-    __tablename__ = "question_version_competencies"
-    question_version_id: Mapped[UUID] = mapped_column(
-        ForeignKey("interview_question_versions.id", ondelete="CASCADE"), primary_key=True
-    )
-    competency_id: Mapped[UUID] = mapped_column(
-        ForeignKey("competencies.id", ondelete="RESTRICT"), primary_key=True
-    )
-    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
-    relevance: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
-
-
-class QuestionVersionSkill(QuestionBankBase):
-    __tablename__ = "question_version_skills"
-    question_version_id: Mapped[UUID] = mapped_column(
-        ForeignKey("interview_question_versions.id", ondelete="CASCADE"), primary_key=True
-    )
-    skill_id: Mapped[UUID] = mapped_column(ForeignKey("skills.id", ondelete="RESTRICT"), primary_key=True)
+    taxonomy_version: Mapped[str] = mapped_column(String(80), primary_key=True)
+    concept_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    purpose: Mapped[str] = mapped_column(String(32), primary_key=True)
     relevance: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
 
 

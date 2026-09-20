@@ -17,7 +17,8 @@ async def create_question_bank_schema(engine: AsyncEngine) -> None:
         await connection.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_question_version_primary_competency "
-                "ON question_version_competencies (question_version_id) WHERE is_primary"
+                "ON question_version_taxonomy_concepts (question_version_id) "
+                "WHERE purpose = 'PRIMARY_COMPETENCY'"
             )
         )
         await connection.execute(
@@ -28,8 +29,8 @@ async def create_question_bank_schema(engine: AsyncEngine) -> None:
         )
         await connection.execute(
             text(
-                "CREATE INDEX IF NOT EXISTS ix_question_competency "
-                "ON question_version_competencies (competency_id, question_version_id)"
+                "CREATE INDEX IF NOT EXISTS ix_question_taxonomy_concept "
+                "ON question_version_taxonomy_concepts (taxonomy_version, concept_id, question_version_id)"
             )
         )
         await connection.execute(
