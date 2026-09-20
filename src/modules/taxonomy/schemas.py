@@ -14,7 +14,8 @@ class TaxonomyConceptUpsert(BaseModel):
     @field_validator("kind")
     @classmethod
     def valid_kind(cls, value: str) -> str:
-        if value not in CONCEPT_KINDS: raise ValueError("Unsupported taxonomy concept kind.")
+        if value not in CONCEPT_KINDS:
+            raise ValueError("Unsupported taxonomy concept kind.")
         return value
 class TaxonomyRelationUpsert(BaseModel):
     sourceConceptId: str = Field(min_length=1, max_length=256)
@@ -26,5 +27,6 @@ class TaxonomyRelationUpsert(BaseModel):
     @field_validator("relationType")
     @classmethod
     def valid_relation(cls, value: str) -> str:
-        if value not in RELATION_TYPES: raise ValueError("Unsupported taxonomy relation type.")
+        if value not in RELATION_TYPES:
+            raise ValueError("Unsupported taxonomy relation type.")
         return value
