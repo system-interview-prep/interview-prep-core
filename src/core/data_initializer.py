@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import Settings, get_settings
 from src.core.security import hash_password
+from src.modules.auth.schemas import PASSWORD_PATTERN
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,11 @@ async def initialize_data(
     if not email or not password:
         logger.info("Bootstrap administrator skipped: configuration is absent.")
         return False
+    if not PASSWORD_PATTERN.fullmatch(password):
+        raise ValueError(
+            "bootstrap_admin_password must be 8-128 characters and include lowercase, "
+            "uppercase, and numeric characters."
+        )
 
     async with session_factory() as session:
         try:
