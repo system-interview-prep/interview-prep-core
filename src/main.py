@@ -11,6 +11,7 @@ from src.core.config import get_settings
 from src.infrastructure.database import postgres_lifespan
 from src.infrastructure.rabbitmq import rabbitmq_lifespan
 from src.infrastructure.socketio import sio
+from src.modules.admin import build_module as build_admin_module
 from src.modules.auth import build_module as build_auth_module
 from src.modules.chat import build_module as build_chat_module
 from src.modules.health import build_module as build_health_module
@@ -32,6 +33,7 @@ del _signaling_events
 MODULES = [
     build_health_module(),
     build_auth_module(),
+    build_admin_module(),
     build_users_module(),
     build_user_cvs_module(),
     build_job_categories_module(),
