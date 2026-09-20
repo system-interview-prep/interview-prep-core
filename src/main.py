@@ -12,9 +12,9 @@ from src.infrastructure.database import postgres_lifespan
 from src.infrastructure.rabbitmq import rabbitmq_lifespan
 from src.infrastructure.socketio import sio
 from src.modules.auth import build_module as build_auth_module
+from src.modules.admin_users import build_module as build_admin_users_module
 from src.modules.chat import build_module as build_chat_module
 from src.modules.health import build_module as build_health_module
-from src.modules.job_categories.router import build_module as build_job_categories_module
 from src.modules.job_descriptions import build_module as build_job_descriptions_module
 from src.modules.matching import build_module as build_matching_module
 from src.modules.notifications import build_module as build_notifications_module
@@ -32,9 +32,9 @@ del _signaling_events
 MODULES = [
     build_health_module(),
     build_auth_module(),
+    build_admin_users_module(),
     build_users_module(),
     build_user_cvs_module(),
-    build_job_categories_module(),
     build_job_descriptions_module(),
     build_taxonomy_module(),
     build_matching_module(),
@@ -52,7 +52,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     async with postgres_lifespan():
         from src.infrastructure.database import engine
         from src.modules.question_bank.schema import create_question_bank_schema
+        from src.modules.taxonomy.schema import create_taxonomy_schema
 
+        await create_taxonomy_schema(engine)
         await create_question_bank_schema(engine)
         async with rabbitmq_lifespan():
             yield
