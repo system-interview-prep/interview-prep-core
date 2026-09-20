@@ -8,7 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.core.config import get_settings
-from src.infrastructure.database import postgres_lifespan
+from src.core.data_initializer import initialize_data
+from src.infrastructure.database import SessionFactory, postgres_lifespan
 from src.infrastructure.rabbitmq import rabbitmq_lifespan
 from src.infrastructure.socketio import sio
 from src.modules.auth import build_module as build_auth_module
@@ -56,6 +57,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
         await create_taxonomy_schema(engine)
         await create_question_bank_schema(engine)
+        await initialize_data(SessionFactory)
         async with rabbitmq_lifespan():
             yield
 
