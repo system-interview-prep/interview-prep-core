@@ -30,7 +30,7 @@ async def seed_default_taxonomy(session_factory: Callable[[], AsyncSession]) -> 
         await session.execute(
             text(
                 "INSERT INTO taxonomy_versions(version, priority, is_active) "
-                "VALUES (:version, 0, false)"
+                "VALUES (:version, 10, true)"
             ),
             {"version": TAXONOMY_VERSION},
         )

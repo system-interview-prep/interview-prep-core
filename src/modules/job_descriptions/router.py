@@ -334,7 +334,7 @@ async def finalize_upload(
         text("SELECT version FROM taxonomy_versions WHERE is_active ORDER BY priority DESC, published_at DESC LIMIT 1")
     )).scalar_one_or_none()
     taxonomy_exists = await db.execute(
-        text("SELECT 1 FROM taxonomy_concepts WHERE taxonomy_version = :version AND concept_id = :id AND kind IN ('domain', 'occupation', 'job_family') AND is_active"),
+        text("SELECT 1 FROM taxonomy_concepts WHERE taxonomy_version = :version AND concept_id = :id AND kind IN ('domain', 'occupation', 'job_family', 'competency', 'job_role', 'specialization') AND is_active"),
         {"version": taxonomy_version, "id": concept_id}
     )
     if taxonomy_exists.scalar_one_or_none() is None:
