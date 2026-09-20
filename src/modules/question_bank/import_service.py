@@ -5,6 +5,7 @@ import csv
 import io
 from datetime import UTC, datetime
 from hashlib import sha256
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, UploadFile
@@ -19,6 +20,9 @@ from src.modules.question_bank.models import (
     QuestionImportRow,
     QuestionVersionTaxonomyConcept,
 )
+from src.modules.question_bank.service import QuestionBankService
+
+MAX_IMPORT_FILE_SIZE = 5 * 1024 * 1024
 
 
 class QuestionImportService:
@@ -28,8 +32,8 @@ class QuestionImportService:
     async def create_csv_import(self, file: UploadFile, actor_id: str) -> QuestionImport:
         if not file.filename or not file.filename.lower().endswith((".csv", ".xlsx")):
             raise HTTPException(422, "Only CSV and XLSX imports are supported.")
-        content = await file.read()
-        if not content or len(content) > 5 * 1024 * 1024:
+        content = await file.read(MAX_IMPORT_FILE_SIZE + 1)
+        if not content or len(content) > MAX_IMPORT_FILE_SIZE:
             raise HTTPException(422, "CSV file must be between 1 byte and 5 MB.")
         try:
             parsed = parse_xlsx(content) if file.filename.lower().endswith(".xlsx") else parse_csv(content)
@@ -135,6 +139,7 @@ class QuestionImportService:
             errors = self._validate_payload(payload)
             if errors:
                 raise HTTPException(422, "Import validation changed; refresh and review rows.")
+            await self._validate_primary_competency(payload)
             question = InterviewQuestion(id=uuid4(), stable_key=payload["stable_key"], created_by=actor_id)
             version = InterviewQuestionVersion(
                 id=uuid4(),
@@ -175,6 +180,15 @@ class QuestionImportService:
         )
         await self.db.flush()
         return rows
+
+    async def _validate_primary_competency(self, payload: dict) -> None:
+        concept_id = str(payload.get("primary_competency_id", "")).strip()
+        if not concept_id:
+            raise HTTPException(422, "Import validation changed; refresh and review rows.")
+        await QuestionBankService(self.db)._validate_taxonomy_mappings(
+            payload["taxonomy_version"],
+            [SimpleNamespace(concept_id=concept_id, purpose="PRIMARY_COMPETENCY")],
+        )
 
     @staticmethod
     def _validate_payload(payload: dict) -> list[dict]:
