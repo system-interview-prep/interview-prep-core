@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -60,6 +61,14 @@ def _sanitize_candidate_payload(data: Any) -> dict[str, Any]:
         data["jobTitle"] = {"value": val[:200], "quote": quote[:500]} if val and quote else None
     else:
         data["jobTitle"] = None
+
+    company = data.get("companyName") or data.get("company_name")
+    if isinstance(company, dict):
+        val = str(company.get("value") or "").strip()
+        quote = str(company.get("quote") or "").strip()
+        data["companyName"] = {"value": val[:200], "quote": quote[:500]} if val and quote else None
+    else:
+        data["companyName"] = None
 
     for list_field in ("responsibilities", "benefits"):
         clean_list = []
@@ -263,6 +272,12 @@ class HybridJobDescriptionParser:
             )
             requirement_keys.add(key)
 
+        company_name = baseline.company_name
+        if candidate.company_name:
+            company_evidence = ground("company", candidate.company_name)
+            if company_evidence and not company_name:
+                company_name = candidate.company_name.value.strip()
+
         title = baseline.job_title
         if candidate.job_title:
             title_evidence = ground("title", candidate.job_title)
@@ -297,11 +312,21 @@ class HybridJobDescriptionParser:
         return CanonicalJobDescription(
             schemaVersion="1.0",
             jobTitle=title,
+            companyName=company_name,
             careerClassifications=classifications,
             seniority=baseline.seniority,
             employmentType=baseline.employment_type,
             workMode=baseline.work_mode,
             location=baseline.location,
+            experienceMinYears=baseline.experience_min_years,
+            experienceMaxYears=baseline.experience_max_years,
+            experienceRaw=baseline.experience_raw,
+            salaryMin=baseline.salary_min,
+            salaryMax=baseline.salary_max,
+            salaryCurrency=baseline.salary_currency,
+            salaryPeriod=baseline.salary_period,
+            salaryNegotiable=baseline.salary_negotiable,
+            salaryRaw=baseline.salary_raw,
             responsibilities=responsibilities,
             requirements=requirements,
             benefits=benefits,
