@@ -171,6 +171,21 @@ def test_deterministic_parser_extracts_structured_sections_with_grounded_evidenc
     assert all(owner.evidence_refs and set(owner.evidence_refs).issubset(evidence_ids) for owner in owners)
 
 
+def test_deterministic_parser_keeps_degree_only_education_schema_valid() -> None:
+    source = _source(
+        [
+            {"type": "title", "text": "Education"},
+            {"type": "text", "text": "Bachelor of Science | 2016 - 2020"},
+        ]
+    )
+
+    result = DeterministicResumeParser().parse(source, extraction_version="mineru-3.0.0")
+
+    assert len(result.resume.education) == 1
+    assert result.resume.education[0].institution == "Bachelor of Science"
+    assert result.resume.education[0].degree == "Bachelor of Science"
+
+
 def test_canonical_resume_rejects_dangling_evidence_reference() -> None:
     with pytest.raises(ValidationError, match="evidenceRefs"):
         CanonicalResume.model_validate(

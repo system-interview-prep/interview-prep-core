@@ -18,6 +18,7 @@ def _docx() -> bytes:
     ("filename", "content_type", "content", "detected"),
     [
         ("cv.pdf", "application/pdf", b"%PDF-1.7", "application/pdf"),
+        ("prefixed-cv.pdf", "application/pdf", b"\xef\xbb\xbf\n%PDF-1.7", "application/pdf"),
         (
             "jd.docx",
             "application/octet-stream",
