@@ -2,12 +2,12 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
-from src.modules.user_cvs.domain.schemas import ProficiencyLevel
 from src.modules.user_cvs.schemas import (
     CanonicalModel,
     CanonicalResume,
     CareerClassification,
     EvidenceSpan,
+    ProficiencyLevel,
     TaxonomyRef,
 )
 
