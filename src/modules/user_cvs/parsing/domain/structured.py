@@ -5,7 +5,6 @@ import unicodedata
 from collections.abc import Iterable
 from hashlib import sha1
 
-from src.modules.user_cvs.parsing.domain.source import EvidenceMapper, SourceBlock, SourceDocument
 from src.modules.user_cvs.domain.schemas import (
     CertificationEntry,
     EducationEntry,
@@ -13,6 +12,7 @@ from src.modules.user_cvs.domain.schemas import (
     PartialDate,
     ProjectEntry,
 )
+from src.modules.user_cvs.parsing.domain.source import EvidenceMapper, SourceBlock, SourceDocument
 
 _YEAR = r"(?:19|20)\d{2}"
 _MONTH_EN = (
@@ -206,6 +206,12 @@ class EducationExtractor:
                     institution = parts[inst_idx]
                 else:
                     institution, degree = parts[0], parts[1]
+
+            # A degree-only line (for example, "Bachelor of Science") is
+            # still useful evidence, but the canonical schema requires a
+            # non-empty institution.  Keep the entry reviewable instead of
+            # aborting the whole CV parse with ``institution=None``.
+            institution = (institution or degree or "Institution").strip()
 
             ref = _add_block_evidence(draft, mapper, block, "education")
             draft.education.append(
