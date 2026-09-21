@@ -32,3 +32,19 @@ class WorkerEventLoopRunner:
         if self._loop is not None and not self._loop.is_closed():
             self._loop.close()
             self._loop = None
+
+    def reset_after_fork(self) -> None:
+        """Discard a loop inherited from Celery's prefork parent.
+
+        A child must never run coroutines on a loop that existed in the parent
+        process.  There is deliberately no ``close()`` here: the inherited
+        loop may own resources whose counterpart lives only in the parent.
+        """
+
+        self._loop = None
+
+
+# SQLAlchemy/asyncpg pools are bound to the loop that creates their
+# connections.  All async Celery tasks in a child process must therefore use
+# this one runner, rather than one runner per task module.
+worker_async_runner = WorkerEventLoopRunner()

@@ -34,7 +34,11 @@ class SignatureMimeDetector:
     """Identify supported formats from bytes instead of trusting client metadata."""
 
     def detect(self, content: bytes) -> str:
-        if content.startswith(b"%PDF-"):
+        # PDF permits a small prefix (for example a UTF-8 BOM or producer
+        # metadata) before its header; requiring byte zero rejects otherwise
+        # valid exported CVs.  The standard allows the header within 1024
+        # bytes, so keep the search bounded to avoid accepting arbitrary text.
+        if content[:1024].find(b"%PDF-") >= 0:
             return "application/pdf"
         if content.startswith(b"\x89PNG\r\n\x1a\n"):
             return "image/png"
