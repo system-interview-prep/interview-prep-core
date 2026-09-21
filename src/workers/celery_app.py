@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.signals import worker_process_init
 
 from src.core.config import get_settings
 
@@ -25,16 +26,13 @@ celery_app.conf.update(
     },
 )
 
-
-from celery.signals import worker_process_init
-
-
 @worker_process_init.connect
 def on_worker_process_init(**kwargs: object) -> None:
-    import asyncio
     from src.infrastructure.database import engine
+    from src.workers.async_runner import worker_async_runner
 
-    engine.sync_engine.dispose()
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
+    # The worker is forked from Celery's parent process.  Do not close inherited
+    # asyncpg connections: they belong to the parent's event loop.  Replacing
+    # the pool makes this child establish fresh connections on its own loop.
+    engine.sync_engine.dispose(close=False)
+    worker_async_runner.reset_after_fork()
