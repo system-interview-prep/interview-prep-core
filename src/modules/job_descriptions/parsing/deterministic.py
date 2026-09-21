@@ -2,6 +2,7 @@ import re
 import unicodedata
 from datetime import UTC, datetime
 from hashlib import sha1
+from typing import Any
 
 from src.modules.job_descriptions.domain.schemas import (
     CanonicalJobDescription,
@@ -182,14 +183,30 @@ class DeterministicJobDescriptionParser:
         mapper, evidence, ranges = EvidenceMapper(source), {}, _ranges(source.text)
         requirements = self._requirements(source, mapper, evidence, ranges.get("requirements"))
         title = self._title(source, ranges)
+        company_name, _ = self._company_info(source, mapper, evidence)
+        exp_min, exp_max, exp_raw = self._experience_range(source, mapper, evidence)
+        sal_min, sal_max, sal_curr, sal_period, sal_neg, sal_raw = self._salary_info(
+            source, mapper, evidence
+        )
+
         return CanonicalJobDescription(
             schemaVersion="1.0",
             jobTitle=title,
+            companyName=company_name,
             careerClassifications=self._classifications(requirements, title),
-            seniority=self._seniority(title or ""),
+            seniority=self._seniority(title or "", source.text),
             employmentType=self._employment_type(source.text),
             workMode=self._work_mode(source.text),
             location=self._location(source),
+            experienceMinYears=exp_min,
+            experienceMaxYears=exp_max,
+            experienceRaw=exp_raw,
+            salaryMin=sal_min,
+            salaryMax=sal_max,
+            salaryCurrency=sal_curr,
+            salaryPeriod=sal_period,
+            salaryNegotiable=sal_neg,
+            salaryRaw=sal_raw,
             responsibilities=self._texts(
                 source, mapper, evidence, ranges.get("responsibilities"), "responsibility"
             ),
@@ -407,46 +424,275 @@ class DeterministicJobDescriptionParser:
         return int(match.group(1)) * 12 if match else None
 
     @staticmethod
-    def _seniority(text: str) -> str | None:
-        normalized = _key(text)
-        mapping = {
-            "intern": ("intern", "thuc tap"),
-            "junior": ("junior", "fresher"),
-            "mid": ("mid", "middle"),
-            "senior": ("senior",),
-            "lead": ("lead", "team lead"),
-            "manager": ("manager", "quan ly"),
+    def _company_info(
+        source: SourceDocument, mapper: EvidenceMapper, evidence: dict[str, Any]
+    ) -> tuple[str | None, str | None]:
+        excluded_labels = {
+            "dia diem", "dia diem lam viec", "location", "address",
+            "yeu cau", "yeu cau ung vien", "yeu cau cong viec", "requirements",
+            "quyen loi", "phuc loi", "benefits",
+            "mo ta cong viec", "job description", "description",
+            "vi tri", "chuc danh", "job title", "position",
+            "thoi gian", "thoi gian lam viec", "working time", "working hours",
+            "muc luong", "luong", "salary", "compensation",
+            "lien he", "contact", "cach thuc ung tuyen", "application",
+            "uu tien", "preferred", "hinh thuc", "hinh thuc lam viec",
+            "so luong", "kinh nghiem", "experience", "ngay dang",
+            "ha noi", "hanoi", "ho chi minh", "hcm", "tphcm", "da nang", "viet nam", "vietnam",
         }
-        return next(
-            (name for name, aliases in mapping.items() if any(alias in normalized for alias in aliases)), None
-        )
+        lines = _lines(source.text)
+        # 1. Explicit label pattern: "Company: ABC", "Công ty: ABC", "Tên công ty: ABC"
+        for offset, line in lines:
+            if ":" not in line:
+                continue
+            label, _, value = line.partition(":")
+            norm_label = _key(label)
+            if norm_label in {"company", "cong ty", "ten cong ty", "company name"}:
+                cleaned = value.strip(" -•\t")
+                if cleaned and len(cleaned) <= 100:
+                    start = offset + line.index(value)
+                    end = start + len(value)
+                    ref = _evidence_id("company", start, end)
+                    evidence[ref] = mapper.from_offsets(evidence_id=ref, char_start=start, char_end=end)
+                    return cleaned, ref
+
+        # 2. Header slogan/tagline pattern (e.g. "NSTAGE : Fun Lives On") in the first 15 lines
+        for offset, line in lines[:15]:
+            # Bullets are item lists (e.g. "- Hà Nội: ..."), never header slogans!
+            if re.match(r"^\s*[-•*o]\s+", line):
+                continue
+            candidate = line.strip(" -•\t")
+            if not candidate or _heading(candidate):
+                continue
+            if ":" in candidate:
+                part1, sep, part2 = candidate.partition(":")
+                norm1 = _key(part1)
+                norm2 = _key(part2)
+                if norm1 in excluded_labels or any(norm1.startswith(ex + " ") for ex in excluded_labels):
+                    continue
+                words1 = part1.strip().split()
+                if 1 <= len(words1) <= 5 and len(part1.strip()) <= 50 and part2.strip():
+                    company = part1.strip()
+                    start = offset
+                    end = offset + len(line)
+                    ref = _evidence_id("company", start, end)
+                    evidence[ref] = mapper.from_offsets(evidence_id=ref, char_start=start, char_end=end)
+                    return company, ref
+
+        return None, None
+
+    @staticmethod
+    def _experience_range(
+        source: SourceDocument, mapper: EvidenceMapper, evidence: dict[str, Any]
+    ) -> tuple[int | None, int | None, str | None]:
+        for offset, line in _lines(source.text):
+            lower_line = line.lower()
+            norm = _key(line)
+            if not re.search(r"\b(?:kinh nghiem|experience|exp)\b", norm):
+                continue
+
+            # Strict inequality cases: "trên 5 năm" (> 5), "dưới 2 năm" (< 2), "hơn 3 năm", "over 5 years"
+            # Schema cannot represent strict > or <.
+            # Do NOT canonicalize to min=5 or max=2. Keep numeric range null and preserve experienceRaw + evidence.
+            if re.search(r"\b(?:trên|tren|over|hơn|hon|>|dưới|duoi|less than|<)\s*\d+", lower_line):
+                start = offset
+                end = offset + len(line)
+                ref = _evidence_id("experience", start, end)
+                evidence[ref] = mapper.from_offsets(evidence_id=ref, char_start=start, char_end=end)
+                return None, None, line.strip()
+
+            # Range: "2 - 4 năm", "2-4 nam", "tu 3 den 5 nam", "from 2 to 4 years"
+            m_range = re.search(
+                r"(?:từ|tu\s+)?(\d+)\s*(?:-|–|—|đến|den|to)\s*(\d+)\s*(?:\+?\s*)?(?:năm|nam|years?)",
+                lower_line,
+            )
+            if m_range:
+                min_y = int(m_range.group(1))
+                max_y = int(m_range.group(2))
+                if min_y <= max_y:
+                    start = offset
+                    end = offset + len(line)
+                    ref = _evidence_id("experience", start, end)
+                    evidence[ref] = mapper.from_offsets(evidence_id=ref, char_start=start, char_end=end)
+                    return min_y, max_y, line.strip()
+
+            # Closed lower bound (>=): "ít nhất 2 năm", "tối thiểu 2 năm", "at least 2 years", "from 2 years", "3+ years"
+            m_min = re.search(
+                r"(?:(?:ít nhất|it nhat|tối thiểu|toi thieu|from|at least)\s*(\d+)\s*(?:\+|plus)?|(\d+)\s*(?:\+|plus))\s*(?:năm|nam|years?)\s*(?:kinh nghiệm|kinh nghiem|of experience|experience)?",
+                lower_line,
+            )
+            if m_min:
+                min_y = int(m_min.group(1) or m_min.group(2))
+                start = offset
+                end = offset + len(line)
+                ref = _evidence_id("experience", start, end)
+                evidence[ref] = mapper.from_offsets(evidence_id=ref, char_start=start, char_end=end)
+                return min_y, None, line.strip()
+
+        return None, None, None
+
+    @staticmethod
+    def _seniority(title: str, text: str) -> str | None:
+        norm_title = _key(title)
+        title_mapping = [
+            ("intern", ("intern", "thuc tap")),
+            ("fresher", ("fresher",)),
+            ("junior", ("junior",)),
+            ("mid", ("mid", "middle", "mid level")),
+            ("senior", ("senior",)),
+            ("lead", ("team lead", "tech lead", "lead")),
+            ("manager", ("manager", "truong phong", "quan ly")),
+        ]
+        for name, aliases in title_mapping:
+            for alias in aliases:
+                if re.search(rf"\b{re.escape(alias)}\b", norm_title):
+                    return name
+
+        # Avoid false positives like "làm việc với Senior Manager" or "báo cáo cho Lead"
+        for _, line in _lines(text):
+            norm_line = _key(line)
+            if any(norm_line.startswith(prefix) for prefix in ("cap bac", "level", "seniority", "chuc vu")):
+                for name, aliases in title_mapping:
+                    if any(re.search(rf"\b{re.escape(alias)}\b", norm_line) for alias in aliases):
+                        return name
+        return None
 
     @staticmethod
     def _employment_type(text: str) -> str | None:
-        normalized = _key(text)
-        mapping = {
-            "full_time": ("full time", "toan thoi gian"),
-            "part_time": ("part time", "ban thoi gian"),
-            "contract": ("contract", "hop dong"),
-            "internship": ("internship", "thuc tap"),
-        }
-        return next(
-            (name for name, aliases in mapping.items() if any(alias in normalized for alias in aliases)), None
-        )
+        # Avoid inferring from working hours (e.g. "Thứ 2 - Thứ 6, 08:00 - 17:00")
+        for _, line in _lines(text):
+            norm = _key(line)
+            if "gio lam viec" in norm or "thoi gian lam viec" in norm or "working hours" in norm or "thu 2" in norm:
+                continue
+            if re.search(r"\b(?:toan thoi gian|full[- ]?time)\b", norm):
+                return "full_time"
+            if re.search(r"\b(?:ban thoi gian|part[- ]?time)\b", norm):
+                return "part_time"
+            if re.search(r"\b(?:thuc tap|internship)\b", norm):
+                return "internship"
+            if re.search(r"\b(?:hop dong|contract)\b", norm):
+                return "contract"
+            if re.search(r"\b(?:thoi vu|temporary)\b", norm):
+                return "temporary"
+        return None
 
     @staticmethod
     def _work_mode(text: str) -> str | None:
-        normalized = _key(text)
-        mapping = {
-            "remote": ("remote", "tu xa"),
-            "hybrid": ("hybrid",),
-            # Do not infer a work arrangement from incidental benefits such as
-            # food supplied "tại văn phòng".
-            "on_site": ("on site", "lam viec tai van phong"),
-        }
-        return next(
-            (name for name, aliases in mapping.items() if any(alias in normalized for alias in aliases)), None
-        )
+        # Only direct evidence; do not infer from address or office snacks
+        for _, line in _lines(text):
+            norm = _key(line)
+            if any(norm.startswith(p) for p in ("dia diem", "dia chi", "address", "location", "ha noi", "ho chi minh")):
+                continue
+            if "do an" in norm or "snack" in norm or "an nhe" in norm:
+                continue
+            if re.search(r"\b(?:remote|tu xa)\b", norm):
+                return "remote"
+            if re.search(r"\bhybrid\b", norm):
+                return "hybrid"
+            if re.search(r"\b(?:on[- ]?site|lam viec tai van phong)\b", norm):
+                return "on_site"
+        return None
+
+    @staticmethod
+    def _salary_info(
+        source: SourceDocument, mapper: EvidenceMapper, evidence: dict[str, Any]
+    ) -> tuple[int | None, int | None, str | None, str | None, bool | None, str | None]:
+        for offset, line in _lines(source.text):
+            lower_line = line.lower()
+            norm = _key(line)
+            if not any(k in norm for k in ("luong", "salary", "thu nhap", "compensation", "$", "usd", "vnd", "trieu")):
+                continue
+
+            # Explicit fixed / non-negotiable keywords
+            is_fixed = bool(
+                re.search(
+                    r"\b(?:co dinh|cố định|khong thoa thuan|không thỏa thuận|fixed|non[- ]?negotiable)\b",
+                    lower_line,
+                )
+            )
+            # Explicit negotiable keywords
+            is_negotiable = bool(
+                re.search(
+                    r"\b(?:thoa thuan|thỏa thuận|thuong luong|thương lượng|negotiable)\b",
+                    lower_line,
+                )
+            )
+
+            neg_flag: bool | None
+            if is_fixed:
+                neg_flag = False
+            elif is_negotiable:
+                neg_flag = True
+            else:
+                neg_flag = None
+
+            # Negotiable keywords without numbers
+            if is_negotiable and not re.search(r"\d", norm):
+                start = offset
+                end = offset + len(line)
+                ref = _evidence_id("salary", start, end)
+                evidence[ref] = mapper.from_offsets(evidence_id=ref, char_start=start, char_end=end)
+                return None, None, None, None, True, line.strip()
+
+            # Competitive / Attractive without numbers (must NOT be treated as negotiable)
+            if re.search(r"\b(?:canh tranh|competitive|hap dan)\b", norm) and not re.search(r"\d", norm):
+                start = offset
+                end = offset + len(line)
+                ref = _evidence_id("salary", start, end)
+                evidence[ref] = mapper.from_offsets(evidence_id=ref, char_start=start, char_end=end)
+                return None, None, None, None, None, line.strip()
+
+            # VND millions: "20 - 30 triệu/tháng", "20-30 trieu", "20 - 30 tr", "25 triệu cố định"
+            m_vnd_range = re.search(
+                r"(\d+(?:[.,]\d+)?)\s*(?:-|–|—|đến|den|to)\s*(\d+(?:[.,]\d+)?)\s*(?:triệu|trieu|tr|m)\b",
+                lower_line,
+            )
+            m_vnd_single = re.search(
+                r"(\d+(?:[.,]\d+)?)\s*(?:triệu|trieu|tr|m)\b",
+                lower_line,
+            )
+            if m_vnd_range:
+                min_v = int(float(m_vnd_range.group(1).replace(",", ".")) * 1_000_000)
+                max_v = int(float(m_vnd_range.group(2).replace(",", ".")) * 1_000_000)
+                period = "year" if "năm" in lower_line or "year" in lower_line else "month"
+                start = offset
+                end = offset + len(line)
+                ref = _evidence_id("salary", start, end)
+                evidence[ref] = mapper.from_offsets(evidence_id=ref, char_start=start, char_end=end)
+                return min_v, max_v, "VND", period, neg_flag, line.strip()
+            elif m_vnd_single:
+                val = int(float(m_vnd_single.group(1).replace(",", ".")) * 1_000_000)
+                period = "year" if "năm" in lower_line or "year" in lower_line else "month"
+                start = offset
+                end = offset + len(line)
+                ref = _evidence_id("salary", start, end)
+                evidence[ref] = mapper.from_offsets(evidence_id=ref, char_start=start, char_end=end)
+                if re.search(r"\b(?:tối đa|toi da|up to|tới|den)\b", lower_line):
+                    return None, val, "VND", period, neg_flag, line.strip()
+                elif re.search(r"\b(?:từ|tu|from|tối thiểu|toi thieu)\b", lower_line):
+                    return val, None, "VND", period, neg_flag, line.strip()
+                elif is_fixed:
+                    return val, val, "VND", period, False, line.strip()
+                else:
+                    return val, None, "VND", period, neg_flag, line.strip()
+
+            # USD: "$1,000 - $2,000 / month", "1000 - 2000 usd"
+            if "$" in lower_line or "usd" in lower_line:
+                m_usd = re.search(
+                    r"(?:\$|usd)?\s*(\d{1,3}(?:,\d{3})*|\d+)\s*(?:-|–|—|to)\s*(?:\$|usd)?\s*(\d{1,3}(?:,\d{3})*|\d+)\s*(?:usd|\$)?",
+                    lower_line,
+                )
+                if m_usd:
+                    min_v = int(m_usd.group(1).replace(",", ""))
+                    max_v = int(m_usd.group(2).replace(",", ""))
+                    period = "year" if "year" in lower_line or "năm" in lower_line else "month"
+                    start = offset
+                    end = offset + len(line)
+                    ref = _evidence_id("salary", start, end)
+                    evidence[ref] = mapper.from_offsets(evidence_id=ref, char_start=start, char_end=end)
+                    return min_v, max_v, "USD", period, neg_flag, line.strip()
+
+        return None, None, None, None, None, None
 
     @staticmethod
     def _location(source: SourceDocument) -> str | None:
@@ -456,14 +702,12 @@ class DeterministicJobDescriptionParser:
             if key.startswith("location "):
                 return line.split(":", 1)[1].strip() if ":" in line else None
             if _heading(line) == "location" and index + 1 < len(lines):
-                value = (
-                    line.split(":", 1)[1].strip()
-                    if ":" in line
-                    else lines[index + 1][1].lstrip("-• ").split(":", 1)[0].strip()
-                )
-                if value:
-                    return value
-        match = re.search(r"(?im)^\s*(hà nội|ha noi|hanoi|đà nẵng|da nang|ho chi minh city)\s*:", source.text)
+                val = line.split(":", 1)[1].strip() if ":" in line else ""
+                if not val:
+                    val = lines[index + 1][1].lstrip("-•*o ").split(":", 1)[0].strip()
+                if val:
+                    return val
+        match = re.search(r"(?im)^\s*[-•*o]?\s*(hà nội|ha noi|hanoi|đà nẵng|da nang|ho chi minh city)\s*:", source.text)
         return match.group(1).title() if match else None
 
     @staticmethod
