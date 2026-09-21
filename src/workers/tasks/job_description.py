@@ -10,10 +10,8 @@ from src.modules.taxonomy.service import load_active_skill_taxonomy
 from src.modules.user_cvs.parsing.domain.source import build_source_document
 from src.modules.user_cvs.parsing.infrastructure.mineru_adapter import MinerUDocumentExtractor
 from src.modules.user_cvs.parsing.infrastructure.storage import R2ObjectStorage
-from src.workers.async_runner import WorkerEventLoopRunner
+from src.workers.async_runner import worker_async_runner
 from src.workers.celery_app import celery_app
-
-_async_runner = WorkerEventLoopRunner()
 
 
 @celery_app.task(
@@ -26,7 +24,7 @@ _async_runner = WorkerEventLoopRunner()
 )
 def parse_job_description(self, payload: dict) -> dict:
     del self
-    return _async_runner.run(_parse_job_description(str(payload.get("upload_id") or "")))
+    return worker_async_runner.run(_parse_job_description(str(payload.get("upload_id") or "")))
 
 
 async def _parse_job_description(upload_id: str) -> dict:
