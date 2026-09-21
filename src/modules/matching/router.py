@@ -22,7 +22,7 @@ from src.modules.matching.schemas import (
     UnresolvedRequirement,
 )
 from src.modules.matching.service import run_match
-from src.modules.user_cvs.domain.schemas import CanonicalResume
+from src.modules.user_cvs.schemas import CanonicalResume
 from src.workers.tasks.matching import match_cv_to_jd
 
 
