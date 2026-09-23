@@ -138,12 +138,19 @@ class EducationEntry(CanonicalModel):
     field_of_study: str | None = None
     start_date: PartialDate | None = None
     end_date: PartialDate | None = None
+    student_status: Literal["student", "final_year", "recent_graduate"] | None = None
+    gpa: float | None = Field(default=None, gt=0)
+    gpa_scale: float | None = Field(default=None, gt=0)
     evidence_refs: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def dates_are_ordered(self) -> "EducationEntry":
         if self.start_date and self.end_date and _starts_definitely_after(self.start_date, self.end_date):
             raise ValueError("startDate must not be after endDate")
+        if (self.gpa is None) != (self.gpa_scale is None):
+            raise ValueError("gpa and gpaScale must be provided together")
+        if self.gpa is not None and self.gpa_scale is not None and self.gpa > self.gpa_scale:
+            raise ValueError("gpa must not exceed gpaScale")
         return self
 
 
@@ -174,8 +181,10 @@ class CertificationEntry(CanonicalModel):
 
     @model_validator(mode="after")
     def dates_are_ordered(self) -> "CertificationEntry":
-        if self.issued_date and self.expires_date and _starts_definitely_after(
-            self.issued_date, self.expires_date
+        if (
+            self.issued_date
+            and self.expires_date
+            and _starts_definitely_after(self.issued_date, self.expires_date)
         ):
             raise ValueError("issuedDate must not be after expiresDate")
         return self
