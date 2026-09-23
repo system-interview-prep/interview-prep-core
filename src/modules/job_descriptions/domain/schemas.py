@@ -16,9 +16,28 @@ class JobRequirement(CanonicalModel):
     kind: Literal["skill", "experience", "education", "language", "other"]
     priority: Literal["must_have", "preferred"]
     concept: TaxonomyRef | None = None
+    atomic_concepts: list[TaxonomyRef] = Field(default_factory=list)
     raw_label: str = Field(min_length=1)
     minimum_experience_months: int | None = Field(default=None, ge=0)
+    group_id: str | None = None
+    group_operator: Literal["all_of", "any_of", "atomic"] | None = None
+    operator: Literal["gte", "gt", "lte", "lt", "eq", "required"] | None = None
+    threshold: float | None = None
+    scale: float | None = None
+    credential: str | None = None
+    equivalent_allowed: bool | None = None
     evidence_refs: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def atomic_group_is_consistent(self) -> "JobRequirement":
+        concept_ids = [item.concept_id for item in self.atomic_concepts]
+        if len(concept_ids) != len(set(concept_ids)):
+            raise ValueError("atomicConcepts must be unique")
+        if self.atomic_concepts and self.concept is not None:
+            raise ValueError("concept and atomicConcepts are mutually exclusive")
+        if len(self.atomic_concepts) > 1 and self.group_operator not in {"all_of", "any_of"}:
+            raise ValueError("multi-concept requirements need all_of or any_of")
+        return self
 
 
 class GroundedJobText(CanonicalModel):
