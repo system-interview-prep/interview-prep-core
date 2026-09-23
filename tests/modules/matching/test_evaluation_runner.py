@@ -42,7 +42,7 @@ def test_production_evaluation_runs_the_facade_for_all_golden_cases() -> None:
     assert report["summary"]["requirement"]["macro_f1"] == 1.0
     assert report["summary"]["eligibility"]["accuracy"] == 1.0
     assert report["summary"]["evidence"]["f1"] == 1.0
-    assert report["summary"]["actionable_coverage"] == 0.5333
-    assert report["summary"]["unexpected_abstentions"] == 14
-    assert report["quality_gate"]["checks"]["actionable_coverage"] is False
-    assert report["quality_gate"]["passed"] is False
+    assert report["summary"]["actionable_coverage"] == 1.0
+    assert report["summary"]["unexpected_abstentions"] == 0
+    assert report["quality_gate"]["checks"]["actionable_coverage"] is True
+    assert report["quality_gate"]["passed"] is True
