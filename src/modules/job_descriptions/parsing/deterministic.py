@@ -1,3 +1,4 @@
+import logging
 import re
 import unicodedata
 from datetime import UTC, datetime
@@ -12,6 +13,173 @@ from src.modules.job_descriptions.domain.schemas import (
 from src.modules.taxonomy.facade import classify_career
 from src.modules.user_cvs.facade import EvidenceMapper, SourceDocument
 from src.modules.user_cvs.schemas import CareerClassification, ParsingMetadata, TaxonomyRef
+
+logger = logging.getLogger(__name__)
+
+_PRIORITY_NEGATION_RE = re.compile(
+    r"\b(?:"
+    r"not\s+(?:strictly\s+)?required|is\s+not\s+required|not\s+mandatory|no\s+requirement|"
+    r"not\s+needed|not\s+compulsory|not\s+a\s+requirement|"
+    r"khong\s+bat\s+buoc|khong\s+yeu\s+cau|khong\s+can\s+thiet|khong\s+doi\s+hoi"
+    r")\b",
+    re.I,
+)
+
+_PRIORITY_PREFERRED_RE = re.compile(
+    r"\b(?:"
+    r"(?:la\s+)?diem\s+cong(?:\s+lon)?|"
+    r"(?:la\s+)?loi\s+the(?:\s+lon)?|"
+    r"(?:la\s+|duoc\s+)?uu\s+tien(?:\s+ung\s+vien)?|"
+    r"co\s+loi\s+the|"
+    r"khuyen\s+khich|"
+    r"(?:is\s+)?preferred|"
+    r"(?:is\s+)?(?:a\s+)?plus|"
+    r"nice\s+to\s+have|"
+    r"desirable|"
+    r"(?:is\s+)?(?:an\s+)?advantage(?:ous)?|"
+    r"optional"
+    r")\b",
+    re.I,
+)
+
+_PRIORITY_MUST_HAVE_RE = re.compile(
+    r"\b(?:"
+    r"(?:la\s+)?bat\s+buoc(?:\s+co)?|"
+    r"yeu\s+cau\s+bat\s+buoc|"
+    r"phai\s+co|"
+    r"(?:is\s+)?mandatory|"
+    r"must(?:\s+have)?|"
+    r"compulsory|"
+    r"required"
+    r")\b",
+    re.I,
+)
+
+
+_CONTRAST_PREFERRED_RE = re.compile(
+    r"\b(?:but|however|nhung|song)\b.*?\b(?:preferred|plus|nice\s+to\s+have|advantage|diem\s+cong|loi\s+the|uu\s+tien)\b",
+    re.I,
+)
+
+_CONCEPT_EQUIVS = {
+    "cert": "__CERT__",
+    "certified": "__CERT__",
+    "certification": "__CERT__",
+    "certificate": "__CERT__",
+    "practitioner": "__CERT__",
+    "chung": "__CERT__",
+    "chi": "__CERT__",
+    "bang": "__DEGREE__",
+    "cap": "__DEGREE__",
+    "degree": "__DEGREE__",
+    "bachelor": "__DEGREE__",
+    "master": "__DEGREE__",
+    "phd": "__DEGREE__",
+    "kinh": "__EXP__",
+    "nghiem": "__EXP__",
+    "experience": "__EXP__",
+    "exp": "__EXP__",
+}
+
+_FILLER_WORDS = {
+    "a", "an", "the", "any", "moi", "tat", "ca", "truoc", "do", "co", "is", "are",
+    "for", "of", "in", "with", "ve", "to", "and", "or",
+}
+
+_NEG_TOPIC_PATTERNS = [
+    # Format 1: <topic> is not required / không bắt buộc
+    re.compile(
+        r"(?:^|[.;\n])\s*(?:(?:a|an|the)\s+)?(?P<topic>[a-z0-9\s\+\#\-]+?)\s+"
+        r"(?:is|are|will\s+be)?\s*"
+        r"(?:not\s+(?:strictly\s+)?required|not\s+mandatory|not\s+needed|not\s+compulsory|not\s+a\s+requirement|khong\s+bat\s+buoc|khong\s+yeu\s+cau)\b",
+        re.I,
+    ),
+    # Format 2: không yêu cầu / no requirement for <topic>
+    re.compile(
+        r"\b(?:not\s+require(?:s)?|do\s+not\s+require|does\s+not\s+require|no\s+requirement\s+for|khong\s+yeu\s+cau|khong\s+bat\s+buoc)\s+"
+        r"(?:(?:a|an|the|any)\s+)?(?P<topic>[a-z0-9\s\+\#\-]+?)(?=$|[;,.]|\s+(?:and|but|may|candidates|ung\s+vien))",
+        re.I,
+    ),
+]
+
+_POSITIVE_OVERRIDE_RE = re.compile(
+    r"\b(?:"
+    r"preferred|is\s+preferred|plus|a\s+plus|is\s+a\s+plus|nice\s+to\s+have|advantage|"
+    r"diem\s+cong|loi\s+the|uu\s+tien|"
+    r"required|mandatory|must|must\s+have|bat\s+buoc"
+    r")\b",
+    re.I,
+)
+
+
+def _normalize_tokens(text: str) -> set[str]:
+    words = _key(text).split()
+    tokens: set[str] = set()
+    for w in words:
+        if w in _FILLER_WORDS:
+            continue
+        mapped = _CONCEPT_EQUIVS.get(w, w)
+        tokens.add(mapped)
+    return tokens
+
+
+def _extract_negated_topics(text: str) -> list[set[str]]:
+    topics: list[set[str]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        k = _key(line)
+        for pat in _NEG_TOPIC_PATTERNS:
+            for m in pat.finditer(k):
+                t = m.group("topic").strip()
+                t = re.sub(r"^(?:a|an|the|any|moi|tat\s+ca)\s+", "", t).strip()
+                toks = _normalize_tokens(t)
+                if toks:
+                    topics.append(toks)
+    return topics
+
+
+def _has_positive_override(candidate_value: str) -> bool:
+    return bool(_POSITIVE_OVERRIDE_RE.search(_key(candidate_value)))
+
+
+def _is_negated_by_document(candidate_value: str, doc_negated_topics: list[set[str]]) -> bool:
+    if _has_positive_override(candidate_value):
+        return False
+    cand_toks = _normalize_tokens(candidate_value)
+    for topic_toks in doc_negated_topics:
+        # Conservative principle: all non-filler concept tokens of negated topic must be matched
+        if topic_toks and topic_toks.issubset(cand_toks):
+            return True
+    return False
+
+
+def _detect_priority(value: str, section_priority: str = "must_have") -> str:
+    key_text = _key(value)
+    is_neg = bool(_PRIORITY_NEGATION_RE.search(key_text))
+    is_contrast_pref = bool(_CONTRAST_PREFERRED_RE.search(key_text))
+    is_pref = bool(_PRIORITY_PREFERRED_RE.search(key_text))
+    is_must = bool(_PRIORITY_MUST_HAVE_RE.search(key_text)) and not is_neg
+
+    if is_contrast_pref:
+        return "preferred"
+
+    if is_pref and is_must:
+        logger.warning(
+            "Ambiguous conflicting priority cues in requirement: %r. Defaulting to section priority %r.",
+            value,
+            section_priority,
+        )
+        return section_priority
+
+    if is_pref:
+        return "preferred"
+
+    if is_must:
+        return "must_have"
+
+    return section_priority
 
 _SKILLS = {
     "skill-unity": ("Unity", ("unity", "unity engine")),
@@ -42,7 +210,45 @@ _SKILLS = {
         "Large Language Models",
         ("large language model", "large language models", "llm"),
     ),
+    "skill-kotlin": ("Kotlin", ("kotlin",)),
+    "skill-cplusplus": ("C++", ("c++", "cpp")),
 }
+
+_GPA_RE = re.compile(
+    r"\b(?:GPA|CPA|Điểm\s*(?:GPA)?)\s*(?:>=|>=|≥|tối\s*thiểu|từ|\s*:\s*)?\s*(?P<thresh>\d+(?:\.\d+)?)\s*(?:/|\s*trên\s*)(?P<scale>\d+(?:\.\d+)?)",
+    re.I,
+)
+_GPA_STANDALONE_RE = re.compile(
+    r"\b(?:GPA|CPA)\s*(?:>=|>=|≥|tối\s*thiểu|từ|\s*:\s*)\s*(?P<thresh>\d+(?:\.\d+)?)",
+    re.I,
+)
+_LANG_CERT_RE = re.compile(
+    r"\b(?P<cred>IELTS|TOEIC|TOEFL|JLPT|HSK)\s*(?:>=|>=|≥|từ|\s*:\s*)?\s*(?P<thresh>\d+(?:\.\d+)?|\b[A-C][1-2]\b|\bN[1-5]\b)\s*(?:\+)?",
+    re.I,
+)
+_EQUIV_RE = re.compile(
+    r"\b(?:hoặc\s*tương\s*đương|or\s*equivalent|tương\s*đương|equivalent)\b",
+    re.I,
+)
+_PROGRAMMING_FOUNDATION_RE = re.compile(
+    r"\b(?:kiến thức nền tảng (?:về )?lập trình|"
+    r"nền tảng lập trình (?:vững chắc|tốt|cơ bản)|"
+    r"programming foundation|software (?:engineering )?fundamentals|coding fundamentals)\b",
+    re.I,
+)
+_STUDENT_STATUS_DISJUNCTION = re.compile(
+    r"(?P<opt1>sinh viên\s+năm\s+(?:4|cuối)|final-year\s+student|undergraduate)\s*"
+    r"(?:,|\s+hoặc|\s+or|/)\s*"
+    r"(?P<opt2>mới\s+tốt\s+nghiệp(?:[^,\n.]*)|recent\s+graduate(?:[^,\n.]*)|fresh\s+graduate(?:[^,\n.]*))",
+    re.I,
+)
+_RESEARCH_COMPETITION_DISJUNCTION = re.compile(
+    r"(?P<opt1>(?:từng\s+tham\s+gia\s+)?nghiên\s+cứu\s+khoa\s+học|scientific\s+research)\s*"
+    r"(?:,|\s+hoặc|\s+or|/)\s*"
+    r"(?P<opt2>(?:từng\s+)?(?:tham\s+gia\s+)?(?:cuộc\s+thi\s+AI|thi\s+AI)|AI\s+competition|hackathon)",
+    re.I,
+)
+
 PARSER_VERSION = "deterministic-jd-v4"
 _HEADERS = {
     "requirements": {
@@ -226,6 +432,8 @@ class DeterministicJobDescriptionParser:
         if not section:
             return []
         start, end, priority, result = *section, "must_have", []
+        doc_negated_topics = _extract_negated_topics(source.text)
+
         for offset, line in _lines(source.text[start:end]):
             if _heading(line) == "preferred":
                 priority = "preferred"
@@ -241,9 +449,218 @@ class DeterministicJobDescriptionParser:
                 relative_start, value = 0, line.strip()
             else:
                 continue
-            line_priority = "preferred" if "preferred" in _key(value) else priority
+
+            key_text = _key(value)
+            is_negated_line = bool(_PRIORITY_NEGATION_RE.search(key_text))
+            has_preferred_contrast = bool(_CONTRAST_PREFERRED_RE.search(key_text))
+
+            # Negated requirements without explicit preferred contrast are not requirements
+            if is_negated_line and not has_preferred_contrast:
+                continue
+
+            # Document-level negation (conservative concept-matched suppression)
+            if doc_negated_topics and _is_negated_by_document(value, doc_negated_topics):
+                continue
+
+            # Priority detection
+            line_priority = _detect_priority(value, priority)
+            is_preferred_line = line_priority == "preferred"
+
             absolute_start = start + offset + relative_start
-            # Check if this line represents certification, education, or language
+            absolute_end = absolute_start + len(value)
+
+            # Negative check: "Willing to learn"
+            is_willing_to_learn = bool(
+                re.search(r"\b(?:willing to learn|sẵn sàng học|yêu thích học hỏi)\b", value, re.I)
+            )
+            if is_willing_to_learn:
+                ref = _evidence_id("requirement", absolute_start, absolute_end)
+                evidence[ref] = mapper.from_offsets(
+                    evidence_id=ref, char_start=absolute_start, char_end=absolute_end
+                )
+                result.append(
+                    JobRequirement(
+                        requirementId=f"req-other-{absolute_start}",
+                        kind="other",
+                        priority="preferred",
+                        rawLabel=value,
+                        groupOperator="atomic",
+                        evidenceRefs=[ref],
+                    )
+                )
+                continue
+
+            # 1. GPA requirement
+            gpa_match = _GPA_RE.search(value) or _GPA_STANDALONE_RE.search(value)
+            if gpa_match:
+                thresh_val = float(gpa_match.group("thresh"))
+                scale_val = (
+                    float(gpa_match.group("scale"))
+                    if "scale" in gpa_match.groupdict() and gpa_match.group("scale")
+                    else (4.0 if thresh_val <= 4.0 else 10.0)
+                )
+                op = "gte"
+                if ">" in value and ">=" not in value and "≥" not in value:
+                    op = "gt"
+                ref = _evidence_id("requirement", absolute_start, absolute_end)
+                evidence[ref] = mapper.from_offsets(
+                    evidence_id=ref, char_start=absolute_start, char_end=absolute_end
+                )
+                result.append(
+                    JobRequirement(
+                        requirementId=f"req-education-gpa-{absolute_start}",
+                        kind="education",
+                        priority=line_priority,
+                        operator=op,
+                        threshold=thresh_val,
+                        scale=scale_val,
+                        rawLabel=value,
+                        groupOperator="atomic",
+                        evidenceRefs=[ref],
+                    )
+                )
+                continue
+
+            # 2. Language certificate requirement
+            lang_match = _LANG_CERT_RE.search(value)
+            if lang_match:
+                cred = lang_match.group("cred").upper()
+                raw_thresh = lang_match.group("thresh")
+                try:
+                    thresh = float(raw_thresh)
+                except ValueError:
+                    thresh = None
+                equiv = bool(_EQUIV_RE.search(value))
+                ref = _evidence_id("requirement", absolute_start, absolute_end)
+                evidence[ref] = mapper.from_offsets(
+                    evidence_id=ref, char_start=absolute_start, char_end=absolute_end
+                )
+                result.append(
+                    JobRequirement(
+                        requirementId=f"req-language-{absolute_start}",
+                        kind="language",
+                        priority=line_priority,
+                        credential=cred,
+                        operator="gte",
+                        threshold=thresh,
+                        equivalentAllowed=equiv,
+                        rawLabel=value,
+                        groupOperator="atomic",
+                        evidenceRefs=[ref],
+                    )
+                )
+                continue
+
+            # 3. Student status disjunction (e.g. "Sinh viên năm 4 hoặc mới tốt nghiệp")
+            student_match = _STUDENT_STATUS_DISJUNCTION.search(value)
+            if student_match:
+                group_id = f"req-group-any-{absolute_start}"
+                opt1_start = absolute_start + student_match.start("opt1")
+                opt1_end = absolute_start + student_match.end("opt1")
+                ref1 = _evidence_id("requirement", opt1_start, opt1_end)
+                evidence[ref1] = mapper.from_offsets(
+                    evidence_id=ref1, char_start=opt1_start, char_end=opt1_end
+                )
+                result.append(
+                    JobRequirement(
+                        requirementId=f"req-education-{opt1_start}",
+                        kind="education",
+                        priority=line_priority,
+                        groupId=group_id,
+                        groupOperator="any_of",
+                        rawLabel=source.text[opt1_start:opt1_end],
+                        evidenceRefs=[ref1],
+                    )
+                )
+
+                opt2_start = absolute_start + student_match.start("opt2")
+                opt2_end = absolute_start + student_match.end("opt2")
+                ref2 = _evidence_id("requirement", opt2_start, opt2_end)
+                evidence[ref2] = mapper.from_offsets(
+                    evidence_id=ref2, char_start=opt2_start, char_end=opt2_end
+                )
+                result.append(
+                    JobRequirement(
+                        requirementId=f"req-education-{opt2_start}",
+                        kind="education",
+                        priority=line_priority,
+                        groupId=group_id,
+                        groupOperator="any_of",
+                        rawLabel=source.text[opt2_start:opt2_end],
+                        evidenceRefs=[ref2],
+                    )
+                )
+                continue
+
+            # 4. Research / Competition disjunction
+            rc_match = _RESEARCH_COMPETITION_DISJUNCTION.search(value)
+            if rc_match:
+                group_id = f"req-group-any-{absolute_start}"
+                rc_priority = "preferred" if is_preferred_line or priority == "preferred" else line_priority
+
+                opt1_start = absolute_start + rc_match.start("opt1")
+                opt1_end = absolute_start + rc_match.end("opt1")
+                ref1 = _evidence_id("requirement", opt1_start, opt1_end)
+                evidence[ref1] = mapper.from_offsets(
+                    evidence_id=ref1, char_start=opt1_start, char_end=opt1_end
+                )
+                result.append(
+                    JobRequirement(
+                        requirementId=f"req-experience-{opt1_start}",
+                        kind="experience",
+                        priority=rc_priority,
+                        groupId=group_id,
+                        groupOperator="any_of",
+                        rawLabel=source.text[opt1_start:opt1_end],
+                        evidenceRefs=[ref1],
+                    )
+                )
+
+                opt2_start = absolute_start + rc_match.start("opt2")
+                opt2_end = absolute_start + rc_match.end("opt2")
+                ref2 = _evidence_id("requirement", opt2_start, opt2_end)
+                evidence[ref2] = mapper.from_offsets(
+                    evidence_id=ref2, char_start=opt2_start, char_end=opt2_end
+                )
+                result.append(
+                    JobRequirement(
+                        requirementId=f"req-experience-{opt2_start}",
+                        kind="experience",
+                        priority=rc_priority,
+                        groupId=group_id,
+                        groupOperator="any_of",
+                        rawLabel=source.text[opt2_start:opt2_end],
+                        evidenceRefs=[ref2],
+                    )
+                )
+                continue
+
+            # 5. General programming foundation without specific technology
+            prog_match = _PROGRAMMING_FOUNDATION_RE.search(value)
+            if prog_match:
+                has_known_tech = any(
+                    any(re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", value, re.I) for alias in aliases)
+                    for aliases in (t[1] for t in self._taxonomy.values())
+                )
+                if not has_known_tech:
+                    ref = _evidence_id("requirement", absolute_start, absolute_end)
+                    evidence[ref] = mapper.from_offsets(
+                        evidence_id=ref, char_start=absolute_start, char_end=absolute_end
+                    )
+                    result.append(
+                        JobRequirement(
+                            requirementId=f"req-skill-{absolute_start}",
+                            kind="skill",
+                            concept=None,  # DO NOT hallucinate Python / Java / C++
+                            priority=line_priority,
+                            rawLabel=value,
+                            groupOperator="atomic",
+                            evidenceRefs=[ref],
+                        )
+                    )
+                    continue
+
+            # 6. Generic certification, education, or language
             is_cert = bool(
                 re.search(
                     r"\b(?:certified|certification|certificate|chứng chỉ|practitioner)\b",
@@ -253,21 +670,21 @@ class DeterministicJobDescriptionParser:
             )
             is_edu = bool(
                 re.search(
-                    r"\b(?:bachelor|master|phd|degree|b\.s|m\.s|university|college|cử nhân|thạc sĩ|tiến sĩ|đại học|cao đẳng|tốt nghiệp)\b",
+                    r"\b(?:bachelor|master|phd|degree|b\.s|m\.s|university|college|"
+                    r"cử nhân|thạc sĩ|tiến sĩ|đại học|cao đẳng|tốt nghiệp)\b",
                     value,
                     re.I,
                 )
             )
             is_lang = bool(
                 re.search(
-                    r"\b(?:english|tiếng anh|ielts|toeic|toefl|b1|b2|c1|c2|japanese|tiếng nhật|jlpt|n1|n2|n3|chinese|tiếng trung)\b",
+                    r"\b(?:english|tiếng anh|ielts|toeic|toefl|b1|b2|c1|c2|"
+                    r"japanese|tiếng nhật|jlpt|n1|n2|n3|chinese|tiếng trung)\b",
                     value,
                     re.I,
                 )
             )
-
             if is_cert or is_edu or is_lang:
-                absolute_end = absolute_start + len(value)
                 ref = _evidence_id("requirement", absolute_start, absolute_end)
                 evidence[ref] = mapper.from_offsets(
                     evidence_id=ref, char_start=absolute_start, char_end=absolute_end
@@ -280,69 +697,121 @@ class DeterministicJobDescriptionParser:
                         priority=line_priority,
                         rawLabel=value,
                         minimumExperienceMonths=self._experience_months(value),
+                        groupOperator="atomic",
                         evidenceRefs=[ref],
                     )
                 )
                 continue
 
-            found_skill = False
+            # 7. Check taxonomy skills
+            found_skills = []
             for concept_id, (label, aliases) in self._taxonomy.items():
-                match = next(
-                    (
-                        re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", value, re.I)
-                        for alias in aliases
-                        if re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", value, re.I)
-                    ),
-                    None,
-                )
-                if not match:
-                    continue
-                found_skill = True
-                skill_start, skill_end = absolute_start + match.start(), absolute_start + match.end()
-                ref = _evidence_id("requirement", skill_start, skill_end)
-                evidence[ref] = mapper.from_offsets(
-                    evidence_id=ref, char_start=skill_start, char_end=skill_end
-                )
-                result.append(
-                    JobRequirement(
-                        requirementId=f"req-{concept_id}-{skill_start}",
-                        kind="skill",
-                        priority=line_priority,
-                        concept=TaxonomyRef(
-                            conceptId=concept_id,
-                            scheme="internal",
-                            taxonomyVersion=self._taxonomy_version,
-                            label=label,
-                        ),
-                        rawLabel=source.text[skill_start:skill_end],
-                        minimumExperienceMonths=self._experience_months(value),
-                        evidenceRefs=[ref],
-                    )
-                )
-            # Preserve eligibility, education, language, and domain requirements
-            # even when they do not map to the small deterministic skill catalog.
-            if not found_skill:
-                absolute_end = absolute_start + len(value)
-                ref = _evidence_id("requirement", absolute_start, absolute_end)
-                evidence[ref] = mapper.from_offsets(
-                    evidence_id=ref, char_start=absolute_start, char_end=absolute_end
-                )
+                for alias in aliases:
+                    for match in re.finditer(rf"(?<!\w){re.escape(alias)}(?!\w)", value, re.I):
+                        found_skills.append((concept_id, label, match.start(), match.end()))
+                        break
+
+            if found_skills:
+                found_skills.sort(key=lambda x: x[2])
+                unique_skills = []
+                last_end = -1
+                for c_id, lbl, s_start, s_end in found_skills:
+                    if s_start >= last_end:
+                        unique_skills.append((c_id, lbl, s_start, s_end))
+                        last_end = s_end
+
+                if len(unique_skills) > 1:
+                    has_disjunction = bool(re.search(r"\b(?:hoặc|hay|or)\b", value, re.I))
+                    group_op = "any_of" if has_disjunction else "all_of"
+                    group_id = f"req-group-{('any' if has_disjunction else 'all')}-{absolute_start}"
+                else:
+                    group_op = "atomic"
+                    group_id = None
+
                 exp_months = self._experience_months(value)
-                kind = (
-                    "experience"
-                    if (exp_months is not None or re.search(r"\b(?:experience|kinh nghiệm)\b", value, re.I))
-                    else "other"
-                )
-                result.append(
-                    JobRequirement(
-                        requirementId=f"req-{kind}-{absolute_start}",
-                        kind=kind,
-                        priority=line_priority,
-                        rawLabel=value,
-                        minimumExperienceMonths=exp_months,
-                        evidenceRefs=[ref],
+                op_val = "gte" if exp_months is not None else None
+
+                if len(unique_skills) > 1:
+                    ref = _evidence_id("requirement", absolute_start, absolute_end)
+                    evidence[ref] = mapper.from_offsets(
+                        evidence_id=ref, char_start=absolute_start, char_end=absolute_end
                     )
+                    result.append(
+                        JobRequirement(
+                            requirementId=group_id,
+                            kind="skill",
+                            priority=line_priority,
+                            rawLabel=value,
+                            atomicConcepts=[
+                                TaxonomyRef(
+                                    conceptId=c_id,
+                                    scheme="internal",
+                                    taxonomyVersion=self._taxonomy_version,
+                                    label=lbl,
+                                )
+                                for c_id, lbl, _, _ in unique_skills
+                            ],
+                            minimumExperienceMonths=exp_months,
+                            operator=op_val,
+                            groupId=group_id,
+                            groupOperator=group_op,
+                            evidenceRefs=[ref],
+                        )
+                    )
+                    continue
+
+                for c_id, lbl, s_start, s_end in unique_skills:
+                    skill_start = absolute_start + s_start
+                    skill_end = absolute_start + s_end
+                    ref = _evidence_id("requirement", skill_start, skill_end)
+                    evidence[ref] = mapper.from_offsets(
+                        evidence_id=ref, char_start=skill_start, char_end=skill_end
+                    )
+                    result.append(
+                        JobRequirement(
+                            requirementId=f"req-{c_id}-{skill_start}",
+                            kind="skill",
+                            priority=line_priority,
+                            concept=TaxonomyRef(
+                                conceptId=c_id,
+                                scheme="internal",
+                                taxonomyVersion=self._taxonomy_version,
+                                label=lbl,
+                            ),
+                            rawLabel=source.text[skill_start:skill_end],
+                            minimumExperienceMonths=exp_months,
+                            operator=op_val,
+                            groupId=group_id,
+                            groupOperator=group_op,
+                            evidenceRefs=[ref],
+                        )
+                    )
+                continue
+
+            # 8. Fallback
+            ref = _evidence_id("requirement", absolute_start, absolute_end)
+            evidence[ref] = mapper.from_offsets(
+                evidence_id=ref, char_start=absolute_start, char_end=absolute_end
+            )
+            exp_months = self._experience_months(value)
+            kind = (
+                "experience"
+                if (exp_months is not None or re.search(r"\b(?:experience|kinh nghiệm)\b", value, re.I))
+                else "other"
+            )
+            op_val = "gte" if exp_months is not None else None
+            result.append(
+                JobRequirement(
+                    requirementId=f"req-{kind}-{absolute_start}",
+                    kind=kind,
+                    priority=line_priority,
+                    rawLabel=value,
+                    minimumExperienceMonths=exp_months,
+                    operator=op_val,
+                    groupOperator="atomic",
+                    evidenceRefs=[ref],
                 )
+            )
         return result
 
     def _texts(self, source, mapper, evidence, section, kind):
@@ -418,10 +887,21 @@ class DeterministicJobDescriptionParser:
     def _experience_months(text: str) -> int | None:
         normalized = _key(text)
         match = re.search(
-            r"(?:it nhat\s*)?(\d+)\+?\s*(?:years?(?:\s+of)?(?:\s+\w+)?\s+experience|nam(?:\s+\w+)?\s+kinh\s+nghiem)",
+            r"(?:it nhat\s*|at least\s*|toi thieu\s*)?(\d+)\+?\s*"
+            r"(?:years?(?:\s+of)?(?:\s+[a-z0-9 ]+)?(?:\s+experience)?|"
+            r"nam(?:\s+[a-z0-9 ]+)?(?:\s+kinh\s+nghiem)?)",
             normalized,
         )
-        return int(match.group(1)) * 12 if match else None
+        if match:
+            return int(match.group(1)) * 12
+        match_months = re.search(
+            r"(?:it nhat\s*|at least\s*|toi thieu\s*)?(\d+)\+?\s*"
+            r"(?:months?(?:\s+of)?|thang(?:\s+kinh\s+nghiem)?)",
+            normalized,
+        )
+        if match_months:
+            return int(match_months.group(1))
+        return None
 
     @staticmethod
     def _company_info(
@@ -467,7 +947,6 @@ class DeterministicJobDescriptionParser:
             if ":" in candidate:
                 part1, sep, part2 = candidate.partition(":")
                 norm1 = _key(part1)
-                norm2 = _key(part2)
                 if norm1 in excluded_labels or any(norm1.startswith(ex + " ") for ex in excluded_labels):
                     continue
                 words1 = part1.strip().split()
