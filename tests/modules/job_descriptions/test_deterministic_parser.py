@@ -1,6 +1,24 @@
+import pytest
+
 from src.modules.job_descriptions.parsing.deterministic import DeterministicJobDescriptionParser
 from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
 from src.modules.user_cvs.parsing.domain.source import build_source_document
+
+
+def _requirement_concept_ids(parsed) -> set[str]:
+    return {
+        concept.concept_id
+        for item in parsed.requirements
+        for concept in ([item.concept] if item.concept else item.atomic_concepts)
+    }
+
+
+def _requirements_by_concept(parsed) -> dict[str, object]:
+    return {
+        concept.concept_id: item
+        for item in parsed.requirements
+        for concept in ([item.concept] if item.concept else item.atomic_concepts)
+    }
 
 
 def test_parser_builds_grounded_canonical_backend_job_description() -> None:
@@ -27,11 +45,14 @@ def test_parser_builds_grounded_canonical_backend_job_description() -> None:
 
     assert parsed.job_title == "Backend Engineer"
     assert parsed.location == "Ho Chi Minh City"
-    assert {item.concept.concept_id for item in parsed.requirements if item.concept} == {
+    assert _requirement_concept_ids(parsed) == {
         "skill-java", "skill-spring-boot", "skill-fastapi"
     }
     assert parsed.requirements[0].minimum_experience_months == 24
-    assert {item.concept.concept_id: item.priority for item in parsed.requirements} == {
+    assert {
+        concept_id: item.priority
+        for concept_id, item in _requirements_by_concept(parsed).items()
+    } == {
         "skill-java": "must_have", "skill-spring-boot": "must_have", "skill-fastapi": "preferred"
     }
     assert parsed.responsibilities[0].text == "Build reliable backend APIs"
@@ -87,7 +108,7 @@ def test_parser_does_not_assign_experience_or_priority_across_requirement_lines(
     )
 
     parsed = DeterministicJobDescriptionParser().parse(source, extraction_version="mineru-test")
-    requirements = {item.concept.concept_id: item for item in parsed.requirements if item.concept}
+    requirements = _requirements_by_concept(parsed)
     assert requirements["skill-java"].priority == "preferred"
     assert requirements["skill-java"].minimum_experience_months is None
     assert requirements["skill-spring-boot"].priority == "must_have"
@@ -171,7 +192,7 @@ def test_parser_handles_decorated_vietnamese_headings_and_ai_requirements() -> N
     assert parsed.job_title == "[FPT SOFTWARE HCM] TUYỂN DỤNG OJT AI ENGINEER"
     assert [item.text for item in parsed.benefits] == ["Làm việc cùng các chuyên gia AI và Data Scientist"]
     assert any("Sinh viên năm 4" in item.raw_label for item in parsed.requirements)
-    assert {item.concept.concept_id for item in parsed.requirements if item.concept} == {
+    assert _requirement_concept_ids(parsed) == {
         "skill-natural-language-processing", "skill-generative-ai", "skill-large-language-models"
     }
     assert parsed.career_classifications[0].code == "technology.artificial-intelligence"
@@ -199,7 +220,7 @@ def test_parser_accepts_ocr_variant_of_vietnamese_requirement_heading() -> None:
     parsed = DeterministicJobDescriptionParser().parse(source, extraction_version="mineru-test")
 
     assert [item.text for item in parsed.benefits] == ["M\u00f4i tr\u01b0\u1eddng l\u00e0m vi\u1ec7c t\u1ed1t"]
-    assert {item.concept.concept_id for item in parsed.requirements if item.concept} == {
+    assert _requirement_concept_ids(parsed) == {
         "skill-natural-language-processing", "skill-generative-ai"
     }
     assert not any("form" in item.raw_label for item in parsed.requirements)
@@ -232,3 +253,250 @@ def test_parser_prefers_later_task_section_and_does_not_infer_manager_from_a_tas
     assert parsed.seniority is None
     assert parsed.work_mode is None
     assert parsed.career_classifications[0].code == "technology.game-development"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_priority"),
+    [
+        # Vietnamese preferred cues
+        ("Biết Docker là điểm cộng", "preferred"),
+        ("Kubernetes là lợi thế", "preferred"),
+        ("Kỹ năng Python là ưu tiên", "preferred"),
+        ("Được ưu tiên nếu có kinh nghiệm React", "preferred"),
+        ("Ưu tiên ứng viên biết Docker", "preferred"),
+        ("Có chứng chỉ AWS là lợi thế lớn", "preferred"),
+        ("Docker là điểm cộng lớn", "preferred"),
+        # Vietnamese must-have cues
+        ("Git là bắt buộc", "must_have"),
+        ("Yêu cầu bắt buộc: 3 năm kinh nghiệm", "must_have"),
+        ("Phải có kinh nghiệm Spring Boot", "must_have"),
+        # English preferred cues
+        ("Docker experience is preferred", "preferred"),
+        ("Python is a plus", "preferred"),
+        ("Kubernetes is nice to have", "preferred"),
+        ("Knowledge of Go is desirable", "preferred"),
+        ("AWS is an advantage", "preferred"),
+        ("Cloud experience is advantageous", "preferred"),
+        ("AWS certification is preferred", "preferred"),
+        # English must-have cues
+        ("Kubernetes is required", "must_have"),
+        ("Python is mandatory", "must_have"),
+        ("Must have 2 years of experience", "must_have"),
+        ("AWS certification is required", "must_have"),
+        # Negation with contrast (explicit preferred cue after negation)
+        ("AWS certification is not required, but is preferred", "preferred"),
+        ("Chứng chỉ không bắt buộc, nhưng là điểm cộng", "preferred"),
+    ],
+)
+def test_detect_priority_table_driven(text: str, expected_priority: str) -> None:
+    from src.modules.job_descriptions.parsing.deterministic import _detect_priority
+
+    assert _detect_priority(text, section_priority="must_have") == expected_priority
+
+
+def test_priority_section_vs_sentence_precedence() -> None:
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown="fallback",
+            content_list=[
+                {"type": "text", "text": "Software Engineer", "page_idx": 0},
+                {"type": "text", "text": "Requirements", "page_idx": 0},
+                {"type": "text", "text": "- Biết Docker là điểm cộng", "page_idx": 0},
+                {"type": "text", "text": "- AWS certification is not required, but is preferred", "page_idx": 0},
+                {"type": "text", "text": "- Git là bắt buộc", "page_idx": 0},
+                {"type": "text", "text": "Preferred", "page_idx": 0},
+                {"type": "text", "text": "- Python", "page_idx": 0},
+            ],
+        ),
+        document_id="jd-pri-precedence-1",
+        document_sha256="e" * 64,
+    )
+
+    parsed = DeterministicJobDescriptionParser().parse(source, extraction_version="mineru-test")
+
+    # Sentence cue "điểm cộng" overrides section default "must_have" -> "preferred"
+    docker_req = next(r for r in parsed.requirements if r.concept and r.concept.concept_id == "skill-docker")
+    assert docker_req.priority == "preferred"
+
+    # Negation with preferred contrast -> "preferred"
+    aws_req = next(r for r in parsed.requirements if "AWS" in r.raw_label)
+    assert aws_req.priority == "preferred"
+
+    # Explicit mandatory cue "bắt buộc" -> "must_have"
+    git_req = next(r for r in parsed.requirements if r.concept and r.concept.concept_id == "skill-git")
+    assert git_req.priority == "must_have"
+
+    # Section default "preferred" is preserved when no line-level override
+    python_req = next(r for r in parsed.requirements if r.concept and r.concept.concept_id == "skill-python")
+    assert python_req.priority == "preferred"
+
+
+def test_negated_requirements_not_extracted() -> None:
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown="fallback",
+            content_list=[
+                {"type": "text", "text": "Backend Developer", "page_idx": 0},
+                {"type": "text", "text": "Requirements", "page_idx": 0},
+                {"type": "text", "text": "- AWS certification is not required", "page_idx": 0},
+                {"type": "text", "text": "- Certification is not mandatory", "page_idx": 0},
+                {"type": "text", "text": "- Chứng chỉ không bắt buộc", "page_idx": 0},
+                {"type": "text", "text": "- Không yêu cầu kinh nghiệm trước đó", "page_idx": 0},
+                {"type": "text", "text": "- AWS certification is not required and may be learned after joining", "page_idx": 0},
+                {"type": "text", "text": "- Git là bắt buộc", "page_idx": 0},
+            ],
+        ),
+        document_id="jd-neg-test-1",
+        document_sha256="f" * 64,
+    )
+
+    parsed = DeterministicJobDescriptionParser().parse(source, extraction_version="mineru-test")
+
+    # None of the pure negated items should be extracted as requirements
+    labels = [r.raw_label.lower() for r in parsed.requirements]
+    assert not any("aws certification is not required" in l for l in labels)
+    assert not any("certification is not mandatory" in l for l in labels)
+    assert not any("chứng chỉ không bắt buộc" in l for l in labels)
+    assert not any("không yêu cầu kinh nghiệm" in l for l in labels)
+    assert not any("may be learned after joining" in l for l in labels)
+
+    # Git là bắt buộc is a valid requirement
+    git_req = next(r for r in parsed.requirements if r.concept and r.concept.concept_id == "skill-git")
+    assert git_req.priority == "must_have"
+
+
+def test_special_edge_case_jd_edge_pre_gold_011_negation() -> None:
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown="fallback",
+            content_list=[
+                {"type": "text", "text": "Data Analyst", "page_idx": 0},
+                {"type": "text", "text": "A cloud certification is not required; candidates may learn it after joining.", "page_idx": 0},
+                {"type": "text", "text": "Candidate constraints", "page_idx": 0},
+                {"type": "text", "text": "- Python", "page_idx": 0},
+                {"type": "text", "text": "- SQL", "page_idx": 0},
+                {"type": "text", "text": "- 3 years of relevant experience", "page_idx": 0},
+                {"type": "text", "text": "- Bachelor's degree in Computer Science", "page_idx": 0},
+                {"type": "text", "text": "- English at B2 level", "page_idx": 0},
+                {"type": "text", "text": "- AWS Certified Cloud Practitioner", "page_idx": 0},
+                {"type": "text", "text": "- authorization to work in Vietnam", "page_idx": 0},
+                {"type": "text", "text": "- fintech domain knowledge", "page_idx": 0},
+                {"type": "text", "text": "- clear written communication", "page_idx": 0},
+                {"type": "text", "text": "- Docker", "page_idx": 0},
+            ],
+        ),
+        document_id="jd-edge-pre-gold-011",
+        document_sha256="1" * 64,
+    )
+
+    parsed = DeterministicJobDescriptionParser().parse(source, extraction_version="mineru-test")
+
+    # AWS certification must NOT appear in extracted requirements
+    assert not any("AWS" in r.raw_label or "Practitioner" in r.raw_label for r in parsed.requirements)
+    assert not any(r.concept and r.concept.concept_id == "skill-aws" for r in parsed.requirements)
+
+    # Expected 9 valid constraints remain
+    assert len(parsed.requirements) == 9
+
+
+def test_generic_document_level_negation_scenarios() -> None:
+    parser = DeterministicJobDescriptionParser()
+
+    # Scenario 2: "AWS certification is not required, but Azure certification is required"
+    src2 = build_source_document(
+        DocumentArtifacts(
+            markdown="fallback",
+            content_list=[
+                {"type": "text", "text": "Cloud Engineer", "page_idx": 0},
+                {"type": "text", "text": "AWS certification is not required.", "page_idx": 0},
+                {"type": "text", "text": "Requirements", "page_idx": 0},
+                {"type": "text", "text": "- AWS certification", "page_idx": 0},
+                {"type": "text", "text": "- Azure certification is required", "page_idx": 0},
+            ],
+        ),
+        document_id="jd-neg-scen-2",
+        document_sha256="2" * 64,
+    )
+    p2 = parser.parse(src2, extraction_version="mineru-test")
+    assert not any("AWS" in r.raw_label for r in p2.requirements)
+    azure_req = next(r for r in p2.requirements if "Azure" in r.raw_label)
+    assert azure_req.priority == "must_have"
+
+    # Scenario 3: "Certification is not required, but AWS certification is preferred"
+    src3 = build_source_document(
+        DocumentArtifacts(
+            markdown="fallback",
+            content_list=[
+                {"type": "text", "text": "Cloud Engineer", "page_idx": 0},
+                {"type": "text", "text": "Certification is not required.", "page_idx": 0},
+                {"type": "text", "text": "Requirements", "page_idx": 0},
+                {"type": "text", "text": "- AWS certification is preferred", "page_idx": 0},
+            ],
+        ),
+        document_id="jd-neg-scen-3",
+        document_sha256="3" * 64,
+    )
+    p3 = parser.parse(src3, extraction_version="mineru-test")
+    aws_req = next(r for r in p3.requirements if "AWS" in r.raw_label)
+    assert aws_req.priority == "preferred"
+
+    # Scenario 4 & 5: "Python is not required, but SQL is required"
+    src4 = build_source_document(
+        DocumentArtifacts(
+            markdown="fallback",
+            content_list=[
+                {"type": "text", "text": "Data Engineer", "page_idx": 0},
+                {"type": "text", "text": "Python is not required.", "page_idx": 0},
+                {"type": "text", "text": "Requirements", "page_idx": 0},
+                {"type": "text", "text": "- Python", "page_idx": 0},
+                {"type": "text", "text": "- SQL is required", "page_idx": 0},
+            ],
+        ),
+        document_id="jd-neg-scen-4",
+        document_sha256="4" * 64,
+    )
+    p4 = parser.parse(src4, extraction_version="mineru-test")
+    assert not any("Python" in r.raw_label or (r.concept and r.concept.concept_id == "skill-python") for r in p4.requirements)
+    sql_req = next(r for r in p4.requirements if "SQL" in r.raw_label or (r.concept and r.concept.concept_id == "skill-sql"))
+    assert sql_req.priority == "must_have"
+
+    # Scenario 6: "English certification is not required; English communication is required"
+    src6 = build_source_document(
+        DocumentArtifacts(
+            markdown="fallback",
+            content_list=[
+                {"type": "text", "text": "Developer", "page_idx": 0},
+                {"type": "text", "text": "English certification is not required.", "page_idx": 0},
+                {"type": "text", "text": "Requirements", "page_idx": 0},
+                {"type": "text", "text": "- English communication is required", "page_idx": 0},
+            ],
+        ),
+        document_id="jd-neg-scen-6",
+        document_sha256="6" * 64,
+    )
+    p6 = parser.parse(src6, extraction_version="mineru-test")
+    eng_req = next(r for r in p6.requirements if "English" in r.raw_label or "english" in r.raw_label.lower())
+    assert eng_req.priority == "must_have"
+
+    # Scenario 7: Prevent false suppression - generic negative statement does not suppress unrelated requirements
+    src7 = build_source_document(
+        DocumentArtifacts(
+            markdown="fallback",
+            content_list=[
+                {"type": "text", "text": "Software Engineer", "page_idx": 0},
+                {"type": "text", "text": "Cloud certification is not required.", "page_idx": 0},
+                {"type": "text", "text": "Requirements", "page_idx": 0},
+                {"type": "text", "text": "- Python", "page_idx": 0},
+                {"type": "text", "text": "- SQL", "page_idx": 0},
+                {"type": "text", "text": "- Docker", "page_idx": 0},
+            ],
+        ),
+        document_id="jd-neg-scen-7",
+        document_sha256="7" * 64,
+    )
+    p7 = parser.parse(src7, extraction_version="mineru-test")
+    req_labels = {r.raw_label for r in p7.requirements}
+    assert "Python" in req_labels
+    assert "SQL" in req_labels
+    assert "Docker" in req_labels
+
