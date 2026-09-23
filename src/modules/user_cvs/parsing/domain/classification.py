@@ -10,10 +10,13 @@ from src.modules.user_cvs.domain.schemas import CareerClassification
 
 
 class DeterministicCareerClassifier:
-    def classify(self, *, skills, employment):
+    def classify(self, *, skills, employment, headline=None, headline_evidence_refs=()):
+        titles = [(entry.job_title, entry.evidence_refs) for entry in employment]
+        if headline:
+            titles.insert(0, (headline, list(headline_evidence_refs)))
         results = classify_career(
             {skill.concept.concept_id: skill.evidence_refs for skill in skills},
-            [(entry.job_title, entry.evidence_refs) for entry in employment],
+            titles,
             minimum_skill_signals=2,
             include_ancestors=True,
         )
