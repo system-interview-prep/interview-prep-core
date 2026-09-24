@@ -108,10 +108,10 @@ def test_semantic_score_cannot_compensate_for_failed_must_have() -> None:
     assert result.requirement_results[0].status == "not_met"
 
 
-def test_missing_must_have_abstains_for_review() -> None:
+def test_missing_must_have_returns_a_self_service_estimate() -> None:
     result = MatchingFacade(StubEmbedder()).match(MatchRequest.model_validate(_payload(add_java=False)))
-    assert result.eligibility == "review_required"
-    assert result.decision == "abstained"
+    assert result.eligibility == "eligible"
+    assert result.suitability_score is not None
     assert result.requirement_results[0].status == "unknown"
 
 

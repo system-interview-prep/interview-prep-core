@@ -24,14 +24,30 @@ from src.workers.celery_app import celery_app
 )
 def parse_job_description(self, payload: dict) -> dict:
     del self
-    return worker_async_runner.run(_parse_job_description(str(payload.get("upload_id") or "")))
+    return worker_async_runner.run(
+        _parse_job_description(
+            str(payload.get("upload_id") or ""),
+            str(payload.get("version_id") or "") or None,
+        )
+    )
 
 
-async def _parse_job_description(upload_id: str) -> dict:
+async def _parse_job_description(upload_id: str, version_id: str | None = None) -> dict:
     if not upload_id:
         return {"status": "ignored"}
     try:
         async with SessionFactory() as db:
+            if version_id:
+                from sqlalchemy import text
+
+                await db.execute(
+                    text(
+                        "UPDATE job_description_versions SET processing_status = 'PROCESSING', error = NULL "
+                        "WHERE id = CAST(:version_id AS uuid) AND source_upload_id = :upload_id"
+                    ),
+                    {"version_id": version_id, "upload_id": upload_id},
+                )
+                await db.commit()
             taxonomy = await load_active_skill_taxonomy(db)
             mode = get_settings().jd_parser_mode.casefold().strip()
             if mode == "hybrid":
@@ -48,12 +64,35 @@ async def _parse_job_description(upload_id: str) -> dict:
                 source_builder=build_source_document,
             )
             result = await pipeline.run(upload_id)
-            return {"status": result.status, "upload_id": result.upload_id}
+            if version_id and result.status == "DONE":
+                await db.execute(
+                    text(
+                        "UPDATE job_description_versions v SET raw_text = u.raw_text, "
+                        "structured_data = u.structured_data, extracted_metadata = u.extracted_metadata, "
+                        "processing_status = 'DONE', error = NULL "
+                        "FROM job_descriptions u WHERE v.id = CAST(:version_id AS uuid) "
+                        "AND v.source_upload_id = u.id AND u.id = :upload_id"
+                    ),
+                    {"version_id": version_id, "upload_id": upload_id},
+                )
+                await db.commit()
+            return {"status": result.status, "upload_id": result.upload_id, "version_id": version_id}
     except Exception as exc:
         try:
             async with SessionFactory() as err_db:
                 repo = SqlAlchemyJobDescriptionParseRepository(err_db)
                 await repo.fail(upload_id, f"Parse error: {exc}"[:1000])
+                if version_id:
+                    from sqlalchemy import text
+
+                    await err_db.execute(
+                        text(
+                            "UPDATE job_description_versions SET processing_status = 'FAILED', "
+                            "error = :error WHERE id = CAST(:version_id AS uuid)"
+                        ),
+                        {"version_id": version_id, "error": f"Parse error: {exc}"[:1000]},
+                    )
+                    await err_db.commit()
         except Exception:
             pass
         raise

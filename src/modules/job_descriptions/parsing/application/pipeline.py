@@ -1,8 +1,10 @@
 import inspect
+import time
 from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Protocol
 
+from src.core.trace_logging import trace_event
 from src.modules.job_descriptions.domain.schemas import CanonicalJobDescription
 from src.modules.user_cvs.facade import DocumentArtifacts, SourceDocument
 
@@ -86,13 +88,17 @@ class JobDescriptionParsingPipeline:
         self._source_builder = source_builder
 
     async def run(self, upload_id: str) -> JobDescriptionPipelineResult:
+        started_at = time.monotonic()
         if not upload_id:
+            trace_event("jd_parser", "ignored")
             return JobDescriptionPipelineResult(status="ignored", upload_id=upload_id)
         document = await self._repository.claim(upload_id)
         if document is None:
+            trace_event("jd_parser", "not_claimed", upload_id=upload_id)
             return JobDescriptionPipelineResult(status="not_claimed", upload_id=upload_id)
         try:
             content = self._storage.read(document.storage_key)
+            trace_event("jd_parser", "extraction_started", upload_id=document.upload_id, bytes=len(content))
             artifacts = await self._extractor.extract(content, document.filename, document.upload_id)
             if not artifacts.markdown.strip() and not artifacts.content_list:
                 raise ValueError("document extractor returned no content")
@@ -102,6 +108,13 @@ class JobDescriptionParsingPipeline:
                 artifacts,
                 document_id=document.upload_id,
                 document_sha256=document.checksum,
+            )
+            trace_event(
+                "jd_parser",
+                "parser_started",
+                upload_id=document.upload_id,
+                extractor_version=artifacts.extractor_version,
+                source_characters=len(source.text),
             )
             parsed_or_awaitable = self._parser.parse(
                 source,
@@ -118,6 +131,13 @@ class JobDescriptionParsingPipeline:
                 parsed=parsed,
                 parse_source=parse_source,
             )
+            trace_event(
+                "jd_parser",
+                "completed",
+                upload_id=document.upload_id,
+                parser_version=parsed.parsing.parser_version,
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+            )
             return JobDescriptionPipelineResult(
                 status="DONE",
                 upload_id=upload_id,
@@ -125,4 +145,11 @@ class JobDescriptionParsingPipeline:
             )
         except Exception as exc:
             await self._repository.fail(upload_id, str(exc)[:1000])
+            trace_event(
+                "jd_parser",
+                "failed",
+                upload_id=upload_id,
+                error_type=type(exc).__name__,
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+            )
             raise

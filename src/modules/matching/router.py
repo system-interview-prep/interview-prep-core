@@ -75,8 +75,9 @@ async def _resolve_resume(db: AsyncSession, cv_id: str) -> CanonicalResume:
 async def _resolve_job(db: AsyncSession, job_id: str) -> CanonicalJob:
     res = await db.execute(
         text(
-            "SELECT id, title, keywords, description, requirements, structured_data, status "
-            "FROM job_descriptions WHERE id = :id"
+            "SELECT id, title, keywords, description, requirements, structured_data, status, active_version_id "
+            "FROM job_descriptions WHERE id = :id AND item_type = 'JOB_DESCRIPTION' "
+            "AND listing_status = 'ACTIVE'"
         ),
         {"id": job_id},
     )
@@ -87,6 +88,7 @@ async def _resolve_job(db: AsyncSession, job_id: str) -> CanonicalJob:
     # CANONICAL PATH — only entered when structured_data exists.
     # Invariant: if structured_data is present, we MUST use it or fail closed.
     # Falling back to the legacy synthetic path is FORBIDDEN when structured_data exists.
+    active_version_id = row["active_version_id"] if "active_version_id" in row else None
     if row["structured_data"]:
         try:
             parsed_jd = CanonicalJobDescription.model_validate(row["structured_data"])
@@ -123,7 +125,10 @@ async def _resolve_job(db: AsyncSession, job_id: str) -> CanonicalJob:
                         f"JD chưa hoàn thành parsing, không thể tiếp tục matching."
                     ),
                 )
-            return job_description_to_matching_job(parsed_jd, job_id=job_id)
+            job = job_description_to_matching_job(parsed_jd, job_id=job_id)
+            return job.model_copy(
+                update={"job_version_id": str(active_version_id) if active_version_id else None}
+            )
         except HTTPException:
             raise
         except ValueError as err:
@@ -198,6 +203,7 @@ async def _resolve_job(db: AsyncSession, job_id: str) -> CanonicalJob:
     return CanonicalJob(
         schemaVersion="2.1",
         jobId=job_id,
+        jobVersionId=str(active_version_id) if active_version_id else None,
         documentId=doc_id,
         documentSha256=doc_sha256,
         jobTitle=row["title"],

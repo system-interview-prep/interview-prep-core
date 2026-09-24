@@ -51,13 +51,75 @@ def _validate_http_url(url: str | None, field_name: str) -> None:
             raise ValueError(f"{field_name} must have a valid hostname")
 
 
+class PatchExperience(BaseModel):
+    min_years: int | None = Field(default=None, ge=0, validation_alias=AliasChoices("minYears", "min_years"))
+    max_years: int | None = Field(default=None, ge=0, validation_alias=AliasChoices("maxYears", "max_years"))
+
+
+class PatchSalary(BaseModel):
+    min: int | None = Field(default=None, ge=0)
+    max: int | None = Field(default=None, ge=0)
+    currency: str | None = None
+    period: Literal["hour", "month", "year"] | None = None
+    negotiable: bool | None = None
+
+
+class PatchSource(BaseModel):
+    type: Literal["internal_upload", "manual", "greenhouse", "lever", "company_career", "other"] | None = None
+    key: str | None = None
+    name: str | None = None
+    url: str | None = None
+    apply_url: str | None = Field(default=None, validation_alias=AliasChoices("applyUrl", "apply_url"))
+
+
 class JobDescriptionPatch(BaseModel):
+    """Editable published/draft listing fields; parser snapshots stay immutable."""
+    title: str | None = None
     description: str | None = None
+    company_name: str | None = Field(default=None, validation_alias=AliasChoices("companyName", "company_name"))
+    company_logo_url: str | None = Field(default=None, validation_alias=AliasChoices("companyLogoUrl", "company_logo_url"))
+    location: str | None = None
+    work_mode: Literal["remote", "hybrid", "on_site"] | None = Field(default=None, validation_alias=AliasChoices("workMode", "work_mode"))
+    employment_type: Literal["full_time", "part_time", "internship", "contract", "temporary"] | None = Field(default=None, validation_alias=AliasChoices("employmentType", "employment_type"))
+    seniority: str | None = None
+    experience: PatchExperience | None = None
+    salary: PatchSalary | None = None
+    primary_taxonomy_concept_id: str | None = Field(default=None, validation_alias=AliasChoices("primaryTaxonomyConceptId", "primary_taxonomy_concept_id"))
+    keywords: list[str] | None = None
+    source: PatchSource | None = None
+    external_job_id: str | None = Field(default=None, validation_alias=AliasChoices("externalJobId", "external_job_id"))
+    posted_at: datetime | None = Field(default=None, validation_alias=AliasChoices("postedAt", "posted_at"))
+    listing_status: Literal["DRAFT", "ACTIVE"] | None = Field(default=None, validation_alias=AliasChoices("listingStatus", "listing_status"))
 
 
 class UploadPatch(BaseModel):
     structuredData: dict | None = None
     extractedMetadata: dict | None = None
+
+
+def _version(row: dict) -> dict:
+    value = {
+        "id": str(row["id"]),
+        "jobDescriptionId": row["job_description_id"],
+        "versionNumber": row["version_number"],
+        "status": row["status"],
+        "processingStatus": row["processing_status"],
+        "filename": row.get("source_filename"),
+        "checksum": row.get("source_checksum"),
+        "error": row.get("error"),
+        "createdAt": row["created_at"].isoformat(),
+        "publishedAt": row["published_at"].isoformat() if row.get("published_at") else None,
+    }
+    if "structured_data" in row:
+        value.update(
+            {
+                "rawText": row.get("raw_text"),
+                "structuredData": row.get("structured_data"),
+                "extractedMetadata": row.get("extracted_metadata"),
+                "metadata": row.get("metadata") or {},
+            }
+        )
+    return value
 
 
 class FinalizeExperience(BaseModel):
@@ -90,11 +152,6 @@ class FinalizeSalary(BaseModel):
     def validate_salary(self) -> "FinalizeSalary":
         if self.min is not None and self.max is not None and self.min > self.max:
             raise ValueError("salary.min cannot be greater than salary.max")
-        if self.min is not None or self.max is not None:
-            if not self.currency or not self.currency.strip():
-                raise ValueError("salary.currency is required when numeric salary is provided")
-            if not self.period:
-                raise ValueError("salary.period is required when numeric salary is provided")
         return self
 
 
@@ -347,6 +404,31 @@ async def _upload_status_snapshot(db: AsyncSession, user_id: str, upload_id: str
     }
 
 
+async def _ensure_checksum_available(db: AsyncSession, user_id: str, checksum: str) -> None:
+    """Serialize checksum checks and reject content already owned by this admin."""
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:dedupe_key, 0))"),
+        {"dedupe_key": f"jd:{user_id}:{checksum}"},
+    )
+    duplicate = await db.execute(
+        text(
+            "SELECT 1 FROM job_descriptions jd "
+            "WHERE jd.owner_user_id = :user_id AND jd.checksum = :checksum "
+            "UNION ALL "
+            "SELECT 1 FROM job_description_versions v "
+            "JOIN job_descriptions jd ON jd.id = v.job_description_id "
+            "WHERE jd.owner_user_id = :user_id AND v.source_checksum = :checksum "
+            "LIMIT 1"
+        ),
+        {"user_id": user_id, "checksum": checksum},
+    )
+    if duplicate.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Tài liệu này đã được tải lên trước đó (checksum trùng khớp).",
+        )
+
+
 def _decode_cursor(cursor: str) -> tuple[datetime, str]:
     try:
         value = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
@@ -378,16 +460,7 @@ async def upload_jd(
     suffix = Path(filename).suffix.lower()
 
     checksum = sha256(content).hexdigest()
-    existing = await db.execute(
-        text(
-            _UPLOAD_SELECT
-            + " WHERE owner_user_id = :user_id AND checksum = :checksum AND item_type = 'JD_UPLOAD'"
-        ),
-        {"user_id": user["sub"], "checksum": checksum},
-    )
-    existing_row = existing.mappings().one_or_none()
-    if existing_row:
-        return _upload(existing_row)
+    await _ensure_checksum_available(db, user["sub"], checksum)
 
     upload_id = str(uuid4())
     storage_key = f"job-descriptions/{user['sub']}/{upload_id}{suffix}"
@@ -421,6 +494,36 @@ async def upload_jd(
 
     celery_app.send_task("job_description.parse", args=[{"upload_id": upload_id}])
     return await _get_upload(db, user["sub"], upload_id)
+
+
+@_inner_router.delete("/uploads/{upload_id}")
+async def delete_upload(
+    upload_id: str, user: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
+) -> dict:
+    """Delete an unfinalized JD upload and its source document."""
+    await _get_upload(db, user["sub"], upload_id)
+    storage_key = await db.scalar(
+        text("SELECT storage_key FROM job_descriptions WHERE id = :id AND owner_user_id = :uid"),
+        {"id": upload_id, "uid": user["sub"]},
+    )
+    result = await db.execute(
+        text(
+            "DELETE FROM job_descriptions "
+            "WHERE id = :id AND owner_user_id = :uid AND item_type = 'JD_UPLOAD'"
+        ),
+        {"id": upload_id, "uid": user["sub"]},
+    )
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="JD upload not found")
+    await db.commit()
+    try:
+        if storage_key:
+            delete_object(storage_key)
+    except Exception:
+        # Database deletion is authoritative; a failed object cleanup should
+        # not resurrect a draft upload.
+        pass
+    return {"message": "Deleted"}
 
 
 @_inner_router.get("/uploads/{upload_id}")
@@ -675,6 +778,25 @@ async def finalize_upload(
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=409, detail="Upload has already been finalized or modified")
+        await db.execute(
+            text(
+                "WITH inserted AS (INSERT INTO job_description_versions "
+                "(job_description_id, version_number, status, source_storage_key, source_filename, "
+                "source_checksum, raw_text, structured_data, extracted_metadata, metadata, "
+                "processing_status, published_at) "
+                "SELECT id, 1, CASE WHEN listing_status = 'ACTIVE' THEN 'ACTIVE' ELSE 'DRAFT' END, "
+                "storage_key, filename, checksum, raw_text, structured_data, extracted_metadata, "
+                "jsonb_build_object('title', title), 'DONE', "
+                "CASE WHEN listing_status = 'ACTIVE' THEN now() ELSE NULL END "
+                "FROM job_descriptions WHERE id = :id "
+                "ON CONFLICT (job_description_id, version_number) DO UPDATE "
+                "SET metadata = EXCLUDED.metadata RETURNING id, status) "
+                "UPDATE job_descriptions jd SET active_version_id = "
+                "CASE WHEN inserted.status = 'ACTIVE' THEN inserted.id ELSE jd.active_version_id END "
+                "FROM inserted WHERE jd.id = :id"
+            ),
+            {"id": upload_id},
+        )
         await db.commit()
     except Exception:
         await db.rollback()
@@ -707,7 +829,7 @@ async def download_upload(
 
 @_inner_router.get("")
 async def list_job_descriptions(
-    _: dict = Depends(current_user),
+    user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=12, ge=1, le=100),
     cursor: str | None = None,
@@ -716,6 +838,8 @@ async def list_job_descriptions(
     order: Literal["asc", "desc"] = "desc",
 ) -> dict:
     filters = ["jd.item_type = 'JOB_DESCRIPTION'"]
+    if "ADMIN" not in user.get("roles", []):
+        filters.append("jd.listing_status = 'ACTIVE'")
     params: dict[str, object] = {"limit": limit + 1}
     if taxonomy_concept_id:
         filters.append("jd.primary_taxonomy_concept_id = :taxonomy_concept_id")
@@ -748,8 +872,182 @@ async def list_job_descriptions(
 
 @_inner_router.get("/{job_description_id}")
 async def get_job_description(
-    job_description_id: str, _: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
+    job_description_id: str, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
 ) -> dict:
+    job = await _get(db, job_description_id)
+    if "ADMIN" not in user.get("roles", []) and job["listingStatus"] != "ACTIVE":
+        raise HTTPException(status_code=404, detail="Job description not found")
+    return job
+
+
+@_inner_router.get("/{job_description_id}/versions")
+async def list_job_description_versions(
+    job_description_id: str,
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _get(db, job_description_id)
+    result = await db.execute(
+        text(
+            "SELECT id, job_description_id, version_number, status, processing_status, "
+            "source_filename, source_checksum, error, created_at, published_at "
+            "FROM job_description_versions WHERE job_description_id = :job_id "
+            "ORDER BY version_number DESC"
+        ),
+        {"job_id": job_description_id},
+    )
+    return {"items": [_version(row) for row in result.mappings().all()]}
+
+
+@_inner_router.post("/{job_description_id}/versions", status_code=status.HTTP_201_CREATED)
+async def create_job_description_version(
+    job_description_id: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _get(db, job_description_id)
+    content = await file.read(_MAX_FILE_SIZE + 1)
+    try:
+        filename, detected_content_type = _file_validator.validate(
+            file.filename or "", file.content_type, content
+        )
+    except DocumentFileTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except InvalidDocumentFile as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    upload_id = str(uuid4())
+    version_id = str(uuid4())
+    checksum = sha256(content).hexdigest()
+    await _ensure_checksum_available(db, user["sub"], checksum)
+    suffix = Path(filename).suffix.lower()
+    storage_key = f"job-descriptions/{user['sub']}/{job_description_id}/versions/{version_id}{suffix}"
+    try:
+        put_object(storage_key, content, detected_content_type)
+        await db.execute(
+            text(
+                "INSERT INTO job_descriptions (id, owner_user_id, item_type, filename, content_type, "
+                "size, storage_key, url, checksum, status, processing_status) VALUES "
+                "(:id, :uid, 'JD_UPLOAD', :filename, :content_type, :size, :storage_key, :url, "
+                ":checksum, 'PENDING', 'PENDING')"
+            ),
+            {"id": upload_id, "uid": user["sub"], "filename": filename,
+             "content_type": detected_content_type, "size": len(content),
+             "storage_key": storage_key,
+             "url": public_url(storage_key) or f"/admin/job-descriptions/uploads/{upload_id}/download",
+             "checksum": checksum},
+        )
+        await db.execute(
+            text("SELECT id FROM job_descriptions WHERE id = :job_id FOR UPDATE"),
+            {"job_id": job_description_id},
+        )
+        result = await db.execute(
+            text(
+                "INSERT INTO job_description_versions "
+                "(id, job_description_id, version_number, status, source_upload_id, "
+                "source_storage_key, source_filename, source_checksum, processing_status, metadata) "
+                "SELECT CAST(:version_id AS uuid), jd.id, "
+                "COALESCE((SELECT MAX(version_number) + 1 FROM job_description_versions "
+                "WHERE job_description_id = jd.id), 1), 'DRAFT', :upload_id, :storage_key, "
+                ":filename, :checksum, 'PENDING', jsonb_build_object('title', jd.title) "
+                "FROM job_descriptions jd WHERE jd.id = :job_id AND jd.item_type = 'JOB_DESCRIPTION' "
+                "RETURNING id, job_description_id, version_number, status, processing_status, "
+                "source_filename, source_checksum, error, created_at, published_at"
+            ),
+            {"version_id": version_id, "upload_id": upload_id, "storage_key": storage_key,
+             "filename": filename, "checksum": checksum, "job_id": job_description_id},
+        )
+        row = result.mappings().one()
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        delete_object(storage_key)
+        raise
+
+    from src.workers.celery_app import celery_app
+    celery_app.send_task(
+        "job_description.parse", args=[{"upload_id": upload_id, "version_id": version_id}]
+    )
+    return _version(row)
+
+
+@_inner_router.get("/{job_description_id}/versions/{version_id}")
+async def get_job_description_version(
+    job_description_id: str,
+    version_id: str,
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    result = await db.execute(
+        text(
+            "SELECT id, job_description_id, version_number, status, processing_status, "
+            "source_filename, source_checksum, error, raw_text, structured_data, "
+            "extracted_metadata, metadata, created_at, published_at "
+            "FROM job_description_versions WHERE job_description_id = :job_id "
+            "AND id = CAST(:version_id AS uuid)"
+        ),
+        {"job_id": job_description_id, "version_id": version_id},
+    )
+    row = result.mappings().one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="JD version not found")
+    return _version(row)
+
+
+@_inner_router.post("/{job_description_id}/versions/{version_id}/publish")
+async def publish_job_description_version(
+    job_description_id: str,
+    version_id: str,
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        await db.execute(
+            text("SELECT id FROM job_descriptions WHERE id = :id FOR UPDATE"),
+            {"id": job_description_id},
+        )
+        target_result = await db.execute(
+            text(
+                "SELECT id, processing_status, structured_data FROM job_description_versions "
+                "WHERE id = CAST(:version_id AS uuid) AND job_description_id = :job_id FOR UPDATE"
+            ),
+            {"version_id": version_id, "job_id": job_description_id},
+        )
+        target = target_result.mappings().one_or_none()
+        if not target:
+            raise HTTPException(status_code=404, detail="JD version not found")
+        if target["processing_status"] != "DONE" or not target["structured_data"]:
+            raise HTTPException(status_code=409, detail="JD version has not finished parsing")
+        await db.execute(
+            text(
+                "UPDATE job_description_versions SET status = 'SUPERSEDED' "
+                "WHERE job_description_id = :job_id AND status = 'ACTIVE' AND id <> CAST(:version_id AS uuid)"
+            ),
+            {"job_id": job_description_id, "version_id": version_id},
+        )
+        await db.execute(
+            text(
+                "UPDATE job_description_versions SET status = 'ACTIVE', published_at = now() "
+                "WHERE id = CAST(:version_id AS uuid)"
+            ),
+            {"version_id": version_id},
+        )
+        await db.execute(
+            text(
+                "UPDATE job_descriptions jd SET active_version_id = CAST(:version_id AS uuid), "
+                "raw_text = v.raw_text, description = v.raw_text, structured_data = v.structured_data, "
+                "extracted_metadata = v.extracted_metadata, storage_key = v.source_storage_key, "
+                "filename = v.source_filename, checksum = v.source_checksum, listing_status = 'ACTIVE', "
+                "status = 'ACTIVE', updated_at = now() FROM job_description_versions v "
+                "WHERE jd.id = :job_id AND v.id = CAST(:version_id AS uuid)"
+            ),
+            {"job_id": job_description_id, "version_id": version_id},
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
     return await _get(db, job_description_id)
 
 
@@ -760,13 +1058,52 @@ async def update_job_description(
     _: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    if "description" in payload.model_fields_set:
+    values = payload.model_dump(exclude_unset=True)
+    if values:
+        experience = values.pop("experience", None)
+        salary = values.pop("salary", None)
+        source = values.pop("source", None)
+        if experience is not None:
+            values.update({"experience_min_years": experience.get("min_years"), "experience_max_years": experience.get("max_years")})
+        if salary is not None:
+            values.update({"salary_min": salary.get("min"), "salary_max": salary.get("max"),
+                           "salary_currency": salary.get("currency"), "salary_period": salary.get("period"),
+                           "salary_negotiable": salary.get("negotiable")})
+        if source is not None:
+            values.update({"source_type": source.get("type"), "source_key": source.get("key"),
+                           "source_name": source.get("name"), "source_url": source.get("url"),
+                           "apply_url": source.get("apply_url")})
+        column_map = {
+            "title": "title", "description": "description", "company_name": "company_name",
+            "company_logo_url": "company_logo_url",
+            "location": "location", "work_mode": "work_mode", "employment_type": "employment_type",
+            "seniority": "seniority", "primary_taxonomy_concept_id": "primary_taxonomy_concept_id",
+            "keywords": "keywords", "listing_status": "listing_status",
+            "experience_min_years": "experience_min_years", "experience_max_years": "experience_max_years",
+            "salary_min": "salary_min", "salary_max": "salary_max", "salary_currency": "salary_currency",
+            "salary_period": "salary_period", "salary_negotiable": "salary_negotiable",
+            "source_type": "source_type", "source_key": "source_key", "source_name": "source_name",
+            "source_url": "source_url", "apply_url": "apply_url", "external_job_id": "external_job_id",
+            "posted_at": "posted_at",
+        }
+        assignments = [f"{column_map[key]} = :{key}" for key in values if key in column_map]
+        if assignments:
+            if "listing_status" in values:
+                assignments.append("status = :listing_status")
+            assignments.append("updated_at = now()")
         result = await db.execute(
             text(
-                "UPDATE job_descriptions SET description = :description, updated_at = now() "
+                "UPDATE job_descriptions SET " + ", ".join(assignments) + " "
                 "WHERE id = :id AND item_type = 'JOB_DESCRIPTION'"
             ),
-            {"id": job_description_id, "description": payload.description or ""},
+            {"id": job_description_id, **values},
+        )
+        await db.execute(
+            text(
+                "UPDATE job_description_versions SET metadata = metadata || CAST(:metadata AS jsonb) "
+                "WHERE id = (SELECT active_version_id FROM job_descriptions WHERE id = :id)"
+            ),
+            {"id": job_description_id, "metadata": json.dumps(values)},
         )
         await db.commit()
         if result.rowcount == 0:

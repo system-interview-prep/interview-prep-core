@@ -44,6 +44,16 @@ _SKILLS = (
 
 
 def upgrade() -> None:
+    # Revision 0007 originally created the taxonomy table without the
+    # extensibility fields subsequently used by the taxonomy services.  This
+    # migration must add ``metadata`` before its seed inserts: application
+    # startup happens only *after* Alembic completes, so the runtime schema
+    # bootstrap cannot make this insert safe.
+    op.execute(
+        "ALTER TABLE taxonomy_concepts "
+        "ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb"
+    )
+
     for concept_id, label, aliases in _SKILLS:
         op.execute(
             "INSERT INTO taxonomy_concepts "

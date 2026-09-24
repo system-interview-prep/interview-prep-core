@@ -99,13 +99,43 @@ class MatchingFacade:
         self._apply_effective_weights(factors)
         suitability = self._suitability(factors)
         score_provenance = self._score_provenance(requirements, factors)
-        if score_provenance.mode == "semantic_only_suppressed":
-            suitability = None
-            warnings.append("semantic_only_score_suppressed")
+        if score_provenance.mode == "semantic_only_estimated":
+            warnings.append("semantic_only_estimate")
         decision, fit_band = self._decision(eligibility, suitability, factors)
         return MatchResult(
             resumeId=payload.resume.resume_id,
             jobId=payload.job.job_id,
+            jobVersionId=payload.job.job_version_id,
+            policyVersion=payload.matching_policy.policy_version,
+            eligibility=eligibility,
+            compatibilityStatus=compatibility_status,
+            suitabilityScore=suitability,
+            fitBand=fit_band,
+            decision=decision,
+            requirementResults=requirements,
+            compatibilityResults=compatibility_results,
+            factorResults=factors,
+            scoreProvenance=score_provenance,
+            warnings=warnings,
+        )
+
+    async def match_async(self, payload: MatchRequest) -> MatchResult:
+        """Assess a match while keeping database I/O on the caller's event loop."""
+        requirements = self._evaluate_requirements(payload.resume, payload.job)
+        eligibility = self._eligibility(payload, requirements)
+        compatibility_results = self._evaluate_compatibility(payload)
+        compatibility_status = self._compatibility_status(compatibility_results)
+        factors, warnings = await self._score_factors_async(payload, requirements)
+        self._apply_effective_weights(factors)
+        suitability = self._suitability(factors)
+        score_provenance = self._score_provenance(requirements, factors)
+        if score_provenance.mode == "semantic_only_estimated":
+            warnings.append("semantic_only_estimate")
+        decision, fit_band = self._decision(eligibility, suitability, factors)
+        return MatchResult(
+            resumeId=payload.resume.resume_id,
+            jobId=payload.job.job_id,
+            jobVersionId=payload.job.job_version_id,
             policyVersion=payload.matching_policy.policy_version,
             eligibility=eligibility,
             compatibilityStatus=compatibility_status,
@@ -280,6 +310,25 @@ class MatchingFacade:
         factors.append(semantic)
         return factors, [warning] if warning else []
 
+    async def _score_factors_async(
+        self, payload: MatchRequest, requirements: list[RequirementResult]
+    ) -> tuple[list[FactorResult], list[str]]:
+        weights = POLICY_WEIGHTS[payload.matching_policy.policy_version]
+        pairs = list(zip(payload.job.requirements, requirements, strict=True))
+        factors = [
+            self._requirement_coverage_factor(weights["requirement_coverage"], pairs),
+            self._requirement_factor(
+                "skill", weights["skill"], pairs, lambda r: self._requirement_category(r) == "skill"
+            ),
+            self._experience_factor(payload, weights["experience"], pairs),
+            self._requirement_factor(
+                "language", weights["language"], pairs, lambda r: self._requirement_category(r) == "language"
+            ),
+        ]
+        semantic, warning = await self._semantic_factor_async(payload, weights["semantic"])
+        factors.append(semantic)
+        return factors, [warning] if warning else []
+
     @staticmethod
     def _requirement_coverage_factor(
         policy_weight: float,
@@ -288,8 +337,7 @@ class MatchingFacade:
         applicable = [
             (requirement, result)
             for requirement, result in pairs
-            if result.status != "not_applicable"
-            and result.reason_code != "requirement_evaluator_unsupported"
+            if result.status != "not_applicable" and result.reason_code != "requirement_evaluator_unsupported"
         ]
         if not applicable:
             return FactorResult(
@@ -299,16 +347,12 @@ class MatchingFacade:
                 policyWeight=policy_weight,
                 effectiveWeight=0.0,
             )
-        evaluated = [
-            (requirement, result) for requirement, result in applicable if result.score is not None
-        ]
+        evaluated = [(requirement, result) for requirement, result in applicable if result.score is not None]
         evidence = list(dict.fromkeys(ref for _, result in applicable for ref in result.evidence_refs))
         applicable_weight = sum(
             _REQUIREMENT_IMPORTANCE[requirement.priority] for requirement, _ in applicable
         )
-        evaluated_weight = sum(
-            _REQUIREMENT_IMPORTANCE[requirement.priority] for requirement, _ in evaluated
-        )
+        evaluated_weight = sum(_REQUIREMENT_IMPORTANCE[requirement.priority] for requirement, _ in evaluated)
         if not evaluated:
             return FactorResult(
                 factor="requirement_coverage",
@@ -319,10 +363,13 @@ class MatchingFacade:
                 evidenceRefs=evidence,
                 warningCode="requirements_not_evaluated",
             )
-        score = sum(
-            _REQUIREMENT_IMPORTANCE[requirement.priority] * (result.score or 0.0)
-            for requirement, result in evaluated
-        ) / evaluated_weight
+        score = (
+            sum(
+                _REQUIREMENT_IMPORTANCE[requirement.priority] * (result.score or 0.0)
+                for requirement, result in evaluated
+            )
+            / evaluated_weight
+        )
         return FactorResult(
             factor="requirement_coverage",
             status="scored",
@@ -377,9 +424,7 @@ class MatchingFacade:
                 effectiveWeight=0.0,
             )
         scored = [result for _, result in selected if result.score is not None]
-        evidence = list(
-            dict.fromkeys(ref for _, result in selected for ref in result.evidence_refs)
-        )
+        evidence = list(dict.fromkeys(ref for _, result in selected for ref in result.evidence_refs))
         if not scored:
             return FactorResult(
                 factor=factor,
@@ -403,20 +448,16 @@ class MatchingFacade:
         )
 
     def _semantic_factor(
-        self, payload: MatchRequest, policy_weight: float
+        self, payload: MatchRequest, policy_weight: float, sparse_score: float | None = None
     ) -> tuple[FactorResult, str | None]:
         contextual_resume_text = [
-            value
-            for value in (payload.resume.profile.headline, payload.resume.profile.summary)
-            if value
+            value for value in (payload.resume.profile.headline, payload.resume.profile.summary) if value
         ]
         contextual_resume_text.extend(claim.concept.label for claim in payload.resume.skills)
         contextual_resume_text.extend(item.label for item in payload.resume.career_classifications)
         contextual_resume_text.extend(project.name for project in payload.resume.projects)
         contextual_resume_text.extend(
-            text
-            for employment in payload.resume.employment
-            for text in employment.responsibilities
+            text for employment in payload.resume.employment for text in employment.responsibilities
         )
         contextual_resume_text.extend(
             achievement.text
@@ -428,33 +469,28 @@ class MatchingFacade:
         )
         contextual_job_text = [value for value in (payload.job.job_title,) if value]
         contextual_job_text.extend(
-            item.raw_label
-            for item in payload.job.requirements
-            if isinstance(item, UnresolvedRequirement)
+            item.raw_label for item in payload.job.requirements if isinstance(item, UnresolvedRequirement)
         )
         contextual_job_text.extend(
-            item.skill.label
-            for item in payload.job.requirements
-            if isinstance(item, SkillRequirement)
+            item.skill.label for item in payload.job.requirements if isinstance(item, SkillRequirement)
         )
         contextual_job_text.extend(item.text for item in payload.job.responsibilities)
         contextual_job_text.extend(item.label for item in payload.job.career_classifications)
         resume_text = "\n".join(contextual_resume_text) or "\n".join(
             item.text for item in payload.resume.evidence
         )
-        job_text = "\n".join(contextual_job_text) or "\n".join(
-            item.text for item in payload.job.evidence
-        )
+        job_text = "\n".join(contextual_job_text) or "\n".join(item.text for item in payload.job.evidence)
         if not resume_text or not job_text:
             return self._unknown_semantic(policy_weight, "semantic_input_not_evidenced")
 
-        if payload.matching_policy.bm25_provider_mode == "in_memory":
-            sparse_score = bm25_similarity(job_text, resume_text)
-        else:
-            doc_id = payload.resume.document_id or payload.resume.resume_id
-            sparse_score = self._bm25_provider.score(
-                query_text=job_text, doc_text=resume_text, doc_id=doc_id
-            )
+        if sparse_score is None:
+            if payload.matching_policy.bm25_provider_mode == "in_memory":
+                sparse_score = bm25_similarity(job_text, resume_text)
+            else:
+                doc_id = payload.resume.document_id or payload.resume.resume_id
+                sparse_score = self._bm25_provider.score(
+                    query_text=job_text, doc_text=resume_text, doc_id=doc_id
+                )
         mode = payload.matching_policy.semantic_mode
         bm25_w = payload.matching_policy.bm25_weight
 
@@ -534,6 +570,55 @@ class MatchingFacade:
 
         return self._unknown_semantic(policy_weight, "semantic_scorer_unavailable")
 
+    async def _semantic_factor_async(
+        self, payload: MatchRequest, policy_weight: float
+    ) -> tuple[FactorResult, str | None]:
+        """Async equivalent of the semantic factor's sparse-score portion."""
+        contextual_resume_text = [
+            value for value in (payload.resume.profile.headline, payload.resume.profile.summary) if value
+        ]
+        contextual_resume_text.extend(claim.concept.label for claim in payload.resume.skills)
+        contextual_resume_text.extend(item.label for item in payload.resume.career_classifications)
+        contextual_resume_text.extend(project.name for project in payload.resume.projects)
+        contextual_resume_text.extend(
+            text for employment in payload.resume.employment for text in employment.responsibilities
+        )
+        contextual_resume_text.extend(
+            achievement.text
+            for employment in payload.resume.employment
+            for achievement in employment.achievements
+        )
+        contextual_resume_text.extend(
+            project.description for project in payload.resume.projects if project.description
+        )
+        contextual_job_text = [value for value in (payload.job.job_title,) if value]
+        contextual_job_text.extend(
+            item.raw_label for item in payload.job.requirements if isinstance(item, UnresolvedRequirement)
+        )
+        contextual_job_text.extend(
+            item.skill.label for item in payload.job.requirements if isinstance(item, SkillRequirement)
+        )
+        contextual_job_text.extend(item.text for item in payload.job.responsibilities)
+        contextual_job_text.extend(item.label for item in payload.job.career_classifications)
+        resume_text = "\n".join(contextual_resume_text) or "\n".join(
+            item.text for item in payload.resume.evidence
+        )
+        job_text = "\n".join(contextual_job_text) or "\n".join(item.text for item in payload.job.evidence)
+        if not resume_text or not job_text:
+            return self._unknown_semantic(policy_weight, "semantic_input_not_evidenced")
+        if payload.matching_policy.bm25_provider_mode == "in_memory":
+            sparse_score = bm25_similarity(job_text, resume_text)
+        else:
+            sparse_score = await self._bm25_provider.score_async(
+                query_text=job_text,
+                doc_text=resume_text,
+                doc_id=payload.resume.document_id or payload.resume.resume_id,
+            )
+
+        # The remaining semantic work is CPU-only and shares the established
+        # scoring implementation without touching the database again.
+        return self._semantic_factor(payload, policy_weight, sparse_score=sparse_score)
+
     @staticmethod
     def _token_overlap(left: str | None, right: str | None) -> float:
         def tokens(value: str | None) -> set[str]:
@@ -578,9 +663,7 @@ class MatchingFacade:
                     criterion="work_mode",
                     status="compatible" if compatible else "incompatible",
                     confidence=1.0,
-                    reasonCode=(
-                        "work_mode_accepted" if compatible else "work_mode_not_accepted"
-                    ),
+                    reasonCode=("work_mode_accepted" if compatible else "work_mode_not_accepted"),
                 )
             )
 
@@ -691,12 +774,10 @@ class MatchingFacade:
         requirements: list[RequirementResult], factors: list[FactorResult]
     ) -> ScoreProvenance:
         scored_factors = [item.factor for item in factors if item.status == "scored"]
-        supported = [
-            item for item in requirements if item.reason_code != "requirement_evaluator_unsupported"
-        ]
+        supported = [item for item in requirements if item.reason_code != "requirement_evaluator_unsupported"]
         scored_requirements = [item for item in supported if item.score is not None]
         if scored_factors == ["semantic"]:
-            mode = "semantic_only_suppressed"
+            mode = "semantic_only_estimated"
         elif scored_factors:
             mode = "requirement_aware"
         else:
