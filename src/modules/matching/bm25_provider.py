@@ -10,7 +10,6 @@ Supports:
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import logging
 import re
 from typing import Any, Protocol, runtime_checkable
@@ -32,6 +31,10 @@ class Bm25Provider(Protocol):
         """Compute normalized BM25 similarity score in range [0.0, 1.0]."""
         ...
 
+    async def score_async(self, query_text: str, doc_text: str, doc_id: str | None = None) -> float:
+        """Compute a score without leaving the caller's event loop."""
+        ...
+
 
 class InMemoryBm25Provider:
     """Computes BM25 similarity purely in memory without external database."""
@@ -39,6 +42,9 @@ class InMemoryBm25Provider:
     def score(self, query_text: str, doc_text: str, doc_id: str | None = None) -> float:
         del doc_id  # Unused in purely in-memory evaluation
         return bm25_similarity(query_text, doc_text)
+
+    async def score_async(self, query_text: str, doc_text: str, doc_id: str | None = None) -> float:
+        return self.score(query_text, doc_text, doc_id)
 
 
 class ParadeDbBm25Provider:
@@ -72,9 +78,7 @@ class ParadeDbBm25Provider:
                 safe_tokens.append(cleaned)
         return " ".join(safe_tokens)
 
-    async def score_async(
-        self, query_text: str, doc_text: str, doc_id: str | None = None
-    ) -> float:
+    async def score_async(self, query_text: str, doc_text: str, doc_id: str | None = None) -> float:
         """Asynchronously query ParadeDB BM25 score from user_cvs table."""
         if not doc_id:
             return self.fallback.score(query_text, doc_text, doc_id)
@@ -118,7 +122,11 @@ class ParadeDbBm25Provider:
             return self.fallback.score(query_text, doc_text, doc_id)
 
     def score(self, query_text: str, doc_text: str, doc_id: str | None = None) -> float:
-        """Synchronous wrapper for score_async, handling event loop state safely."""
+        """Compatibility wrapper for synchronous callers outside an event loop.
+
+        FastAPI request handling must use :meth:`score_async`; an asyncpg pool
+        cannot safely be moved to an event loop created by ``asyncio.run``.
+        """
         try:
             try:
                 loop = asyncio.get_running_loop()
@@ -126,13 +134,8 @@ class ParadeDbBm25Provider:
                 loop = None
 
             if loop is not None and loop.is_running():
-                # Running inside an active loop (e.g. FastAPI async context), offload to thread
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    return executor.submit(
-                        asyncio.run, self.score_async(query_text, doc_text, doc_id)
-                    ).result(timeout=5.0)
-            else:
-                return asyncio.run(self.score_async(query_text, doc_text, doc_id))
+                raise RuntimeError("score() cannot be used inside a running event loop; await score_async()")
+            return asyncio.run(self.score_async(query_text, doc_text, doc_id))
         except Exception as exc:
             logger.warning("ParadeDB runner failed; falling back to in-memory: %s", exc)
             return self.fallback.score(query_text, doc_text, doc_id)

@@ -1,6 +1,7 @@
 from src.core.config import get_settings
 from src.modules.matching.facade import get_matching_facade
 from src.modules.matching.schemas import MatchRequest
+from src.workers.async_runner import worker_async_runner
 from src.workers.celery_app import celery_app
 
 
@@ -14,4 +15,4 @@ from src.workers.celery_app import celery_app
 )
 def match_cv_to_jd(self, raw_payload: dict) -> dict:
     payload = MatchRequest.model_validate(raw_payload)
-    return get_matching_facade().match(payload).model_dump(by_alias=True)
+    return worker_async_runner.run(get_matching_facade().match_async(payload)).model_dump(by_alias=True)
