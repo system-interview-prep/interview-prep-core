@@ -1,8 +1,10 @@
 import inspect
+import time
 from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Protocol
 
+from src.core.trace_logging import trace_event
 from src.modules.user_cvs.domain.schemas import ParsedResume
 from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
 from src.modules.user_cvs.parsing.domain.source import SourceDocument
@@ -87,13 +89,17 @@ class CvParsingPipeline:
         self._source_builder = source_builder
 
     async def run(self, cv_id: str) -> PipelineResult:
+        started_at = time.monotonic()
         if not cv_id:
+            trace_event("cv_parser", "ignored")
             return PipelineResult(status="ignored", cv_id=cv_id)
         document = await self._repository.claim(cv_id)
         if document is None:
+            trace_event("cv_parser", "not_claimed", cv_id=cv_id)
             return PipelineResult(status="not_claimed", cv_id=cv_id)
         try:
             content = self._storage.read(document.storage_key)
+            trace_event("cv_parser", "extraction_started", cv_id=document.cv_id, bytes=len(content))
             artifacts = await self._extractor.extract(content, document.filename, document.cv_id)
             if not artifacts.markdown.strip() and not artifacts.content_list:
                 raise ValueError("document extractor returned no content")
@@ -104,6 +110,13 @@ class CvParsingPipeline:
                 artifacts,
                 document_id=document.cv_id,
                 document_sha256=document.checksum,
+            )
+            trace_event(
+                "cv_parser",
+                "parser_started",
+                cv_id=document.cv_id,
+                extractor_version=artifacts.extractor_version,
+                source_characters=len(source.text),
             )
             parsed_or_awaitable = self._parser.parse(
                 source,
@@ -121,6 +134,14 @@ class CvParsingPipeline:
                 parse_source=f"mineru+{parser_version}",
             )
             canonical_status = parsed.resume.parsing.status if parsed.resume.parsing else None
+            trace_event(
+                "cv_parser",
+                "completed",
+                cv_id=document.cv_id,
+                canonical_status=canonical_status,
+                parser_version=parser_version,
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+            )
             return PipelineResult(
                 status="DONE",
                 cv_id=document.cv_id,
@@ -128,4 +149,11 @@ class CvParsingPipeline:
             )
         except Exception as exc:
             await self._repository.fail(document.cv_id, str(exc)[:1000])
+            trace_event(
+                "cv_parser",
+                "failed",
+                cv_id=document.cv_id,
+                error_type=type(exc).__name__,
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+            )
             raise

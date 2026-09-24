@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_host: str = "0.0.0.0"
     app_port: int = 5000
+    # None enables traces only in local/development environments.
+    trace_logs_enabled: bool | None = None
+    trace_logs_dir: str = "trace-logs"
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     jwt_secret: str = "development-only-secret-change-me"

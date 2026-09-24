@@ -10,3 +10,4 @@ __pycache__/
 app.log
 uploads/
 models_cache/
+trace-logs/
