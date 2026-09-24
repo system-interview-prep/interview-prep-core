@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -60,6 +61,14 @@ def _sanitize_candidate_payload(data: Any) -> dict[str, Any]:
         data["jobTitle"] = {"value": val[:200], "quote": quote[:500]} if val and quote else None
     else:
         data["jobTitle"] = None
+
+    company = data.get("companyName") or data.get("company_name")
+    if isinstance(company, dict):
+        val = str(company.get("value") or "").strip()
+        quote = str(company.get("quote") or "").strip()
+        data["companyName"] = {"value": val[:200], "quote": quote[:500]} if val and quote else None
+    else:
+        data["companyName"] = None
 
     for list_field in ("responsibilities", "benefits"):
         clean_list = []
@@ -152,7 +161,14 @@ class HybridJobDescriptionParser:
             parsed_json = _safe_json_parse(output)
             sanitized = _sanitize_candidate_payload(parsed_json)
             candidate = JobDescriptionCandidate.model_validate(sanitized)
-        except (ModelServiceError, RuntimeError, json.JSONDecodeError, ValidationError, ValueError, Exception) as exc:
+        except (
+            ModelServiceError,
+            RuntimeError,
+            json.JSONDecodeError,
+            ValidationError,
+            ValueError,
+            Exception,
+        ) as exc:
             return self._with_warning(baseline, "llm_fallback", f"LLM candidate rejected: {str(exc)[:300]}")
         try:
             return self._merge(baseline, source, candidate)
@@ -227,9 +243,10 @@ class HybridJobDescriptionParser:
                 val = item.value.strip()
                 replaced = False
                 for idx, ex in enumerate(result):
-                    if (
-                        val.casefold() == ex.text.casefold()
-                        or (len(val) >= 5 and len(ex.text) >= 5 and (val.casefold() in ex.text.casefold() or ex.text.casefold() in val.casefold()))
+                    if val.casefold() == ex.text.casefold() or (
+                        len(val) >= 5
+                        and len(ex.text) >= 5
+                        and (val.casefold() in ex.text.casefold() or ex.text.casefold() in val.casefold())
                     ):
                         result[idx] = GroundedJobText(text=val, evidenceRefs=[evidence_id])
                         replaced = True
@@ -242,14 +259,62 @@ class HybridJobDescriptionParser:
             baseline.responsibilities, "responsibility", candidate.responsibilities
         )
         benefits = unique_text(baseline.benefits, "benefit", candidate.benefits)
+
+        def overlaps(left_id: str, right_id: str) -> bool:
+            left = evidence[left_id]
+            right = evidence[right_id]
+            return left.char_start < right.char_end and right.char_start < left.char_end
+
+        # Reconcile grounded LLM claims with deterministic requirements by source
+        # provenance. This retains stable IDs and structured numeric fields while
+        # preventing the same source requirement from becoming two canonical rows.
         requirements = list(baseline.requirements)
-        requirement_keys = {(item.raw_label.casefold().strip(), item.priority) for item in requirements}
-        for index, item in enumerate(candidate.requirements, start=len(requirements) + 1):
+        for index, item in enumerate(candidate.requirements, start=1):
             evidence_id = ground("requirement", item)
-            key = (item.value.casefold().strip(), item.priority)
-            if not evidence_id or key in requirement_keys:
+            if not evidence_id:
                 continue
             concept = self._resolve_concept(item.quote)
+            exp_months = self._deterministic._experience_months(item.quote)
+            op_val = "gte" if exp_months is not None else None
+            matching_indices = [
+                requirement_index
+                for requirement_index, requirement in enumerate(requirements)
+                if any(overlaps(ref, evidence_id) for ref in requirement.evidence_refs)
+                and (
+                    concept is None
+                    or requirement.concept is None
+                    or requirement.concept.concept_id == concept.concept_id
+                )
+            ]
+            if len(matching_indices) == 1:
+                requirement_index = matching_indices[0]
+                existing = requirements[requirement_index]
+                requirements[requirement_index] = existing.model_copy(
+                    update={
+                        "kind": "skill" if concept else existing.kind,
+                        "priority": (
+                            "preferred" if "preferred" in {existing.priority, item.priority} else "must_have"
+                        ),
+                        "concept": (
+                            existing.concept
+                            if existing.atomic_concepts
+                            else concept or existing.concept
+                        ),
+                        "raw_label": (
+                            existing.raw_label
+                            if existing.atomic_concepts
+                            else item.value.strip()
+                        ),
+                        "minimum_experience_months": (
+                            existing.minimum_experience_months
+                            if existing.minimum_experience_months is not None
+                            else exp_months
+                        ),
+                        "operator": existing.operator or op_val,
+                        "evidence_refs": list(dict.fromkeys([*existing.evidence_refs, evidence_id])),
+                    }
+                )
+                continue
             requirements.append(
                 JobRequirement(
                     requirementId=f"req-llm-{index:03d}",
@@ -257,11 +322,18 @@ class HybridJobDescriptionParser:
                     priority=item.priority,
                     concept=concept,
                     rawLabel=item.value.strip(),
-                    minimumExperienceMonths=self._deterministic._experience_months(item.quote),
+                    minimumExperienceMonths=exp_months,
+                    operator=op_val,
+                    groupOperator="atomic",
                     evidenceRefs=[evidence_id],
                 )
             )
-            requirement_keys.add(key)
+
+        company_name = baseline.company_name
+        if candidate.company_name:
+            company_evidence = ground("company", candidate.company_name)
+            if company_evidence and not company_name:
+                company_name = candidate.company_name.value.strip()
 
         title = baseline.job_title
         if candidate.job_title:
@@ -269,12 +341,22 @@ class HybridJobDescriptionParser:
             if title_evidence:
                 candidate_title = candidate.job_title.value.strip()
                 weak_titles = {
-                    "description", "job description", "summary", "overview", "tldr",
-                    "your job", "who we are", "our vision", "purpose of job"
+                    "description",
+                    "job description",
+                    "summary",
+                    "overview",
+                    "tldr",
+                    "your job",
+                    "who we are",
+                    "our vision",
+                    "purpose of job",
                 }
                 if not title or title.casefold() in weak_titles:
                     title = candidate_title
-                elif candidate_title.casefold() in title.casefold() or title.casefold() in candidate_title.casefold():
+                elif (
+                    candidate_title.casefold() in title.casefold()
+                    or title.casefold() in candidate_title.casefold()
+                ):
                     title = candidate_title
                 elif not self._has_explicit_title_header(source.text, title):
                     title = candidate_title
@@ -283,7 +365,10 @@ class HybridJobDescriptionParser:
                         ParserWarning(
                             code="llm_title_conflict",
                             severity="warning",
-                            message="LLM title differs from deterministic title; deterministic title retained",
+                            message=(
+                                "LLM title differs from deterministic title; "
+                                "deterministic title retained"
+                            ),
                         )
                     )
 
@@ -297,11 +382,21 @@ class HybridJobDescriptionParser:
         return CanonicalJobDescription(
             schemaVersion="1.0",
             jobTitle=title,
+            companyName=company_name,
             careerClassifications=classifications,
             seniority=baseline.seniority,
             employmentType=baseline.employment_type,
             workMode=baseline.work_mode,
             location=baseline.location,
+            experienceMinYears=baseline.experience_min_years,
+            experienceMaxYears=baseline.experience_max_years,
+            experienceRaw=baseline.experience_raw,
+            salaryMin=baseline.salary_min,
+            salaryMax=baseline.salary_max,
+            salaryCurrency=baseline.salary_currency,
+            salaryPeriod=baseline.salary_period,
+            salaryNegotiable=baseline.salary_negotiable,
+            salaryRaw=baseline.salary_raw,
             responsibilities=responsibilities,
             requirements=requirements,
             benefits=benefits,
@@ -323,6 +418,7 @@ class HybridJobDescriptionParser:
     @staticmethod
     def _has_explicit_title_header(raw_text: str, title: str) -> bool:
         from src.modules.job_descriptions.parsing.deterministic import _key
+
         for line in raw_text.splitlines():
             label, separator, value = line.partition(":")
             if separator and _key(label) in {"job title", "position", "vi tri", "chuc danh"}:

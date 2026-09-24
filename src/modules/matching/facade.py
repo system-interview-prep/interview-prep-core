@@ -8,6 +8,10 @@ from functools import lru_cache
 from src.modules.matching.bm25 import bm25_similarity
 from src.modules.matching.bm25_provider import Bm25Provider, get_bm25_provider
 from src.modules.matching.rag.embedding import EmbeddingAdapter, build_embedding_adapter_from_env
+from src.modules.matching.requirement_evaluators import (
+    evaluate_unresolved_requirement,
+    select_evaluator,
+)
 from src.modules.matching.schemas import (
     CanonicalJob,
     CompatibilityResult,
@@ -17,6 +21,7 @@ from src.modules.matching.schemas import (
     MatchResult,
     Requirement,
     RequirementResult,
+    ScoreProvenance,
     SkillRequirement,
     UnresolvedRequirement,
 )
@@ -36,10 +41,33 @@ ROLE_SYNONYMS = {
 }
 
 POLICY_WEIGHTS = {
-    "balanced-v1": {"skill": 0.30, "experience": 0.30, "semantic": 0.30, "language": 0.10},
-    "skill-focus-v1": {"skill": 0.40, "experience": 0.25, "semantic": 0.30, "language": 0.05},
-    "experience-focus-v1": {"skill": 0.25, "experience": 0.40, "semantic": 0.30, "language": 0.05},
+    # Grounded requirement satisfaction is the primary fit signal. Skill and
+    # semantic factors add breadth and context, but are intentionally secondary
+    # because they can overlap with requirement evidence.
+    "balanced-v1": {
+        "requirement_coverage": 0.60,
+        "skill": 0.15,
+        "experience": 0.05,
+        "language": 0.05,
+        "semantic": 0.15,
+    },
+    "skill-focus-v1": {
+        "requirement_coverage": 0.50,
+        "skill": 0.25,
+        "experience": 0.05,
+        "language": 0.05,
+        "semantic": 0.15,
+    },
+    "experience-focus-v1": {
+        "requirement_coverage": 0.50,
+        "skill": 0.10,
+        "experience": 0.20,
+        "language": 0.05,
+        "semantic": 0.15,
+    },
 }
+
+_REQUIREMENT_IMPORTANCE = {"must_have": 1.0, "nice_to_have": 0.35, "context": 0.15}
 
 PROFICIENCY_RANK = {
     "basic": 1,
@@ -70,6 +98,10 @@ class MatchingFacade:
         factors, warnings = self._score_factors(payload, requirements)
         self._apply_effective_weights(factors)
         suitability = self._suitability(factors)
+        score_provenance = self._score_provenance(requirements, factors)
+        if score_provenance.mode == "semantic_only_suppressed":
+            suitability = None
+            warnings.append("semantic_only_score_suppressed")
         decision, fit_band = self._decision(eligibility, suitability, factors)
         return MatchResult(
             resumeId=payload.resume.resume_id,
@@ -83,6 +115,7 @@ class MatchingFacade:
             requirementResults=requirements,
             compatibilityResults=compatibility_results,
             factorResults=factors,
+            scoreProvenance=score_provenance,
             warnings=warnings,
         )
 
@@ -202,14 +235,7 @@ class MatchingFacade:
                         )
                     )
             elif isinstance(requirement, UnresolvedRequirement):
-                results.append(
-                    RequirementResult(
-                        requirementId=requirement.requirement_id,
-                        status="unknown",
-                        confidence=0.0,
-                        reasonCode=f"{requirement.kind}_requirement_needs_specialized_evaluator",
-                    )
-                )
+                results.append(evaluate_unresolved_requirement(requirement, resume))
         return results
 
     @staticmethod
@@ -235,25 +261,79 @@ class MatchingFacade:
         weights = POLICY_WEIGHTS[payload.matching_policy.policy_version]
         pairs = list(zip(payload.job.requirements, requirements, strict=True))
         factors = [
+            self._requirement_coverage_factor(weights["requirement_coverage"], pairs),
             self._requirement_factor(
                 "skill",
                 weights["skill"],
                 pairs,
-                lambda requirement: (
-                    isinstance(requirement, SkillRequirement) and requirement.priority != "must_have"
-                ),
+                lambda requirement: self._requirement_category(requirement) == "skill",
             ),
             self._experience_factor(payload, weights["experience"], pairs),
             self._requirement_factor(
                 "language",
                 weights["language"],
                 pairs,
-                lambda requirement: isinstance(requirement, LanguageRequirement),
+                lambda requirement: self._requirement_category(requirement) == "language",
             ),
         ]
         semantic, warning = self._semantic_factor(payload, weights["semantic"])
         factors.append(semantic)
         return factors, [warning] if warning else []
+
+    @staticmethod
+    def _requirement_coverage_factor(
+        policy_weight: float,
+        pairs: list[tuple[Requirement, RequirementResult]],
+    ) -> FactorResult:
+        applicable = [
+            (requirement, result)
+            for requirement, result in pairs
+            if result.status != "not_applicable"
+            and result.reason_code != "requirement_evaluator_unsupported"
+        ]
+        if not applicable:
+            return FactorResult(
+                factor="requirement_coverage",
+                status="not_applicable",
+                reliability=0.0,
+                policyWeight=policy_weight,
+                effectiveWeight=0.0,
+            )
+        evaluated = [
+            (requirement, result) for requirement, result in applicable if result.score is not None
+        ]
+        evidence = list(dict.fromkeys(ref for _, result in applicable for ref in result.evidence_refs))
+        applicable_weight = sum(
+            _REQUIREMENT_IMPORTANCE[requirement.priority] for requirement, _ in applicable
+        )
+        evaluated_weight = sum(
+            _REQUIREMENT_IMPORTANCE[requirement.priority] for requirement, _ in evaluated
+        )
+        if not evaluated:
+            return FactorResult(
+                factor="requirement_coverage",
+                status="unknown",
+                reliability=0.0,
+                policyWeight=policy_weight,
+                effectiveWeight=0.0,
+                evidenceRefs=evidence,
+                warningCode="requirements_not_evaluated",
+            )
+        score = sum(
+            _REQUIREMENT_IMPORTANCE[requirement.priority] * (result.score or 0.0)
+            for requirement, result in evaluated
+        ) / evaluated_weight
+        return FactorResult(
+            factor="requirement_coverage",
+            status="scored",
+            rawScore=score,
+            # Unknown evidence is excluded from satisfaction, but lowers confidence
+            # through reliability rather than being silently counted as a failure.
+            reliability=evaluated_weight / applicable_weight,
+            policyWeight=policy_weight,
+            effectiveWeight=0.0,
+            evidenceRefs=evidence,
+        )
 
     def _experience_factor(
         self,
@@ -261,59 +341,24 @@ class MatchingFacade:
         policy_weight: float,
         pairs: list[tuple[Requirement, RequirementResult]],
     ) -> FactorResult:
-        job = payload.job
-        resume = payload.resume
-        if not job.job_title and not job.career_classifications:
-            return self._requirement_factor(
-                "experience",
-                policy_weight,
-                pairs,
-                lambda requirement: (
-                    isinstance(requirement, SkillRequirement)
-                    and requirement.operator == "gte"
-                    and requirement.priority != "must_have"
-                ),
-            )
+        del payload
+        return self._requirement_factor(
+            "experience",
+            policy_weight,
+            pairs,
+            lambda requirement: self._requirement_category(requirement) == "experience",
+        )
 
-        title_scores = [
-            self._token_overlap(job.job_title, employment.job_title)
-            for employment in resume.employment
-            if job.job_title
-        ]
-        job_domains = {item.code for item in job.career_classifications}
-        resume_domains = {item.code for item in resume.career_classifications}
-        domain_score = 1.0 if job_domains & resume_domains else 0.0
-        components = []
-        if title_scores:
-            components.append(max(title_scores))
-        if job_domains and resume_domains:
-            components.append(domain_score)
-        evidence = list(
-            dict.fromkeys(
-                ref
-                for owner in [*resume.employment, *resume.career_classifications]
-                for ref in owner.evidence_refs
-            )
-        )
-        if not components:
-            return FactorResult(
-                factor="experience",
-                status="unknown",
-                reliability=0.0,
-                policyWeight=policy_weight,
-                effectiveWeight=0.0,
-                warningCode="career_experience_not_evidenced",
-            )
-        return FactorResult(
-            factor="experience",
-            status="scored",
-            rawScore=sum(components) / len(components),
-            reliability=1.0 if evidence else 0.5,
-            policyWeight=policy_weight,
-            effectiveWeight=0.0,
-            evidenceRefs=evidence,
-            warningCode=None if evidence else "career_experience_has_no_direct_evidence",
-        )
+    @staticmethod
+    def _requirement_category(requirement: Requirement) -> str | None:
+        if isinstance(requirement, SkillRequirement):
+            return "skill"
+        if isinstance(requirement, LanguageRequirement):
+            return "language"
+        if isinstance(requirement, UnresolvedRequirement):
+            selection = select_evaluator(requirement)
+            return selection.category if selection else None
+        return None
 
     @staticmethod
     def _requirement_factor(
@@ -332,7 +377,9 @@ class MatchingFacade:
                 effectiveWeight=0.0,
             )
         scored = [result for _, result in selected if result.score is not None]
-        evidence = [ref for _, result in selected for ref in result.evidence_refs]
+        evidence = list(
+            dict.fromkeys(ref for _, result in selected for ref in result.evidence_refs)
+        )
         if not scored:
             return FactorResult(
                 factor=factor,
@@ -359,10 +406,18 @@ class MatchingFacade:
         self, payload: MatchRequest, policy_weight: float
     ) -> tuple[FactorResult, str | None]:
         contextual_resume_text = [
+            value
+            for value in (payload.resume.profile.headline, payload.resume.profile.summary)
+            if value
+        ]
+        contextual_resume_text.extend(claim.concept.label for claim in payload.resume.skills)
+        contextual_resume_text.extend(item.label for item in payload.resume.career_classifications)
+        contextual_resume_text.extend(project.name for project in payload.resume.projects)
+        contextual_resume_text.extend(
             text
             for employment in payload.resume.employment
             for text in employment.responsibilities
-        ]
+        )
         contextual_resume_text.extend(
             achievement.text
             for employment in payload.resume.employment
@@ -371,7 +426,19 @@ class MatchingFacade:
         contextual_resume_text.extend(
             project.description for project in payload.resume.projects if project.description
         )
-        contextual_job_text = [item.text for item in payload.job.responsibilities]
+        contextual_job_text = [value for value in (payload.job.job_title,) if value]
+        contextual_job_text.extend(
+            item.raw_label
+            for item in payload.job.requirements
+            if isinstance(item, UnresolvedRequirement)
+        )
+        contextual_job_text.extend(
+            item.skill.label
+            for item in payload.job.requirements
+            if isinstance(item, SkillRequirement)
+        )
+        contextual_job_text.extend(item.text for item in payload.job.responsibilities)
+        contextual_job_text.extend(item.label for item in payload.job.career_classifications)
         resume_text = "\n".join(contextual_resume_text) or "\n".join(
             item.text for item in payload.resume.evidence
         )
@@ -618,6 +685,43 @@ class MatchingFacade:
         if not scored:
             return None
         return sum(item.effective_weight * item.raw_score for item in scored if item.raw_score is not None)
+
+    @staticmethod
+    def _score_provenance(
+        requirements: list[RequirementResult], factors: list[FactorResult]
+    ) -> ScoreProvenance:
+        scored_factors = [item.factor for item in factors if item.status == "scored"]
+        supported = [
+            item for item in requirements if item.reason_code != "requirement_evaluator_unsupported"
+        ]
+        scored_requirements = [item for item in supported if item.score is not None]
+        if scored_factors == ["semantic"]:
+            mode = "semantic_only_suppressed"
+        elif scored_factors:
+            mode = "requirement_aware"
+        else:
+            mode = "unavailable"
+        return ScoreProvenance(
+            mode=mode,
+            scoredFactors=scored_factors,
+            supportedRequirementCount=len(supported),
+            scoredRequirementCount=len(scored_requirements),
+            unknownRequirementCount=sum(item.status == "unknown" for item in requirements),
+            totalRequirementCount=len(requirements),
+            requirementCoverage=next(
+                (
+                    item.raw_score
+                    for item in factors
+                    if item.factor == "requirement_coverage" and item.status == "scored"
+                ),
+                None,
+            ),
+            factorContributions={
+                item.factor: item.effective_weight * (item.raw_score or 0.0)
+                for item in factors
+                if item.status == "scored" and item.raw_score is not None
+            },
+        )
 
     @staticmethod
     def _decision(

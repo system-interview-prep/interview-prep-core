@@ -20,6 +20,7 @@ class RequirementCandidate(TextCandidate):
 
 class JobDescriptionCandidate(_CandidateModel):
     job_title: TextCandidate | None = Field(default=None, alias="jobTitle")
+    company_name: TextCandidate | None = Field(default=None, alias="companyName")
     responsibilities: list[TextCandidate] = Field(default_factory=list, max_length=30)
     requirements: list[RequirementCandidate] = Field(default_factory=list, max_length=40)
     benefits: list[TextCandidate] = Field(default_factory=list, max_length=30)

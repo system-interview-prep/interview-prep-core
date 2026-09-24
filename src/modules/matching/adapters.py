@@ -1,12 +1,41 @@
-"""Adapters from finalized parser contracts to the matching contract."""
+from typing import Literal
 
-from src.modules.job_descriptions.schemas import CanonicalJobDescription
+from src.modules.job_descriptions.schemas import CanonicalJobDescription, JobRequirement
 from src.modules.matching.schemas import (
     CanonicalJob,
     GroundedJobText,
     SkillRequirement,
     UnresolvedRequirement,
 )
+
+_PRIORITY_MAP: dict[str, Literal["must_have", "nice_to_have"]] = {
+    # Official canonical JD contract (CanonicalJobDescription)
+    "must_have": "must_have",
+    "preferred": "nice_to_have",
+    # Backward compatibility aliases
+    "required": "must_have",
+    "nice_to_have": "nice_to_have",
+}
+
+
+def _canonical_requirements(parsed: CanonicalJobDescription) -> list[JobRequirement]:
+    """Select one parser source for legacy hybrid artifacts.
+
+    hybrid-jd-v2 used to persist the deterministic baseline followed by an
+    independently paraphrased ``req-llm-*`` set.  Source selection is based on
+    explicit parser provenance in the IDs, never fuzzy display-text matching.
+    New parser output contains only one source, so this compatibility branch is
+    inert for newly parsed JDs.
+    """
+    llm_requirements = [
+        item for item in parsed.requirements if item.requirement_id.startswith("req-llm-")
+    ]
+    baseline_requirements = [
+        item for item in parsed.requirements if not item.requirement_id.startswith("req-llm-")
+    ]
+    if llm_requirements and baseline_requirements:
+        return llm_requirements
+    return parsed.requirements
 
 
 def job_description_to_matching_job(
@@ -19,15 +48,25 @@ def job_description_to_matching_job(
         raise ValueError("a finalized JD needs document evidence before matching")
     first_evidence = parsed.evidence[0]
     requirements = []
-    for requirement in parsed.requirements:
+    for requirement in _canonical_requirements(parsed):
         if not requirement.evidence_refs:
             raise ValueError(f"requirement {requirement.requirement_id} has no evidence")
+        priority = _PRIORITY_MAP.get(requirement.priority)
+        if priority is None:
+            raise ValueError(
+                f"unsupported requirement priority '{requirement.priority}' "
+                f"for requirement '{requirement.requirement_id}'"
+            )
         common = {
             "requirementId": requirement.requirement_id,
-            "priority": "nice_to_have" if requirement.priority == "preferred" else "must_have",
+            "priority": priority,
             "sourceEvidenceRef": requirement.evidence_refs[0],
         }
-        if requirement.kind == "skill" and requirement.concept is not None:
+        if (
+            requirement.kind == "skill"
+            and requirement.concept is not None
+            and not requirement.atomic_concepts
+        ):
             requirements.append(
                 SkillRequirement(
                     **common,
@@ -44,7 +83,15 @@ def job_description_to_matching_job(
                     type="unresolved",
                     kind=requirement.kind,
                     rawLabel=requirement.raw_label,
+                    atomicConcepts=requirement.atomic_concepts,
                     minimumExperienceMonths=requirement.minimum_experience_months,
+                    operator=requirement.operator,
+                    threshold=requirement.threshold,
+                    scale=requirement.scale,
+                    credential=requirement.credential,
+                    equivalentAllowed=requirement.equivalent_allowed,
+                    groupId=requirement.group_id,
+                    groupOperator=requirement.group_operator,
                 )
             )
 

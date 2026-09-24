@@ -134,4 +134,4 @@ async def test_pipeline_awaits_async_parser_and_persists_its_version() -> None:
     await pipeline.run("cv-1")
 
     assert repository.completed is not None
-    assert repository.completed[1]["parse_source"] == "mineru+deterministic-resume-v4"
+    assert repository.completed[1]["parse_source"] == "mineru+deterministic-resume-v5"

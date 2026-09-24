@@ -80,7 +80,7 @@ async def test_hybrid_resume_falls_back_without_losing_deterministic_result() ->
     parsed = await HybridResumeParser(client=FakeClient(ModelServiceError("offline"))).parse(
         _source(), extraction_version="test"
     )
-    assert parsed.resume.parsing.parser_version == "hybrid-resume-v1"
+    assert parsed.resume.parsing.parser_version == "hybrid-resume-v2"
     assert any(warning.code == "llm_fallback" for warning in parsed.resume.parsing.warnings)
     assert parsed.identity.emails[0].value == "jane@example.com"
 

@@ -1,6 +1,8 @@
 import hashlib
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,8 +24,10 @@ from src.modules.matching.schemas import (
     UnresolvedRequirement,
 )
 from src.modules.matching.service import run_match
-from src.modules.user_cvs.domain.schemas import CanonicalResume
+from src.modules.user_cvs.schemas import CanonicalResume
 from src.workers.tasks.matching import match_cv_to_jd
+
+logger = logging.getLogger(__name__)
 
 
 class MatchIdsRequest(BaseModel):
@@ -80,28 +84,97 @@ async def _resolve_job(db: AsyncSession, job_id: str) -> CanonicalJob:
     if not row:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy tin tuyển dụng với mã {job_id}")
 
+    # CANONICAL PATH — only entered when structured_data exists.
+    # Invariant: if structured_data is present, we MUST use it or fail closed.
+    # Falling back to the legacy synthetic path is FORBIDDEN when structured_data exists.
     if row["structured_data"]:
         try:
             parsed_jd = CanonicalJobDescription.model_validate(row["structured_data"])
-            if parsed_jd.evidence:
-                return job_description_to_matching_job(parsed_jd, job_id=job_id)
-        except Exception:
-            pass
+        except ValidationError as err:
+            logger.warning(
+                "matching.resolve_job canonical_validation_failed job_id=%s "
+                "error_type=%s schema_version=%s",
+                job_id,
+                type(err).__name__,
+                row["structured_data"].get("schemaVersion", "unknown")
+                if isinstance(row["structured_data"], dict)
+                else "unknown",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"structured_data của JD '{job_id}' không đúng contract "
+                    f"CanonicalJobDescription — không thể tiếp tục matching. "
+                    f"Lỗi: {err.error_count()} validation error(s). "
+                    f"Hãy kiểm tra lại kết quả parsing của JD này."
+                ),
+            ) from err
 
-    # Synthesize grounded CanonicalJob from basic fields
+        try:
+            if not parsed_jd.evidence:
+                logger.warning(
+                    "matching.resolve_job canonical_no_evidence job_id=%s",
+                    job_id,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"JD '{job_id}' có structured_data nhưng thiếu evidence — "
+                        f"JD chưa hoàn thành parsing, không thể tiếp tục matching."
+                    ),
+                )
+            return job_description_to_matching_job(parsed_jd, job_id=job_id)
+        except HTTPException:
+            raise
+        except ValueError as err:
+            logger.warning(
+                "matching.resolve_job matching_adapter_failed job_id=%s "
+                "error_type=%s error=%s",
+                job_id,
+                type(err).__name__,
+                str(err),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"JD '{job_id}' vượt qua canonical validation nhưng "
+                    f"không thể convert sang matching contract: {err}"
+                ),
+            ) from err
+        except Exception as err:
+            logger.error(
+                "matching.resolve_job matching_adapter_unexpected_error job_id=%s "
+                "error_type=%s",
+                job_id,
+                type(err).__name__,
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    f"Lỗi không mong đợi khi xử lý JD '{job_id}'. "
+                    f"Vui lòng thử lại hoặc liên hệ hỗ trợ."
+                ),
+            ) from err
+
+    # LEGACY PATH — only reached when structured_data is absent (None/empty).
+    # This supports JDs that have not yet been processed by the canonical parser.
+    # Do NOT move this block above the structured_data guard.
+
     doc_id = f"doc-jd-{job_id}"
     full_text = f"{row['title']}\n\n{row['description']}\n\n{row['requirements']}".strip() or "Job Description"
     doc_sha256 = hashlib.sha256(full_text.encode("utf-8")).hexdigest()
     ev_id = f"ev-jd-{job_id}-1"
+    ev_text = full_text[:500]
     evidence = [
         EvidenceSpan(
-            evidence_id=ev_id,
-            document_id=doc_id,
-            document_sha256=doc_sha256,
-            text=full_text[:500],
-            start_offset=0,
-            end_offset=min(500, len(full_text)),
-            section_type="requirements",
+            evidenceId=ev_id,
+            documentId=doc_id,
+            documentSha256=doc_sha256,
+            section="requirements",
+            text=ev_text,
+            charStart=0,
+            charEnd=len(ev_text),
         )
     ]
     req_lines = [line.strip() for line in (row["requirements"] or "").split("\n") if line.strip()]

@@ -14,6 +14,7 @@ from src.modules.user_cvs.domain.schemas import (
     ParserWarning,
     ParsingMetadata,
     ResumeIdentity,
+    ResumeProfile,
     SkillClaim,
     TaxonomyRef,
 )
@@ -26,7 +27,7 @@ from src.modules.user_cvs.parsing.domain.structured import (
     ProjectExtractor,
 )
 
-PARSER_VERSION = "deterministic-resume-v4"
+PARSER_VERSION = "deterministic-resume-v5"
 TAXONOMY_VERSION = "internal-2026.1"
 
 _SKILLS = {
@@ -74,6 +75,28 @@ _SKILLS = {
     "skill-xml": ("XML", ("xml",)),
     "skill-http": ("HTTP", ("http",)),
     "skill-rest-api": ("REST API", ("rest", "rest api", "restful api")),
+    "skill-artificial-intelligence": ("Artificial Intelligence", ("artificial intelligence", "ai")),
+    "skill-machine-learning": ("Machine Learning", ("machine learning", "ml")),
+    "skill-natural-language-processing": (
+        "Natural Language Processing",
+        ("natural language processing", "nlp"),
+    ),
+    "skill-generative-ai": ("Generative AI", ("generative ai", "genai", "gen ai")),
+    "skill-large-language-models": (
+        "Large Language Models",
+        ("large language models", "large language model", "llms", "llm"),
+    ),
+    "skill-retrieval-augmented-generation": (
+        "Retrieval-Augmented Generation",
+        ("retrieval-augmented generation", "retrieval augmented generation", "rag"),
+    ),
+    "skill-langgraph": ("LangGraph", ("langgraph",)),
+    "skill-gemini": ("Gemini", ("gemini", "google gemini")),
+    "skill-bm25": ("BM25", ("bm25",)),
+    "skill-tf-idf": ("TF-IDF", ("tf-idf", "tf idf")),
+    "skill-reciprocal-rank-fusion": ("Reciprocal Rank Fusion", ("reciprocal rank fusion", "rrf")),
+    "skill-named-entity-recognition": ("Named Entity Recognition", ("named entity recognition", "ner")),
+    "skill-semantic-search": ("Semantic Search", ("semantic search",)),
 }
 
 _EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\w.-])")
@@ -131,6 +154,8 @@ class ResumeDraft:
     education: list = field(default_factory=list)
     projects: list = field(default_factory=list)
     certifications: list = field(default_factory=list)
+    profile: ResumeProfile = field(default_factory=ResumeProfile)
+    profile_evidence_refs: list[str] = field(default_factory=list)
     evidence: dict[str, EvidenceSpan] = field(default_factory=dict)
     warnings: list[ParserWarning] = field(default_factory=list)
 
@@ -196,6 +221,39 @@ class TaxonomySkillExtractor:
                     message="Deterministic taxonomy did not find an explicit skill alias.",
                 )
             )
+
+
+class ProfileExtractor:
+    """Capture an explicit headline without treating prose as a job title."""
+
+    _HEADLINE_RE = re.compile(
+        r"^\s*(?:ai|ml|machine learning|backend|frontend|software|data|devops|cloud)\s+"
+        r"(?:engineer|developer|scientist)(?:\s+(?:intern|student))?"
+        r"(?:\s*[|â€¢Â·].*)?\s*$",
+        re.IGNORECASE,
+    )
+
+    def extract(self, source: SourceDocument, mapper: EvidenceMapper, draft: ResumeDraft) -> None:
+        candidates = [
+            block
+            for block in source.blocks[:12]
+            if block.section in {"profile", "skills", "other"}
+            and len(block.text.strip()) <= 240
+            and self._HEADLINE_RE.search(block.text)
+        ]
+        if not candidates:
+            return
+        block = candidates[0]
+        value = block.text.strip()
+        evidence_id = _evidence_id("headline", block.char_start, block.char_end)
+        draft.evidence[evidence_id] = mapper.from_offsets(
+            evidence_id=evidence_id,
+            char_start=block.char_start,
+            char_end=block.char_end,
+            section="profile",
+        )
+        draft.profile = ResumeProfile(headline=value)
+        draft.profile_evidence_refs = [evidence_id]
 
 
 class CefrLanguageExtractor:
@@ -292,6 +350,7 @@ class DeterministicResumeParser:
         self._claim_extractors = tuple(
             claim_extractors
             or (
+                ProfileExtractor(),
                 TaxonomySkillExtractor(taxonomy, taxonomy_version),
                 CefrLanguageExtractor(),
                 EmploymentExtractor(),
@@ -327,8 +386,12 @@ class DeterministicResumeParser:
             projects=draft.projects,
             certifications=draft.certifications,
             languages=draft.languages,
+            profile=draft.profile,
             careerClassifications=self._career_classifier.classify(
-                skills=draft.skills, employment=draft.employment
+                skills=draft.skills,
+                employment=draft.employment,
+                headline=draft.profile.headline,
+                headline_evidence_refs=draft.profile_evidence_refs,
             ),
             evidence=list(draft.evidence.values()),
             parsing=ParsingMetadata(

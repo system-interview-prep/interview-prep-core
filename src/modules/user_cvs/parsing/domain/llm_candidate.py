@@ -35,6 +35,11 @@ class EducationCandidate(_CandidateModel):
     field_of_study: str | None = Field(default=None, max_length=300, alias="fieldOfStudy")
     start_date: PartialDateCandidate | None = Field(default=None, alias="startDate")
     end_date: PartialDateCandidate | None = Field(default=None, alias="endDate")
+    student_status: Literal["student", "final_year", "recent_graduate"] | None = Field(
+        default=None, alias="studentStatus"
+    )
+    gpa: float | None = Field(default=None, gt=0)
+    gpa_scale: float | None = Field(default=None, gt=0, alias="gpaScale")
     quote: str = Field(min_length=1, max_length=8_000)
 
 
@@ -65,7 +70,7 @@ Use exactly this top-level schema: headline, summary, employment, education, pro
 headline and summary are {"value": string, "quote": exact source substring} or null.
 Each structured entry must contain a quote copied verbatim from one unique contiguous source span.
 Employment fields: jobTitle, organization, startDate, endDate, isCurrent, responsibilities, quote.
-Education fields: institution, degree, fieldOfStudy, startDate, endDate, quote.
+Education fields: institution, degree, fieldOfStudy, startDate, endDate, studentStatus, gpa, gpaScale, quote.
 Project fields: name, description, quote. Certification fields: name, issuer, credentialId, quote.
 Dates use {"value":"YYYY" or "YYYY-MM" or "YYYY-MM-DD", "precision":"year|month|day"}.
 Never extract names, email addresses, phone numbers, birth dates, protected traits, or inferred skills.
