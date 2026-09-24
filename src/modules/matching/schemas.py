@@ -91,6 +91,7 @@ class GroundedJobText(CanonicalModel):
 class CanonicalJob(CanonicalModel):
     schema_version: Literal["2.1"]
     job_id: str = Field(min_length=1)
+    job_version_id: str | None = None
     document_id: str = Field(min_length=1)
     document_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[a-fA-F0-9]+$")
     job_title: str | None = None
@@ -133,7 +134,9 @@ class CanonicalJob(CanonicalModel):
 class MatchingPolicy(CanonicalModel):
     policy_version: Literal["balanced-v1", "skill-focus-v1", "experience-focus-v1"] = "balanced-v1"
     must_have_mode: Literal["strict", "advisory"] = "strict"
-    unknown_handling: Literal["manual_review", "penalize"] = "manual_review"
+    # Self-service CV/JD comparison must not block a score merely because
+    # parsing cannot ground every requirement in evidence.
+    unknown_handling: Literal["manual_review", "penalize"] = "penalize"
     semantic_mode: Literal["hybrid", "dense_only", "sparse_only"] = "hybrid"
     bm25_weight: float = Field(default=0.4, ge=0.0, le=1.0)
     bm25_provider_mode: Literal["auto", "in_memory", "paradedb"] = "auto"
@@ -221,7 +224,7 @@ class CompatibilityResult(CanonicalModel):
 
 
 class ScoreProvenance(CanonicalModel):
-    mode: Literal["requirement_aware", "semantic_only_suppressed", "unavailable"]
+    mode: Literal["requirement_aware", "semantic_only_estimated", "unavailable"]
     scored_factors: list[str] = Field(default_factory=list)
     supported_requirement_count: int = Field(ge=0)
     scored_requirement_count: int = Field(ge=0)
@@ -236,6 +239,7 @@ class MatchResult(CanonicalModel):
     pipeline_version: Literal["one-to-one-evidence-fusion-v1"] = "one-to-one-evidence-fusion-v1"
     resume_id: str
     job_id: str
+    job_version_id: str | None = None
     policy_version: str
     eligibility: Literal["eligible", "ineligible", "review_required"]
     compatibility_status: Literal[

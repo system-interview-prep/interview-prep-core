@@ -77,6 +77,8 @@ def _mock_db_for_finalize(
     update_result = MagicMock()
     update_result.rowcount = update_rowcount
 
+    version_insert_result = MagicMock()
+
     final_row = {
         "id": effective_upload["id"],
         "external_job_id": None,
@@ -123,6 +125,7 @@ def _mock_db_for_finalize(
         version_result,
         concept_result,
         update_error if update_error is not None else update_result,
+        version_insert_result,
         final_get_result,
     ]
     db.execute.side_effect = effects
@@ -156,7 +159,7 @@ async def test_finalize_active_lifecycle_and_write_path() -> None:
 
     result = await finalize_upload(upload_id="upload-1", payload=payload, user=user, db=db)
 
-    assert db.execute.call_count == 5
+    assert db.execute.call_count == 6
     # Inspect update call (call #4, index 3)
     update_call = db.execute.call_args_list[3]
     query_str = str(update_call[0][0])
@@ -221,18 +224,11 @@ async def test_finalize_draft_lifecycle() -> None:
 
 
 # =========================================================================
-# TEST C: Salary numeric without currency or period -> validation fail
+# TEST C: Salary metadata is optional; numeric ranges remain validated
 # =========================================================================
-def test_validation_salary_numeric_requires_currency_and_period() -> None:
-    # min provided, currency missing
-    with pytest.raises(ValidationError) as exc:
-        FinalizeSalary(min=1000, period="month")
-    assert "salary.currency is required" in str(exc.value)
-
-    # max provided, period missing
-    with pytest.raises(ValidationError) as exc:
-        FinalizeSalary(max=2000, currency="VND")
-    assert "salary.period is required" in str(exc.value)
+def test_validation_salary_numeric_allows_missing_metadata() -> None:
+    assert FinalizeSalary(min=1000, period="month").currency is None
+    assert FinalizeSalary(max=2000, currency="VND").period is None
 
     # min > max
     with pytest.raises(ValidationError) as exc:
@@ -691,17 +687,6 @@ def test_finalize_http_endpoint_validation_via_testclient(client) -> None:
             },
         )
         assert res2.status_code == 422
-
-        # Salary numeric missing currency
-        res3 = client.post(
-            "/admin/job-descriptions/uploads/upload-1/finalize",
-            json={
-                "title": "Backend Dev",
-                "primaryTaxonomyConceptId": "c-1",
-                "salary": {"min": 10000000, "period": "month"},
-            },
-        )
-        assert res3.status_code == 422
 
         # Experience min > max
         res4 = client.post(
