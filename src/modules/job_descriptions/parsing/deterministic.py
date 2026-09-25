@@ -10,6 +10,7 @@ from src.modules.job_descriptions.domain.schemas import (
     GroundedJobText,
     JobRequirement,
 )
+from src.modules.taxonomy.career import TAXONOMY_VERSION
 from src.modules.taxonomy.facade import classify_career
 from src.modules.user_cvs.facade import EvidenceMapper, SourceDocument
 from src.modules.user_cvs.schemas import CareerClassification, ParsingMetadata, TaxonomyRef
@@ -219,7 +220,7 @@ def resolve_known_skill_concepts(
     text: str,
     *,
     taxonomy: dict[str, tuple[str, tuple[str, ...]]] | None = None,
-    taxonomy_version: str = "internal-2026.1",
+    taxonomy_version: str = TAXONOMY_VERSION,
 ) -> list[TaxonomyRef]:
     """Resolve only explicit known skill aliases present in grounded text.
 
