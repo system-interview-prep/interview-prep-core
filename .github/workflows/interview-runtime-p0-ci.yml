@@ -63,6 +63,7 @@ jobs:
           ruff check \
             src/modules/interviews/planner.py \
             src/modules/interviews/router.py \
+            src/modules/matching/facade.py \
             tests/modules/interviews/test_planner.py \
             tests/modules/interviews/test_planner_db_integration.py \
             tests/app/test_app_contract.py
@@ -76,7 +77,8 @@ jobs:
             tests/modules/interviews/test_planner.py \
             tests/modules/interviews/test_planner_db_integration.py \
             tests/modules/interviews/test_runtime_foundation.py \
-            tests/app/test_app_contract.py
+            tests/app/test_app_contract.py \
+            tests/app/test_architecture.py
 
       - name: Run full test suite
         run: pytest -q
