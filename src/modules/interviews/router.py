@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import current_user
 from src.infrastructure.database import get_db
+from src.modules.interviews.planner import build_and_persist_session_plan, read_session_plan
 
 router = APIRouter(prefix="/api/v1/interviews", tags=["interviews"])
 
@@ -187,6 +188,43 @@ async def list_interview_sessions(
         {"uid": user["sub"]},
     )
     return {"sessions": [_session_payload(dict(row)) for row in result.mappings().all()]}
+
+
+@router.post("/sessions/{session_id}/plan")
+async def build_interview_plan(
+    session_id: str,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await _owned_session(db, user["sub"], session_id)
+    try:
+        return await build_and_persist_session_plan(
+            db=db,
+            user=user,
+            session_row=session,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/sessions/{session_id}/plan")
+async def get_interview_plan(
+    session_id: str,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await _owned_session(db, user["sub"], session_id)
+    try:
+        return await read_session_plan(
+            db=db,
+            plan_id=session["plan_id"],
+            session_id=session_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/sessions/{session_id}/close")
