@@ -106,6 +106,9 @@ def test_semantic_score_cannot_compensate_for_failed_must_have() -> None:
     assert result.eligibility == "ineligible"
     assert result.fit_band == "not_eligible"
     assert result.requirement_results[0].status == "not_met"
+    assert result.suitability_score is None
+    assert result.diagnostic_score is not None
+    assert result.failed_must_have_requirements == ["req-java"]
 
 
 def test_missing_must_have_requires_manual_review() -> None:
@@ -113,6 +116,9 @@ def test_missing_must_have_requires_manual_review() -> None:
     assert result.eligibility == "review_required"
     assert result.decision == "abstained"
     assert result.requirement_results[0].status == "unknown"
+    assert result.suitability_score is None
+    assert result.diagnostic_score is not None
+    assert result.failed_must_have_requirements == []
 
 
 def test_unknown_requirement_is_excluded_from_coverage_score_but_exposed_in_provenance() -> None:
