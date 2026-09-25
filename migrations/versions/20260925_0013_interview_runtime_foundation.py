@@ -227,6 +227,31 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Fail closed once P0 structured runtime data exists. Dropping this schema
+    # would otherwise keep the legacy session row while irreversibly deleting
+    # its CV/JD grounding, plan, competency targets, and turns.
+    op.execute(
+        """
+        DO $
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM interview_sessions
+                WHERE resume_id IS NOT NULL OR job_id IS NOT NULL
+            )
+            OR EXISTS (SELECT 1 FROM interview_session_plans)
+            OR EXISTS (SELECT 1 FROM session_competency_targets)
+            OR EXISTS (SELECT 1 FROM interview_turns)
+            THEN
+                RAISE EXCEPTION
+                    'Refusing downgrade 20260925_0013: structured interview runtime data exists. '
+                    'Export or migrate that data before downgrading.';
+            END IF;
+        END
+        $;
+        """
+    )
+
     op.drop_index("ix_interview_turns_session_status", table_name="interview_turns")
     op.drop_table("interview_turns")
 
