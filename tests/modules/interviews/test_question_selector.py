@@ -1,6 +1,6 @@
 from src.modules.interviews.question_selector import (
-    _Candidate,
     _allowed_purposes,
+    _Candidate,
     _candidate_rank,
     _snapshot,
 )
@@ -39,9 +39,21 @@ def test_career_fallback_only_accepts_role_mapping():
 
 
 def test_rank_prefers_exact_locale_then_nearest_difficulty():
-    exact = candidate(question_version_id="exact", canonical_locale="vi-VN", difficulty_band="intermediate")
-    language_only = candidate(question_version_id="lang", canonical_locale="vi", difficulty_band="intermediate")
-    harder = candidate(question_version_id="hard", canonical_locale="vi-VN", difficulty_band="advanced")
+    exact = candidate(
+        question_version_id="exact",
+        canonical_locale="vi-VN",
+        difficulty_band="intermediate",
+    )
+    language_only = candidate(
+        question_version_id="lang",
+        canonical_locale="vi",
+        difficulty_band="intermediate",
+    )
+    harder = candidate(
+        question_version_id="hard",
+        canonical_locale="vi-VN",
+        difficulty_band="advanced",
+    )
 
     ranked = sorted(
         [language_only, harder, exact],
