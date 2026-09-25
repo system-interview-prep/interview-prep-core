@@ -88,6 +88,15 @@ def _requirement_concepts(requirement: Any) -> list[TaxonomyRef]:
     return []
 
 
+def _status_for_concept(result: Any, concept_id: str) -> str:
+    if result is None:
+        return "unknown"
+    for concept_result in result.concept_results:
+        if concept_result.concept_id == concept_id:
+            return concept_result.status
+    return result.status
+
+
 def _allocate_question_counts(weights: list[float], budget: int) -> list[int]:
     """Allocate an integer agenda deterministically.
 
@@ -153,13 +162,14 @@ def derive_competency_plan(
             continue
 
         result = result_by_id.get(requirement.requirement_id)
-        match_status = result.status if result is not None else "unknown"
         priority_weight = _PRIORITY_WEIGHT.get(requirement.priority, 0.0)
-        status_boost = _STATUS_BOOST.get(match_status, 1.0)
-        requirement_weight = priority_weight * status_boost
-        per_concept_weight = requirement_weight / len(concepts)
+        concept_count = len(concepts)
 
         for concept in concepts:
+            match_status = _status_for_concept(result, concept.concept_id)
+            status_boost = _STATUS_BOOST.get(match_status, 1.0)
+            per_concept_weight = priority_weight * status_boost / concept_count
+
             key = (concept.taxonomy_version, concept.concept_id)
             target = candidates.get(key)
             if target is None:
