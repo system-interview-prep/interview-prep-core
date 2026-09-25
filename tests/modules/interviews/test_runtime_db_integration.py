@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import text
 
-from src.infrastructure.database import SessionFactory
+from src.infrastructure.database import SessionFactory, engine
 from src.modules.interviews.router import (
     CreateInterviewSession,
     close_interview_session,
@@ -142,3 +142,4 @@ async def test_grounded_session_persists_reads_and_closes() -> None:
             )
             await db.execute(text("DELETE FROM job_descriptions WHERE id = :id"), {"id": job_id})
             await db.commit()
+            await engine.dispose()
