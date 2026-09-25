@@ -134,9 +134,9 @@ class CanonicalJob(CanonicalModel):
 class MatchingPolicy(CanonicalModel):
     policy_version: Literal["balanced-v1", "skill-focus-v1", "experience-focus-v1"] = "balanced-v1"
     must_have_mode: Literal["strict", "advisory"] = "strict"
-    # Self-service CV/JD comparison must not block a score merely because
-    # parsing cannot ground every requirement in evidence.
-    unknown_handling: Literal["manual_review", "penalize"] = "penalize"
+    # An ungrounded must-have is not evidence of fit.  Require manual review
+    # instead of allowing semantic similarity to promote the match.
+    unknown_handling: Literal["manual_review", "penalize"] = "manual_review"
     semantic_mode: Literal["hybrid", "dense_only", "sparse_only"] = "hybrid"
     bm25_weight: float = Field(default=0.4, ge=0.0, le=1.0)
     bm25_provider_mode: Literal["auto", "in_memory", "paradedb"] = "auto"
@@ -175,6 +175,7 @@ class RequirementResult(CanonicalModel):
     confidence: float = Field(ge=0, le=1)
     evidence_refs: list[str] = Field(default_factory=list)
     reason_code: str
+    evidence_explanation: str | None = None
     concept_results: list["ConceptResult"] = Field(default_factory=list)
     group_operator: Literal["atomic", "all_of", "any_of"] = "atomic"
 
@@ -190,6 +191,10 @@ class RequirementResult(CanonicalModel):
             )
             if self.evidence_refs != expected:
                 raise ValueError("evidenceRefs must be the ordered union of conceptResults evidenceRefs")
+        if self.status == "unknown" and not self.evidence_explanation:
+            self.evidence_explanation = (
+                f"Chưa có bằng chứng đủ rõ để kết luận; nguyên nhân đánh giá: {self.reason_code}."
+            )
         return self
 
 

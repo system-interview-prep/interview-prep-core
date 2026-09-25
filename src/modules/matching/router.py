@@ -17,9 +17,9 @@ from src.modules.matching.schemas import (
     FactorResult,
     GroundedJobText,
     MatchAccepted,
+    MatchingPolicy,
     MatchRequest,
     MatchResult,
-    MatchingPolicy,
     RequirementResult,
     UnresolvedRequirement,
 )
@@ -60,7 +60,9 @@ async def _resolve_resume(db: AsyncSession, cv_id: str) -> CanonicalResume:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy hồ sơ CV với mã {cv_id}")
     if row["parsed_data"]:
         try:
-            return CanonicalResume.model_validate(row["parsed_data"])
+            return CanonicalResume.model_validate(row["parsed_data"]).model_copy(
+                update={"raw_text": row["raw_text"] or ""}
+            )
         except Exception as err:
             raise HTTPException(
                 status_code=422,
@@ -304,7 +306,9 @@ legacy_router = APIRouter(prefix="/ai", tags=["matching-legacy"])
 )
 async def match(payload: MatchRequest, response: Response) -> MatchAccepted | MatchResult:
     if payload.async_processing:
-        task = match_cv_to_jd.delay(payload.model_dump(by_alias=True))
+        serialized = payload.model_dump(by_alias=True)
+        serialized["resume"]["rawText"] = payload.resume.raw_text or ""
+        task = match_cv_to_jd.delay(serialized)
         response.status_code = status.HTTP_202_ACCEPTED
         return MatchAccepted(taskId=task.id)
     result = await run_match(payload)
@@ -339,7 +343,11 @@ async def _handle_match_ids(
         asyncProcessing=payload.async_processing,
     )
     if payload.async_processing:
-        task = match_cv_to_jd.delay(match_req.model_dump(by_alias=True))
+        serialized = match_req.model_dump(by_alias=True)
+        # rawText is runtime-only and excluded from canonical persistence, but
+        # must cross the Celery boundary for targeted reparse.
+        serialized["resume"]["rawText"] = resume.raw_text or ""
+        task = match_cv_to_jd.delay(serialized)
         response.status_code = status.HTTP_202_ACCEPTED
         return MatchAccepted(taskId=task.id)
     result = await run_match(match_req)

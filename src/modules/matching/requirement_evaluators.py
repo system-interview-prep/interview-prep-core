@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
+from src.core.trace_logging import trace_event
 from src.modules.matching.schemas import ConceptResult, RequirementResult, UnresolvedRequirement
 from src.modules.user_cvs.schemas import CanonicalResume, EvidenceSpan, TaxonomyRef
 
@@ -120,7 +121,7 @@ def select_evaluator(requirement: UnresolvedRequirement) -> EvaluatorSelection |
     if requirement.credential or _CREDENTIAL_RE.search(text):
         return EvaluatorSelection("language_credential", "language")
     decomposed, _ = _decompose_explicit_list(requirement.raw_label)
-    if requirement.kind == "skill" and (requirement.atomic_concepts or decomposed):
+    if requirement.atomic_concepts or decomposed:
         return EvaluatorSelection("knowledge_skill", "skill")
     if _has_phrase(
         text,
@@ -142,8 +143,12 @@ def select_evaluator(requirement: UnresolvedRequirement) -> EvaluatorSelection |
     if _has_phrase(text, ("dam me", "passion")) and _has_phrase(text, ("ai", "artificial intelligence")):
         return EvaluatorSelection("ai_activity", "skill")
     if requirement.minimum_experience_months is not None:
-        return EvaluatorSelection("experience_duration", "experience")
-    return None
+        return EvaluatorSelection("generic_requirement", "experience")
+    # Every non-empty rawLabel is evaluable.  A generic evaluator is the
+    # conservative final fallback; valid requirements must never become
+    # ``requirement_evaluator_unsupported`` merely because the JD parser did
+    # not produce atomic concepts.
+    return EvaluatorSelection("generic_requirement", "other")
 
 
 def _result(
@@ -155,8 +160,13 @@ def _result(
     confidence: float,
     concept_results: list[ConceptResult] | None = None,
     group_operator: Literal["atomic", "all_of", "any_of"] = "atomic",
+    evidence_explanation: str | None = None,
 ) -> RequirementResult:
     concept_results = concept_results or []
+    if status == "unknown" and evidence_explanation is None:
+        evidence_explanation = (
+            f"Chưa có bằng chứng đủ rõ để kết luận; nguyên nhân đánh giá: {reason_code}."
+        )
     evidence_refs = (
         list(dict.fromkeys(ref for concept in concept_results for ref in concept.evidence_refs))
         if concept_results
@@ -169,8 +179,121 @@ def _result(
         confidence=confidence,
         evidenceRefs=evidence_refs,
         reasonCode=reason_code,
+        evidenceExplanation=evidence_explanation,
         conceptResults=concept_results,
         groupOperator=group_operator,
+    )
+
+
+_GENERIC_STOPWORDS = {
+    "a", "an", "and", "as", "at", "be", "by", "for", "from", "good", "have",
+    "hands", "hand", "in", "knowledge", "of", "or", "strong", "the", "to", "with",
+    "experience", "understanding", "ability", "skill", "skills", "using", "working",
+    "years", "year", "minimum", "plus", "preferred", "must", "should", "is", "are",
+    "backend", "frontend", "fullstack", "development", "developer", "building", "build",
+    "application", "applications", "system", "systems",
+    "va", "và", "ve", "về", "có", "kinh", "nghiem", "nghiệm", "voi", "với", "su", "sự",
+}
+
+
+def _generic_terms(raw_label: str) -> list[str]:
+    terms = _normalize(raw_label).split()
+    return [term for term in terms if term not in _GENERIC_STOPWORDS and len(term) > 1]
+
+
+def _raw_coverage(resume: CanonicalResume) -> str:
+    if resume.parsing is None:
+        # Legacy canonical records do not carry the source-text coverage
+        # contract.  Indexed evidence alone cannot prove that an absent term
+        # was absent from the original CV.
+        return "unavailable"
+    return resume.parsing.raw_text_coverage
+
+
+def _absence_result(
+    requirement: UnresolvedRequirement,
+    resume: CanonicalResume,
+    *,
+    reason_prefix: str = "requirement",
+) -> RequirementResult:
+    coverage = _raw_coverage(resume)
+    if coverage == "complete":
+        return _result(
+            requirement,
+            status="not_met",
+            reason_code=f"{reason_prefix}_not_evidenced",
+            confidence=0.9,
+            evidence_explanation=(
+                "Không tìm thấy bằng chứng phù hợp trong toàn bộ raw text của CV; "
+                "tiêu chí được xác định là chưa đáp ứng."
+            ),
+        )
+    return _result(
+        requirement,
+        status="unknown",
+        reason_code="raw_text_coverage_incomplete",
+        confidence=0.0,
+        evidence_explanation=(
+            f"Không thể kết luận vắng bằng chứng vì raw_text_coverage={coverage}; "
+            "CV chưa được đọc đầy đủ. Đây là lý do coverage, không phải bằng chứng đạt."
+        ),
+    )
+
+
+def _evaluate_generic_requirement(
+    requirement: UnresolvedRequirement,
+    resume: CanonicalResume,
+) -> RequirementResult:
+    terms = _generic_terms(requirement.raw_label)
+    if not terms:
+        return _result(
+            requirement,
+            status="unknown",
+            reason_code="requirement_evaluator_unsupported",
+            confidence=0.0,
+            evidence_explanation="rawLabel không chứa nội dung có thể phân tích; cần JD hợp lệ.",
+        )
+    ranked_candidates = [
+        (
+            sum(1 for term in terms if _has_phrase(evidence.text, (term,))),
+            evidence,
+        )
+        for evidence in resume.evidence
+        if any(_has_phrase(evidence.text, (term,)) for term in terms)
+    ]
+    candidates = [evidence for _, evidence in ranked_candidates]
+    candidates = sorted(
+        _dedupe_evidence(candidates),
+        key=lambda item: (-_STRENGTH_RANK[_evidence_strength(item)], item.char_start, item.evidence_id),
+    )[:4]
+    if not candidates:
+        return _absence_result(requirement, resume, reason_prefix="requirement")
+    strongest = _evidence_strength(candidates[0])
+    strongest_overlap = max(
+        overlap
+        for overlap, evidence in ranked_candidates
+        if evidence.evidence_id in {item.evidence_id for item in candidates[:4]}
+    )
+    minimum_overlap = 1 if len(terms) <= 2 else 2
+    if strongest in {"applied", "demonstrated"} and strongest_overlap >= minimum_overlap:
+        return _result(
+            requirement,
+            status="met",
+            reason_code="generic_requirement_evidenced",
+            evidence=candidates,
+            confidence=min(0.9, 0.55 + 0.1 * _STRENGTH_RANK[strongest]),
+            evidence_explanation="CV có bằng chứng theo ngữ cảnh thực hành liên quan đến yêu cầu JD.",
+        )
+    return _result(
+        requirement,
+        status="unknown",
+        reason_code="generic_requirement_evidence_weak",
+        evidence=candidates,
+        confidence=0.35,
+        evidence_explanation=(
+            "CV có đề cập thuật ngữ liên quan nhưng chưa thể hiện đủ ngữ cảnh thực hành, "
+            "mức độ hoặc thời lượng để xác nhận yêu cầu."
+        ),
     )
 
 
@@ -340,12 +463,7 @@ def _evaluate_knowledge_skill(
     fallback_concepts, fallback_operator = _decompose_explicit_list(requirement.raw_label)
     requested = requirement.atomic_concepts or fallback_concepts
     if not requested:
-        return _result(
-            requirement,
-            status="unknown",
-            reason_code="requirement_evaluator_unsupported",
-            confidence=0.0,
-        )
+        return _evaluate_generic_requirement(requirement, resume)
 
     group_operator = _concept_group_operator(
         requirement, requirement_text, len(requested), fallback_operator
@@ -447,11 +565,12 @@ def _evaluate_atomic_concept(
         key=lambda item: (-_STRENGTH_RANK[_evidence_strength(item)], item.char_start, item.evidence_id),
     )[:2]
     if not ranked:
+        coverage = _raw_coverage(resume)
         return ConceptResult(
             conceptId=concept.concept_id,
             label=concept.label,
-            status="unknown",
-            confidence=0.0,
+            status="not_met" if coverage == "complete" else "unknown",
+            confidence=0.9 if coverage == "complete" else 0.0,
             reasonCode="concept_evidence_missing",
         )
     strength = _evidence_strength(ranked[0])
@@ -583,13 +702,6 @@ def evaluate_unresolved_requirement(
     resume: CanonicalResume,
 ) -> RequirementResult:
     selection = select_evaluator(requirement)
-    if selection is None:
-        return _result(
-            requirement,
-            status="unknown",
-            reason_code="requirement_evaluator_unsupported",
-            confidence=0.0,
-        )
     evaluators = {
         "gpa": _evaluate_gpa,
         "language_credential": _evaluate_language,
@@ -598,13 +710,33 @@ def evaluate_unresolved_requirement(
         "programming_foundation": _evaluate_programming_foundation,
         "research_or_competition": _evaluate_research_or_competition,
         "ai_activity": _evaluate_ai_activity,
+        "generic_requirement": _evaluate_generic_requirement,
     }
     evaluator = evaluators.get(selection.name)
     if evaluator is None:
-        return _result(
-            requirement,
-            status="unknown",
-            reason_code="requirement_evaluator_unsupported",
-            confidence=0.0,
-        )
-    return evaluator(requirement, resume)
+        result = _evaluate_generic_requirement(requirement, resume)
+    else:
+        result = evaluator(requirement, resume)
+    trace_event(
+        "matching",
+        "requirement_evaluated",
+        requirement_id=requirement.requirement_id,
+        requirement_kind=requirement.kind,
+        evaluator=selection.name,
+        evaluator_category=selection.category,
+        result_status=result.status,
+        reason_code=result.reason_code,
+        score=result.score,
+        confidence=result.confidence,
+        evidence_refs=result.evidence_refs,
+        resolution_source="structured_concept_refs"
+        if result.concept_results
+        else "canonical_evidence",
+        matched_aliases=[],
+        concept_results=[concept.model_dump(by_alias=True) for concept in result.concept_results],
+        evidence_coverage=(resume.parsing.evidence_index_coverage if resume.parsing else "legacy"),
+        raw_text_coverage=(resume.parsing.raw_text_coverage if resume.parsing else "legacy"),
+        canonical_section_coverage=(resume.parsing.canonical_section_coverage if resume.parsing else {}),
+        retrieval_methods=["structured_concept_refs", "exact_alias_phrase", "generic_token_overlap"],
+    )
+    return result

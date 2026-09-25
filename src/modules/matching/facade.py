@@ -26,6 +26,7 @@ from src.modules.matching.schemas import (
     UnresolvedRequirement,
 )
 from src.modules.matching.semantic import cosine_similarity
+from src.modules.matching.targeted_reparse import reparse_partial_resume
 from src.modules.user_cvs.schemas import CanonicalResume
 
 ROLE_SYNONYMS = {
@@ -91,6 +92,9 @@ class MatchingFacade:
         self._bm25_provider = bm25_provider or get_bm25_provider()
 
     def match(self, payload: MatchRequest) -> MatchResult:
+        payload = payload.model_copy(
+            update={"resume": reparse_partial_resume(payload.resume, payload.job)}
+        )
         requirements = self._evaluate_requirements(payload.resume, payload.job)
         eligibility = self._eligibility(payload, requirements)
         compatibility_results = self._evaluate_compatibility(payload)
@@ -100,7 +104,8 @@ class MatchingFacade:
         suitability = self._suitability(factors)
         score_provenance = self._score_provenance(requirements, factors)
         if score_provenance.mode == "semantic_only_estimated":
-            warnings.append("semantic_only_estimate")
+            warnings.extend(["semantic_only_estimate", "semantic_only_score_suppressed"])
+            suitability = None
         decision, fit_band = self._decision(eligibility, suitability, factors)
         return MatchResult(
             resumeId=payload.resume.resume_id,
@@ -121,6 +126,9 @@ class MatchingFacade:
 
     async def match_async(self, payload: MatchRequest) -> MatchResult:
         """Assess a match while keeping database I/O on the caller's event loop."""
+        payload = payload.model_copy(
+            update={"resume": reparse_partial_resume(payload.resume, payload.job)}
+        )
         requirements = self._evaluate_requirements(payload.resume, payload.job)
         eligibility = self._eligibility(payload, requirements)
         compatibility_results = self._evaluate_compatibility(payload)
@@ -130,7 +138,8 @@ class MatchingFacade:
         suitability = self._suitability(factors)
         score_provenance = self._score_provenance(requirements, factors)
         if score_provenance.mode == "semantic_only_estimated":
-            warnings.append("semantic_only_estimate")
+            warnings.extend(["semantic_only_estimate", "semantic_only_score_suppressed"])
+            suitability = None
         decision, fit_band = self._decision(eligibility, suitability, factors)
         return MatchResult(
             resumeId=payload.resume.resume_id,
