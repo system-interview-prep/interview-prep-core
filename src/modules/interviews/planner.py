@@ -8,6 +8,7 @@ import json
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import uuid4
 
 from pydantic import ValidationError
 from sqlalchemy import text
@@ -368,10 +369,11 @@ async def build_and_persist_session_plan(
                 "INSERT INTO session_competency_targets "
                 "(id, plan_id, taxonomy_version, concept_id, label, importance, "
                 "target_question_count, rationale) "
-                "VALUES (gen_random_uuid()::text, :plan_id, :taxonomy_version, "
-                ":concept_id, :label, :importance, :question_count, CAST(:rationale AS jsonb))"
+                "VALUES (:id, :plan_id, :taxonomy_version, :concept_id, :label, "
+                ":importance, :question_count, CAST(:rationale AS jsonb))"
             ),
             {
+                "id": str(uuid4()),
                 "plan_id": plan_id,
                 "taxonomy_version": target["taxonomyVersion"],
                 "concept_id": target["conceptId"],
