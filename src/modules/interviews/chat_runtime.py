@@ -166,6 +166,8 @@ async def start_chat_session(
     session_row: dict[str, Any],
 ) -> dict[str, Any]:
     session_id = session_row["id"]
+    if session_row.get("experience_type") != "interview_chat":
+        raise ChatRuntimeError("This session is not an interview chat")
     if session_row["status"] == "CLOSED":
         raise ChatRuntimeError("Phiên phỏng vấn đã kết thúc.")
     if session_row.get("plan_status") != "LOCKED":
@@ -244,11 +246,9 @@ async def start_chat_session(
 
     # 2. Main Question message
     q_snapshot = first_turn.get("question_snapshot") or {}
-    q_text = (
-        q_snapshot.get("questionText")
-        or q_snapshot.get("question_text")
-        or "Hãy giới thiệu về kinh nghiệm chuyên môn liên quan của bạn."
-    )
+    q_text = q_snapshot.get("questionText") or q_snapshot.get("question_text")
+    if not q_text or not first_turn.get("question_version_id"):
+        raise ChatRuntimeError("Frozen question is incomplete; cannot start interview chat")
 
     question_id = str(uuid4())
     q_meta = {
@@ -399,6 +399,8 @@ async def process_candidate_message(
     if session_row["status"] == "CLOSED":
         raise ChatRuntimeError("Phiên phỏng vấn đã kết thúc.")
 
+    if not client_message_id:
+        raise ValueError("clientMessageId is required for reliable retries")
     cleaned_content = content.strip()
     if not cleaned_content:
         raise ValueError("Nội dung tin nhắn không được để trống.")
@@ -418,6 +420,8 @@ async def process_candidate_message(
         )
         existing_user_msg = existing.mappings().one_or_none()
         if existing_user_msg:
+            if existing_user_msg["content"] != cleaned_content:
+                raise ChatRuntimeError("clientMessageId was already used for different content")
             user_seq = existing_user_msg["sequence"]
             asst_res = await db.execute(
                 text(
@@ -431,9 +435,11 @@ async def process_candidate_message(
                 {"sid": session_id, "seq": user_seq + 1},
             )
             asst_msg = asst_res.mappings().one_or_none()
+            if asst_msg is None:
+                raise ChatRuntimeError("Previous response is pending; retry after recovery")
             return {
                 "userMessage": _message_payload(dict(existing_user_msg)),
-                "assistantResponse": _message_payload(dict(asst_msg)) if asst_msg else None,
+                "assistantResponse": _message_payload(dict(asst_msg)),
                 "turnStatus": {"completed": False},
                 "sessionStatus": session_row["status"],
             }
@@ -693,11 +699,9 @@ async def process_candidate_message(
             {"turn_id": next_turn["id"]},
         )
         next_snap = next_turn.get("question_snapshot") or {}
-        next_q_text = (
-            next_snap.get("questionText")
-            or next_snap.get("question_text")
-            or "Câu hỏi tiếp theo dành cho bạn."
-        )
+        next_q_text = next_snap.get("questionText") or next_snap.get("question_text")
+        if not next_q_text or not next_turn.get("question_version_id"):
+            raise ChatRuntimeError("Frozen question is incomplete; cannot advance interview chat")
 
         # Bridge Transition: natural acknowledgment + next main question
         if is_vi:
