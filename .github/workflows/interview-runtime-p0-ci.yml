@@ -62,9 +62,11 @@ jobs:
         run: |
           ruff check \
             src/modules/interviews/planner.py \
+            src/modules/interviews/plan_structure.py \
             src/modules/interviews/router.py \
             src/modules/matching/facade.py \
             tests/modules/interviews/test_planner.py \
+            tests/modules/interviews/test_plan_structure.py \
             tests/modules/interviews/test_planner_db_integration.py \
             tests/app/test_app_contract.py
 
@@ -75,6 +77,7 @@ jobs:
         run: |
           pytest -q \
             tests/modules/interviews/test_planner.py \
+            tests/modules/interviews/test_plan_structure.py \
             tests/modules/interviews/test_planner_db_integration.py \
             tests/modules/interviews/test_runtime_foundation.py \
             tests/app/test_app_contract.py \
