@@ -12,3 +12,9 @@ def test_voice_request_validation() -> None:
 
 def test_voice_route_requires_authentication(client) -> None:
     assert client.post("/ai/chat-voice", json={"sessionId": "s1", "prompt": "Hi"}).status_code == 401
+
+
+@pytest.mark.parametrize("path", ["transcribe", "speak", "realtime-token"])
+def test_voice_lab_requires_authentication(client, path: str) -> None:
+    response = client.post(f"/ai/voice-lab/{path}")
+    assert response.status_code == 401
