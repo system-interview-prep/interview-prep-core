@@ -164,6 +164,21 @@ def build_evaluation_targets(
                 "status": status,
                 "reasonCode": result.reason_code if result is not None else "match_result_missing",
                 "conceptIds": concept_ids,
+                "conceptResults": (
+                    [
+                        {
+                            "conceptId": concept_result.concept_id,
+                            "label": concept_result.label,
+                            "status": concept_result.status,
+                            "confidence": concept_result.confidence,
+                            "reasonCode": concept_result.reason_code,
+                            "candidateEvidenceRefs": list(concept_result.evidence_refs),
+                        }
+                        for concept_result in result.concept_results
+                    ]
+                    if result is not None
+                    else []
+                ),
                 "jobEvidenceRefs": [requirement.source_evidence_ref],
                 "candidateEvidenceRefs": list(result.evidence_refs) if result is not None else [],
                 "evaluationMode": (
