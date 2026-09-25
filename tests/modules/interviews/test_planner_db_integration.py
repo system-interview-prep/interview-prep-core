@@ -171,6 +171,20 @@ async def test_planner_persists_grounded_competency_agenda(monkeypatch) -> None:
             assert plan["targets"][0]["rationale"]["matchStatuses"] == ["unknown"]
             assert plan["sourceContext"]["resumeChecksum"] == checksum
             assert plan["sourceContext"]["matchingPolicyVersion"] == "balanced-v1"
+            assert sum(section["durationMinutes"] for section in plan["sections"]) == 20
+            assert plan["difficulty"]["level"] == "unspecified"
+            assert plan["evaluationTargets"][0]["requirementId"] == "req-python"
+            assert plan["evaluationTargets"][0]["attention"] == "validate_gap"
+
+            persisted_payload = await db.scalar(
+                text(
+                    "SELECT plan_payload FROM interview_session_plans "
+                    "WHERE id = :plan_id"
+                ),
+                {"plan_id": plan["planId"]},
+            )
+            assert persisted_payload["policyVersion"] == "interview-planner-v1"
+            assert persisted_payload["evaluationTargets"][0]["requirementId"] == "req-python"
 
             loaded = await get_interview_plan(created["sessionId"], user=user, db=db)
             assert loaded["targets"] == plan["targets"]
