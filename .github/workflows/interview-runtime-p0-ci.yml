@@ -9,6 +9,8 @@ on:
       - develop
     paths:
       - "src/modules/interviews/**"
+      - "src/modules/matching/**"
+      - "migrations/**"
       - "tests/modules/interviews/**"
       - "tests/app/test_app_contract.py"
       - ".github/workflows/interview-runtime-p0-ci.yml"
