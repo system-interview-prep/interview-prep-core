@@ -16,6 +16,7 @@ def test_openapi_contains_every_public_business_route(client) -> None:
         "/api/v1/interviews/sessions",
         "/api/v1/interviews/sessions/{session_id}",
         "/api/v1/interviews/sessions/{session_id}/close",
+        "/api/v1/interviews/sessions/{session_id}/plan",
         "/ai/session",
         "/ai/sessions",
         "/ai/chat",
