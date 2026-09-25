@@ -214,6 +214,47 @@ _SKILLS = {
     "skill-cplusplus": ("C++", ("c++", "cpp")),
 }
 
+
+def resolve_known_skill_concepts(
+    text: str,
+    *,
+    taxonomy: dict[str, tuple[str, tuple[str, ...]]] | None = None,
+    taxonomy_version: str = "internal-2026.1",
+) -> list[TaxonomyRef]:
+    """Resolve only explicit known skill aliases present in grounded text.
+
+    This is shared by parsing and legacy compatibility adapters.  It is
+    deliberately lexical and closed-world: unknown text never creates a
+    taxonomy concept.
+    """
+    source = taxonomy or _SKILLS
+    matches: list[tuple[int, int, TaxonomyRef]] = []
+    for concept_id, (label, aliases) in source.items():
+        for alias in aliases:
+            match = re.search(rf"(?<!\\w){re.escape(alias)}(?!\\w)", text, re.I)
+            if match:
+                matches.append(
+                    (
+                        match.start(),
+                        match.end(),
+                        TaxonomyRef(
+                            conceptId=concept_id,
+                            scheme="internal",
+                            taxonomyVersion=taxonomy_version,
+                            label=label,
+                        ),
+                    )
+                )
+                break
+    matches.sort(key=lambda item: (item[0], -(item[1] - item[0]), item[2].concept_id))
+    resolved: list[TaxonomyRef] = []
+    seen: set[str] = set()
+    for _, _, concept in matches:
+        if concept.concept_id not in seen:
+            resolved.append(concept)
+            seen.add(concept.concept_id)
+    return resolved
+
 _GPA_RE = re.compile(
     r"\b(?:GPA|CPA|Điểm\s*(?:GPA)?)\s*(?:>=|>=|≥|tối\s*thiểu|từ|\s*:\s*)?\s*(?P<thresh>\d+(?:\.\d+)?)\s*(?:/|\s*trên\s*)(?P<scale>\d+(?:\.\d+)?)",
     re.I,
