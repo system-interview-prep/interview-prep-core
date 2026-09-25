@@ -1,6 +1,9 @@
 name: Interview Runtime P0 CI
 
 on:
+  push:
+    branches:
+      - feat/interview-runtime-foundation
   pull_request:
     branches:
       - develop
