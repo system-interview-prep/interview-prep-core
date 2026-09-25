@@ -92,3 +92,42 @@ def test_adapter_fails_closed_when_finalized_jd_has_no_evidence() -> None:
 
     with pytest.raises(ValueError, match="document evidence"):
         job_description_to_matching_job(parsed, job_id="job-1")
+
+
+def test_legacy_hybrid_uses_grounded_baseline_when_llm_copy_lost_taxonomy() -> None:
+    base = _parsed_jd()
+    baseline = base.requirements[0].model_copy(update={"requirement_id": "req-python"})
+    ungrounded_llm = base.requirements[1].model_copy(
+        update={
+            "requirement_id": "req-llm-python",
+            "kind": "skill",
+            "raw_label": "Python programming",
+            "concept": None,
+            "atomic_concepts": [],
+        }
+    )
+    parsed = base.model_copy(
+        update={"requirements": [baseline, ungrounded_llm]}
+    )
+
+    adapted = job_description_to_matching_job(parsed, job_id="job-legacy")
+
+    assert [item.requirement_id for item in adapted.requirements] == ["req-python"]
+    assert isinstance(adapted.requirements[0], SkillRequirement)
+    assert adapted.requirements[0].skill.concept_id == "skill-python"
+
+
+def test_legacy_hybrid_keeps_llm_source_when_it_is_taxonomy_grounded() -> None:
+    base = _parsed_jd()
+    baseline = base.requirements[0].model_copy(update={"requirement_id": "req-python"})
+    grounded_llm = base.requirements[0].model_copy(
+        update={"requirement_id": "req-llm-python"}
+    )
+    parsed = base.model_copy(
+        update={"requirements": [baseline, grounded_llm]}
+    )
+
+    adapted = job_description_to_matching_job(parsed, job_id="job-legacy")
+
+    assert [item.requirement_id for item in adapted.requirements] == ["req-llm-python"]
+    assert isinstance(adapted.requirements[0], SkillRequirement)
