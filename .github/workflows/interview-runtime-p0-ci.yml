@@ -75,6 +75,54 @@ jobs:
           python -m alembic downgrade 20260924_0012
           python -m alembic upgrade head
 
+      - name: Verify populated-data downgrade is refused
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          conn = psycopg2.connect(os.environ["DATABASE_URL"])
+          conn.autocommit = True
+          with conn.cursor() as cur:
+              cur.execute(
+                  "INSERT INTO users (id, email, name, provider) "
+                  "VALUES ('p0-downgrade-user', 'p0-downgrade@example.test', "
+                  "'P0 Downgrade Guard', 'local')"
+              )
+              cur.execute(
+                  "INSERT INTO interview_sessions "
+                  "(id, user_id, type, language, status) "
+                  "VALUES ('p0-downgrade-session', 'p0-downgrade-user', "
+                  "'Chat', 'English', 'OPEN')"
+              )
+              cur.execute(
+                  "INSERT INTO interview_session_plans "
+                  "(id, session_id, schema_version, status, source_context) "
+                  "VALUES ('p0-downgrade-plan', 'p0-downgrade-session', "
+                  "'1.0', 'DRAFT', '{}'::jsonb)"
+              )
+          conn.close()
+          PY
+
+          if python -m alembic downgrade 20260924_0012; then
+            echo "Expected downgrade to fail while structured runtime data exists."
+            exit 1
+          fi
+
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          conn = psycopg2.connect(os.environ["DATABASE_URL"])
+          conn.autocommit = True
+          with conn.cursor() as cur:
+              cur.execute(
+                  "DELETE FROM interview_sessions WHERE id = 'p0-downgrade-session'"
+              )
+              cur.execute("DELETE FROM users WHERE id = 'p0-downgrade-user'")
+          conn.close()
+          PY
+
       - name: Run P0 focused tests
         run: |
           pytest -q tests/modules/interviews/test_runtime_foundation.py tests/modules/interviews/test_runtime_db_integration.py tests/app/test_app_contract.py
