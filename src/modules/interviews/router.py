@@ -156,7 +156,7 @@ async def create_interview_session(
         },
     )
     await db.commit()
-    return await _owned_session(db, user["sub"], session_id)
+    return _session_payload(await _owned_session(db, user["sub"], session_id))
 
 
 @router.get("/sessions/{session_id}")
@@ -165,7 +165,7 @@ async def get_interview_session(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    return await _owned_session(db, user["sub"], session_id)
+    return _session_payload(await _owned_session(db, user["sub"], session_id))
 
 
 @router.get("/sessions")
@@ -200,4 +200,4 @@ async def close_interview_session(
         {"sid": session_id, "uid": user["sub"]},
     )
     await db.commit()
-    return await _owned_session(db, user["sub"], session_id)
+    return _session_payload(await _owned_session(db, user["sub"], session_id))
