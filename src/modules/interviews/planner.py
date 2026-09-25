@@ -14,7 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.modules.job_descriptions.schemas import CanonicalJobDescription
-from src.modules.matching.adapters import job_description_to_matching_job
+from src.modules.matching.facade import canonical_job_from_description, evaluate_match
 from src.modules.matching.schemas import (
     CanonicalJob,
     LanguageRequirement,
@@ -24,7 +24,6 @@ from src.modules.matching.schemas import (
     TaxonomyRef,
     UnresolvedRequirement,
 )
-from src.modules.matching.service import run_match
 from src.modules.user_cvs.schemas import CanonicalResume
 
 PLANNER_POLICY_VERSION = "interview-planner-v1"
@@ -291,16 +290,14 @@ async def _load_job(
         raise ValueError("Job canonical parsing is incomplete")
     try:
         parsed = CanonicalJobDescription.model_validate(row["structured_data"])
-        job = job_description_to_matching_job(parsed, job_id=job_id)
+        job = canonical_job_from_description(
+            parsed,
+            job_id=job_id,
+            job_version_id=(str(row["active_version_id"]) if row["active_version_id"] else None),
+        )
     except (ValidationError, ValueError) as exc:
         raise ValueError("Job canonical data is invalid") from exc
-    return job.model_copy(
-        update={
-            "job_version_id": (
-                str(row["active_version_id"]) if row["active_version_id"] else None
-            )
-        }
-    )
+    return job
 
 
 async def build_and_persist_session_plan(
@@ -322,7 +319,7 @@ async def build_and_persist_session_plan(
     )
     job = await _load_job(db, user=user, job_id=session_row["job_id"])
 
-    match = await run_match(
+    match = await evaluate_match(
         MatchRequest(
             schemaVersion="2.1",
             resume=resume,
