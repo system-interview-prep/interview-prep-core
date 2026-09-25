@@ -154,6 +154,9 @@ def test_adapter_recovers_exact_known_skill_from_legacy_ungrounded_requirement()
         "skill-artificial-intelligence",
         "skill-python",
     ]
+    assert {item.taxonomy_version for item in requirement.atomic_concepts} == {
+        "internal-career-2026.1"
+    }
 
 
 def test_adapter_does_not_invent_taxonomy_for_unknown_legacy_skill_text() -> None:
