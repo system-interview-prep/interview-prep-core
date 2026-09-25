@@ -16,6 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.security import current_user
 from src.infrastructure.database import get_db
 from src.modules.interviews.planner import build_and_persist_session_plan, read_session_plan
+from src.modules.interviews.question_selector import (
+    QuestionUnavailableError,
+    read_frozen_turns,
+    select_and_freeze_questions,
+)
 
 router = APIRouter(prefix="/api/v1/interviews", tags=["interviews"])
 
@@ -225,6 +230,39 @@ async def get_interview_plan(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/questions/select")
+async def select_interview_questions(
+    session_id: str,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await _owned_session(db, user["sub"], session_id)
+    try:
+        return await select_and_freeze_questions(db=db, session_row=session)
+    except QuestionUnavailableError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/sessions/{session_id}/turns")
+async def get_interview_turns(
+    session_id: str,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _owned_session(db, user["sub"], session_id)
+    return {
+        "sessionId": session_id,
+        "turns": await read_frozen_turns(db=db, session_id=session_id),
+    }
 
 
 @router.post("/sessions/{session_id}/close")
