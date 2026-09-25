@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -75,7 +75,7 @@ async def test_planner_persists_grounded_competency_agenda(monkeypatch) -> None:
         parsing=ParsingMetadata(
             parserVersion="test-jd-v1",
             extractionVersion="test-extract-v1",
-            parsedAt=datetime.now(timezone.utc),
+            parsedAt=datetime.now(UTC),
             status="ready",
         ),
     )
