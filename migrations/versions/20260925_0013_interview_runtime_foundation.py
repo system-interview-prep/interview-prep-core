@@ -232,7 +232,7 @@ def downgrade() -> None:
     # its CV/JD grounding, plan, competency targets, and turns.
     op.execute(
         """
-        DO $
+        DO $p0$
         BEGIN
             IF EXISTS (
                 SELECT 1
@@ -248,7 +248,7 @@ def downgrade() -> None:
                     'Export or migrate that data before downgrading.';
             END IF;
         END
-        $;
+        $p0$;
         """
     )
 
