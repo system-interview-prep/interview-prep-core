@@ -4,6 +4,7 @@ This module owns the new interview runtime contract. Legacy /ai/session remains
 available during migration, but new product flows should create sessions here.
 """
 
+import json
 from typing import Literal
 from uuid import uuid4
 
