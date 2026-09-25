@@ -18,6 +18,15 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.add_column(
+        "session_competency_targets",
+        sa.Column("selection_rank", sa.Integer(), nullable=True),
+    )
+    op.create_check_constraint(
+        "ck_session_competency_targets_selection_rank",
+        "session_competency_targets",
+        "selection_rank IS NULL OR selection_rank >= 0",
+    )
+    op.add_column(
         "interview_session_plans",
         sa.Column(
             "plan_payload",
@@ -48,3 +57,9 @@ def downgrade() -> None:
         """
     )
     op.drop_column("interview_session_plans", "plan_payload")
+    op.drop_constraint(
+        "ck_session_competency_targets_selection_rank",
+        "session_competency_targets",
+        type_="check",
+    )
+    op.drop_column("session_competency_targets", "selection_rank")
