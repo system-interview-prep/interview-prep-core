@@ -1,15 +1,16 @@
-name: Interview Planner P1 CI
+name: Interview Question Selector P2 CI
 
 on:
   push:
     branches:
-      - feat/interview-planner
+      - feat/interview-question-selector
   pull_request:
     branches:
       - develop
     paths:
       - "src/modules/interviews/**"
       - "src/modules/matching/**"
+      - "src/modules/question_bank/**"
       - "migrations/**"
       - "tests/modules/interviews/**"
       - "tests/app/test_app_contract.py"
@@ -20,7 +21,7 @@ permissions:
   contents: read
 
 jobs:
-  verify-planner:
+  verify-question-selector:
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -60,16 +61,18 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev,matching]"
 
-      - name: Lint P1 change surface
+      - name: Lint P2 change surface
         run: |
           ruff check \
             src/modules/interviews/planner.py \
             src/modules/interviews/plan_structure.py \
             src/modules/interviews/router.py \
+            src/modules/interviews/question_selector.py \
             migrations/versions/20260925_0014_interview_planner_payload.py \
             src/modules/matching/facade.py \
             tests/modules/interviews/test_planner.py \
             tests/modules/interviews/test_plan_structure.py \
+            tests/modules/interviews/test_question_selector.py \
             tests/modules/interviews/test_planner_db_integration.py \
             tests/app/test_app_contract.py
 
@@ -130,11 +133,12 @@ jobs:
           conn.close()
           PY
 
-      - name: Run P1 focused tests
+      - name: Run P2 focused tests
         run: |
           pytest -q \
             tests/modules/interviews/test_planner.py \
             tests/modules/interviews/test_plan_structure.py \
+            tests/modules/interviews/test_question_selector.py \
             tests/modules/interviews/test_planner_db_integration.py \
             tests/modules/interviews/test_runtime_foundation.py \
             tests/app/test_app_contract.py \
