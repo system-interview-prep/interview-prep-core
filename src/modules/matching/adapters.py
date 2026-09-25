@@ -96,11 +96,18 @@ def job_description_to_matching_job(
         )
         concept = requirement.concept
         atomic_concepts = requirement.atomic_concepts
+        recovered_group_operator = requirement.group_operator
         if recovered_concepts:
             if len(recovered_concepts) == 1:
                 concept = recovered_concepts[0]
             else:
                 atomic_concepts = recovered_concepts
+                # Recovery is based on explicit aliases co-occurring in one
+                # evidence-grounded skill requirement.  Legacy records did not
+                # persist composition metadata, so represent the recovered
+                # decomposition as all_of rather than emitting an invalid
+                # multi-concept contract.
+                recovered_group_operator = recovered_group_operator or "all_of"
 
         if (
             requirement.kind == "skill"
@@ -131,7 +138,7 @@ def job_description_to_matching_job(
                     credential=requirement.credential,
                     equivalentAllowed=requirement.equivalent_allowed,
                     groupId=requirement.group_id,
-                    groupOperator=requirement.group_operator,
+                    groupOperator=recovered_group_operator,
                 )
             )
 
