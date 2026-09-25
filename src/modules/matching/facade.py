@@ -101,11 +101,12 @@ class MatchingFacade:
         compatibility_status = self._compatibility_status(compatibility_results)
         factors, warnings = self._score_factors(payload, requirements)
         self._apply_effective_weights(factors)
-        suitability = self._suitability(factors)
+        diagnostic_score = self._suitability(factors)
         score_provenance = self._score_provenance(requirements, factors)
-        if score_provenance.mode == "semantic_only_estimated":
+        semantic_only = score_provenance.mode == "semantic_only_estimated"
+        if semantic_only:
             warnings.extend(["semantic_only_estimate", "semantic_only_score_suppressed"])
-            suitability = None
+        suitability = diagnostic_score if eligibility == "eligible" and not semantic_only else None
         decision, fit_band = self._decision(eligibility, suitability, factors)
         return MatchResult(
             resumeId=payload.resume.resume_id,
@@ -114,9 +115,11 @@ class MatchingFacade:
             policyVersion=payload.matching_policy.policy_version,
             eligibility=eligibility,
             compatibilityStatus=compatibility_status,
+            diagnosticScore=diagnostic_score,
             suitabilityScore=suitability,
             fitBand=fit_band,
             decision=decision,
+            failedMustHaveRequirements=self._failed_must_have_requirements(payload, requirements),
             requirementResults=requirements,
             compatibilityResults=compatibility_results,
             factorResults=factors,
@@ -135,11 +138,12 @@ class MatchingFacade:
         compatibility_status = self._compatibility_status(compatibility_results)
         factors, warnings = await self._score_factors_async(payload, requirements)
         self._apply_effective_weights(factors)
-        suitability = self._suitability(factors)
+        diagnostic_score = self._suitability(factors)
         score_provenance = self._score_provenance(requirements, factors)
-        if score_provenance.mode == "semantic_only_estimated":
+        semantic_only = score_provenance.mode == "semantic_only_estimated"
+        if semantic_only:
             warnings.extend(["semantic_only_estimate", "semantic_only_score_suppressed"])
-            suitability = None
+        suitability = diagnostic_score if eligibility == "eligible" and not semantic_only else None
         decision, fit_band = self._decision(eligibility, suitability, factors)
         return MatchResult(
             resumeId=payload.resume.resume_id,
@@ -148,9 +152,11 @@ class MatchingFacade:
             policyVersion=payload.matching_policy.policy_version,
             eligibility=eligibility,
             compatibilityStatus=compatibility_status,
+            diagnosticScore=diagnostic_score,
             suitabilityScore=suitability,
             fitBand=fit_band,
             decision=decision,
+            failedMustHaveRequirements=self._failed_must_have_requirements(payload, requirements),
             requirementResults=requirements,
             compatibilityResults=compatibility_results,
             factorResults=factors,
@@ -293,6 +299,16 @@ class MatchingFacade:
         ):
             return "review_required"
         return "eligible"
+
+    @staticmethod
+    def _failed_must_have_requirements(
+        payload: MatchRequest, results: list[RequirementResult]
+    ) -> list[str]:
+        return [
+            requirement.requirement_id
+            for requirement, result in zip(payload.job.requirements, results, strict=True)
+            if requirement.priority == "must_have" and result.status == "not_met"
+        ]
 
     def _score_factors(
         self, payload: MatchRequest, requirements: list[RequirementResult]
