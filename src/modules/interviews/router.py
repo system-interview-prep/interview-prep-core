@@ -50,7 +50,7 @@ EndReason = Literal["COMPLETED", "USER_ENDED", "TECHNICAL_FAILURE"]
 
 
 class SendChatMessage(BaseModel):
-    client_message_id: str | None = Field(default=None, alias="clientMessageId")
+    client_message_id: str = Field(alias="clientMessageId", min_length=1, max_length=64)
     content: str = Field(min_length=1, max_length=10000)
 
     model_config = {"populate_by_name": True}
@@ -404,6 +404,8 @@ async def start_chat(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     session = await _owned_session(db, user["sub"], session_id)
+    if session.get("experience_type") != "interview_chat":
+        raise HTTPException(status_code=409, detail="Session is not an interview chat")
     try:
         return await start_chat_session(db=db, session_row=session)
     except ChatRuntimeError as exc:
@@ -418,6 +420,8 @@ async def get_chat(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     session = await _owned_session(db, user["sub"], session_id)
+    if session.get("experience_type") != "interview_chat":
+        raise HTTPException(status_code=409, detail="Session is not an interview chat")
     return await get_chat_runtime(db=db, session_row=session)
 
 
@@ -429,6 +433,8 @@ async def send_chat(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     session = await _owned_session(db, user["sub"], session_id)
+    if session.get("experience_type") != "interview_chat":
+        raise HTTPException(status_code=409, detail="Session is not an interview chat")
     try:
         return await process_candidate_message(
             db=db,
@@ -452,6 +458,8 @@ async def complete_chat(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     session = await _owned_session(db, user["sub"], session_id)
+    if session.get("experience_type") != "interview_chat":
+        raise HTTPException(status_code=409, detail="Session is not an interview chat")
     try:
         return await complete_chat_session(
             db=db,
