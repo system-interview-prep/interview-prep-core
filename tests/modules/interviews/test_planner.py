@@ -106,6 +106,7 @@ def test_planner_prioritizes_unresolved_must_have_without_skipping_met_claims() 
         "skill.docker",
     }
     assert plan["targets"][0]["rationale"]["matchStatuses"] == ["unknown"]
+    assert [item["selectionRank"] for item in plan["targets"]] == [0, 1]
 
 
 def test_planner_preserves_atomic_concepts_and_allocates_bounded_budget() -> None:
@@ -343,3 +344,5 @@ def test_planner_keeps_must_have_concepts_ahead_of_repeated_nice_to_have() -> No
 
     assert plan["questionBudget"] == 3
     assert "skill.core" in {item["conceptId"] for item in plan["targets"]}
+    assert plan["targets"][0]["conceptId"] == "skill.core"
+    assert plan["targets"][0]["selectionRank"] == 0
