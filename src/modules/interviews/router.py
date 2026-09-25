@@ -46,7 +46,7 @@ ExperienceType = Literal[
     "video_interview",
     "interview_chat",
 ]
-EndReason = Literal["COMPLETED", "USER_ENDED", "TECHNICAL_FAILURE"]
+EndReason = Literal["COMPLETED", "USER_ENDED", "TECHNICAL_FAILURE", "TIME_EXPIRED"]
 
 
 class SendChatMessage(BaseModel):
@@ -92,6 +92,8 @@ def _session_payload(row: dict) -> dict:
         "status": row["status"],
         "startedAt": row["started_at"].isoformat(),
         "endedAt": row["ended_at"].isoformat() if row.get("ended_at") else None,
+        "chatStartedAt": row["chat_started_at"].isoformat() if row.get("chat_started_at") else None,
+        "deadlineAt": row["chat_deadline_at"].isoformat() if row.get("chat_deadline_at") else None,
         "plan": (
             {
                 "planId": row["plan_id"],
@@ -107,6 +109,7 @@ def _session_payload(row: dict) -> dict:
 _SESSION_SELECT = """
     SELECT s.id, s.resume_id, s.job_id, s.mode, s.locale, s.duration_minutes,
            s.status, s.started_at, s.ended_at, s.experience_type, s.end_reason,
+           s.chat_started_at, s.chat_deadline_at,
            p.id AS plan_id, p.schema_version AS plan_schema_version,
            p.status AS plan_status
     FROM interview_sessions s
