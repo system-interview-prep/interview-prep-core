@@ -144,12 +144,12 @@ async def create_interview_session(
         {
             "id": plan_id,
             "sid": session_id,
-            "context": (
-                '{"resumeId":"'
-                + payload.resume_id
-                + '","jobId":"'
-                + payload.job_id
-                + '","source":"p0-session-context"}'
+            "context": json.dumps(
+                {
+                    "resumeId": payload.resume_id,
+                    "jobId": payload.job_id,
+                    "source": "p0-session-context",
+                }
             ),
         },
     )
