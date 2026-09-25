@@ -1,9 +1,9 @@
-name: Interview Question Selector P2 CI
+name: Interview Text Runtime P3 CI
 
 on:
   push:
     branches:
-      - feat/interview-question-selector
+      - feat/interview-text-runtime
   pull_request:
     branches:
       - develop
@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 jobs:
-  verify-question-selector:
+  verify-text-runtime:
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -61,18 +61,20 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev,matching]"
 
-      - name: Lint P2 change surface
+      - name: Lint P3 change surface
         run: |
           ruff check \
             src/modules/interviews/planner.py \
             src/modules/interviews/plan_structure.py \
             src/modules/interviews/router.py \
             src/modules/interviews/question_selector.py \
+            src/modules/interviews/text_runtime.py \
             migrations/versions/20260925_0014_interview_planner_payload.py \
             src/modules/matching/facade.py \
             tests/modules/interviews/test_planner.py \
             tests/modules/interviews/test_plan_structure.py \
             tests/modules/interviews/test_question_selector.py \
+            tests/modules/interviews/test_text_runtime.py \
             tests/modules/interviews/test_planner_db_integration.py \
             tests/app/test_app_contract.py
 
@@ -133,7 +135,7 @@ jobs:
           conn.close()
           PY
 
-      - name: Run P2 focused tests
+      - name: Run P3 focused tests
         run: |
           pytest -q \
             tests/modules/interviews/test_planner.py \

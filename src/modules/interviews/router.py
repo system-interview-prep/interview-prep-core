@@ -21,10 +21,23 @@ from src.modules.interviews.question_selector import (
     read_frozen_turns,
     select_and_freeze_questions,
 )
+from src.modules.interviews.text_runtime import (
+    TurnStateError,
+    answer_turn,
+    ask_turn,
+    complete_text_runtime,
+    read_text_runtime,
+)
 
 router = APIRouter(prefix="/api/v1/interviews", tags=["interviews"])
 
 InterviewMode = Literal["text", "voice", "video"]
+
+
+class SubmitInterviewAnswer(BaseModel):
+    answer_text: str = Field(alias="answerText", min_length=1, max_length=20000)
+
+    model_config = {"populate_by_name": True}
 
 
 class CreateInterviewSession(BaseModel):
@@ -263,6 +276,75 @@ async def get_interview_turns(
         "sessionId": session_id,
         "turns": await read_frozen_turns(db=db, session_id=session_id),
     }
+
+
+@router.get("/sessions/{session_id}/runtime")
+async def get_text_interview_runtime(
+    session_id: str,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await _owned_session(db, user["sub"], session_id)
+    try:
+        return await read_text_runtime(db=db, session_row=session)
+    except TurnStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/turns/{turn_id}/ask")
+async def ask_interview_turn(
+    session_id: str,
+    turn_id: str,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await _owned_session(db, user["sub"], session_id)
+    try:
+        return await ask_turn(db=db, session_row=session, turn_id=turn_id)
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TurnStateError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/turns/{turn_id}/answer")
+async def answer_interview_turn(
+    session_id: str,
+    turn_id: str,
+    payload: SubmitInterviewAnswer,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await _owned_session(db, user["sub"], session_id)
+    try:
+        return await answer_turn(
+            db=db,
+            session_row=session,
+            turn_id=turn_id,
+            answer_text=payload.answer_text,
+        )
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except TurnStateError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/complete")
+async def complete_interview_runtime(
+    session_id: str,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await _owned_session(db, user["sub"], session_id)
+    try:
+        return await complete_text_runtime(db=db, session_row=session)
+    except TurnStateError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/sessions/{session_id}/close")
