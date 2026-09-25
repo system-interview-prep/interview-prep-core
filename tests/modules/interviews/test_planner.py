@@ -4,6 +4,7 @@ from src.modules.interviews.planner import (
 )
 from src.modules.matching.schemas import (
     CanonicalJob,
+    ConceptResult,
     MatchResult,
     RequirementResult,
     SkillRequirement,
@@ -121,9 +122,44 @@ def test_planner_preserves_atomic_concepts_and_allocates_bounded_budget() -> Non
         ],
         groupOperator="all_of",
     )
+    atomic_result = RequirementResult(
+        requirementId="req-ai",
+        status="unknown",
+        score=None,
+        confidence=0.4,
+        evidenceRefs=[],
+        reasonCode="atomic_group_incomplete",
+        groupOperator="all_of",
+        conceptResults=[
+            ConceptResult(
+                conceptId="skill.nlp",
+                label="NLP",
+                status="met",
+                confidence=1.0,
+                evidenceRefs=[],
+                reasonCode="concept_evidenced",
+            ),
+            ConceptResult(
+                conceptId="skill.genai",
+                label="GenAI",
+                status="met",
+                confidence=1.0,
+                evidenceRefs=[],
+                reasonCode="concept_evidenced",
+            ),
+            ConceptResult(
+                conceptId="skill.llm",
+                label="LLM",
+                status="unknown",
+                confidence=0.0,
+                evidenceRefs=[],
+                reasonCode="concept_evidence_missing",
+            ),
+        ],
+    )
     plan = derive_competency_plan(
         job=_job(ai_group),
-        match=_match([_result("req-ai", "unknown")]),
+        match=_match([atomic_result]),
         duration_minutes=25,
     )
 
@@ -134,6 +170,8 @@ def test_planner_preserves_atomic_concepts_and_allocates_bounded_budget() -> Non
         "skill.genai",
         "skill.llm",
     }
+    assert plan["targets"][0]["conceptId"] == "skill.llm"
+    assert plan["targets"][0]["rationale"]["matchStatuses"] == ["unknown"]
     assert all(item["targetQuestionCount"] <= 3 for item in plan["targets"])
 
 
