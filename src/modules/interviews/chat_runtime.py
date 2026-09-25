@@ -223,6 +223,10 @@ async def start_chat_session(
     session_row = {**session_row, **dict(clock)}
 
     first_turn = turns[0]
+    q_snapshot = first_turn.get("question_snapshot") or {}
+    q_text = q_snapshot.get("questionText") or q_snapshot.get("question_text")
+    if not q_text or not first_turn.get("question_version_id"):
+        raise ChatRuntimeError("Frozen question is incomplete; cannot start interview chat")
     # Update first turn to ASKED
     await db.execute(
         text(
@@ -268,11 +272,6 @@ async def start_chat_session(
     )
 
     # 2. Main Question message
-    q_snapshot = first_turn.get("question_snapshot") or {}
-    q_text = q_snapshot.get("questionText") or q_snapshot.get("question_text")
-    if not q_text or not first_turn.get("question_version_id"):
-        raise ChatRuntimeError("Frozen question is incomplete; cannot start interview chat")
-
     question_id = str(uuid4())
     q_meta = {
         "questionVersionId": str(first_turn["question_version_id"])
