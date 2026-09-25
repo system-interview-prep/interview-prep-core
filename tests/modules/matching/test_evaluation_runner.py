@@ -1,9 +1,23 @@
 import json
 
-from src.modules.matching.evaluation.runner import run_golden, run_production, write_report
+import pytest
+
+from src.modules.matching.evaluation.runner import (
+    DEFAULT_DATASET_DIR,
+    DEFAULT_DATASET_FILE,
+    run_golden,
+    run_production,
+    write_report,
+)
+
+
+def _require_matching_golden() -> None:
+    if not (DEFAULT_DATASET_DIR / DEFAULT_DATASET_FILE).is_file():
+        pytest.skip("Private DOC_AND_PLAN matching golden dataset is not available in this checkout")
 
 
 def test_matching_golden_runner_reports_integrity_without_claiming_model_accuracy() -> None:
+    _require_matching_golden()
     report = run_golden()
 
     assert report["summary"]["total"] == 50
@@ -34,6 +48,7 @@ def test_matching_report_writer_keeps_latest_immutable_runs_and_history(tmp_path
 
 
 def test_production_evaluation_runs_the_facade_for_all_golden_cases() -> None:
+    _require_matching_golden()
     report = run_production(semantic_mode="disabled")
 
     assert report["metric_contract"]["production_benchmark"] is True

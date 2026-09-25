@@ -1,0 +1,131 @@
+name: Interview Runtime P0 CI
+
+on:
+  pull_request:
+    branches:
+      - develop
+    paths:
+      - "src/modules/interviews/**"
+      - "src/main.py"
+      - "migrations/**"
+      - "tests/modules/interviews/**"
+      - "tests/app/test_app_contract.py"
+      - ".github/workflows/interview-runtime-p0-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: paradedb/paradedb:0.25.3-pg16
+        env:
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: matching_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U user -d matching_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql://user:password@localhost:5432/matching_db
+      JWT_SECRET: ci-only-secret-that-is-long-enough-for-tests
+      RUN_LIVE_JEV_TESTS: "0"
+      RUN_DB_INTEGRATION_TESTS: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,matching]"
+
+      - name: Lint P0 change surface
+        run: |
+          ruff check \
+            src/main.py \
+            src/modules/interviews \
+            migrations/env.py \
+            migrations/versions/20260925_0013_interview_runtime_foundation.py \
+            tests/modules/interviews/test_runtime_foundation.py \
+            tests/app/test_app_contract.py
+
+      - name: Verify migration upgrade
+        run: python -m alembic upgrade head
+
+      - name: Verify P0 migration downgrade and re-upgrade
+        run: |
+          python -m alembic downgrade 20260924_0012
+          python -m alembic upgrade head
+
+      - name: Verify populated-data downgrade is refused
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          conn = psycopg2.connect(os.environ["DATABASE_URL"])
+          conn.autocommit = True
+          with conn.cursor() as cur:
+              cur.execute(
+                  "INSERT INTO users (id, email, name, provider) "
+                  "VALUES ('p0-downgrade-user', 'p0-downgrade@example.test', "
+                  "'P0 Downgrade Guard', 'local')"
+              )
+              cur.execute(
+                  "INSERT INTO interview_sessions "
+                  "(id, user_id, type, language, status) "
+                  "VALUES ('p0-downgrade-session', 'p0-downgrade-user', "
+                  "'Chat', 'English', 'OPEN')"
+              )
+              cur.execute(
+                  "INSERT INTO interview_session_plans "
+                  "(id, session_id, schema_version, status, source_context) "
+                  "VALUES ('p0-downgrade-plan', 'p0-downgrade-session', "
+                  "'1.0', 'DRAFT', '{}'::jsonb)"
+              )
+          conn.close()
+          PY
+
+          if python -m alembic downgrade 20260924_0012; then
+            echo "Expected downgrade to fail while structured runtime data exists."
+            exit 1
+          fi
+
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          conn = psycopg2.connect(os.environ["DATABASE_URL"])
+          conn.autocommit = True
+          with conn.cursor() as cur:
+              cur.execute(
+                  "DELETE FROM interview_sessions WHERE id = 'p0-downgrade-session'"
+              )
+              cur.execute("DELETE FROM users WHERE id = 'p0-downgrade-user'")
+          conn.close()
+          PY
+
+      - name: Run P0 focused tests
+        run: |
+          pytest -q tests/modules/interviews/test_runtime_foundation.py tests/modules/interviews/test_runtime_db_integration.py tests/app/test_app_contract.py
+
+      - name: Run full test suite
+        run: pytest -q

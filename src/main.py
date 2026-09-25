@@ -17,6 +17,7 @@ from src.modules.admin_users import build_module as build_admin_users_module
 from src.modules.auth import build_module as build_auth_module
 from src.modules.chat import build_module as build_chat_module
 from src.modules.health import build_module as build_health_module
+from src.modules.interviews import build_module as build_interviews_module
 from src.modules.job_descriptions import build_module as build_job_descriptions_module
 from src.modules.matching import build_module as build_matching_module
 from src.modules.notifications import build_module as build_notifications_module
@@ -43,6 +44,7 @@ MODULES = [
     build_taxonomy_module(),
     build_matching_module(),
     build_question_bank_module(),
+    build_interviews_module(),
     build_sessions_module(),
     build_chat_module(),
     build_voice_module(),
