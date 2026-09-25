@@ -76,7 +76,10 @@ async def _parse_job_description(upload_id: str, version_id: str | None = None) 
                     {"version_id": version_id, "upload_id": upload_id},
                 )
                 await db.commit()
-            return {"status": result.status, "upload_id": result.upload_id, "version_id": version_id}
+            response = {"status": result.status, "upload_id": result.upload_id}
+            if version_id:
+                response["version_id"] = version_id
+            return response
     except Exception as exc:
         try:
             async with SessionFactory() as err_db:
