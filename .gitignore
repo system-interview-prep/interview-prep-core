@@ -11,3 +11,6 @@ app.log
 uploads/
 models_cache/
 trace-logs/
+.pytest-auth-full
+/.pytest-auth-full
+.pytest-auth-full/
