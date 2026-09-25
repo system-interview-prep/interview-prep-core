@@ -131,3 +131,46 @@ def test_legacy_hybrid_keeps_llm_source_when_it_is_taxonomy_grounded() -> None:
 
     assert [item.requirement_id for item in adapted.requirements] == ["req-llm-python"]
     assert isinstance(adapted.requirements[0], SkillRequirement)
+
+
+def test_adapter_recovers_exact_known_skill_from_legacy_ungrounded_requirement() -> None:
+    base = _parsed_jd()
+    legacy = base.requirements[0].model_copy(
+        update={
+            "requirement_id": "req-legacy-ai",
+            "kind": "skill",
+            "raw_label": "Experience building AI systems with Python",
+            "concept": None,
+            "atomic_concepts": [],
+        }
+    )
+    parsed = base.model_copy(update={"requirements": [legacy]})
+
+    adapted = job_description_to_matching_job(parsed, job_id="job-legacy")
+
+    requirement = adapted.requirements[0]
+    assert isinstance(requirement, UnresolvedRequirement)
+    assert [item.concept_id for item in requirement.atomic_concepts] == [
+        "skill-artificial-intelligence",
+        "skill-python",
+    ]
+
+
+def test_adapter_does_not_invent_taxonomy_for_unknown_legacy_skill_text() -> None:
+    base = _parsed_jd()
+    legacy = base.requirements[0].model_copy(
+        update={
+            "requirement_id": "req-legacy-unknown",
+            "kind": "skill",
+            "raw_label": "Experience with proprietary platform ZetaQ",
+            "concept": None,
+            "atomic_concepts": [],
+        }
+    )
+    parsed = base.model_copy(update={"requirements": [legacy]})
+
+    adapted = job_description_to_matching_job(parsed, job_id="job-legacy")
+
+    requirement = adapted.requirements[0]
+    assert isinstance(requirement, UnresolvedRequirement)
+    assert requirement.atomic_concepts == []
