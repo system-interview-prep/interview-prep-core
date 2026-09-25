@@ -235,9 +235,12 @@ def derive_competency_plan(
     counts = _allocate_question_counts(normalized_weights, budget)
 
     targets = []
-    for item, importance, target_count in zip(selected, normalized_weights, counts, strict=True):
+    for selection_rank, (item, importance, target_count) in enumerate(
+        zip(selected, normalized_weights, counts, strict=True)
+    ):
         targets.append(
             {
+                "selectionRank": selection_rank,
                 "taxonomyVersion": item.concept.taxonomy_version,
                 "conceptId": item.concept.concept_id,
                 "label": item.concept.label,
@@ -408,14 +411,15 @@ async def build_and_persist_session_plan(
         await db.execute(
             text(
                 "INSERT INTO session_competency_targets "
-                "(id, plan_id, taxonomy_version, concept_id, label, importance, "
-                "target_question_count, rationale) "
-                "VALUES (:id, :plan_id, :taxonomy_version, :concept_id, :label, "
-                ":importance, :question_count, CAST(:rationale AS jsonb))"
+                "(id, plan_id, selection_rank, taxonomy_version, concept_id, label, "
+                "importance, target_question_count, rationale) "
+                "VALUES (:id, :plan_id, :selection_rank, :taxonomy_version, :concept_id, "
+                ":label, :importance, :question_count, CAST(:rationale AS jsonb))"
             ),
             {
                 "id": str(uuid4()),
                 "plan_id": plan_id,
+                "selection_rank": target["selectionRank"],
                 "taxonomy_version": target["taxonomyVersion"],
                 "concept_id": target["conceptId"],
                 "label": target["label"],
@@ -471,15 +475,16 @@ async def read_session_plan(
 
     targets_result = await db.execute(
         text(
-            "SELECT taxonomy_version, concept_id, label, importance, "
+            "SELECT selection_rank, taxonomy_version, concept_id, label, importance, "
             "target_question_count, rationale "
             "FROM session_competency_targets WHERE plan_id = :plan_id "
-            "ORDER BY importance DESC, taxonomy_version, concept_id"
+            "ORDER BY selection_rank NULLS LAST, importance DESC, taxonomy_version, concept_id"
         ),
         {"plan_id": plan_id},
     )
     targets = [
         {
+            "selectionRank": row["selection_rank"],
             "taxonomyVersion": row["taxonomy_version"],
             "conceptId": row["concept_id"],
             "label": row["label"],
