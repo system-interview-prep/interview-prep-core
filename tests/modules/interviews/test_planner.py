@@ -173,6 +173,14 @@ def test_planner_preserves_atomic_concepts_and_allocates_bounded_budget() -> Non
     }
     assert plan["targets"][0]["conceptId"] == "skill.llm"
     assert plan["targets"][0]["rationale"]["matchStatuses"] == ["unknown"]
+    evaluation = plan["evaluationTargets"][0]
+    assert evaluation["groupOperator"] == "all_of"
+    assert [item["status"] for item in evaluation["conceptResults"]] == [
+        "met",
+        "met",
+        "unknown",
+    ]
+    assert evaluation["conceptResults"][2]["conceptId"] == "skill.llm"
     assert all(item["targetQuestionCount"] <= 3 for item in plan["targets"])
 
 
