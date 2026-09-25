@@ -191,6 +191,7 @@ def test_planner_is_deterministic_for_same_job_match_and_duration() -> None:
     second = derive_competency_plan(job=job, match=match, duration_minutes=25)
 
     assert first == second
+    assert len(first["fingerprint"]) == 64
 
 
 def test_planner_uses_career_classification_only_as_explicit_fallback() -> None:
