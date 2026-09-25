@@ -5,8 +5,10 @@ import unicodedata
 from collections.abc import Callable
 from functools import lru_cache
 
+from src.core.trace_logging import trace_event
 from src.modules.matching.bm25 import bm25_similarity
 from src.modules.matching.bm25_provider import Bm25Provider, get_bm25_provider
+from src.modules.matching.evidence_retrieval import retrieve_named_technology_context
 from src.modules.matching.rag.embedding import EmbeddingAdapter, build_embedding_adapter_from_env
 from src.modules.matching.requirement_evaluators import (
     evaluate_unresolved_requirement,
@@ -15,6 +17,7 @@ from src.modules.matching.requirement_evaluators import (
 from src.modules.matching.schemas import (
     CanonicalJob,
     CompatibilityResult,
+    EvidenceCandidateTrace,
     FactorResult,
     LanguageRequirement,
     MatchRequest,
@@ -173,12 +176,32 @@ class MatchingFacade:
             if isinstance(requirement, SkillRequirement):
                 claim = skill_claims.get(requirement.skill.concept_id)
                 if claim is None:
+                    context_candidates = retrieve_named_technology_context(
+                        requirement.skill.label,
+                        requirement.raw_label or requirement.skill.label,
+                        resume,
+                    )
                     results.append(
                         RequirementResult(
                             requirementId=requirement.requirement_id,
                             status="unknown",
-                            confidence=0.0,
-                            reasonCode="skill_not_evidenced",
+                            confidence=0.45 if context_candidates else 0.0,
+                            evidenceRefs=[item.evidence.evidence_id for item in context_candidates],
+                            reasonCode=(
+                                "skill_semantic_context_needs_confirmation"
+                                if context_candidates
+                                else "skill_not_evidenced"
+                            ),
+                            evidenceExplanation=(
+                                "CV mô tả môi trường/container liên quan nhưng chưa nêu rõ công nghệ "
+                                "được yêu cầu; cần xác minh tên công nghệ trực tiếp."
+                                if context_candidates
+                                else None
+                            ),
+                            retrievalCandidates=[
+                                EvidenceCandidateTrace(**item.trace(rank=index, evidence_strength="applied"))
+                                for index, item in enumerate(context_candidates, start=1)
+                            ],
                         )
                     )
                 elif requirement.operator == "proficiency_gte" and claim.proficiency_level is None:
@@ -281,6 +304,50 @@ class MatchingFacade:
                     )
             elif isinstance(requirement, UnresolvedRequirement):
                 results.append(evaluate_unresolved_requirement(requirement, resume))
+        # Structured skill/language requirements historically bypassed the
+        # evaluator trace. Emit the same grounded event shape so every
+        # requirement can be audited, including preferred Docker/Linux rows.
+        for requirement, result in zip(job.requirements, results, strict=True):
+            if not isinstance(requirement, (SkillRequirement, LanguageRequirement)):
+                continue
+            trace_event(
+                "matching",
+                "requirement_evaluated",
+                requirement_id=requirement.requirement_id,
+                requirement_kind="skill" if isinstance(requirement, SkillRequirement) else "language",
+                evaluator="knowledge_skill" if isinstance(requirement, SkillRequirement) else "language",
+                evaluator_category="skill" if isinstance(requirement, SkillRequirement) else "language",
+                result_status=result.status,
+                reason_code=result.reason_code,
+                score=result.score,
+                confidence=result.confidence,
+                evidence_refs=result.evidence_refs,
+                resolution_source="canonical_evidence",
+                matched_aliases=[],
+                concept_results=[],
+                retrieval_candidates=[candidate.model_dump(by_alias=True) for candidate in result.retrieval_candidates],
+                decision_basis={
+                    "raw_coverage": resume.parsing.raw_text_coverage if resume.parsing else "legacy",
+                    "section_coverage": resume.parsing.canonical_section_coverage if resume.parsing else {},
+                    "evidence_coverage": resume.parsing.evidence_index_coverage if resume.parsing else "legacy",
+                    "threshold_version": "semantic-expansion-v1",
+                    "required_strength": "applied" if isinstance(requirement, SkillRequirement) else None,
+                    "operator": "atomic",
+                },
+                required_months=(
+                    requirement.minimum_experience_months
+                    if isinstance(requirement, SkillRequirement)
+                    else None
+                ),
+                total_verified_months=None,
+                counted_employment_refs=[],
+                merged_interval_count=None,
+                evidence_coverage=resume.parsing.evidence_index_coverage if resume.parsing else "legacy",
+                raw_text_coverage=resume.parsing.raw_text_coverage if resume.parsing else "legacy",
+                canonical_section_coverage=resume.parsing.canonical_section_coverage if resume.parsing else {},
+                retrieval_methods=["structured_concept_refs", "exact_alias_phrase", "generic_token_overlap"]
+                + ([candidate.retrieval_method for candidate in result.retrieval_candidates] if result.retrieval_candidates else []),
+            )
         return results
 
     @staticmethod

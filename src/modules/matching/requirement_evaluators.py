@@ -55,6 +55,27 @@ _EXPERIENCE_DURATION_RE = re.compile(
     re.I,
 )
 
+_EDUCATION_LEVELS: dict[str, int] = {
+    "high school": 1,
+    "secondary school": 1,
+    "trung hoc": 1,
+    "associate": 2,
+    "college": 2,
+    "cao dang": 2,
+    "bachelor": 3,
+    "b.sc": 3,
+    "b.s": 3,
+    "b.a": 3,
+    "university": 3,
+    "dai hoc": 3,
+    "master": 4,
+    "m.sc": 4,
+    "m.s": 4,
+    "ph.d": 5,
+    "phd": 5,
+    "doctorate": 5,
+}
+
 
 def _normalize(value: str) -> str:
     decomposed = unicodedata.normalize("NFKD", value)
@@ -67,6 +88,24 @@ def _has_phrase(text: str, phrases: Iterable[str]) -> bool:
     normalized = _normalize(text).replace(".", " ")
     padded = f" {normalized} "
     return any(f" {_normalize(phrase).replace('.', ' ')} " in padded for phrase in phrases)
+
+
+def _required_education_level(text: str) -> int | None:
+    normalized = _normalize(text).replace(".", " ")
+    if not any(
+        _has_phrase(normalized, (marker,))
+        for marker in ("or higher", "and above", "tro len", "above")
+    ):
+        return None
+    matched = [level for label, level in _EDUCATION_LEVELS.items() if _has_phrase(normalized, (label,))]
+    return max(matched) if matched else None
+
+
+def _education_level(degree: str | None, evidence_text: str = "") -> int | None:
+    text = f"{degree or ''} {evidence_text}"
+    normalized = _normalize(text).replace(".", " ")
+    matched = [level for label, level in _EDUCATION_LEVELS.items() if _has_phrase(normalized, (label,))]
+    return max(matched) if matched else None
 
 
 def _matching_evidence(
@@ -298,6 +337,11 @@ def select_evaluator(requirement: UnresolvedRequirement) -> EvaluatorSelection |
         return EvaluatorSelection("gpa", "education")
     if _GPA_RE.search(text):
         return EvaluatorSelection("gpa", "education")
+    # Degree thresholds are identifiable from the requirement text itself.  Do
+    # not depend on the JD parser's ``kind`` classification: older/LLM parser
+    # versions may label the same requirement as ``other`` or ``experience``.
+    if _required_education_level(text) is not None:
+        return EvaluatorSelection("education_degree", "education")
     if requirement.credential or _CREDENTIAL_RE.search(text):
         return EvaluatorSelection("language_credential", "language")
     if _required_experience_months(requirement) is not None:
@@ -708,6 +752,74 @@ def _evaluate_education_status(
     )
 
 
+def _evaluate_education_degree(
+    requirement: UnresolvedRequirement,
+    resume: CanonicalResume,
+) -> RequirementResult:
+    required_level = _required_education_level(requirement.raw_label)
+    if required_level is None:
+        return _evaluate_generic_requirement(requirement, resume)
+
+    evidence_by_id = {item.evidence_id: item for item in resume.evidence}
+    qualifying: list[EvidenceSpan] = []
+    below: list[EvidenceSpan] = []
+    for education in resume.education:
+        refs = [evidence_by_id[ref] for ref in education.evidence_refs if ref in evidence_by_id]
+        entry_text = " ".join(item.text for item in refs)
+        level = _education_level(education.degree, entry_text)
+        if level is None:
+            continue
+        (qualifying if level >= required_level else below).extend(refs)
+
+    # A parser may have populated raw evidence while the structured education
+    # entry is incomplete.  Use the same degree hierarchy against those spans.
+    if not qualifying and not below:
+        for evidence in resume.evidence:
+            level = _education_level(None, evidence.text)
+            if level is None:
+                continue
+            (qualifying if level >= required_level else below).append(evidence)
+
+    if qualifying:
+        return _result(
+            requirement,
+            status="met",
+            reason_code="education_degree_evidenced",
+            evidence=_dedupe_evidence(qualifying)[:6],
+            confidence=1.0,
+            evidence_explanation=(
+                "Bằng cấp trong CV đạt hoặc cao hơn mức học vấn tối thiểu được yêu cầu."
+            ),
+        )
+    if below:
+        return _result(
+            requirement,
+            status="not_met",
+            reason_code="education_degree_below_minimum",
+            evidence=_dedupe_evidence(below)[:6],
+            confidence=0.95,
+            evidence_explanation="CV có bằng cấp nhưng thấp hơn mức học vấn tối thiểu.",
+        )
+    coverage = resume.parsing.raw_text_coverage if resume.parsing else "legacy"
+    if coverage == "complete":
+        return _result(
+            requirement,
+            status="not_met",
+            reason_code="education_degree_not_evidenced",
+            confidence=0.9,
+            evidence_explanation="Không tìm thấy bằng cấp phù hợp trong toàn bộ raw text của CV.",
+        )
+    return _result(
+        requirement,
+        status="unknown",
+        reason_code="education_degree_evidence_incomplete",
+        confidence=0.0,
+        evidence_explanation=(
+            f"Không thể kết luận bằng cấp vắng mặt vì raw_text_coverage={coverage}."
+        ),
+    )
+
+
 def _evaluate_knowledge_skill(
     requirement: UnresolvedRequirement,
     resume: CanonicalResume,
@@ -1003,6 +1115,7 @@ def evaluate_unresolved_requirement(
         "gpa": _evaluate_gpa,
         "language_credential": _evaluate_language,
         "experience_duration": _evaluate_experience_duration,
+        "education_degree": _evaluate_education_degree,
         "education_status": _evaluate_education_status,
         "knowledge_skill": _evaluate_knowledge_skill,
         "programming_foundation": _evaluate_programming_foundation,

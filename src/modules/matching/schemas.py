@@ -21,6 +21,9 @@ class RequirementBase(CanonicalModel):
 class SkillRequirement(RequirementBase):
     type: Literal["skill"]
     skill: TaxonomyRef
+    # Preserve the original JD wording when the taxonomy parser resolves only
+    # one concept from a compound line (for example Docker + Linux).
+    raw_label: str | None = None
     operator: Literal["required", "gte", "proficiency_gte"] = "required"
     minimum_experience_months: int | None = Field(default=None, ge=0)
     minimum_proficiency_level: ProficiencyLevel | None = None

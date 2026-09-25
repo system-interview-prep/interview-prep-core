@@ -92,6 +92,19 @@ _CAPABILITY_EXPANSIONS: dict[str, tuple[str, ...]] = {
     "fault tolerance": ("retry policy", "failure recovery", "load shedding", "resilient"),
     "monitoring": ("telemetry", "alerting", "observability", "metrics"),
     "ci cd": ("automated release", "delivery pipeline", "continuous delivery", "release pipeline"),
+    # Domain capabilities used by finance/transaction requirements.  These are
+    # intentionally broad capability terms, not aliases for a named product.
+    "finance": ("payment", "settlement", "reconciliation", "ledger", "authorization"),
+    "financial systems": ("payment", "settlement", "reconciliation", "ledger", "authorization"),
+    "fintech": ("payment", "settlement", "payment authorization", "ledger", "order workflow"),
+    "trading platforms": ("order routing", "order workflow", "settlement", "execution"),
+    "high volume transaction systems": (
+        "settlement",
+        "ledger",
+        "transaction processing",
+        "records per day",
+        "million records",
+    ),
 }
 
 _NAMED_TECHNOLOGIES = {
@@ -107,6 +120,16 @@ _NAMED_TECHNOLOGIES = {
     "python",
     "java",
     "postgresql",
+}
+
+# Context phrases can support a named technology claim without silently
+# upgrading it to ``met``.  They are used only to attach explainable evidence
+# to an ``unknown`` result when the CV describes the surrounding environment
+# (e.g. OCI/container packaging and Unix-like hosts) but omits the product
+# name itself.
+_NAMED_TECH_CONTEXT: dict[str, tuple[str, ...]] = {
+    "docker": ("oci image", "container image", "container packaging", "containerized"),
+    "linux": ("unix-like", "unix host", "unix-like operations", "posix"),
 }
 
 
@@ -187,6 +210,44 @@ def retrieve_semantic_evidence(
                 semantic_score=combined,
                 lexical_score=lexical_score,
                 concept_id=concept_id,
+            )
+        )
+    return sorted(
+        candidates,
+        key=lambda item: (-item.semantic_score, item.evidence.char_start, item.evidence.evidence_id),
+    )[:4]
+
+
+def retrieve_named_technology_context(
+    concept_label: str,
+    requirement_text: str,
+    resume: CanonicalResume,
+) -> list[EvidenceCandidate]:
+    """Retrieve contextual evidence without asserting a named technology.
+
+    This intentionally returns candidates for presentation/verification only;
+    callers must keep the status ``unknown`` until the exact technology is
+    confirmed by a structured claim or explicit alias.
+    """
+
+    label = _normalize(concept_label).replace(".", " ")
+    context = _NAMED_TECH_CONTEXT.get(label)
+    if not context or not _contains_phrase(requirement_text, concept_label):
+        return []
+    candidates: list[EvidenceCandidate] = []
+    for evidence in resume.evidence:
+        matched = [phrase for phrase in context if _contains_phrase(evidence.text, phrase)]
+        if not matched:
+            continue
+        semantic_score = min(0.58, 0.35 + 0.08 * len(matched))
+        lexical_score = bm25_similarity(" ".join(matched), evidence.text, reference_length=40.0)
+        candidates.append(
+            EvidenceCandidate(
+                evidence=evidence,
+                retrieval_method="named_technology_context",
+                semantic_score=round(0.7 * semantic_score + 0.3 * lexical_score, 4),
+                lexical_score=lexical_score,
+                concept_id=None,
             )
         )
     return sorted(

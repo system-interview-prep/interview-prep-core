@@ -24,8 +24,9 @@ def _canonical_requirements(parsed: CanonicalJobDescription) -> list[JobRequirem
     hybrid-jd-v2 used to persist the deterministic baseline followed by an
     independently paraphrased ``req-llm-*`` set.  Source selection is based on
     explicit parser provenance in the IDs, never fuzzy display-text matching.
-    New parser output contains only one source, so this compatibility branch is
-    inert for newly parsed JDs.
+    New parser output merges the deterministic set with only genuinely new
+    grounded claims, so discarding the baseline would silently reduce a full
+    JD to one requirement.
     """
     llm_requirements = [
         item for item in parsed.requirements if item.requirement_id.startswith("req-llm-")
@@ -33,7 +34,11 @@ def _canonical_requirements(parsed: CanonicalJobDescription) -> list[JobRequirem
     baseline_requirements = [
         item for item in parsed.requirements if not item.requirement_id.startswith("req-llm-")
     ]
-    if llm_requirements and baseline_requirements:
+    if (
+        llm_requirements
+        and baseline_requirements
+        and parsed.parsing.parser_version == "hybrid-jd-v2"
+    ):
         return llm_requirements
     return parsed.requirements
 
@@ -72,6 +77,7 @@ def job_description_to_matching_job(
                     **common,
                     type="skill",
                     skill=requirement.concept,
+                    rawLabel=requirement.raw_label,
                     operator="gte" if requirement.minimum_experience_months is not None else "required",
                     minimumExperienceMonths=requirement.minimum_experience_months,
                 )
