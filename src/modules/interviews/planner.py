@@ -160,13 +160,15 @@ def derive_competency_plan(
     """
     result_by_id = {item.requirement_id: item for item in match.requirement_results}
     candidates: dict[tuple[str, str], _CandidateTarget] = {}
-    skipped_requirement_ids: list[str] = []
+    non_competency_requirement_ids: list[str] = []
+    had_taxonomy_concepts = False
 
     for requirement in job.requirements:
         concepts = _requirement_concepts(requirement)
         if not concepts:
-            skipped_requirement_ids.append(requirement.requirement_id)
+            non_competency_requirement_ids.append(requirement.requirement_id)
             continue
+        had_taxonomy_concepts = True
 
         result = result_by_id.get(requirement.requirement_id)
         priority_weight = _PRIORITY_WEIGHT.get(requirement.priority, 0.0)
@@ -175,6 +177,8 @@ def derive_competency_plan(
         for concept in concepts:
             match_status = _status_for_concept(result, concept.concept_id)
             status_boost = _STATUS_BOOST.get(match_status, 1.0)
+            if status_boost <= 0.0:
+                continue
             per_concept_weight = priority_weight * status_boost / concept_count
 
             key = (concept.taxonomy_version, concept.concept_id)
@@ -193,7 +197,7 @@ def derive_competency_plan(
     # A canonical role classification is a controlled fallback only when the JD
     # has no taxonomy-backed requirement concepts. It is explicitly marked so
     # P2 can treat it differently from requirement-level competencies.
-    if not candidates:
+    if not candidates and not had_taxonomy_concepts:
         classifications = sorted(
             job.career_classifications,
             key=lambda item: (not item.is_primary, -item.confidence, item.code),
@@ -212,12 +216,13 @@ def derive_competency_plan(
             )
 
     if not candidates:
-        raise ValueError("No taxonomy-backed interview competencies could be derived from the job")
+        raise ValueError("No applicable taxonomy-backed interview competencies could be derived from the job")
 
     budget = _question_budget(duration_minutes)
     ranked = sorted(
         candidates.values(),
         key=lambda item: (
+            0 if "must_have" in item.priorities else 1,
             -item.raw_weight,
             item.concept.taxonomy_version,
             item.concept.concept_id,
@@ -259,7 +264,7 @@ def derive_competency_plan(
         "sections": build_sections(duration_minutes),
         "targets": targets,
         "evaluationTargets": evaluation_targets,
-        "skippedRequirementIds": skipped_requirement_ids,
+        "nonCompetencyRequirementIds": non_competency_requirement_ids,
     }
     canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     plan["fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -392,7 +397,7 @@ async def build_and_persist_session_plan(
         "fitBand": match.fit_band,
         "plannerPolicyVersion": plan["policyVersion"],
         "questionBudget": plan["questionBudget"],
-        "skippedRequirementIds": plan["skippedRequirementIds"],
+        "nonCompetencyRequirementIds": plan["nonCompetencyRequirementIds"],
     }
 
     await db.execute(
