@@ -141,7 +141,7 @@ def test_parser_handles_vietnamese_game_jd_sections_title_and_priority() -> None
     )
 
     parsed = DeterministicJobDescriptionParser().parse(source, extraction_version="mineru-test")
-    requirements = {item.concept.concept_id: item for item in parsed.requirements if item.concept}
+    requirements = _requirements_by_concept(parsed)
     unity_must_have = next(
         item
         for item in parsed.requirements
