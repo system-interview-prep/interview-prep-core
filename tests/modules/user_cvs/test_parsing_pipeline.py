@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+import src.modules.user_cvs.parsing.application.pipeline as pipeline_module
 from src.modules.user_cvs.parsing.application.pipeline import CvDocument, CvParsingPipeline
 from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
 from src.modules.user_cvs.parsing.domain.deterministic import DeterministicResumeParser
@@ -86,6 +87,34 @@ async def test_pipeline_runs_upload_artifact_to_structured_persistence_boundary(
     artifact_key = f"{document.storage_key}.artifacts/{SHA256}/mineru.json"
     assert artifact_key in storage.json_objects
     assert storage.json_objects[artifact_key]["contentList"][1]["bbox"] == [0, 20, 50, 30]
+
+
+async def test_pipeline_traces_quality_gate_without_document_text(monkeypatch) -> None:
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        pipeline_module,
+        "trace_event",
+        lambda _workflow, event, **fields: events.append((event, fields)),
+    )
+    document = CvDocument("cv-1", "resume.pdf", "cvs/cv-trace.pdf", SHA256)
+    pipeline = CvParsingPipeline(
+        repository=RecordingRepository(document),
+        storage=MemoryStorage(b"pdf"),
+        extractor=StubExtractor(),
+        parser=DeterministicResumeParser(),
+        source_builder=build_source_document,
+    )
+
+    await pipeline.run("cv-1")
+
+    quality = next(fields for event, fields in events if event == "quality_gate")
+    assert quality["status"] == "review_required"
+    assert quality["coverage"] == "partial"
+    assert quality["section_counts"]["evidence"] > 0
+    assert "source_text" not in quality
+    assert quality["raw_text_coverage"] == "complete"
+    assert quality["canonical_section_coverage"]["employment"] == "complete_empty"
+    assert quality["evidence_index_coverage"] == "complete"
 
 
 class FailingExtractor:

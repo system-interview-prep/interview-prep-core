@@ -240,6 +240,16 @@ class ParsingMetadata(CanonicalModel):
     status: Literal["ready", "review_required"]
     source_artifact_key: str | None = None
     warnings: list[ParserWarning] = Field(default_factory=list)
+    # Coverage is deliberately split by pipeline layer.  A parser may have
+    # complete source text while its canonical sections are incomplete; that
+    # distinction is required before deciding whether an absent requirement is
+    # ``not_met`` or merely ``unknown``.
+    raw_text_coverage: Literal["complete", "partial", "unavailable"] = "partial"
+    canonical_section_coverage: dict[
+        str, Literal["complete", "complete_empty", "partial", "unavailable"]
+    ] = Field(default_factory=dict)
+    evidence_index_coverage: Literal["complete", "partial", "unavailable"] = "partial"
+    coverage_reason_codes: list[str] = Field(default_factory=list)
 
 
 class CanonicalResume(CanonicalModel):
@@ -258,6 +268,9 @@ class CanonicalResume(CanonicalModel):
     career_classifications: list[CareerClassification] = Field(default_factory=list)
     evidence: list[EvidenceSpan] = Field(default_factory=list)
     parsing: ParsingMetadata | None = None
+    # Raw text is attached only at the matching boundary for targeted reparse.
+    # It is excluded from canonical persistence and trace payloads.
+    raw_text: str | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
     def references_are_consistent(self) -> "CanonicalResume":
