@@ -22,10 +22,16 @@ pytestmark = pytest.mark.skipif(
 @pytest.mark.asyncio
 async def test_grounded_session_persists_reads_and_closes() -> None:
     user_id = str(uuid4())
+    other_user_id = str(uuid4())
     resume_id = str(uuid4())
     job_id = str(uuid4())
     checksum = uuid4().hex + uuid4().hex
     user = {"sub": user_id, "email": f"{user_id}@example.test", "roles": ["CANDIDATE"]}
+    other_user = {
+        "sub": other_user_id,
+        "email": f"{other_user_id}@example.test",
+        "roles": ["CANDIDATE"],
+    }
 
     async with SessionFactory() as db:
         try:
@@ -35,6 +41,13 @@ async def test_grounded_session_persists_reads_and_closes() -> None:
                     "VALUES (:id, :email, 'P0 Candidate', 'local')"
                 ),
                 {"id": user_id, "email": user["email"]},
+            )
+            await db.execute(
+                text(
+                    "INSERT INTO users (id, email, name, provider) "
+                    "VALUES (:id, :email, 'P0 Other Candidate', 'local')"
+                ),
+                {"id": other_user_id, "email": other_user["email"]},
             )
             await db.execute(
                 text(
@@ -86,6 +99,18 @@ async def test_grounded_session_persists_reads_and_closes() -> None:
             assert loaded["sessionId"] == created["sessionId"]
             assert loaded["plan"]["planId"] == created["plan"]["planId"]
 
+            with pytest.raises(HTTPException) as read_error:
+                await get_interview_session(created["sessionId"], user=other_user, db=db)
+            assert read_error.value.status_code == 404
+
+            with pytest.raises(HTTPException) as close_error:
+                await close_interview_session(created["sessionId"], user=other_user, db=db)
+            assert close_error.value.status_code == 404
+
+            still_open = await get_interview_session(created["sessionId"], user=user, db=db)
+            assert still_open["status"] == "OPEN"
+            assert still_open["endedAt"] is None
+
             closed = await close_interview_session(created["sessionId"], user=user, db=db)
             assert closed["status"] == "CLOSED"
             assert closed["endedAt"] is not None
@@ -107,6 +132,9 @@ async def test_grounded_session_persists_reads_and_closes() -> None:
             assert legacy_error.value.status_code == 404
         finally:
             await db.rollback()
-            await db.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
+            await db.execute(
+                text("DELETE FROM users WHERE id IN (:owner_id, :other_id)"),
+                {"owner_id": user_id, "other_id": other_user_id},
+            )
             await db.execute(text("DELETE FROM job_descriptions WHERE id = :id"), {"id": job_id})
             await db.commit()
