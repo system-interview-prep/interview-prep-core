@@ -109,6 +109,22 @@ def _requirement_concept_ids(requirement: Any) -> list[str]:
     return []
 
 
+def _requirement_label(requirement: Any) -> str:
+    if isinstance(requirement, SkillRequirement):
+        return requirement.skill.label
+    if isinstance(requirement, LanguageRequirement):
+        return requirement.language_code
+    if isinstance(requirement, UnresolvedRequirement):
+        return requirement.raw_label
+    return "Requirement"
+
+
+def _requirement_group_operator(requirement: Any) -> str:
+    if isinstance(requirement, UnresolvedRequirement):
+        return requirement.group_operator or "atomic"
+    return "atomic"
+
+
 def _requirement_kind(requirement: Any) -> str:
     if isinstance(requirement, SkillRequirement):
         return "skill"
@@ -143,6 +159,8 @@ def build_evaluation_targets(
                 "requirementId": requirement.requirement_id,
                 "priority": requirement.priority,
                 "kind": _requirement_kind(requirement),
+                "label": _requirement_label(requirement),
+                "groupOperator": _requirement_group_operator(requirement),
                 "status": status,
                 "reasonCode": result.reason_code if result is not None else "match_result_missing",
                 "conceptIds": concept_ids,
