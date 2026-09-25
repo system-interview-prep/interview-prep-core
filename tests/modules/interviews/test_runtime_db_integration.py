@@ -2,6 +2,7 @@ import os
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import text
 
 from src.infrastructure.database import SessionFactory
@@ -88,7 +89,24 @@ async def test_grounded_session_persists_reads_and_closes() -> None:
             closed = await close_interview_session(created["sessionId"], user=user, db=db)
             assert closed["status"] == "CLOSED"
             assert closed["endedAt"] is not None
+
+            closed_again = await close_interview_session(created["sessionId"], user=user, db=db)
+            assert closed_again["endedAt"] == closed["endedAt"]
+
+            legacy_session_id = str(uuid4())
+            await db.execute(
+                text(
+                    "INSERT INTO interview_sessions (id, user_id, type, language, status) "
+                    "VALUES (:id, :uid, 'Chat', 'English', 'OPEN')"
+                ),
+                {"id": legacy_session_id, "uid": user_id},
+            )
+            await db.commit()
+            with pytest.raises(HTTPException) as legacy_error:
+                await get_interview_session(legacy_session_id, user=user, db=db)
+            assert legacy_error.value.status_code == 404
         finally:
+            await db.rollback()
             await db.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
             await db.execute(text("DELETE FROM job_descriptions WHERE id = :id"), {"id": job_id})
             await db.commit()
