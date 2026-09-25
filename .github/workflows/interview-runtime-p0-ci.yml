@@ -79,6 +79,55 @@ jobs:
           python -m alembic downgrade 20260925_0013
           python -m alembic upgrade head
 
+      - name: Verify populated P1 downgrade is refused
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          conn = psycopg2.connect(os.environ["DATABASE_URL"])
+          conn.autocommit = True
+          with conn.cursor() as cur:
+              cur.execute(
+                  "INSERT INTO users (id, email, name, provider) "
+                  "VALUES ('p1-downgrade-user', 'p1-downgrade@example.test', "
+                  "'P1 Downgrade Guard', 'local')"
+              )
+              cur.execute(
+                  "INSERT INTO interview_sessions "
+                  "(id, user_id, type, language, status) "
+                  "VALUES ('p1-downgrade-session', 'p1-downgrade-user', "
+                  "'Chat', 'English', 'OPEN')"
+              )
+              cur.execute(
+                  "INSERT INTO interview_session_plans "
+                  "(id, session_id, schema_version, status, source_context, plan_payload) "
+                  "VALUES ('p1-downgrade-plan', 'p1-downgrade-session', "
+                  "'1.0', 'READY', '{}'::jsonb, "
+                  "'{\"policyVersion\":\"interview-planner-v1\"}'::jsonb)"
+              )
+          conn.close()
+          PY
+
+          if python -m alembic downgrade 20260925_0013; then
+            echo "Expected P1 downgrade to fail while plan payload data exists."
+            exit 1
+          fi
+
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          conn = psycopg2.connect(os.environ["DATABASE_URL"])
+          conn.autocommit = True
+          with conn.cursor() as cur:
+              cur.execute(
+                  "DELETE FROM interview_sessions WHERE id = 'p1-downgrade-session'"
+              )
+              cur.execute("DELETE FROM users WHERE id = 'p1-downgrade-user'")
+          conn.close()
+          PY
+
       - name: Run P1 focused tests
         run: |
           pytest -q \
