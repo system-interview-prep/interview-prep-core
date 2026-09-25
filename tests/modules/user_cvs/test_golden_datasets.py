@@ -10,7 +10,14 @@ from src.modules.user_cvs.evaluation.runner import _load_cases, evaluate_cases
 from src.modules.user_cvs.parsing.domain.deterministic import DeterministicResumeParser
 
 
+def _require_cv_goldens() -> None:
+    marker = DEFAULT_DATASET_DIR / "parser_core_v1/manifests/manifest.json"
+    if not marker.is_file():
+        pytest.skip("Private DOC_AND_PLAN CV golden datasets are not available in this checkout")
+
+
 def test_cv_golden_artifacts_are_private_grounded_and_unique() -> None:
+    _require_cv_goldens()
     assert validate_cv_datasets() == {
         "skill_evidence_v1/candidates/pre_gold_cv_skill_evidence_v1.json": 300,
         "parser_core_v1/candidates/pre_gold_cv_parser_core_v1.json": 100,
@@ -37,6 +44,7 @@ def test_cv_golden_builder_is_reproducible() -> None:
 
 
 def test_all_cv_manifests_resolve_the_numbered_golden_files() -> None:
+    _require_cv_goldens()
     expected_counts = {
         "parser_core_v1/manifests/manifest.json": 100,
         "parser_edge_v1/manifests/manifest.json": 40,
@@ -50,6 +58,7 @@ def test_all_cv_manifests_resolve_the_numbered_golden_files() -> None:
 
 
 def test_vietnamese_cases_are_separately_addressable_but_pair_grouped() -> None:
+    _require_cv_goldens()
     core = json.loads((DEFAULT_DATASET_DIR / "parser_core_v1/candidates/pre_gold_cv_parser_core_v1.json").read_text(encoding="utf-8"))
     translated = json.loads(
         (DEFAULT_DATASET_DIR / "vi_translation_v1/candidates/pre_gold_cv_vi_translation_v1.json").read_text(encoding="utf-8")
@@ -70,6 +79,7 @@ def test_vietnamese_cases_are_separately_addressable_but_pair_grouped() -> None:
 
 
 def test_skill_evidence_gold_passes_deterministic_quality_gate() -> None:
+    _require_cv_goldens()
     cases, gates = _load_cases(DEFAULT_DATASET_DIR, "skill_evidence_v1/manifests/manifest.json")
     report = asyncio.run(evaluate_cases(cases, DeterministicResumeParser(), quality_gates=gates))
     assert report["quality_gate"]["passed"]

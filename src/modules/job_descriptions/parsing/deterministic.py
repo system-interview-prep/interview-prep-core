@@ -1330,12 +1330,15 @@ class DeterministicJobDescriptionParser:
     @staticmethod
     def _classifications(requirements, job_title: str | None = None):
         del job_title  # Canonical JD v1 has no evidenceRefs for its title.
+        skill_evidence: dict[str, list[str]] = {}
+        for item in requirements:
+            concepts = [item.concept] if item.concept is not None else item.atomic_concepts
+            for concept in concepts:
+                existing = skill_evidence.setdefault(concept.concept_id, [])
+                existing.extend(ref for ref in item.evidence_refs if ref not in existing)
+
         results = classify_career(
-            {
-                item.concept.concept_id: item.evidence_refs
-                for item in requirements
-                if item.concept is not None
-            },
+            skill_evidence,
             [],
             minimum_skill_signals=1,
             include_ancestors=False,

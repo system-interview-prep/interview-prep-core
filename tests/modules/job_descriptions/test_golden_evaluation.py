@@ -1,10 +1,18 @@
 import json
 
+import pytest
+
 from src.modules.job_descriptions.domain.schemas import CanonicalJobDescription
 from src.modules.job_descriptions.evaluation.runner import DEFAULT_DATASET_DIR, _evidence_is_valid, run_golden
 
 
+def _require_golden_dataset() -> None:
+    if not (DEFAULT_DATASET_DIR / "manifest.json").is_file():
+        pytest.skip("Private DOC_AND_PLAN JD golden dataset is not available in this checkout")
+
+
 def test_golden_runner_loads_every_case_and_returns_a_report() -> None:
+    _require_golden_dataset()
     report = run_golden()
 
     manifest = json.loads((DEFAULT_DATASET_DIR / "manifest.json").read_text(encoding="utf-8"))
@@ -15,6 +23,7 @@ def test_golden_runner_loads_every_case_and_returns_a_report() -> None:
 
 
 def test_golden_fixtures_are_hand_authored_schema_valid_and_grounded() -> None:
+    _require_golden_dataset()
     manifest = json.loads((DEFAULT_DATASET_DIR / "manifest.json").read_text(encoding="utf-8"))
     cases = []
     for descriptor in manifest["files"]:
