@@ -40,7 +40,7 @@ async def test_grounded_session_persists_reads_and_closes() -> None:
                     "INSERT INTO user_cvs "
                     "(id, user_id, checksum, filename, content_type, size, storage_key, url, status) "
                     "VALUES (:id, :uid, :checksum, 'p0.pdf', 'application/pdf', 1, "
-                    "':storage', '/p0.pdf', 'DONE')"
+                    ":storage, '/p0.pdf', 'DONE')"
                 ),
                 {
                     "id": resume_id,
