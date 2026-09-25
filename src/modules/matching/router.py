@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
 from src.modules.job_descriptions.schemas import CanonicalJobDescription
 from src.modules.matching.adapters import job_description_to_matching_job
@@ -128,6 +129,15 @@ async def _resolve_job(db: AsyncSession, job_id: str) -> CanonicalJob:
                     ),
                 )
             job = job_description_to_matching_job(parsed_jd, job_id=job_id)
+            trace_event(
+                "matching",
+                "job_resolved",
+                job_id=job_id,
+                parser_version=parsed_jd.parsing.parser_version,
+                source_requirement_count=len(parsed_jd.requirements),
+                matching_requirement_count=len(job.requirements),
+                requirement_ids=[item.requirement_id for item in job.requirements],
+            )
             return job.model_copy(
                 update={"job_version_id": str(active_version_id) if active_version_id else None}
             )

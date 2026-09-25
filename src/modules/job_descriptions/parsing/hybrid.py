@@ -10,13 +10,18 @@ from typing import Any
 from pydantic import ValidationError
 
 from src.core.config import get_settings
+from src.core.trace_logging import trace_event
 from src.modules.ai import GenerationRequest, ModelServiceClient, ModelServiceError, generate_text
 from src.modules.job_descriptions.domain.schemas import (
     CanonicalJobDescription,
     GroundedJobText,
     JobRequirement,
 )
-from src.modules.job_descriptions.parsing.deterministic import DeterministicJobDescriptionParser
+from src.modules.job_descriptions.parsing.deterministic import (
+    DeterministicJobDescriptionParser,
+    is_probable_requirement_heading_at,
+    is_probable_requirement_heading_value,
+)
 from src.modules.job_descriptions.parsing.llm_candidate import (
     JD_EXTRACTION_INSTRUCTIONS,
     JobDescriptionCandidate,
@@ -25,7 +30,7 @@ from src.modules.job_descriptions.parsing.llm_candidate import (
 from src.modules.user_cvs.facade import EvidenceMapper, SourceDocument
 from src.modules.user_cvs.schemas import ParserWarning, TaxonomyRef
 
-PARSER_VERSION = "hybrid-jd-v2"
+PARSER_VERSION = "hybrid-jd-v4"
 
 
 def _evidence_id(kind: str, start: int, end: int) -> str:
@@ -273,6 +278,23 @@ class HybridJobDescriptionParser:
             evidence_id = ground("requirement", item)
             if not evidence_id:
                 continue
+            grounded_span = evidence[evidence_id]
+            if is_probable_requirement_heading_at(source.text, grounded_span.char_start):
+                # The candidate quote is a structurally identified section
+                # heading, not a candidate requirement.  This keeps the LLM
+                # augmentation aligned with deterministic source structure.
+                trace_event(
+                    "jd_parser",
+                    "requirement_filtered",
+                    document_id=source.document_id,
+                    raw_label=item.value.strip(),
+                    char_start=grounded_span.char_start,
+                    char_end=grounded_span.char_end,
+                    reason_code="layout_section_heading",
+                    classifier="neighboring_line_structure",
+                    source="hybrid_candidate",
+                )
+                continue
             concept = self._resolve_concept(item.quote)
             exp_months = self._deterministic._experience_months(item.quote)
             op_val = "gte" if exp_months is not None else None
@@ -329,6 +351,37 @@ class HybridJobDescriptionParser:
                 )
             )
 
+        # Run the structural guard once more over the merged canonical list.
+        # This is deliberately source-position based: it protects against a
+        # model returning a heading with a quote that does not follow the
+        # deterministic baseline's requirement ordering.
+        filtered_requirements: list[JobRequirement] = []
+        for requirement in requirements:
+            span = next(
+                (evidence[ref] for ref in requirement.evidence_refs if ref in evidence),
+                None,
+            )
+            is_structural = is_probable_requirement_heading_value(source.text, requirement.raw_label)
+            if span is not None:
+                is_structural = is_structural or is_probable_requirement_heading_at(
+                    source.text, span.char_start
+                )
+            if is_structural:
+                trace_event(
+                    "jd_parser",
+                    "requirement_filtered",
+                    document_id=source.document_id,
+                    raw_label=requirement.raw_label,
+                    char_start=span.char_start,
+                    char_end=span.char_end,
+                    reason_code="layout_section_heading",
+                    classifier="neighboring_line_structure",
+                    source="hybrid_post_merge",
+                )
+                continue
+            filtered_requirements.append(requirement)
+        requirements = filtered_requirements
+
         company_name = baseline.company_name
         if candidate.company_name:
             company_evidence = ground("company", candidate.company_name)
@@ -372,6 +425,14 @@ class HybridJobDescriptionParser:
                         )
                     )
 
+        trace_event(
+            "jd_parser",
+            "requirements_finalized",
+            document_id=source.document_id,
+            parser_version=PARSER_VERSION,
+            requirement_count=len(requirements),
+            requirement_ids=[item.requirement_id for item in requirements],
+        )
         classifications = self._deterministic._classifications(requirements)
         metadata = baseline.parsing.model_copy(
             update={

@@ -1,0 +1,15 @@
+SUMMARY
+Server-side engineer focused on resilient, measurable systems.
+
+PROFESSIONAL EXPERIENCE
+- Designed resource-oriented HTTP endpoints and service-oriented components.
+- Reworked a multi-node event-processing platform using a durable message broker, an in-memory key-value store, and a relational SQL engine.
+- Sustained 18,000 requests per second with p95 response time below 45 ms during peak settlement windows.
+- Built parallel worker pools, race-safe state transitions, and non-blocking I/O pipelines.
+- Modelled relational schemas, access paths, and atomic commit boundaries; reduced a report from 11 minutes to 24 seconds through query-plan analysis.
+- Led incident root-cause analysis, production remediation, and response-time tuning using flame graphs and load tests.
+- Designed payment authorization, reconciliation, and settlement workflows for ledger operations.
+
+SELECTED PROJECTS
+- Migrated a legacy batch process to continuously flowing event handlers with replay support and atomic state updates.
+- Processed 40 million records per day while preserving auditability and failure recovery.

@@ -4,9 +4,15 @@ import re
 import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from typing import Literal
 
 from src.core.trace_logging import trace_event
+from src.modules.matching.evidence_retrieval import (
+    EvidenceCandidate,
+    is_named_technology,
+    retrieve_semantic_evidence,
+)
 from src.modules.matching.schemas import ConceptResult, RequirementResult, UnresolvedRequirement
 from src.modules.user_cvs.schemas import CanonicalResume, EvidenceSpan, TaxonomyRef
 
@@ -42,6 +48,33 @@ _PROGRAMMING_LANGUAGES: dict[str, tuple[str, ...]] = {
     "rust": ("rust",),
 }
 _STRENGTH_RANK = {"mention": 1, "claimed": 2, "applied": 3, "demonstrated": 4}
+_SEMANTIC_MET_THRESHOLD = 0.38
+_EXPERIENCE_DURATION_RE = re.compile(
+    r"\b(?:minimum|at least|min(?:imum)?)?\s*"
+    r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>years?|yrs?|months?|mos?)\b",
+    re.I,
+)
+
+_EDUCATION_LEVELS: dict[str, int] = {
+    "high school": 1,
+    "secondary school": 1,
+    "trung hoc": 1,
+    "associate": 2,
+    "college": 2,
+    "cao dang": 2,
+    "bachelor": 3,
+    "b.sc": 3,
+    "b.s": 3,
+    "b.a": 3,
+    "university": 3,
+    "dai hoc": 3,
+    "master": 4,
+    "m.sc": 4,
+    "m.s": 4,
+    "ph.d": 5,
+    "phd": 5,
+    "doctorate": 5,
+}
 
 
 def _normalize(value: str) -> str:
@@ -55,6 +88,24 @@ def _has_phrase(text: str, phrases: Iterable[str]) -> bool:
     normalized = _normalize(text).replace(".", " ")
     padded = f" {normalized} "
     return any(f" {_normalize(phrase).replace('.', ' ')} " in padded for phrase in phrases)
+
+
+def _required_education_level(text: str) -> int | None:
+    normalized = _normalize(text).replace(".", " ")
+    if not any(
+        _has_phrase(normalized, (marker,))
+        for marker in ("or higher", "and above", "tro len", "above")
+    ):
+        return None
+    matched = [level for label, level in _EDUCATION_LEVELS.items() if _has_phrase(normalized, (label,))]
+    return max(matched) if matched else None
+
+
+def _education_level(degree: str | None, evidence_text: str = "") -> int | None:
+    text = f"{degree or ''} {evidence_text}"
+    normalized = _normalize(text).replace(".", " ")
+    matched = [level for label, level in _EDUCATION_LEVELS.items() if _has_phrase(normalized, (label,))]
+    return max(matched) if matched else None
 
 
 def _matching_evidence(
@@ -112,14 +163,189 @@ def _unique_refs(items: Iterable[EvidenceSpan]) -> list[str]:
     return list(dict.fromkeys(item.evidence_id for item in items))
 
 
+def _required_experience_months(requirement: UnresolvedRequirement) -> int | None:
+    if requirement.minimum_experience_months is not None:
+        return requirement.minimum_experience_months
+    match = _EXPERIENCE_DURATION_RE.search(_normalize(requirement.raw_label))
+    if not match:
+        return None
+    value = float(match.group("value"))
+    return round(value * 12) if match.group("unit").startswith(("year", "yr")) else round(value)
+
+
+def _date_window(value: object) -> tuple[date, date] | None:
+    if value is None or not hasattr(value, "value") or not hasattr(value, "precision"):
+        return None
+    parts = [int(part) for part in value.value.split("-")]
+    year = parts[0]
+    if value.precision == "year":
+        return date(year, 1, 1), date(year, 12, 31)
+    month = parts[1]
+    if value.precision == "month":
+        last_day = 31
+        while last_day > 28:
+            try:
+                date(year, month, last_day)
+                break
+            except ValueError:
+                last_day -= 1
+        return date(year, month, 1), date(year, month, last_day)
+    exact = date(year, month, parts[2])
+    return exact, exact
+
+
+def _month_keys(start: date, end: date) -> set[tuple[int, int]]:
+    if end < start:
+        return set()
+    keys: set[tuple[int, int]] = set()
+    cursor = date(start.year, start.month, 1)
+    boundary = date(end.year, end.month, 1)
+    while cursor <= boundary:
+        keys.add((cursor.year, cursor.month))
+        cursor = date(cursor.year + (cursor.month // 12), cursor.month % 12 + 1, 1)
+    return keys
+
+
+def _experience_duration_stats(resume: CanonicalResume) -> dict[str, object]:
+    today = datetime.now(UTC).date()
+    minimum_months: set[tuple[int, int]] = set()
+    maximum_months: set[tuple[int, int]] = set()
+    evidence_refs: list[str] = []
+    timeline_seen = False
+    timeline_uncertain = False
+    intervals: list[tuple[int, int]] = []
+    for employment in resume.employment:
+        start_window = _date_window(employment.start_date)
+        end_window = _date_window(employment.end_date)
+        if employment.is_current and end_window is None:
+            end_window = (today, today)
+        refs = [*employment.evidence_refs]
+        refs.extend(ref for achievement in employment.achievements for ref in achievement.evidence_refs)
+        evidence_refs.extend(refs)
+        if start_window is None or end_window is None:
+            timeline_uncertain = True
+            continue
+        timeline_seen = True
+        minimum_interval = _month_keys(start_window[1], end_window[0])
+        maximum_interval = _month_keys(start_window[0], end_window[1])
+        minimum_months.update(minimum_interval)
+        maximum_months.update(maximum_interval)
+        if maximum_interval:
+            interval_start = min(year * 12 + month for year, month in maximum_interval)
+            interval_end = max(year * 12 + month for year, month in maximum_interval)
+            intervals.append((interval_start, interval_end))
+    merged_interval_count = 0
+    current_end: int | None = None
+    for interval_start, interval_end in sorted(intervals):
+        if current_end is None or interval_start > current_end + 1:
+            merged_interval_count += 1
+        current_end = max(current_end or interval_end, interval_end)
+    return {
+        "minimum_months": minimum_months,
+        "maximum_months": maximum_months,
+        "evidence_refs": list(dict.fromkeys(evidence_refs)),
+        "timeline_seen": timeline_seen,
+        "timeline_uncertain": timeline_uncertain,
+        "merged_interval_count": merged_interval_count,
+    }
+
+
+def _evaluate_experience_duration(
+    requirement: UnresolvedRequirement,
+    resume: CanonicalResume,
+) -> RequirementResult:
+    required_months = _required_experience_months(requirement)
+    if required_months is None:
+        return _result(
+            requirement,
+            status="unknown",
+            reason_code="requirement_evaluator_unsupported",
+            confidence=0.0,
+            evidence_explanation="Không xác định được số tháng kinh nghiệm tối thiểu từ yêu cầu JD.",
+        )
+
+    stats = _experience_duration_stats(resume)
+    minimum_months = stats["minimum_months"]
+    maximum_months = stats["maximum_months"]
+    evidence_refs = stats["evidence_refs"]
+    timeline_seen = stats["timeline_seen"]
+    timeline_uncertain = stats["timeline_uncertain"]
+    if not timeline_seen:
+        employment_coverage = (
+            resume.parsing.canonical_section_coverage.get("employment")
+            if resume.parsing
+            else None
+        )
+        if employment_coverage in {"complete", "complete_empty"} and _raw_coverage(resume) == "complete":
+            return _result(
+                requirement,
+                status="not_met",
+                reason_code="experience_duration_evidence_missing",
+                confidence=0.9,
+                evidence_explanation=(
+                    "CV đã đọc đầy đủ phần employment nhưng không có timeline đủ để đáp ứng "
+                    f"mốc {required_months} tháng."
+                ),
+            )
+        return _result(
+            requirement,
+            status="unknown",
+            reason_code="experience_duration_evidence_missing",
+            confidence=0.0,
+            evidence_explanation="CV chưa có timeline employment đủ rõ để tính thời lượng kinh nghiệm.",
+        )
+    if len(minimum_months) >= required_months:
+        return _result(
+            requirement,
+            status="met",
+            reason_code="experience_duration_satisfied",
+            evidence=[item for item in resume.evidence if item.evidence_id in evidence_refs],
+            confidence=0.95 if not timeline_uncertain else 0.85,
+            evidence_explanation=(
+                f"Timeline employment xác thực tối thiểu {len(minimum_months)} tháng, "
+                f"đáp ứng yêu cầu {required_months} tháng."
+            ),
+        )
+    if len(maximum_months) < required_months and not timeline_uncertain:
+        return _result(
+            requirement,
+            status="not_met",
+            reason_code="experience_duration_below_minimum",
+            evidence=[item for item in resume.evidence if item.evidence_id in evidence_refs],
+            confidence=0.95,
+            evidence_explanation=(
+                f"Timeline employment xác thực tối đa {len(maximum_months)} tháng, "
+                f"thấp hơn yêu cầu {required_months} tháng."
+            ),
+        )
+    return _result(
+        requirement,
+        status="unknown",
+        reason_code="experience_duration_ambiguous",
+        evidence=[item for item in resume.evidence if item.evidence_id in evidence_refs],
+        confidence=0.45,
+        evidence_explanation=(
+            "CV có timeline employment nhưng độ chính xác ngày/tháng chưa đủ để xác nhận "
+            f"mốc {required_months} tháng."
+        ),
+    )
+
+
 def select_evaluator(requirement: UnresolvedRequirement) -> EvaluatorSelection | None:
     text = _normalize(requirement.raw_label)
     if requirement.threshold is not None and requirement.scale is not None:
         return EvaluatorSelection("gpa", "education")
     if _GPA_RE.search(text):
         return EvaluatorSelection("gpa", "education")
+    # Degree thresholds are identifiable from the requirement text itself.  Do
+    # not depend on the JD parser's ``kind`` classification: older/LLM parser
+    # versions may label the same requirement as ``other`` or ``experience``.
+    if _required_education_level(text) is not None:
+        return EvaluatorSelection("education_degree", "education")
     if requirement.credential or _CREDENTIAL_RE.search(text):
         return EvaluatorSelection("language_credential", "language")
+    if _required_experience_months(requirement) is not None:
+        return EvaluatorSelection("experience_duration", "experience")
     decomposed, _ = _decompose_explicit_list(requirement.raw_label)
     if requirement.atomic_concepts or decomposed:
         return EvaluatorSelection("knowledge_skill", "skill")
@@ -142,8 +368,6 @@ def select_evaluator(requirement: UnresolvedRequirement) -> EvaluatorSelection |
         return EvaluatorSelection("research_or_competition", "skill")
     if _has_phrase(text, ("dam me", "passion")) and _has_phrase(text, ("ai", "artificial intelligence")):
         return EvaluatorSelection("ai_activity", "skill")
-    if requirement.minimum_experience_months is not None:
-        return EvaluatorSelection("generic_requirement", "experience")
     # Every non-empty rawLabel is evaluable.  A generic evaluator is the
     # conservative final fallback; valid requirements must never become
     # ``requirement_evaluator_unsupported`` merely because the JD parser did
@@ -159,6 +383,7 @@ def _result(
     evidence: Iterable[EvidenceSpan] = (),
     confidence: float,
     concept_results: list[ConceptResult] | None = None,
+    retrieval_candidates: Iterable[EvidenceCandidate] = (),
     group_operator: Literal["atomic", "all_of", "any_of"] = "atomic",
     evidence_explanation: str | None = None,
 ) -> RequirementResult:
@@ -181,13 +406,17 @@ def _result(
         reasonCode=reason_code,
         evidenceExplanation=evidence_explanation,
         conceptResults=concept_results,
+        retrievalCandidates=[
+            candidate.trace(rank=index, evidence_strength=_evidence_strength(candidate.evidence))
+            for index, candidate in enumerate(retrieval_candidates, start=1)
+        ],
         groupOperator=group_operator,
     )
 
 
 _GENERIC_STOPWORDS = {
     "a", "an", "and", "as", "at", "be", "by", "for", "from", "good", "have",
-    "hands", "hand", "in", "knowledge", "of", "or", "strong", "the", "to", "with",
+    "hands", "hand", "in", "into", "knowledge", "of", "on", "or", "strong", "the", "to", "via", "with",
     "experience", "understanding", "ability", "skill", "skills", "using", "working",
     "years", "year", "minimum", "plus", "preferred", "must", "should", "is", "are",
     "backend", "frontend", "fullstack", "development", "developer", "building", "build",
@@ -253,34 +482,101 @@ def _evaluate_generic_requirement(
             confidence=0.0,
             evidence_explanation="rawLabel không chứa nội dung có thể phân tích; cần JD hợp lệ.",
         )
+    weak_exact_terms = {"high", "low", "good", "solid", "strong"}
     ranked_candidates = [
         (
-            sum(1 for term in terms if _has_phrase(evidence.text, (term,))),
+            sum(
+                1
+                for term in terms
+                if term not in weak_exact_terms and _has_phrase(evidence.text, (term,))
+            ),
             evidence,
         )
         for evidence in resume.evidence
         if any(_has_phrase(evidence.text, (term,)) for term in terms)
     ]
-    candidates = [evidence for _, evidence in ranked_candidates]
-    candidates = sorted(
-        _dedupe_evidence(candidates),
+    # A concrete technology is independently useful evidence (a CV may place
+    # C# and .NET in separate spans). Capability phrases need two substantive
+    # lexical hits so a generic adjective such as ``high`` cannot suppress the
+    # semantic retrieval pass.
+    minimum_overlap = 1 if is_named_technology(requirement.raw_label) else 2
+    exact_candidates = sorted(
+        _dedupe_evidence(evidence for _, evidence in ranked_candidates),
         key=lambda item: (-_STRENGTH_RANK[_evidence_strength(item)], item.char_start, item.evidence_id),
     )[:4]
+    exact_overlap = {
+        evidence.evidence_id: overlap for overlap, evidence in ranked_candidates
+    }
+    exact_candidates = [
+        evidence
+        for evidence in exact_candidates
+        if exact_overlap.get(evidence.evidence_id, 0) >= minimum_overlap
+    ]
+    retrieval_candidates = [
+        EvidenceCandidate(
+            evidence=evidence,
+            retrieval_method="exact_phrase",
+            semantic_score=1.0,
+            lexical_score=1.0,
+        )
+        for evidence in exact_candidates
+    ]
+    semantic_candidates = retrieve_semantic_evidence(requirement.raw_label, resume)
+    if not exact_candidates and semantic_candidates:
+        candidates = [candidate.evidence for candidate in semantic_candidates]
+        retrieval_candidates = semantic_candidates
+    else:
+        candidates = exact_candidates
     if not candidates:
         return _absence_result(requirement, resume, reason_prefix="requirement")
     strongest = _evidence_strength(candidates[0])
     strongest_overlap = max(
-        overlap
-        for overlap, evidence in ranked_candidates
-        if evidence.evidence_id in {item.evidence_id for item in candidates[:4]}
+        (
+            overlap
+            for overlap, evidence in ranked_candidates
+            if evidence.evidence_id in {item.evidence_id for item in candidates[:4]}
+        ),
+        default=0,
     )
-    minimum_overlap = 1 if len(terms) <= 2 else 2
+    semantic_match = bool(semantic_candidates and not exact_candidates)
+    semantic_score = retrieval_candidates[0].semantic_score if retrieval_candidates else 0.0
+    if (
+        semantic_match
+        and strongest in {"applied", "demonstrated"}
+        and semantic_score >= _SEMANTIC_MET_THRESHOLD
+    ):
+        return _result(
+            requirement,
+            status="met",
+            reason_code="semantic_requirement_evidenced",
+            evidence=candidates,
+            retrieval_candidates=retrieval_candidates,
+            confidence=min(0.88, 0.55 + semantic_score * 0.25),
+            evidence_explanation=(
+                "CV có evidence semantic tương đồng, kèm ngữ cảnh thực hành và kết quả đủ rõ "
+                "để xác nhận yêu cầu."
+            ),
+        )
+    if semantic_match:
+        return _result(
+            requirement,
+            status="unknown",
+            reason_code="semantic_requirement_evidence_weak",
+            evidence=candidates,
+            retrieval_candidates=retrieval_candidates,
+            confidence=min(0.55, 0.25 + semantic_score * 0.3),
+            evidence_explanation=(
+                "CV có evidence semantic liên quan nhưng chưa đủ ngữ cảnh hành động, "
+                "độ mạnh hoặc kết quả để xác nhận yêu cầu."
+            ),
+        )
     if strongest in {"applied", "demonstrated"} and strongest_overlap >= minimum_overlap:
         return _result(
             requirement,
             status="met",
             reason_code="generic_requirement_evidenced",
             evidence=candidates,
+            retrieval_candidates=retrieval_candidates,
             confidence=min(0.9, 0.55 + 0.1 * _STRENGTH_RANK[strongest]),
             evidence_explanation="CV có bằng chứng theo ngữ cảnh thực hành liên quan đến yêu cầu JD.",
         )
@@ -289,6 +585,7 @@ def _evaluate_generic_requirement(
         status="unknown",
         reason_code="generic_requirement_evidence_weak",
         evidence=candidates,
+        retrieval_candidates=retrieval_candidates,
         confidence=0.35,
         evidence_explanation=(
             "CV có đề cập thuật ngữ liên quan nhưng chưa thể hiện đủ ngữ cảnh thực hành, "
@@ -455,6 +752,74 @@ def _evaluate_education_status(
     )
 
 
+def _evaluate_education_degree(
+    requirement: UnresolvedRequirement,
+    resume: CanonicalResume,
+) -> RequirementResult:
+    required_level = _required_education_level(requirement.raw_label)
+    if required_level is None:
+        return _evaluate_generic_requirement(requirement, resume)
+
+    evidence_by_id = {item.evidence_id: item for item in resume.evidence}
+    qualifying: list[EvidenceSpan] = []
+    below: list[EvidenceSpan] = []
+    for education in resume.education:
+        refs = [evidence_by_id[ref] for ref in education.evidence_refs if ref in evidence_by_id]
+        entry_text = " ".join(item.text for item in refs)
+        level = _education_level(education.degree, entry_text)
+        if level is None:
+            continue
+        (qualifying if level >= required_level else below).extend(refs)
+
+    # A parser may have populated raw evidence while the structured education
+    # entry is incomplete.  Use the same degree hierarchy against those spans.
+    if not qualifying and not below:
+        for evidence in resume.evidence:
+            level = _education_level(None, evidence.text)
+            if level is None:
+                continue
+            (qualifying if level >= required_level else below).append(evidence)
+
+    if qualifying:
+        return _result(
+            requirement,
+            status="met",
+            reason_code="education_degree_evidenced",
+            evidence=_dedupe_evidence(qualifying)[:6],
+            confidence=1.0,
+            evidence_explanation=(
+                "Bằng cấp trong CV đạt hoặc cao hơn mức học vấn tối thiểu được yêu cầu."
+            ),
+        )
+    if below:
+        return _result(
+            requirement,
+            status="not_met",
+            reason_code="education_degree_below_minimum",
+            evidence=_dedupe_evidence(below)[:6],
+            confidence=0.95,
+            evidence_explanation="CV có bằng cấp nhưng thấp hơn mức học vấn tối thiểu.",
+        )
+    coverage = resume.parsing.raw_text_coverage if resume.parsing else "legacy"
+    if coverage == "complete":
+        return _result(
+            requirement,
+            status="not_met",
+            reason_code="education_degree_not_evidenced",
+            confidence=0.9,
+            evidence_explanation="Không tìm thấy bằng cấp phù hợp trong toàn bộ raw text của CV.",
+        )
+    return _result(
+        requirement,
+        status="unknown",
+        reason_code="education_degree_evidence_incomplete",
+        confidence=0.0,
+        evidence_explanation=(
+            f"Không thể kết luận bằng cấp vắng mặt vì raw_text_coverage={coverage}."
+        ),
+    )
+
+
 def _evaluate_knowledge_skill(
     requirement: UnresolvedRequirement,
     resume: CanonicalResume,
@@ -469,7 +834,7 @@ def _evaluate_knowledge_skill(
         requirement, requirement_text, len(requested), fallback_operator
     )
     minimum_strength = _minimum_evidence_strength(requirement_text)
-    concepts = [
+    evaluated_concepts = [
         _evaluate_atomic_concept(
             concept=concept,
             resume=resume,
@@ -477,6 +842,8 @@ def _evaluate_knowledge_skill(
         )
         for concept in requested
     ]
+    concepts = [item[0] for item in evaluated_concepts]
+    retrieval_candidates = [candidate for _, candidates in evaluated_concepts for candidate in candidates]
     status = _group_status(concepts, group_operator)
     confidence = _group_confidence(concepts, group_operator)
     return _result(
@@ -491,6 +858,7 @@ def _evaluate_knowledge_skill(
         ),
         confidence=confidence,
         concept_results=concepts,
+        retrieval_candidates=retrieval_candidates,
         group_operator=group_operator,
     )
 
@@ -526,12 +894,15 @@ def _evidence_strength(evidence: EvidenceSpan) -> Literal["mention", "claimed", 
     text = _normalize(evidence.text)
     if re.search(
         r"\b(?:research(?:ed)?|scientific|benchmark(?:ed)?|evaluat(?:ed|ion)|"
-        r"experiment|nghien cuu|danh gia|thu nghiem)\b",
+        r"experiment|nghien cuu|danh gia|thu nghiem|\d[\d,.]*\s*"
+        r"(?:requests?|records?|ms|seconds?|minutes?|million|percent|%)|p(?:95|99)\b)",
         text,
     ):
         return "demonstrated"
     if re.search(
-        r"\b(?:built|developed|implemented|integrated|deployed|pipeline|workflow|"
+        r"\b(?:built|designed|developed|implemented|integrated|deployed|operated|"
+        r"reworked|introduced|replaced|reorganized|modelled|migrated|packaged|"
+        r"pipeline|workflow|remediation|tuning|reduced|processed|led|"
         r"xay dung|phat trien|trien khai|tich hop)\b",
         text,
     ):
@@ -548,7 +919,7 @@ def _evaluate_atomic_concept(
     concept: TaxonomyRef,
     resume: CanonicalResume,
     minimum_strength: str,
-) -> ConceptResult:
+) -> tuple[ConceptResult, list[EvidenceCandidate]]:
     evidence_by_id = {item.evidence_id: item for item in resume.evidence}
     structured_refs = [
         ref
@@ -564,26 +935,64 @@ def _evaluate_atomic_concept(
         candidates,
         key=lambda item: (-_STRENGTH_RANK[_evidence_strength(item)], item.char_start, item.evidence_id),
     )[:2]
+    retrieval_candidates = [
+        EvidenceCandidate(
+            evidence=evidence,
+            retrieval_method="exact_phrase",
+            semantic_score=1.0,
+            lexical_score=1.0,
+            concept_id=concept.concept_id,
+        )
+        for evidence in ranked
+    ]
+    if not ranked and not is_named_technology(concept.label):
+        semantic_candidates = retrieve_semantic_evidence(
+            concept.label,
+            resume,
+            concept_id=concept.concept_id,
+        )
+        ranked = [candidate.evidence for candidate in semantic_candidates]
+        retrieval_candidates = semantic_candidates
     if not ranked:
         coverage = _raw_coverage(resume)
-        return ConceptResult(
-            conceptId=concept.concept_id,
-            label=concept.label,
-            status="not_met" if coverage == "complete" else "unknown",
-            confidence=0.9 if coverage == "complete" else 0.0,
-            reasonCode="concept_evidence_missing",
+        return (
+            ConceptResult(
+                conceptId=concept.concept_id,
+                label=concept.label,
+                status="not_met" if coverage == "complete" else "unknown",
+                confidence=0.9 if coverage == "complete" else 0.0,
+                reasonCode="concept_evidence_missing",
+            ),
+            [],
         )
     strength = _evidence_strength(ranked[0])
     strength_rank = _STRENGTH_RANK[strength]
+    semantic_match = any(
+        candidate.retrieval_method == "semantic_lexical_expansion"
+        for candidate in retrieval_candidates
+    )
+    semantic_score = retrieval_candidates[0].semantic_score if retrieval_candidates else 0.0
     sufficient = strength_rank >= _STRENGTH_RANK[minimum_strength]
-    return ConceptResult(
-        conceptId=concept.concept_id,
-        label=concept.label,
-        status="met" if sufficient else "unknown",
-        confidence=min(0.95, 0.25 + 0.16 * strength_rank + 0.04 * (len(ranked) - 1)),
-        evidenceRefs=_unique_refs(ranked),
-        evidenceStrength=strength,
-        reasonCode="concept_evidence_sufficient" if sufficient else "concept_evidence_too_weak",
+    semantic_sufficient = semantic_match and semantic_score >= _SEMANTIC_MET_THRESHOLD
+    return (
+        ConceptResult(
+            conceptId=concept.concept_id,
+            label=concept.label,
+            status="met" if (sufficient and (not semantic_match or semantic_sufficient)) else "unknown",
+            confidence=min(0.95, 0.25 + 0.16 * strength_rank + 0.04 * (len(ranked) - 1)),
+            evidenceRefs=_unique_refs(ranked),
+            evidenceStrength=strength,
+            reasonCode=(
+                "concept_semantic_evidence_sufficient"
+                if semantic_match and semantic_sufficient
+                else "concept_semantic_evidence_weak"
+                if semantic_match
+                else "concept_evidence_sufficient"
+                if sufficient
+                else "concept_evidence_too_weak"
+            ),
+        ),
+        retrieval_candidates,
     )
 
 
@@ -705,6 +1114,8 @@ def evaluate_unresolved_requirement(
     evaluators = {
         "gpa": _evaluate_gpa,
         "language_credential": _evaluate_language,
+        "experience_duration": _evaluate_experience_duration,
+        "education_degree": _evaluate_education_degree,
         "education_status": _evaluate_education_status,
         "knowledge_skill": _evaluate_knowledge_skill,
         "programming_foundation": _evaluate_programming_foundation,
@@ -717,6 +1128,21 @@ def evaluate_unresolved_requirement(
         result = _evaluate_generic_requirement(requirement, resume)
     else:
         result = evaluator(requirement, resume)
+    duration_stats = (
+        _experience_duration_stats(resume)
+        if selection.name == "experience_duration"
+        else None
+    )
+    decision_basis = {
+        "raw_coverage": resume.parsing.raw_text_coverage if resume.parsing else "legacy",
+        "section_coverage": resume.parsing.canonical_section_coverage if resume.parsing else {},
+        "evidence_coverage": resume.parsing.evidence_index_coverage if resume.parsing else "legacy",
+        "threshold_version": "semantic-expansion-v1",
+        "required_strength": (
+            "applied" if selection.name in {"knowledge_skill", "generic_requirement"} else None
+        ),
+        "operator": result.group_operator,
+    }
     trace_event(
         "matching",
         "requirement_evaluated",
@@ -734,9 +1160,32 @@ def evaluate_unresolved_requirement(
         else "canonical_evidence",
         matched_aliases=[],
         concept_results=[concept.model_dump(by_alias=True) for concept in result.concept_results],
+        retrieval_candidates=[
+            candidate.model_dump(by_alias=True) for candidate in result.retrieval_candidates
+        ],
+        decision_basis=decision_basis,
+        required_months=(
+            _required_experience_months(requirement)
+            if selection.name == "experience_duration"
+            else None
+        ),
+        total_verified_months=(
+            len(duration_stats["minimum_months"]) if duration_stats else None
+        ),
+        counted_employment_refs=(
+            duration_stats["evidence_refs"] if duration_stats else []
+        ),
+        merged_interval_count=(
+            duration_stats["merged_interval_count"] if duration_stats else None
+        ),
         evidence_coverage=(resume.parsing.evidence_index_coverage if resume.parsing else "legacy"),
         raw_text_coverage=(resume.parsing.raw_text_coverage if resume.parsing else "legacy"),
         canonical_section_coverage=(resume.parsing.canonical_section_coverage if resume.parsing else {}),
-        retrieval_methods=["structured_concept_refs", "exact_alias_phrase", "generic_token_overlap"],
+        retrieval_methods=list(
+            dict.fromkeys(
+                ["structured_concept_refs", "exact_alias_phrase", "generic_token_overlap"]
+                + [candidate.retrieval_method for candidate in result.retrieval_candidates]
+            )
+        ),
     )
     return result

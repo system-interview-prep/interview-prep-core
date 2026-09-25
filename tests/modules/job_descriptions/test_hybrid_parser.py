@@ -77,7 +77,7 @@ async def test_hybrid_parser_falls_back_to_deterministic_output() -> None:
         _source(), extraction_version="test"
     )
 
-    assert parsed.parsing.parser_version == "hybrid-jd-v2"
+    assert parsed.parsing.parser_version == "hybrid-jd-v4"
     assert any(warning.code == "llm_fallback" for warning in parsed.parsing.warnings)
 
 
