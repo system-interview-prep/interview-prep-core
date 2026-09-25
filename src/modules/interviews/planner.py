@@ -359,11 +359,25 @@ async def build_and_persist_session_plan(
         duration_minutes=session_row["duration_minutes"],
     )
 
-    existing_context_result = await db.execute(
-        text("SELECT source_context FROM interview_session_plans WHERE id = :id"),
-        {"id": plan_id},
+    # Re-acquire the plan row under a write lock immediately before
+    # persistence. Matching can take time, so the session snapshot received by
+    # the router may be stale by now (for example P2 could have LOCKED the plan).
+    # Serializing only the persistence phase keeps rebuilds idempotent without
+    # holding a database lock during matching/provider work.
+    locked_plan_result = await db.execute(
+        text(
+            "SELECT status, source_context FROM interview_session_plans "
+            "WHERE id = :id AND session_id = :session_id FOR UPDATE"
+        ),
+        {"id": plan_id, "session_id": session_row["id"]},
     )
-    existing_context = existing_context_result.scalar_one_or_none() or {}
+    locked_plan = locked_plan_result.mappings().one_or_none()
+    if locked_plan is None:
+        raise ValueError("Interview plan not found")
+    if locked_plan["status"] == "LOCKED":
+        raise RuntimeError("Interview plan is already locked")
+
+    existing_context = locked_plan["source_context"] or {}
     source_context = {
         **existing_context,
         "resumeId": session_row["resume_id"],
