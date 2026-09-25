@@ -15,6 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import current_user
 from src.infrastructure.database import get_db
+from src.modules.interviews.chat_runtime import (
+    ChatRuntimeError,
+    complete_chat_session,
+    get_chat_runtime,
+    process_candidate_message,
+    start_chat_session,
+)
 from src.modules.interviews.planner import build_and_persist_session_plan, read_session_plan
 from src.modules.interviews.question_selector import (
     QuestionUnavailableError,
@@ -32,6 +39,27 @@ from src.modules.interviews.text_runtime import (
 router = APIRouter(prefix="/api/v1/interviews", tags=["interviews"])
 
 InterviewMode = Literal["text", "voice", "video"]
+ExperienceType = Literal[
+    "legacy_unstructured",
+    "question_practice",
+    "voice_interview",
+    "video_interview",
+    "interview_chat",
+]
+EndReason = Literal["COMPLETED", "USER_ENDED", "TECHNICAL_FAILURE"]
+
+
+class SendChatMessage(BaseModel):
+    client_message_id: str | None = Field(default=None, alias="clientMessageId")
+    content: str = Field(min_length=1, max_length=10000)
+
+    model_config = {"populate_by_name": True}
+
+
+class CompleteChatSession(BaseModel):
+    reason: EndReason = Field(default="USER_ENDED")
+
+    model_config = {"populate_by_name": True}
 
 
 class SubmitInterviewAnswer(BaseModel):
@@ -44,6 +72,7 @@ class CreateInterviewSession(BaseModel):
     resume_id: str = Field(alias="resumeId", min_length=1)
     job_id: str = Field(alias="jobId", min_length=1)
     mode: InterviewMode = "text"
+    experience_type: ExperienceType = Field(default="interview_chat", alias="experienceType")
     locale: str = Field(default="en-US", min_length=2, max_length=35)
     duration_minutes: int = Field(default=25, alias="durationMinutes", ge=5, le=120)
 
@@ -56,6 +85,8 @@ def _session_payload(row: dict) -> dict:
         "resumeId": row.get("resume_id"),
         "jobId": row.get("job_id"),
         "mode": row["mode"],
+        "experienceType": row.get("experience_type") or "interview_chat",
+        "endReason": row.get("end_reason"),
         "locale": row["locale"],
         "durationMinutes": row["duration_minutes"],
         "status": row["status"],
@@ -75,7 +106,7 @@ def _session_payload(row: dict) -> dict:
 
 _SESSION_SELECT = """
     SELECT s.id, s.resume_id, s.job_id, s.mode, s.locale, s.duration_minutes,
-           s.status, s.started_at, s.ended_at,
+           s.status, s.started_at, s.ended_at, s.experience_type, s.end_reason,
            p.id AS plan_id, p.schema_version AS plan_schema_version,
            p.status AS plan_status
     FROM interview_sessions s
@@ -145,8 +176,8 @@ async def create_interview_session(
     await db.execute(
         text(
             "INSERT INTO interview_sessions "
-            "(id, user_id, type, language, status, resume_id, job_id, mode, locale, duration_minutes) "
-            "VALUES (:id, :uid, :type, :language, 'OPEN', :resume_id, :job_id, :mode, :locale, :duration)"
+            "(id, user_id, type, language, status, resume_id, job_id, mode, locale, duration_minutes, experience_type) "
+            "VALUES (:id, :uid, :type, :language, 'OPEN', :resume_id, :job_id, :mode, :locale, :duration, :experience_type)"
         ),
         {
             "id": session_id,
@@ -158,6 +189,7 @@ async def create_interview_session(
             "mode": payload.mode,
             "locale": payload.locale,
             "duration": payload.duration_minutes,
+            "experience_type": payload.experience_type,
         },
     )
     await db.execute(
@@ -363,3 +395,70 @@ async def close_interview_session(
     )
     await db.commit()
     return _session_payload(await _owned_session(db, user["sub"], session_id))
+
+
+@router.post("/sessions/{session_id}/chat/start")
+async def start_chat(
+    session_id: str,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await _owned_session(db, user["sub"], session_id)
+    try:
+        return await start_chat_session(db=db, session_row=session)
+    except ChatRuntimeError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/sessions/{session_id}/chat/runtime")
+async def get_chat(
+    session_id: str,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await _owned_session(db, user["sub"], session_id)
+    return await get_chat_runtime(db=db, session_row=session)
+
+
+@router.post("/sessions/{session_id}/chat/message")
+async def send_chat(
+    session_id: str,
+    payload: SendChatMessage,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await _owned_session(db, user["sub"], session_id)
+    try:
+        return await process_candidate_message(
+            db=db,
+            session_row=session,
+            client_message_id=payload.client_message_id,
+            content=payload.content,
+        )
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ChatRuntimeError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/chat/complete")
+async def complete_chat(
+    session_id: str,
+    payload: CompleteChatSession,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await _owned_session(db, user["sub"], session_id)
+    try:
+        return await complete_chat_session(
+            db=db,
+            session_row=session,
+            reason=payload.reason,
+        )
+    except ChatRuntimeError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
