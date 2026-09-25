@@ -5,7 +5,6 @@ It does not select questions and it does not ask an LLM to invent competencies.
 """
 
 import json
-from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
