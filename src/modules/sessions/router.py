@@ -77,10 +77,13 @@ async def close_session(
     await _owned(db, user["sub"], session_id)
     result = await db.execute(
         text(
-            "UPDATE interview_sessions SET status = 'CLOSED', ended_at = now(), updated_at = now() "
-            "WHERE id = :id RETURNING ended_at"
+            "UPDATE interview_sessions "
+            "SET status = 'CLOSED', "
+            "ended_at = COALESCE(ended_at, now()), "
+            "updated_at = CASE WHEN ended_at IS NULL THEN now() ELSE updated_at END "
+            "WHERE id = :id AND user_id = :uid RETURNING ended_at"
         ),
-        {"id": session_id},
+        {"id": session_id, "uid": user["sub"]},
     )
     await db.commit()
     return {"sessionId": session_id, "status": "CLOSED", "endedAt": result.scalar_one().isoformat()}
