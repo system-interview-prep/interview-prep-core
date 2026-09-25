@@ -374,9 +374,6 @@ async def build_and_persist_session_plan(
         "fitBand": match.fit_band,
         "plannerPolicyVersion": plan["policyVersion"],
         "questionBudget": plan["questionBudget"],
-        "difficulty": plan["difficulty"],
-        "sections": plan["sections"],
-        "evaluationTargets": plan["evaluationTargets"],
         "skippedRequirementIds": plan["skippedRequirementIds"],
     }
 
@@ -408,10 +405,23 @@ async def build_and_persist_session_plan(
     await db.execute(
         text(
             "UPDATE interview_session_plans "
-            "SET status = 'READY', source_context = CAST(:context AS jsonb), updated_at = now() "
+            "SET status = 'READY', source_context = CAST(:context AS jsonb), "
+            "plan_payload = CAST(:plan_payload AS jsonb), updated_at = now() "
             "WHERE id = :id"
         ),
-        {"id": plan_id, "context": json.dumps(source_context)},
+        {
+            "id": plan_id,
+            "context": json.dumps(source_context),
+            "plan_payload": json.dumps(
+                {
+                    "policyVersion": plan["policyVersion"],
+                    "questionBudget": plan["questionBudget"],
+                    "difficulty": plan["difficulty"],
+                    "sections": plan["sections"],
+                    "evaluationTargets": plan["evaluationTargets"],
+                }
+            ),
+        },
     )
     await db.commit()
 
@@ -426,7 +436,7 @@ async def read_session_plan(
 ) -> dict[str, Any]:
     plan_result = await db.execute(
         text(
-            "SELECT id, schema_version, status, source_context, created_at, updated_at "
+            "SELECT id, schema_version, status, source_context, plan_payload, created_at, updated_at "
             "FROM interview_session_plans WHERE id = :id AND session_id = :session_id"
         ),
         {"id": plan_id, "session_id": session_id},
@@ -456,17 +466,18 @@ async def read_session_plan(
         for row in targets_result.mappings().all()
     ]
     context = plan_row["source_context"] or {}
+    payload = plan_row["plan_payload"] or {}
     return {
         "planId": plan_row["id"],
         "sessionId": session_id,
         "schemaVersion": plan_row["schema_version"],
         "status": plan_row["status"],
-        "policyVersion": context.get("plannerPolicyVersion"),
-        "questionBudget": context.get("questionBudget"),
+        "policyVersion": payload.get("policyVersion") or context.get("plannerPolicyVersion"),
+        "questionBudget": payload.get("questionBudget") or context.get("questionBudget"),
         "targetQuestionCount": sum(item["targetQuestionCount"] for item in targets),
-        "difficulty": context.get("difficulty"),
-        "sections": context.get("sections", []),
-        "evaluationTargets": context.get("evaluationTargets", []),
+        "difficulty": payload.get("difficulty"),
+        "sections": payload.get("sections", []),
+        "evaluationTargets": payload.get("evaluationTargets", []),
         "sourceContext": context,
         "targets": targets,
         "createdAt": plan_row["created_at"].isoformat(),
