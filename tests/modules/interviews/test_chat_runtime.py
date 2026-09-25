@@ -404,3 +404,38 @@ async def test_retry_pending_response_is_explicit(mock_session_data):
         await process_candidate_message(
             db, session_row, client_message_id="pending-key", content="My answer",
         )
+
+
+@pytest.mark.asyncio
+async def test_clock_begins_at_chat_start(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    runtime = await start_chat_session(db, session_row)
+    assert runtime["chatStartedAt"] is not None
+    assert runtime["deadlineAt"] is not None
+    assert datetime.fromisoformat(runtime["deadlineAt"]) > datetime.fromisoformat(runtime["chatStartedAt"])
+
+
+@pytest.mark.asyncio
+async def test_expired_chat_closes_on_resume(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    session_row["chat_deadline_at"] = datetime.now(UTC) - timedelta(seconds=1)
+    runtime = await get_chat_runtime(db, session_row)
+    assert runtime["sessionStatus"] == "CLOSED"
+    assert runtime["endReason"] == "TIME_EXPIRED"
+
+
+@pytest.mark.asyncio
+async def test_expired_chat_refuses_new_answer(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    session_row["chat_deadline_at"] = datetime.now(UTC) - timedelta(seconds=1)
+    with pytest.raises(ChatRuntimeError, match="hết thời gian"):
+        await process_candidate_message(
+            db, session_row, client_message_id="after-expiry", content="Late answer",
+        )
+    assert db.session_row["end_reason"] == "TIME_EXPIRED"
+    assert not any(m.get("client_message_id") == "after-expiry" for m in db.messages)
