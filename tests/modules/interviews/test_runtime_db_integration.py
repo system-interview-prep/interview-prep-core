@@ -12,6 +12,7 @@ from src.modules.interviews.router import (
     create_interview_session,
     get_interview_session,
 )
+from src.modules.sessions.router import close_session as legacy_close_session
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_DB_INTEGRATION_TESTS") != "1",
@@ -117,6 +118,9 @@ async def test_grounded_session_persists_reads_and_closes() -> None:
 
             closed_again = await close_interview_session(created["sessionId"], user=user, db=db)
             assert closed_again["endedAt"] == closed["endedAt"]
+
+            legacy_closed = await legacy_close_session(created["sessionId"], user=user, db=db)
+            assert legacy_closed["endedAt"] == closed["endedAt"]
 
             legacy_session_id = str(uuid4())
             await db.execute(
