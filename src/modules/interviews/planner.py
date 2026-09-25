@@ -4,6 +4,7 @@ P1 converts grounded CV/JD matching context into a persisted competency agenda.
 It does not select questions and it does not ask an LLM to invent competencies.
 """
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -250,7 +251,7 @@ def derive_competency_plan(
     evaluation_targets = build_evaluation_targets(job=job, match=match)
     validate_must_have_coverage(job=job, evaluation_targets=evaluation_targets)
 
-    return {
+    plan = {
         "policyVersion": PLANNER_POLICY_VERSION,
         "questionBudget": budget,
         "targetQuestionCount": sum(item["targetQuestionCount"] for item in targets),
@@ -260,6 +261,9 @@ def derive_competency_plan(
         "evaluationTargets": evaluation_targets,
         "skippedRequirementIds": skipped_requirement_ids,
     }
+    canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    plan["fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return plan
 
 
 async def _load_resume(
@@ -415,6 +419,7 @@ async def build_and_persist_session_plan(
             "plan_payload": json.dumps(
                 {
                     "policyVersion": plan["policyVersion"],
+                    "fingerprint": plan["fingerprint"],
                     "questionBudget": plan["questionBudget"],
                     "difficulty": plan["difficulty"],
                     "sections": plan["sections"],
@@ -473,6 +478,7 @@ async def read_session_plan(
         "schemaVersion": plan_row["schema_version"],
         "status": plan_row["status"],
         "policyVersion": payload.get("policyVersion") or context.get("plannerPolicyVersion"),
+        "fingerprint": payload.get("fingerprint"),
         "questionBudget": payload.get("questionBudget") or context.get("questionBudget"),
         "targetQuestionCount": sum(item["targetQuestionCount"] for item in targets),
         "difficulty": payload.get("difficulty"),
