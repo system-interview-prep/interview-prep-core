@@ -66,7 +66,11 @@ _SESSION_SELECT = """
 
 async def _owned_session(db: AsyncSession, user_id: str, session_id: str) -> dict:
     result = await db.execute(
-        text(_SESSION_SELECT + " WHERE s.id = :sid AND s.user_id = :uid"),
+        text(
+            _SESSION_SELECT
+            + " WHERE s.id = :sid AND s.user_id = :uid "
+            "AND s.resume_id IS NOT NULL AND s.job_id IS NOT NULL"
+        ),
         {"sid": session_id, "uid": user_id},
     )
     row = result.mappings().one_or_none()
@@ -195,7 +199,7 @@ async def close_interview_session(
     await db.execute(
         text(
             "UPDATE interview_sessions SET status = 'CLOSED', ended_at = now(), updated_at = now() "
-            "WHERE id = :sid AND user_id = :uid"
+            "WHERE id = :sid AND user_id = :uid AND status <> 'CLOSED'"
         ),
         {"sid": session_id, "uid": user["sub"]},
     )
