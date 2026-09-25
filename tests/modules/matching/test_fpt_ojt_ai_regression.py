@@ -164,8 +164,8 @@ def test_fpt_ojt_ai_sample_is_evidence_evaluated_without_duplicate_requirements(
     assert sum(result.score_provenance.factor_contributions.values()) == pytest.approx(
         result.suitability_score
     )
-    assert result.eligibility == "eligible"
-    assert result.decision == "assessed"
+    assert result.eligibility == "review_required"
+    assert result.decision == "abstained"
 
 
 def test_semantic_only_similarity_is_exposed_as_a_low_evidence_estimate() -> None:
@@ -188,6 +188,7 @@ def test_semantic_only_similarity_is_exposed_as_a_low_evidence_estimate() -> Non
     semantic = next(item for item in result.factor_results if item.factor == "semantic")
     assert semantic.status == "scored"
     assert semantic.raw_score is not None
-    assert result.suitability_score == semantic.raw_score
+    assert result.suitability_score is None
     assert result.score_provenance.mode == "semantic_only_estimated"
     assert "semantic_only_estimate" in result.warnings
+    assert "semantic_only_score_suppressed" in result.warnings

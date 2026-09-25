@@ -81,8 +81,10 @@ def test_unresolved_must_have_is_not_silently_dropped_or_marked_met() -> None:
 
     degree = next(item for item in result.requirement_results if item.requirement_id == "req-degree")
     assert degree.status == "unknown"
-    assert degree.reason_code == "requirement_evaluator_unsupported"
-    assert result.eligibility == "eligible"
+    assert degree.reason_code == "raw_text_coverage_incomplete"
+    assert degree.evidence_explanation
+    assert result.eligibility == "review_required"
+    assert result.decision == "abstained"
 
 
 def test_adapter_fails_closed_when_finalized_jd_has_no_evidence() -> None:

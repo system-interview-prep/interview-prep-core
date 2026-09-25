@@ -108,10 +108,10 @@ def test_semantic_score_cannot_compensate_for_failed_must_have() -> None:
     assert result.requirement_results[0].status == "not_met"
 
 
-def test_missing_must_have_returns_a_self_service_estimate() -> None:
+def test_missing_must_have_requires_manual_review() -> None:
     result = MatchingFacade(StubEmbedder()).match(MatchRequest.model_validate(_payload(add_java=False)))
-    assert result.eligibility == "eligible"
-    assert result.suitability_score is not None
+    assert result.eligibility == "review_required"
+    assert result.decision == "abstained"
     assert result.requirement_results[0].status == "unknown"
 
 
@@ -236,6 +236,7 @@ def test_matching_facade_builds_the_default_embedder_once_per_batch(monkeypatch)
 
 def test_work_mode_and_location_are_compatibility_not_suitability() -> None:
     payload = _payload()
+    payload["matchingPolicy"]["bm25ProviderMode"] = "in_memory"
     payload["job"].update({"workMode": "on_site", "location": "Hà Nội"})
     payload["candidatePreferences"] = {
         "acceptedWorkModes": ["remote"],
