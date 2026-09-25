@@ -1,6 +1,7 @@
 from typing import Literal
 
 from src.modules.job_descriptions.schemas import CanonicalJobDescription, JobRequirement
+from src.modules.job_descriptions.parsing.deterministic import resolve_known_skill_concepts
 from src.modules.matching.schemas import (
     CanonicalJob,
     GroundedJobText,
@@ -81,16 +82,36 @@ def job_description_to_matching_job(
             "priority": priority,
             "sourceEvidenceRef": requirement.evidence_refs[0],
         }
+
+        # Older finalized JDs may predate taxonomy persistence even though their
+        # evidence-grounded raw requirement text contains an exact alias from
+        # the same closed taxonomy used by the deterministic parser. Recover
+        # only those explicit known aliases; never fuzzy-map arbitrary text.
+        recovered_concepts = (
+            resolve_known_skill_concepts(requirement.raw_label)
+            if requirement.kind == "skill"
+            and requirement.concept is None
+            and not requirement.atomic_concepts
+            else []
+        )
+        concept = requirement.concept
+        atomic_concepts = requirement.atomic_concepts
+        if recovered_concepts:
+            if len(recovered_concepts) == 1:
+                concept = recovered_concepts[0]
+            else:
+                atomic_concepts = recovered_concepts
+
         if (
             requirement.kind == "skill"
-            and requirement.concept is not None
-            and not requirement.atomic_concepts
+            and concept is not None
+            and not atomic_concepts
         ):
             requirements.append(
                 SkillRequirement(
                     **common,
                     type="skill",
-                    skill=requirement.concept,
+                    skill=concept,
                     operator="gte" if requirement.minimum_experience_months is not None else "required",
                     minimumExperienceMonths=requirement.minimum_experience_months,
                 )
@@ -102,7 +123,7 @@ def job_description_to_matching_job(
                     type="unresolved",
                     kind=requirement.kind,
                     rawLabel=requirement.raw_label,
-                    atomicConcepts=requirement.atomic_concepts,
+                    atomicConcepts=atomic_concepts,
                     minimumExperienceMonths=requirement.minimum_experience_months,
                     operator=requirement.operator,
                     threshold=requirement.threshold,
