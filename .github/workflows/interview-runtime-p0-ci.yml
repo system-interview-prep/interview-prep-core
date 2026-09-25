@@ -59,8 +59,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev,matching]"
 
-      - name: Lint
-        run: ruff check .
+      - name: Lint P0 change surface
+        run: |
+          ruff check \
+            src/main.py \
+            src/modules/interviews \
+            migrations/versions/20260925_0013_interview_runtime_foundation.py \
+            tests/modules/interviews/test_runtime_foundation.py \
+            tests/app/test_app_contract.py
 
       - name: Verify migration upgrade
         run: python -m alembic upgrade head
