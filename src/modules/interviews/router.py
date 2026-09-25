@@ -77,10 +77,11 @@ async def _owned_session(db: AsyncSession, user_id: str, session_id: str) -> dic
 
 async def _validate_context(
     db: AsyncSession,
-    user_id: str,
+    user: dict,
     resume_id: str,
     job_id: str,
 ) -> None:
+    user_id = user["sub"]
     resume = await db.scalar(
         text("SELECT 1 FROM user_cvs WHERE id = :id AND user_id = :uid"),
         {"id": resume_id, "uid": user_id},
@@ -88,11 +89,11 @@ async def _validate_context(
     if resume is None:
         raise HTTPException(status_code=404, detail="CV not found")
 
+    job_filters = ["id = :id", "item_type = 'JOB_DESCRIPTION'"]
+    if "ADMIN" not in user.get("roles", []):
+        job_filters.append("listing_status = 'ACTIVE'")
     job = await db.scalar(
-        text(
-            "SELECT 1 FROM job_descriptions "
-            "WHERE id = :id AND item_type = 'JOB_DESCRIPTION'"
-        ),
+        text("SELECT 1 FROM job_descriptions WHERE " + " AND ".join(job_filters)),
         {"id": job_id},
     )
     if job is None:
@@ -111,7 +112,7 @@ async def create_interview_session(
     canonical CV/JD/matching context; P2 freezes approved question versions.
     """
 
-    await _validate_context(db, user["sub"], payload.resume_id, payload.job_id)
+    await _validate_context(db, user, payload.resume_id, payload.job_id)
 
     session_id = str(uuid4())
     plan_id = str(uuid4())
