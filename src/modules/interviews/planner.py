@@ -13,6 +13,12 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.modules.interviews.plan_structure import (
+    build_evaluation_targets,
+    build_sections,
+    derive_difficulty,
+    validate_must_have_coverage,
+)
 from src.modules.job_descriptions.schemas import CanonicalJobDescription
 from src.modules.matching.facade import canonical_job_from_description, evaluate_match
 from src.modules.matching.schemas import (
@@ -241,11 +247,17 @@ def derive_competency_plan(
             }
         )
 
+    evaluation_targets = build_evaluation_targets(job=job, match=match)
+    validate_must_have_coverage(job=job, evaluation_targets=evaluation_targets)
+
     return {
         "policyVersion": PLANNER_POLICY_VERSION,
         "questionBudget": budget,
         "targetQuestionCount": sum(item["targetQuestionCount"] for item in targets),
+        "difficulty": derive_difficulty(job),
+        "sections": build_sections(duration_minutes),
         "targets": targets,
+        "evaluationTargets": evaluation_targets,
         "skippedRequirementIds": skipped_requirement_ids,
     }
 
@@ -362,6 +374,9 @@ async def build_and_persist_session_plan(
         "fitBand": match.fit_band,
         "plannerPolicyVersion": plan["policyVersion"],
         "questionBudget": plan["questionBudget"],
+        "difficulty": plan["difficulty"],
+        "sections": plan["sections"],
+        "evaluationTargets": plan["evaluationTargets"],
         "skippedRequirementIds": plan["skippedRequirementIds"],
     }
 
@@ -449,6 +464,9 @@ async def read_session_plan(
         "policyVersion": context.get("plannerPolicyVersion"),
         "questionBudget": context.get("questionBudget"),
         "targetQuestionCount": sum(item["targetQuestionCount"] for item in targets),
+        "difficulty": context.get("difficulty"),
+        "sections": context.get("sections", []),
+        "evaluationTargets": context.get("evaluationTargets", []),
         "sourceContext": context,
         "targets": targets,
         "createdAt": plan_row["created_at"].isoformat(),
