@@ -211,6 +211,23 @@ async def test_planner_persists_grounded_competency_agenda(monkeypatch) -> None:
             with pytest.raises(HTTPException) as locked_error:
                 await build_interview_plan(created["sessionId"], user=user, db=db)
             assert locked_error.value.status_code == 409
+
+            # Simulate a stale router snapshot that still says READY after P2
+            # has LOCKED the persisted plan. The planner must re-check under a
+            # database row lock immediately before replacing targets.
+            with pytest.raises(RuntimeError, match="already locked"):
+                await planner_module.build_and_persist_session_plan(
+                    db=db,
+                    user=user,
+                    session_row={
+                        "id": created["sessionId"],
+                        "resume_id": resume_id,
+                        "job_id": job_id,
+                        "duration_minutes": 20,
+                        "plan_id": plan["planId"],
+                        "plan_status": "READY",
+                    },
+                )
         finally:
             await db.rollback()
             await db.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
