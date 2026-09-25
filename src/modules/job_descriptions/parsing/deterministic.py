@@ -231,7 +231,7 @@ def resolve_known_skill_concepts(
     matches: list[tuple[int, int, TaxonomyRef]] = []
     for concept_id, (label, aliases) in source.items():
         for alias in aliases:
-            match = re.search(rf"(?<!\\w){re.escape(alias)}(?!\\w)", text, re.I)
+            match = re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", text, re.I)
             if match:
                 matches.append(
                     (
