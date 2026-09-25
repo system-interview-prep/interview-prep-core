@@ -22,7 +22,7 @@ def _concept(concept_id: str, label: str) -> TaxonomyRef:
     )
 
 
-def _job(*requirements, classifications=None) -> CanonicalJob:
+def _job(*requirements, classifications=None, seniority=None) -> CanonicalJob:
     evidence = []
     for index, requirement in enumerate(requirements, start=1):
         text_value = f"requirement-{index}"
@@ -44,6 +44,7 @@ def _job(*requirements, classifications=None) -> CanonicalJob:
         documentSha256="a" * 64,
         requirements=list(requirements),
         careerClassifications=classifications or [],
+        seniority=seniority,
         evidence=evidence,
     )
 
@@ -228,3 +229,51 @@ def test_planner_fails_closed_without_taxonomy_backed_targets() -> None:
         assert "No taxonomy-backed interview competencies" in str(exc)
         return
     raise AssertionError("planner must fail closed when no competency can be derived")
+
+
+def test_planner_preserves_non_skill_requirement_validation_and_structure() -> None:
+    python = SkillRequirement(
+        requirementId="req-python",
+        priority="must_have",
+        sourceEvidenceRef="jd-ev-python",
+        type="skill",
+        skill=_concept("skill.python", "Python"),
+    )
+    english = UnresolvedRequirement(
+        requirementId="req-english",
+        priority="must_have",
+        sourceEvidenceRef="jd-ev-english",
+        type="unresolved",
+        kind="language",
+        rawLabel="IELTS 6.0 or equivalent",
+        credential="IELTS",
+        equivalentAllowed=True,
+    )
+    plan = derive_competency_plan(
+        job=_job(python, english, seniority="senior"),
+        match=_match([
+            _result("req-python", "met"),
+            _result("req-english", "unknown"),
+        ]),
+        duration_minutes=20,
+    )
+
+    by_requirement = {
+        item["requirementId"]: item for item in plan["evaluationTargets"]
+    }
+    assert by_requirement["req-python"]["evaluationMode"] == "competency"
+    assert by_requirement["req-english"]["evaluationMode"] == "requirement_validation"
+    assert by_requirement["req-english"]["attention"] == "validate_gap"
+    assert "req-english" in plan["skippedRequirementIds"]
+    assert plan["difficulty"] == {
+        "level": "advanced",
+        "source": "job_seniority",
+        "seniority": "senior",
+    }
+    assert sum(item["durationMinutes"] for item in plan["sections"]) == 20
+    assert [item["sectionId"] for item in plan["sections"]] == [
+        "warmup",
+        "core",
+        "gap_validation",
+        "closing",
+    ]
