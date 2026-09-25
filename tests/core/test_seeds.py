@@ -15,8 +15,13 @@ async def test_run_all_seeds_runs_admin_before_taxonomy(monkeypatch: pytest.Monk
         calls.append("taxonomy")
         return True
 
+    async def question_bank(*_args, **_kwargs) -> dict[str, int]:
+        calls.append("question_bank")
+        return {}
+
     monkeypatch.setattr(seeds, "seed_admin", admin)
     monkeypatch.setattr(seeds, "seed_taxonomy", taxonomy)
+    monkeypatch.setattr(seeds, "seed_question_bank", question_bank)
 
     assert await seeds.run_all_seeds(lambda: None) is True
-    assert calls == ["admin", "taxonomy"]
+    assert calls == ["admin", "taxonomy", "question_bank"]
