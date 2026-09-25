@@ -32,7 +32,7 @@ MessageType = Literal[
     "WRAP_UP",
 ]
 
-EndReason = Literal["COMPLETED", "USER_ENDED", "TECHNICAL_FAILURE"]
+EndReason = Literal["COMPLETED", "USER_ENDED", "TECHNICAL_FAILURE", "TIME_EXPIRED"]
 
 SAFE_FALLBACK_PROBE_VI = (
     "Bạn có thể phân tích rõ hơn về lý do bạn lựa chọn giải pháp này "
@@ -86,6 +86,10 @@ async def get_chat_runtime(
     session_row: dict[str, Any],
 ) -> dict[str, Any]:
     session_id = session_row["id"]
+    deadline = session_row.get("chat_deadline_at")
+    if session_row["status"] == "OPEN" and deadline and deadline <= datetime.now(UTC):
+        await complete_chat_session(db, session_row, reason="TIME_EXPIRED")
+        session_row = {**session_row, "status": "CLOSED", "end_reason": "TIME_EXPIRED"}
     job_title = await _get_job_title(db, session_row.get("job_id"))
 
     # Fetch messages from dedicated interview_chat_messages table
@@ -134,6 +138,9 @@ async def get_chat_runtime(
         "sessionStatus": session_row["status"],
         "experienceType": session_row.get("experience_type") or "interview_chat",
         "endReason": session_row.get("end_reason"),
+        "chatStartedAt": session_row["chat_started_at"].isoformat() if session_row.get("chat_started_at") else None,
+        "deadlineAt": deadline.isoformat() if deadline else None,
+        "serverNow": datetime.now(UTC).isoformat(),
         "jobTitle": job_title,
         "totalTurns": len(turns),
         "currentTurnIndex": current_turn_index,
@@ -198,6 +205,22 @@ async def start_chat_session(
     turns = [dict(r) for r in turns_res.mappings().all()]
     if not turns:
         raise ChatRuntimeError("Không tìm thấy bộ câu hỏi nào cho phiên này.")
+
+    # Begin the clock only when a prepared interview actually opens.
+    clock_result = await db.execute(
+        text("""
+            UPDATE interview_sessions
+            SET chat_started_at = COALESCE(chat_started_at, now()),
+                chat_deadline_at = COALESCE(chat_deadline_at, now() + duration_minutes * interval '1 minute')
+            WHERE id = :sid AND status = 'OPEN'
+            RETURNING chat_started_at, chat_deadline_at
+        """),
+        {"sid": session_id},
+    )
+    clock = clock_result.mappings().one_or_none()
+    if clock is None:
+        raise ChatRuntimeError("Phiên phỏng vấn đã kết thúc.")
+    session_row = {**session_row, **dict(clock)}
 
     first_turn = turns[0]
     # Update first turn to ASKED
@@ -399,6 +422,11 @@ async def process_candidate_message(
     if session_row["status"] == "CLOSED":
         raise ChatRuntimeError("Phiên phỏng vấn đã kết thúc.")
 
+    deadline = session_row.get("chat_deadline_at")
+    if deadline and deadline <= datetime.now(UTC):
+        await complete_chat_session(db, session_row, reason="TIME_EXPIRED")
+        raise ChatRuntimeError("Đã hết thời gian phỏng vấn.")
+
     if not client_message_id:
         raise ValueError("clientMessageId is required for reliable retries")
     cleaned_content = content.strip()
@@ -435,7 +463,7 @@ async def process_candidate_message(
                 {"sid": session_id, "seq": user_seq + 1},
             )
             asst_msg = asst_res.mappings().one_or_none()
-            if asst_msg is None:
+            if asst_msg is None or (asst_msg["message_type"] == "WRAP_UP" and asst_msg["turn_id"] != existing_user_msg["turn_id"]):
                 raise ChatRuntimeError("Previous response is pending; retry after recovery")
             return {
                 "userMessage": _message_payload(dict(existing_user_msg)),
@@ -620,6 +648,12 @@ async def process_candidate_message(
         candidate_answer=cleaned_content,
         has_probed=has_probed,
     )
+
+    # The provider can take longer than the remaining interview time.
+    deadline = session_row.get("chat_deadline_at")
+    if deadline and deadline <= datetime.now(UTC):
+        await complete_chat_session(db, session_row, reason="TIME_EXPIRED")
+        raise ChatRuntimeError("Đã hết thời gian phỏng vấn.")
 
     # =========================================================================
     # PHASE 3: Commit Assistant Response & Advance Turn
@@ -861,12 +895,13 @@ async def complete_chat_session(
                 {"sid": session_id},
             )
             asst_seq = int(max_seq or 0) + 1
-            wrap_text = (
-                "Phiên phỏng vấn đã kết thúc theo yêu cầu của bạn. "
-                "Cảm ơn bạn đã dành thời gian tham gia!"
-                if is_vi
-                else "The interview session has been concluded per your request. Thank you for your time!"
-            )
+            if reason == "TIME_EXPIRED":
+                wrap_text = "Đã hết thời gian phỏng vấn. Cảm ơn bạn đã tham gia!" if is_vi else "Interview time is up. Thank you for participating!"
+            else:
+                wrap_text = (
+                    "Phiên phỏng vấn đã kết thúc theo yêu cầu của bạn. Cảm ơn bạn đã dành thời gian tham gia!"
+                    if is_vi else "The interview session has concluded. Thank you for your time!"
+                )
             await db.execute(
                 text(
                     """
@@ -912,7 +947,7 @@ async def complete_chat_session(
     return {
         "sessionId": session_id,
         "sessionStatus": "CLOSED",
-        "endReason": reason,
+        "endReason": session_row.get("end_reason") if session_row["status"] == "CLOSED" else reason,
         "endedAt": ended_str,
         "summary": summary_text,
     }
