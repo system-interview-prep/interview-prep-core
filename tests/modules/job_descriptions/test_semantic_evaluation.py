@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from src.modules.job_descriptions.evaluation.runner import DEFAULT_DATASET_DIR, _source
 from src.modules.job_descriptions.evaluation.semantic_runner import (
     _field_score,
@@ -39,6 +41,8 @@ def test_hybrid_cache_round_trip_is_stable_and_grounded(tmp_path) -> None:
 
 
 def test_semantic_evaluation_defaults_to_evidence_grounded_manifest() -> None:
+    if not (DEFAULT_DATASET_DIR / "manifest.json").is_file():
+        pytest.skip("Private DOC_AND_PLAN JD golden dataset is not available in this checkout")
     manifest = json.loads((DEFAULT_DATASET_DIR / "manifest.json").read_text(encoding="utf-8"))
     report = run_semantic()
 
