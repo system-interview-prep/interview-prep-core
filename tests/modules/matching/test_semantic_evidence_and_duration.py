@@ -8,11 +8,16 @@ from src.modules.user_cvs.schemas import CanonicalResume
 FIXTURE = Path("tests/fixtures/matching/mock_cv_semantic_near_match_backend_middle.txt")
 
 
-def _requirement(label: str, *, priority: str = "must_have") -> UnresolvedRequirement:
+def _requirement(
+    label: str,
+    *,
+    priority: str = "must_have",
+    kind: str = "experience",
+) -> UnresolvedRequirement:
     return UnresolvedRequirement(
         requirementId="req-test",
         type="unresolved",
-        kind="experience",
+        kind=kind,
         priority=priority,
         sourceEvidenceRef="jd-1",
         rawLabel=label,
@@ -101,6 +106,22 @@ def test_named_technology_is_not_inferred_from_near_synonyms() -> None:
     assert not result.retrieval_candidates
 
 
+def test_finance_domain_semantics_are_grounded_from_payment_and_ledger_work() -> None:
+    result = evaluate_unresolved_requirement(
+        _requirement(
+            "Experience working on projects related to Finance, Accounting, Fintech, Trading, "
+            "or Cryptocurrency",
+            priority="nice_to_have",
+        ),
+        _resume_from_lines(),
+    )
+
+    assert result.status == "met"
+    assert result.reason_code == "concept_group_evidenced"
+    assert result.evidence_refs
+    assert result.retrieval_candidates
+
+
 def test_duration_uses_employment_timeline_and_exposes_evidence() -> None:
     resume = _resume_from_lines(
         employment=[
@@ -122,6 +143,55 @@ def test_duration_uses_employment_timeline_and_exposes_evidence() -> None:
     assert result.status == "met"
     assert result.reason_code == "experience_duration_satisfied"
     assert result.evidence_refs == ["cv-0"]
+
+
+def test_bachelor_degree_satisfies_college_or_higher_requirement() -> None:
+    resume = CanonicalResume.model_validate(
+        {
+            "schemaVersion": "2.1",
+            "resumeId": "cv-degree",
+            "documentId": "cv-degree",
+            "documentSha256": "b" * 64,
+            "parsing": {
+                "parserVersion": "test",
+                "extractionVersion": "test",
+                "parsedAt": datetime.now(UTC).isoformat(),
+                "status": "review_required",
+                "rawTextCoverage": "complete",
+                "evidenceIndexCoverage": "complete",
+            },
+            "education": [
+                {
+                    "educationId": "education-1",
+                    "institution": "Ho Chi Minh City University of Technology",
+                    "degree": "B.Sc.",
+                    "fieldOfStudy": "Computer Science",
+                    "evidenceRefs": ["degree-ev"],
+                }
+            ],
+            "evidence": [
+                {
+                    "evidenceId": "degree-ev",
+                    "documentId": "cv-degree",
+                    "documentSha256": "b" * 64,
+                    "section": "education",
+                    "text": "B.Sc. in Computer Science — Ho Chi Minh City University of Technology | 2020",
+                    "charStart": 0,
+                    "charEnd": len(
+                        "B.Sc. in Computer Science — Ho Chi Minh City University of Technology | 2020"
+                    ),
+                }
+            ],
+        }
+    )
+    result = evaluate_unresolved_requirement(
+        _requirement("Cao Đẳng trở lên", kind="education"),
+        resume,
+    )
+
+    assert result.status == "met"
+    assert result.reason_code == "education_degree_evidenced"
+    assert result.evidence_refs == ["degree-ev"]
 
 
 def test_duration_union_does_not_double_count_overlapping_employment() -> None:

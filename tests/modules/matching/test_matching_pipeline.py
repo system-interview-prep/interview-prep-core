@@ -121,6 +121,36 @@ def test_missing_must_have_requires_manual_review() -> None:
     assert result.failed_must_have_requirements == []
 
 
+def test_named_skill_context_keeps_unknown_but_exposes_related_evidence() -> None:
+    payload = _payload()
+    payload["resume"]["evidence"] = [
+        _evidence("cv-ev-java", "cv-doc-1", "Packaged services as OCI images on Unix-like hosts"),
+    ]
+    payload["resume"]["skills"] = []
+    payload["job"]["requirements"] = [
+        {
+            "requirementId": "req-docker",
+            "type": "skill",
+            "priority": "nice_to_have",
+            "sourceEvidenceRef": "jd-ev-java",
+            "skill": {
+                "conceptId": "skill-docker",
+                "scheme": "internal",
+                "taxonomyVersion": "2026.1",
+                "label": "Docker",
+            },
+            "rawLabel": "Experience with Docker and Linux environments",
+            "operator": "required",
+        }
+    ]
+
+    result = MatchingFacade(StubEmbedder()).match(MatchRequest.model_validate(payload))
+
+    assert result.requirement_results[0].status == "unknown"
+    assert result.requirement_results[0].reason_code == "skill_semantic_context_needs_confirmation"
+    assert result.requirement_results[0].evidence_refs == ["cv-ev-java"]
+
+
 def test_unknown_requirement_is_excluded_from_coverage_score_but_exposed_in_provenance() -> None:
     payload = _payload()
     payload["job"]["requirements"].append(
