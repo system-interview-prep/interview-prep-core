@@ -235,7 +235,7 @@ def test_planner_fails_closed_without_taxonomy_backed_targets() -> None:
             duration_minutes=15,
         )
     except ValueError as exc:
-        assert "No taxonomy-backed interview competencies" in str(exc)
+        assert "No applicable taxonomy-backed interview competencies" in str(exc)
         return
     raise AssertionError("planner must fail closed when no competency can be derived")
 
@@ -273,7 +273,7 @@ def test_planner_preserves_non_skill_requirement_validation_and_structure() -> N
     assert by_requirement["req-python"]["evaluationMode"] == "competency"
     assert by_requirement["req-english"]["evaluationMode"] == "requirement_validation"
     assert by_requirement["req-english"]["attention"] == "validate_gap"
-    assert "req-english" in plan["skippedRequirementIds"]
+    assert "req-english" in plan["nonCompetencyRequirementIds"]
     assert plan["difficulty"] == {
         "level": "advanced",
         "source": "job_seniority",
@@ -286,3 +286,60 @@ def test_planner_preserves_non_skill_requirement_validation_and_structure() -> N
         "gap_validation",
         "closing",
     ]
+
+
+def test_planner_never_allocates_question_target_to_not_applicable_concept() -> None:
+    python = SkillRequirement(
+        requirementId="req-python",
+        priority="must_have",
+        sourceEvidenceRef="jd-ev-python",
+        type="skill",
+        skill=_concept("skill.python", "Python"),
+    )
+    try:
+        derive_competency_plan(
+            job=_job(python),
+            match=_match([_result("req-python", "not_applicable")]),
+            duration_minutes=20,
+        )
+    except ValueError as exc:
+        assert "No applicable taxonomy-backed interview competencies" in str(exc)
+        return
+    raise AssertionError("not_applicable-only taxonomy requirements must fail closed")
+
+
+def test_planner_keeps_must_have_concepts_ahead_of_repeated_nice_to_have() -> None:
+    requirements = [
+        SkillRequirement(
+            requirementId="req-core",
+            priority="must_have",
+            sourceEvidenceRef="jd-ev-core",
+            type="skill",
+            skill=_concept("skill.core", "Core Skill"),
+        )
+    ]
+    results = [_result("req-core", "met")]
+
+    for group in range(4):
+        concept_id = f"skill.optional-{group}"
+        for repetition in range(3):
+            requirement_id = f"req-optional-{group}-{repetition}"
+            requirements.append(
+                SkillRequirement(
+                    requirementId=requirement_id,
+                    priority="nice_to_have",
+                    sourceEvidenceRef=f"jd-ev-{requirement_id}",
+                    type="skill",
+                    skill=_concept(concept_id, f"Optional {group}"),
+                )
+            )
+            results.append(_result(requirement_id, "met"))
+
+    plan = derive_competency_plan(
+        job=_job(*requirements),
+        match=_match(results),
+        duration_minutes=12,
+    )
+
+    assert plan["questionBudget"] == 3
+    assert "skill.core" in {item["conceptId"] for item in plan["targets"]}
