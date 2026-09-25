@@ -5,6 +5,8 @@ import unicodedata
 from collections.abc import Callable
 from functools import lru_cache
 
+from src.modules.job_descriptions.schemas import CanonicalJobDescription
+from src.modules.matching.adapters import job_description_to_matching_job
 from src.modules.matching.bm25 import bm25_similarity
 from src.modules.matching.bm25_provider import Bm25Provider, get_bm25_provider
 from src.modules.matching.rag.embedding import EmbeddingAdapter, build_embedding_adapter_from_env
@@ -830,3 +832,20 @@ class MatchingFacade:
 @lru_cache
 def get_matching_facade() -> MatchingFacade:
     return MatchingFacade()
+
+
+
+def canonical_job_from_description(
+    parsed: CanonicalJobDescription,
+    *,
+    job_id: str,
+    job_version_id: str | None = None,
+) -> CanonicalJob:
+    """Public adapter from canonical JD storage into the matching contract."""
+    job = job_description_to_matching_job(parsed, job_id=job_id)
+    return job.model_copy(update={"job_version_id": job_version_id})
+
+
+async def evaluate_match(payload: MatchRequest) -> MatchResult:
+    """Public async matching entry point for other business modules."""
+    return await get_matching_facade().match_async(payload)
