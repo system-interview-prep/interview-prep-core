@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import text
 
-from src.infrastructure.database import SessionFactory
+from src.infrastructure.database import SessionFactory, engine
 from src.modules.interviews import planner as planner_module
 from src.modules.interviews.router import (
     CreateInterviewSession,
@@ -105,7 +105,7 @@ async def test_planner_persists_grounded_competency_agenda(monkeypatch) -> None:
             warnings=[],
         )
 
-    monkeypatch.setattr(planner_module, "run_match", fake_run_match)
+    monkeypatch.setattr(planner_module, "evaluate_match", fake_run_match)
 
     async with SessionFactory() as db:
         try:
@@ -202,3 +202,4 @@ async def test_planner_persists_grounded_competency_agenda(monkeypatch) -> None:
             await db.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
             await db.execute(text("DELETE FROM job_descriptions WHERE id = :id"), {"id": job_id})
             await db.commit()
+            await engine.dispose()
