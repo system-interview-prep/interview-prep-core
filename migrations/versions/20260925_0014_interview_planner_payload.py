@@ -47,6 +47,11 @@ def downgrade() -> None:
                 FROM interview_session_plans
                 WHERE plan_payload <> '{}'::jsonb
             )
+            OR EXISTS (
+                SELECT 1
+                FROM session_competency_targets
+                WHERE selection_rank IS NOT NULL
+            )
             THEN
                 RAISE EXCEPTION
                     'Refusing downgrade 20260925_0014: P1 plan payload data exists. '
