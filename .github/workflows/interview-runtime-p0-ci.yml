@@ -64,6 +64,7 @@ jobs:
             src/modules/interviews/planner.py \
             src/modules/interviews/plan_structure.py \
             src/modules/interviews/router.py \
+            migrations/versions/20260925_0014_interview_planner_payload.py \
             src/modules/matching/facade.py \
             tests/modules/interviews/test_planner.py \
             tests/modules/interviews/test_plan_structure.py \
@@ -72,6 +73,11 @@ jobs:
 
       - name: Upgrade database
         run: python -m alembic upgrade head
+
+      - name: Verify P1 migration roundtrip
+        run: |
+          python -m alembic downgrade 20260925_0013
+          python -m alembic upgrade head
 
       - name: Run P1 focused tests
         run: |
