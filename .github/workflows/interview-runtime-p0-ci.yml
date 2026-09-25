@@ -43,6 +43,7 @@ jobs:
       DATABASE_URL: postgresql://user:password@localhost:5432/matching_db
       JWT_SECRET: ci-only-secret-that-is-long-enough-for-tests
       RUN_LIVE_JEV_TESTS: "0"
+      RUN_DB_INTEGRATION_TESTS: "1"
 
     steps:
       - name: Checkout
@@ -79,7 +80,7 @@ jobs:
 
       - name: Run P0 focused tests
         run: |
-          pytest -q tests/modules/interviews/test_runtime_foundation.py tests/app/test_app_contract.py
+          pytest -q tests/modules/interviews/test_runtime_foundation.py tests/modules/interviews/test_runtime_db_integration.py tests/app/test_app_contract.py
 
       - name: Run full test suite
         run: pytest -q
