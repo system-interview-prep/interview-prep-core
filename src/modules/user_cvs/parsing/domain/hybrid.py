@@ -26,7 +26,7 @@ from src.modules.user_cvs.parsing.domain.deterministic import DeterministicResum
 from src.modules.user_cvs.parsing.domain.llm_candidate import CV_EXTRACTION_INSTRUCTIONS, ResumeCandidate
 from src.modules.user_cvs.parsing.domain.source import EvidenceMapper, SourceDocument
 
-PARSER_VERSION = "hybrid-resume-v1"
+PARSER_VERSION = "hybrid-resume-v2"
 
 
 def _sanitize_date_candidate(val: Any) -> tuple[dict[str, str] | None, bool]:
@@ -70,11 +70,11 @@ def _safe_json_parse(text: str) -> dict[str, Any]:
     cleaned = text
     if cleaned.count('"') % 2 != 0:
         cleaned += '"'
-    open_braces = cleaned.count('{') - cleaned.count('}')
-    open_brackets = cleaned.count('[') - cleaned.count(']')
+    open_braces = cleaned.count("{") - cleaned.count("}")
+    open_brackets = cleaned.count("[") - cleaned.count("]")
     cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
     cleaned = re.sub(r",\s*$", "", cleaned)
-    cleaned += (']' * max(0, open_brackets)) + ('}' * max(0, open_braces))
+    cleaned += ("]" * max(0, open_brackets)) + ("}" * max(0, open_braces))
     try:
         data = json.loads(cleaned)
         return data if isinstance(data, dict) else {}
@@ -152,6 +152,18 @@ def _sanitize_candidate_payload(data: Any) -> dict[str, Any]:
         end_date, _ = _sanitize_date_candidate(edu.get("endDate"))
         edu["startDate"] = start_date
         edu["endDate"] = end_date
+        status = str(edu.get("studentStatus") or edu.get("student_status") or "").strip()
+        edu["studentStatus"] = status if status in {"student", "final_year", "recent_graduate"} else None
+        try:
+            gpa = float(edu.get("gpa")) if edu.get("gpa") is not None else None
+            scale_value = edu.get("gpaScale", edu.get("gpa_scale"))
+            gpa_scale = float(scale_value) if scale_value is not None else None
+        except (TypeError, ValueError):
+            gpa = gpa_scale = None
+        if gpa is None or gpa_scale is None or not (0 < gpa <= gpa_scale):
+            gpa = gpa_scale = None
+        edu["gpa"] = gpa
+        edu["gpaScale"] = gpa_scale
         edu["quote"] = quote[:8000]
         clean_edu.append(edu)
     data["education"] = clean_edu[:20]
@@ -242,7 +254,14 @@ class HybridResumeParser:
             raw_data = _safe_json_parse(output)
             sanitized_data = _sanitize_candidate_payload(raw_data)
             candidate = ResumeCandidate.model_validate(sanitized_data)
-        except (ModelServiceError, RuntimeError, json.JSONDecodeError, ValidationError, ValueError, Exception) as exc:
+        except (
+            ModelServiceError,
+            RuntimeError,
+            json.JSONDecodeError,
+            ValidationError,
+            ValueError,
+            Exception,
+        ) as exc:
             return self._with_warning(baseline, "llm_fallback", f"LLM candidate rejected: {str(exc)[:300]}")
         try:
             return self._merge(baseline, source, candidate)
@@ -377,6 +396,9 @@ class HybridResumeParser:
                     if item.start_date
                     else None,
                     endDate=PartialDate.model_validate(item.end_date.model_dump()) if item.end_date else None,
+                    studentStatus=item.student_status,
+                    gpa=item.gpa,
+                    gpaScale=item.gpa_scale,
                     evidenceRefs=[ref],
                 )
             )

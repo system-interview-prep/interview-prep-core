@@ -108,11 +108,39 @@ def test_semantic_score_cannot_compensate_for_failed_must_have() -> None:
     assert result.requirement_results[0].status == "not_met"
 
 
-def test_missing_must_have_abstains_for_review() -> None:
+def test_missing_must_have_requires_manual_review() -> None:
     result = MatchingFacade(StubEmbedder()).match(MatchRequest.model_validate(_payload(add_java=False)))
     assert result.eligibility == "review_required"
     assert result.decision == "abstained"
     assert result.requirement_results[0].status == "unknown"
+
+
+def test_unknown_requirement_is_excluded_from_coverage_score_but_exposed_in_provenance() -> None:
+    payload = _payload()
+    payload["job"]["requirements"].append(
+        {
+            "requirementId": "req-language",
+            "type": "language",
+            "priority": "must_have",
+            "sourceEvidenceRef": "jd-ev-java",
+            "languageCode": "en",
+            "operator": "required",
+        }
+    )
+    result = MatchingFacade(StubEmbedder()).match(MatchRequest.model_validate(payload))
+
+    coverage = next(item for item in result.factor_results if item.factor == "requirement_coverage")
+    assert coverage.raw_score == 1.0
+    assert coverage.reliability == pytest.approx(0.5)
+    assert result.score_provenance.unknown_requirement_count == 1
+
+
+def test_grounded_coverage_contribution_exceeds_semantic_contribution() -> None:
+    result = MatchingFacade(StubEmbedder()).match(MatchRequest.model_validate(_payload()))
+
+    contributions = result.score_provenance.factor_contributions
+    assert contributions["requirement_coverage"] > contributions["semantic"]
+    assert sum(contributions.values()) == pytest.approx(result.suitability_score, abs=1e-6)
 
 
 def test_schema_rejects_invalid_requirement_constraint() -> None:
@@ -139,7 +167,7 @@ def test_proficiency_requirement_uses_ordered_level_and_evidence() -> None:
     assert result.requirement_results[0].evidence_refs == ["cv-ev-java"]
 
 
-def test_title_and_domain_fields_drive_evidence_backed_experience_factor() -> None:
+def test_title_alone_does_not_make_experience_factor_applicable() -> None:
     payload = _payload()
     payload["resume"]["employment"] = [
         {
@@ -154,9 +182,9 @@ def test_title_and_domain_fields_drive_evidence_backed_experience_factor() -> No
     result = MatchingFacade(StubEmbedder()).match(MatchRequest.model_validate(payload))
 
     experience = next(item for item in result.factor_results if item.factor == "experience")
-    assert experience.status == "scored"
-    assert experience.raw_score == pytest.approx(1.0)
-    assert experience.evidence_refs == ["cv-ev-java"]
+    assert experience.status == "not_applicable"
+    assert experience.raw_score is None
+    assert experience.evidence_refs == []
 
 
 def test_semantic_factor_prefers_responsibility_project_and_achievement_context() -> None:
@@ -184,7 +212,8 @@ def test_semantic_factor_prefers_responsibility_project_and_achievement_context(
 
     assert "Designed payment APIs" in embedder.texts[0]
     assert "Reduced API latency by 35%" in embedder.texts[0]
-    assert embedder.texts[1] == "Build reliable payment APIs"
+    assert "Java" in embedder.texts[1]
+    assert "Build reliable payment APIs" in embedder.texts[1]
 
 
 def test_matching_facade_builds_the_default_embedder_once_per_batch(monkeypatch) -> None:
@@ -207,6 +236,7 @@ def test_matching_facade_builds_the_default_embedder_once_per_batch(monkeypatch)
 
 def test_work_mode_and_location_are_compatibility_not_suitability() -> None:
     payload = _payload()
+    payload["matchingPolicy"]["bm25ProviderMode"] = "in_memory"
     payload["job"].update({"workMode": "on_site", "location": "Hà Nội"})
     payload["candidatePreferences"] = {
         "acceptedWorkModes": ["remote"],

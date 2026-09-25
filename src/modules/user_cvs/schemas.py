@@ -7,6 +7,7 @@ from src.modules.user_cvs.domain.schemas import (
     EvidenceSpan,
     ParserWarning,
     ParsingMetadata,
+    ProficiencyLevel,
     TaxonomyRef,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     "EvidenceSpan",
     "ParserWarning",
     "ParsingMetadata",
+    "ProficiencyLevel",
     "TaxonomyRef",
 ]

@@ -1,5 +1,4 @@
 from functools import lru_cache
-from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field, field_validator
@@ -12,6 +11,9 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_host: str = "0.0.0.0"
     app_port: int = 5000
+    # None enables traces only in local/development environments.
+    trace_logs_enabled: bool | None = None
+    trace_logs_dir: str = "trace-logs"
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     jwt_secret: str = "development-only-secret-change-me"
@@ -50,6 +52,7 @@ class Settings(BaseSettings):
     jd_parser_mode: str = "deterministic"
     cv_parser_max_output_tokens: int = Field(default=4_096, ge=128, le=8_192)
     cv_parser_mode: str = "deterministic"
+    parser_section_regex_v2_enabled: bool = True
     embedding_provider: str = "openai"
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1024

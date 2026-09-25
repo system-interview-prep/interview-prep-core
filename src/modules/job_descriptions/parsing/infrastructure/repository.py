@@ -12,7 +12,9 @@ class SqlAlchemyJobDescriptionParseRepository:
     async def claim(self, upload_id: str) -> JobDescriptionDocument | None:
         result = await self._session.execute(
             text(
-                "UPDATE job_descriptions SET status = 'PARSING', error = NULL, updated_at = now() "
+                "UPDATE job_descriptions "
+                "SET status = 'PARSING', processing_status = 'PROCESSING', "
+                "error = NULL, updated_at = now() "
                 "WHERE id = :id AND item_type = 'JD_UPLOAD' AND status IN ('PENDING', 'FAILED') "
                 "RETURNING id, filename, storage_key, checksum"
             ),
@@ -40,7 +42,9 @@ class SqlAlchemyJobDescriptionParseRepository:
     ) -> None:
         await self._session.execute(
             text(
-                "UPDATE job_descriptions SET status = 'DONE', raw_text = :raw_text, "
+                "UPDATE job_descriptions "
+                "SET status = 'DONE', processing_status = 'DONE', "
+                "raw_text = :raw_text, "
                 "description = :raw_text, structured_data = CAST(:structured_data AS jsonb), "
                 "parse_source = :parse_source, updated_at = now() "
                 "WHERE id = :id AND item_type = 'JD_UPLOAD'"
@@ -57,7 +61,9 @@ class SqlAlchemyJobDescriptionParseRepository:
     async def fail(self, upload_id: str, error: str) -> None:
         await self._session.execute(
             text(
-                "UPDATE job_descriptions SET status = 'FAILED', error = :error, updated_at = now() "
+                "UPDATE job_descriptions "
+                "SET status = 'FAILED', processing_status = 'FAILED', "
+                "error = :error, updated_at = now() "
                 "WHERE id = :id AND item_type = 'JD_UPLOAD'"
             ),
             {"id": upload_id, "error": error},

@@ -138,12 +138,19 @@ class EducationEntry(CanonicalModel):
     field_of_study: str | None = None
     start_date: PartialDate | None = None
     end_date: PartialDate | None = None
+    student_status: Literal["student", "final_year", "recent_graduate"] | None = None
+    gpa: float | None = Field(default=None, gt=0)
+    gpa_scale: float | None = Field(default=None, gt=0)
     evidence_refs: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def dates_are_ordered(self) -> "EducationEntry":
         if self.start_date and self.end_date and _starts_definitely_after(self.start_date, self.end_date):
             raise ValueError("startDate must not be after endDate")
+        if (self.gpa is None) != (self.gpa_scale is None):
+            raise ValueError("gpa and gpaScale must be provided together")
+        if self.gpa is not None and self.gpa_scale is not None and self.gpa > self.gpa_scale:
+            raise ValueError("gpa must not exceed gpaScale")
         return self
 
 
@@ -174,8 +181,10 @@ class CertificationEntry(CanonicalModel):
 
     @model_validator(mode="after")
     def dates_are_ordered(self) -> "CertificationEntry":
-        if self.issued_date and self.expires_date and _starts_definitely_after(
-            self.issued_date, self.expires_date
+        if (
+            self.issued_date
+            and self.expires_date
+            and _starts_definitely_after(self.issued_date, self.expires_date)
         ):
             raise ValueError("issuedDate must not be after expiresDate")
         return self
@@ -231,6 +240,16 @@ class ParsingMetadata(CanonicalModel):
     status: Literal["ready", "review_required"]
     source_artifact_key: str | None = None
     warnings: list[ParserWarning] = Field(default_factory=list)
+    # Coverage is deliberately split by pipeline layer.  A parser may have
+    # complete source text while its canonical sections are incomplete; that
+    # distinction is required before deciding whether an absent requirement is
+    # ``not_met`` or merely ``unknown``.
+    raw_text_coverage: Literal["complete", "partial", "unavailable"] = "partial"
+    canonical_section_coverage: dict[
+        str, Literal["complete", "complete_empty", "partial", "unavailable"]
+    ] = Field(default_factory=dict)
+    evidence_index_coverage: Literal["complete", "partial", "unavailable"] = "partial"
+    coverage_reason_codes: list[str] = Field(default_factory=list)
 
 
 class CanonicalResume(CanonicalModel):
@@ -249,6 +268,9 @@ class CanonicalResume(CanonicalModel):
     career_classifications: list[CareerClassification] = Field(default_factory=list)
     evidence: list[EvidenceSpan] = Field(default_factory=list)
     parsing: ParsingMetadata | None = None
+    # Raw text is attached only at the matching boundary for targeted reparse.
+    # It is excluded from canonical persistence and trace payloads.
+    raw_text: str | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
     def references_are_consistent(self) -> "CanonicalResume":

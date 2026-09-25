@@ -15,7 +15,18 @@ class TaxonomyAdminService:
         v=(await self.db.execute(text("SELECT version,priority,published_at FROM taxonomy_versions WHERE is_active ORDER BY priority DESC,published_at DESC LIMIT 1"))).mappings().one_or_none()
         if not v:
             return {"version":None,"concepts":[]}
-        c=(await self.db.execute(text("SELECT concept_id,label,kind,description,metadata,is_active FROM taxonomy_concepts WHERE taxonomy_version=:v ORDER BY concept_id"),{"v":v["version"]})).mappings().all()
+        c=(await self.db.execute(text("""
+            SELECT concept_id, label, kind, description, metadata, is_active,
+              COALESCE(
+                (SELECT json_agg(alias ORDER BY alias)
+                 FROM taxonomy_aliases
+                 WHERE taxonomy_version = :v AND concept_id = tc.concept_id),
+                '[]'::json
+              ) AS aliases
+            FROM taxonomy_concepts AS tc
+            WHERE taxonomy_version = :v
+            ORDER BY concept_id
+        """),{"v":v["version"]})).mappings().all()
         return {
             "version": v["version"],
             "priority": v["priority"],
@@ -77,14 +88,33 @@ class TaxonomyAdminService:
         for row in rows:
             if not row["concept_id"].strip() or not row["label"].strip() or row["kind"] not in {"domain", "occupation", "job_family", "job_role", "skill", "competency"}:
                 raise HTTPException(422, "Taxonomy CSV contains an invalid concept.")
+            source = str(row.get("source") or "").strip() or "xlsx"
+            source_ref = str(row.get("source_ref") or "").strip() or None
+            metadata = {"source": source}
+            if source_ref:
+                metadata["source_ref"] = source_ref
             await self.db.execute(
                 text(
                     "INSERT INTO taxonomy_concepts(taxonomy_version, concept_id, label, kind, description, metadata, is_active) "
-                    "VALUES(:version, :concept_id, :label, :kind, :description, '{}'::jsonb, :is_active) "
-                    "ON CONFLICT(taxonomy_version, concept_id) DO UPDATE SET label=EXCLUDED.label, kind=EXCLUDED.kind, description=EXCLUDED.description, is_active=EXCLUDED.is_active"
+                    "VALUES(:version, :concept_id, :label, :kind, :description, CAST(:metadata AS jsonb), :is_active) "
+                    "ON CONFLICT(taxonomy_version, concept_id) DO UPDATE SET label=EXCLUDED.label, kind=EXCLUDED.kind, description=EXCLUDED.description, metadata=EXCLUDED.metadata, is_active=EXCLUDED.is_active"
                 ),
-                {"version": version, "concept_id": row["concept_id"].strip(), "label": row["label"].strip(), "kind": row["kind"], "description": row["description"].strip() or None, "is_active": row["is_active"].lower() in {"true", "1", "yes"}},
+                {"version": version, "concept_id": row["concept_id"].strip(), "label": row["label"].strip(), "kind": row["kind"], "description": str(row["description"] or "").strip() or None, "metadata": json.dumps(metadata), "is_active": str(row["is_active"]).lower() in {"true", "1", "yes"}},
             )
+            aliases = [row["label"].strip()]
+            aliases.extend(
+                item.strip()
+                for item in str(row.get("aliases") or "").replace(",", "|").split("|")
+                if item.strip()
+            )
+            for alias in dict.fromkeys(aliases):
+                await self.db.execute(
+                    text(
+                        "INSERT INTO taxonomy_aliases(taxonomy_version, concept_id, alias) "
+                        "VALUES(:version, :concept_id, :alias) ON CONFLICT DO NOTHING"
+                    ),
+                    {"version": version, "concept_id": row["concept_id"].strip(), "alias": alias},
+                )
         await self.db.commit()
         return len(rows)
     async def upsert_version(self,p:TaxonomyVersionUpsert):
@@ -94,6 +124,21 @@ class TaxonomyAdminService:
         await self.db.execute(text("INSERT INTO taxonomy_versions(version,priority,is_active) VALUES(:version,:priority,:activate) ON CONFLICT(version) DO UPDATE SET priority=EXCLUDED.priority,is_active=EXCLUDED.is_active,published_at=now()"),p.model_dump())
         await self.db.commit()
         return {"version":p.version,"active":p.activate,"priority":p.priority}
+    async def delete_version(self, version: str) -> dict:
+        is_active = await self.db.scalar(
+            text("SELECT is_active FROM taxonomy_versions WHERE version=:version"),
+            {"version": version},
+        )
+        if is_active is None:
+            raise HTTPException(404, "Taxonomy version not found.")
+        if is_active:
+            raise HTTPException(422, "Cannot delete the active taxonomy version. Activate another version first.")
+        await self.db.execute(
+            text("DELETE FROM taxonomy_versions WHERE version=:version"),
+            {"version": version},
+        )
+        await self.db.commit()
+        return {"version": version, "deleted": True}
     async def activate(self,v:str):
         await self._ensure_activatable(v)
         await self.db.execute(text("UPDATE taxonomy_versions SET is_active=false WHERE is_active"))
@@ -119,6 +164,25 @@ class TaxonomyAdminService:
             await self.db.execute(text("INSERT INTO taxonomy_aliases(taxonomy_version,concept_id,alias) VALUES(:v,:id,:a)"),{"v":v,"id":cid,"a":a})
         await self.db.commit()
         return {"version":v,"conceptId":cid,"aliases":aliases}
+    async def delete_concept(self, version: str, concept_id: str) -> dict:
+        exists = await self.db.scalar(
+            text(
+                "SELECT 1 FROM taxonomy_concepts "
+                "WHERE taxonomy_version=:version AND concept_id=:concept_id"
+            ),
+            {"version": version, "concept_id": concept_id},
+        )
+        if not exists:
+            raise HTTPException(404, "Taxonomy concept not found.")
+        await self.db.execute(
+            text(
+                "DELETE FROM taxonomy_concepts "
+                "WHERE taxonomy_version=:version AND concept_id=:concept_id"
+            ),
+            {"version": version, "concept_id": concept_id},
+        )
+        await self.db.commit()
+        return {"version": version, "conceptId": concept_id, "deleted": True}
     async def upsert_relation(self,v:str,p:TaxonomyRelationUpsert):
         if p.sourceConceptId==p.targetConceptId:
             raise HTTPException(422,"A taxonomy relation cannot point to itself.")

@@ -131,7 +131,10 @@ def _specializations(skill_refs, title_refs, *, minimum_skill_signals: int):
                 + [ref for _, title_evidence in matching_titles for ref in title_evidence]
             )
         )
-        confidence = min(0.95, 0.45 + 0.15 * len(supporting_ids) + 0.25 * bool(matching_titles))
+        # A title is explicit intent, while supported skills establish the domain.
+        # This makes an AI Engineer with a backend implementation stack classify
+        # by its AI specialization instead of relying on declaration order ties.
+        confidence = min(0.95, 0.45 + 0.15 * len(supporting_ids) + 0.30 * bool(matching_titles))
         results.append(
             CareerClassificationResult(
                 code=rule.code,

@@ -2,12 +2,12 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
-from src.modules.user_cvs.domain.schemas import ProficiencyLevel
 from src.modules.user_cvs.schemas import (
     CanonicalModel,
     CanonicalResume,
     CareerClassification,
     EvidenceSpan,
+    ProficiencyLevel,
     TaxonomyRef,
 )
 
@@ -57,7 +57,24 @@ class UnresolvedRequirement(RequirementBase):
     type: Literal["unresolved"]
     kind: Literal["skill", "experience", "education", "language", "other"]
     raw_label: str = Field(min_length=1)
+    atomic_concepts: list[TaxonomyRef] = Field(default_factory=list)
     minimum_experience_months: int | None = Field(default=None, ge=0)
+    operator: Literal["gte", "gt", "lte", "lt", "eq", "required"] | None = None
+    threshold: float | None = None
+    scale: float | None = None
+    credential: str | None = None
+    equivalent_allowed: bool | None = None
+    group_id: str | None = None
+    group_operator: Literal["all_of", "any_of", "atomic"] | None = None
+
+    @model_validator(mode="after")
+    def atomic_group_is_consistent(self) -> "UnresolvedRequirement":
+        concept_ids = [item.concept_id for item in self.atomic_concepts]
+        if len(concept_ids) != len(set(concept_ids)):
+            raise ValueError("atomicConcepts must be unique")
+        if len(self.atomic_concepts) > 1 and self.group_operator not in {"all_of", "any_of"}:
+            raise ValueError("multi-concept requirements need all_of or any_of")
+        return self
 
 
 Requirement = Annotated[
@@ -74,12 +91,17 @@ class GroundedJobText(CanonicalModel):
 class CanonicalJob(CanonicalModel):
     schema_version: Literal["2.1"]
     job_id: str = Field(min_length=1)
+    job_version_id: str | None = None
     document_id: str = Field(min_length=1)
     document_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[a-fA-F0-9]+$")
     job_title: str | None = None
     career_classifications: list[CareerClassification] = Field(default_factory=list)
-    seniority: Literal["intern", "junior", "mid", "senior", "lead", "manager"] | None = None
-    employment_type: Literal["full_time", "part_time", "contract", "internship"] | None = None
+    seniority: (
+        Literal["intern", "fresher", "junior", "mid", "senior", "lead", "manager"] | None
+    ) = None
+    employment_type: (
+        Literal["full_time", "part_time", "contract", "internship", "temporary"] | None
+    ) = None
     work_mode: Literal["remote", "hybrid", "on_site"] | None = None
     location: str | None = None
     responsibilities: list[GroundedJobText] = Field(default_factory=list)
@@ -112,6 +134,8 @@ class CanonicalJob(CanonicalModel):
 class MatchingPolicy(CanonicalModel):
     policy_version: Literal["balanced-v1", "skill-focus-v1", "experience-focus-v1"] = "balanced-v1"
     must_have_mode: Literal["strict", "advisory"] = "strict"
+    # An ungrounded must-have is not evidence of fit.  Require manual review
+    # instead of allowing semantic similarity to promote the match.
     unknown_handling: Literal["manual_review", "penalize"] = "manual_review"
     semantic_mode: Literal["hybrid", "dense_only", "sparse_only"] = "hybrid"
     bm25_weight: float = Field(default=0.4, ge=0.0, le=1.0)
@@ -151,10 +175,41 @@ class RequirementResult(CanonicalModel):
     confidence: float = Field(ge=0, le=1)
     evidence_refs: list[str] = Field(default_factory=list)
     reason_code: str
+    evidence_explanation: str | None = None
+    concept_results: list["ConceptResult"] = Field(default_factory=list)
+    group_operator: Literal["atomic", "all_of", "any_of"] = "atomic"
+
+    @model_validator(mode="after")
+    def requirement_evidence_is_concept_union(self) -> "RequirementResult":
+        if self.concept_results:
+            expected = list(
+                dict.fromkeys(
+                    ref
+                    for concept in self.concept_results
+                    for ref in concept.evidence_refs
+                )
+            )
+            if self.evidence_refs != expected:
+                raise ValueError("evidenceRefs must be the ordered union of conceptResults evidenceRefs")
+        if self.status == "unknown" and not self.evidence_explanation:
+            self.evidence_explanation = (
+                f"Chưa có bằng chứng đủ rõ để kết luận; nguyên nhân đánh giá: {self.reason_code}."
+            )
+        return self
+
+
+class ConceptResult(CanonicalModel):
+    concept_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    status: Literal["met", "not_met", "unknown", "not_applicable"]
+    confidence: float = Field(ge=0, le=1)
+    evidence_refs: list[str] = Field(default_factory=list)
+    evidence_strength: Literal["mention", "claimed", "applied", "demonstrated"] | None = None
+    reason_code: str
 
 
 class FactorResult(CanonicalModel):
-    factor: Literal["skill", "experience", "language", "semantic"]
+    factor: Literal["requirement_coverage", "skill", "experience", "language", "semantic"]
     status: Literal["scored", "not_applicable", "unknown"]
     raw_score: float | None = Field(default=None, ge=0, le=1)
     reliability: float = Field(ge=0, le=1)
@@ -173,11 +228,23 @@ class CompatibilityResult(CanonicalModel):
     reason_code: str
 
 
+class ScoreProvenance(CanonicalModel):
+    mode: Literal["requirement_aware", "semantic_only_estimated", "unavailable"]
+    scored_factors: list[str] = Field(default_factory=list)
+    supported_requirement_count: int = Field(ge=0)
+    scored_requirement_count: int = Field(ge=0)
+    unknown_requirement_count: int = Field(default=0, ge=0)
+    total_requirement_count: int = Field(ge=0)
+    requirement_coverage: float | None = Field(default=None, ge=0, le=1)
+    factor_contributions: dict[str, float] = Field(default_factory=dict)
+
+
 class MatchResult(CanonicalModel):
     schema_version: Literal["2.1"] = "2.1"
     pipeline_version: Literal["one-to-one-evidence-fusion-v1"] = "one-to-one-evidence-fusion-v1"
     resume_id: str
     job_id: str
+    job_version_id: str | None = None
     policy_version: str
     eligibility: Literal["eligible", "ineligible", "review_required"]
     compatibility_status: Literal[
@@ -189,4 +256,12 @@ class MatchResult(CanonicalModel):
     requirement_results: list[RequirementResult]
     compatibility_results: list[CompatibilityResult] = Field(default_factory=list)
     factor_results: list[FactorResult]
+    score_provenance: ScoreProvenance = Field(
+        default_factory=lambda: ScoreProvenance(
+            mode="unavailable",
+            supportedRequirementCount=0,
+            scoredRequirementCount=0,
+            totalRequirementCount=0,
+        )
+    )
     warnings: list[str] = Field(default_factory=list)

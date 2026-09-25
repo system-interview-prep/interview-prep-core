@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.config import get_settings
 from src.core.security import current_user
 from src.infrastructure.database import SessionFactory, get_db
-from src.modules.documents.sse import SSE_HEADERS, status_event_stream
+from src.modules.documents.facade import SSE_HEADERS, status_event_stream
 from src.modules.user_cvs.application.query_service import (
     CvContentUnavailableError,
     CvNotFoundError,

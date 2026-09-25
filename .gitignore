@@ -4,7 +4,13 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.pytest_temp/
+.pytest-run/
 .ruff_cache/
 app.log
 uploads/
 models_cache/
+trace-logs/
+.pytest-auth-full
+/.pytest-auth-full
+.pytest-auth-full/
