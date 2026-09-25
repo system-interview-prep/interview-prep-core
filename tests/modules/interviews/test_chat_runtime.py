@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
 import pytest
@@ -111,6 +111,11 @@ class MockChatSession:
             return MockResult([])
 
         if "UPDATE interview_sessions" in sql:
+            if "RETURNING chat_started_at, chat_deadline_at" in sql:
+                started = self.session_row.get("chat_started_at") or datetime.now(UTC)
+                deadline = self.session_row.get("chat_deadline_at") or started + timedelta(minutes=25)
+                self.session_row.update(chat_started_at=started, chat_deadline_at=deadline)
+                return MockResult([{"chat_started_at": started, "chat_deadline_at": deadline}])
             if "SET status = 'CLOSED'" in sql:
                 self.session_row["status"] = "CLOSED"
                 if "USER_ENDED" in sql or params.get("reason") == "USER_ENDED":
