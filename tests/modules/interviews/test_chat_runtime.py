@@ -345,3 +345,57 @@ async def test_complete_chat_session_with_reason(mock_session_data):
     assert res["endReason"] == "USER_ENDED"
     assert "Phiên phỏng vấn đã kết thúc" in res["summary"]
     assert db.session_row["status"] == "CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_start_rejects_incomplete_frozen_question(mock_session_data):
+    session_row, turns = mock_session_data
+    turns[0]["question_snapshot"] = {}
+    db = MockChatSession(session_row, turns)
+    with pytest.raises(ChatRuntimeError, match="Frozen question is incomplete"):
+        await start_chat_session(db, session_row)
+    assert db.messages == []
+
+
+@pytest.mark.asyncio
+async def test_chat_rejects_practice_session(mock_session_data):
+    session_row, turns = mock_session_data
+    session_row["experience_type"] = "question_practice"
+    db = MockChatSession(session_row, turns)
+    with pytest.raises(ChatRuntimeError, match="not an interview chat"):
+        await start_chat_session(db, session_row)
+
+
+@pytest.mark.asyncio
+async def test_retry_key_requires_same_content(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    with patch("src.modules.interviews.chat_runtime.generate_text", new_callable=AsyncMock) as llm:
+        llm.return_value = '{"decision": "NEXT_TOPIC", "reply_text": ""}'
+        await process_candidate_message(
+            db, session_row, client_message_id="same-key",
+            content="My first substantive answer about retrieval.",
+        )
+    with pytest.raises(ChatRuntimeError, match="different content"):
+        await process_candidate_message(
+            db, session_row, client_message_id="same-key",
+            content="A different answer.",
+        )
+
+
+@pytest.mark.asyncio
+async def test_retry_pending_response_is_explicit(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    db.messages.append({
+        "id": "pending-user", "session_id": session_row["id"],
+        "role": "user", "content": "My answer", "turn_id": "turn-1",
+        "message_type": "CANDIDATE_ANSWER", "sequence": 3,
+        "client_message_id": "pending-key", "created_at": datetime.now(UTC),
+    })
+    with pytest.raises(ChatRuntimeError, match="response is pending"):
+        await process_candidate_message(
+            db, session_row, client_message_id="pending-key", content="My answer",
+        )
