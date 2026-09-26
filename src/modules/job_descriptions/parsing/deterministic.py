@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from hashlib import sha1
 from typing import Any
 
+from src.core.trace_logging import trace_event
 from src.modules.job_descriptions.domain.schemas import (
     CanonicalJobDescription,
     GroundedJobText,
@@ -249,7 +250,7 @@ _RESEARCH_COMPETITION_DISJUNCTION = re.compile(
     re.I,
 )
 
-PARSER_VERSION = "deterministic-jd-v4"
+PARSER_VERSION = "deterministic-jd-v5"
 _HEADERS = {
     "requirements": {
         "requirements",
@@ -319,7 +320,6 @@ _HEADERS = {
     "application": {"how to apply", "cach thuc ung tuyen", "cach ung tuyen"},
 }
 
-
 def _key(value: str) -> str:
     value = unicodedata.normalize("NFD", value.casefold())
     value = "".join(char for char in value if unicodedata.category(char) != "Mn")
@@ -370,6 +370,129 @@ def _bullet(line: str) -> tuple[int, str] | None:
     if not match or not (value := match.group("value").strip()):
         return None
     return match.start("value"), value
+
+
+def _nearest_nonempty(lines: list[tuple[int, str]], index: int, step: int) -> str | None:
+    cursor = index + step
+    while 0 <= cursor < len(lines):
+        if lines[cursor][1].strip():
+            return lines[cursor][1].strip()
+        cursor += step
+    return None
+
+
+def _is_short_metadata_line(value: str) -> bool:
+    return bool(
+        value
+        and len(_key(value).split()) <= 6
+        and not re.search(r"[.!,;:]|\d", value)
+        and _bullet(value) is None
+        and _heading(value) is None
+    )
+
+
+def _is_probable_section_heading(lines: list[tuple[int, str]], index: int) -> bool:
+    """Detect a heading by document layout, not by a vocabulary allow-list.
+
+    JD extractors occasionally flatten section metadata into the requirements
+    text.  A standalone short line between bullet runs is structurally a
+    heading; a real requirement is normally a bullet or a sentence.  The
+    neighbouring-line checks keep short valid requirements (for example
+    ``Python``) intact when they are explicitly marked as bullets.
+    """
+
+    line = lines[index][1].strip()
+    if not line or _bullet(line) or _heading(line):
+        return False
+    normalized = _key(line)
+    tokens = normalized.split()
+    if not tokens or len(tokens) > 6 or re.search(r"[.!,;:]|\d", line):
+        return False
+
+    previous = _nearest_nonempty(lines, index, -1)
+    following = _nearest_nonempty(lines, index, 1)
+    if previous is None:
+        return False
+    if following is None:
+        return _is_short_metadata_line(line) and (
+            _bullet(previous) is not None or _is_short_metadata_line(previous)
+        )
+
+    previous_is_bullet = _bullet(previous) is not None
+    following_is_bullet = _bullet(following) is not None
+    if previous_is_bullet and following_is_bullet:
+        return True
+    if following_is_bullet and _heading(previous) in {"preferred", "requirements"}:
+        return True
+
+    # A run of short non-bullet lines immediately before a recognised section
+    # heading is metadata (classification/section labels), not a requirement.
+    following_heading = _heading(following)
+    previous_is_short = _is_short_metadata_line(previous)
+    if following_heading in {"benefits", "application", "location"} and (
+        previous_is_bullet or previous_is_short
+    ):
+        return True
+
+    # Some extractors emit several metadata labels consecutively.  Walk the
+    # short, non-bullet run and use the next real section heading as the
+    # structural boundary; no label vocabulary is required.
+    cursor = index + 1
+    saw_short_line = False
+    while cursor < len(lines):
+        candidate = lines[cursor][1].strip()
+        if not candidate:
+            cursor += 1
+            continue
+        if _heading(candidate) in {"benefits", "application", "location"}:
+            return saw_short_line
+        if not _is_short_metadata_line(candidate):
+            break
+        saw_short_line = True
+        cursor += 1
+
+    # The requirement range ends immediately before the next recognised
+    # heading, so a trailing short-label run has no heading line inside the
+    # range to inspect.  Exhausting the run is itself the boundary signal.
+    return saw_short_line and cursor >= len(lines)
+
+
+def is_probable_requirement_heading_at(text: str, char_start: int) -> bool:
+    """Apply the structural heading classifier to a source-text offset.
+
+    Hybrid extraction uses this same parser-level decision after grounding an
+    LLM quote, so a secondary extractor cannot reintroduce a metadata row that
+    deterministic parsing correctly rejected.
+    """
+
+    lines = _lines(text)
+    candidate_index = next(
+        (
+            index
+            for index, (offset, value) in enumerate(lines)
+            if offset <= char_start < offset + max(len(value), 1)
+        ),
+        None,
+    )
+    return candidate_index is not None and _is_probable_section_heading(lines, candidate_index)
+
+
+def is_probable_requirement_heading_value(text: str, value: str) -> bool:
+    """Check a raw requirement label against structurally identified lines.
+
+    This is a defensive post-merge check for extractors that preserve the
+    value but lose the original quote offset.  It still relies only on line
+    structure and normalized equality, never on a fixed label vocabulary.
+    """
+
+    target = _key(value)
+    if not target:
+        return False
+    lines = _lines(text)
+    return any(
+        _key(line) == target and _is_probable_section_heading(lines, index)
+        for index, (_, line) in enumerate(lines)
+    )
 
 
 class DeterministicJobDescriptionParser:
@@ -434,9 +557,24 @@ class DeterministicJobDescriptionParser:
         start, end, priority, result = *section, "must_have", []
         doc_negated_topics = _extract_negated_topics(source.text)
 
-        for offset, line in _lines(source.text[start:end]):
+        lines = _lines(source.text[start:end])
+        for line_index, (offset, line) in enumerate(lines):
             if _heading(line) == "preferred":
                 priority = "preferred"
+                continue
+            if _is_probable_section_heading(lines, line_index):
+                value = line.strip()
+                absolute_start = start + offset
+                trace_event(
+                    "jd_parser",
+                    "requirement_filtered",
+                    document_id=source.document_id,
+                    raw_label=value,
+                    char_start=absolute_start,
+                    char_end=absolute_start + len(value),
+                    reason_code="layout_section_heading",
+                    classifier="neighboring_line_structure",
+                )
                 continue
             bullet = _bullet(line)
             # Production JDs frequently put an entire qualification paragraph
