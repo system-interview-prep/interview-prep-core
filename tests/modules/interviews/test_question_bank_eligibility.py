@@ -233,7 +233,7 @@ class TestSeedIdempotency:
 
         summary = await seed_question_bank(factory)
 
-        assert summary["skill-artificial-intelligence"] == 10
+        assert summary["skill-artificial-intelligence"] == 12
         assert summary["skill-generative-ai"] == 6
         assert summary["skill-large-language-models"] == 6
         assert summary["skill-natural-language-processing"] == 6
