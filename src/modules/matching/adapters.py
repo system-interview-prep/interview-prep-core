@@ -1,7 +1,10 @@
 from typing import Literal
 
-from src.modules.job_descriptions.schemas import CanonicalJobDescription, JobRequirement
-from src.modules.job_descriptions.parsing.deterministic import resolve_known_skill_concepts
+from src.modules.job_descriptions.schemas import (
+    CanonicalJobDescription,
+    JobRequirement,
+    resolve_known_skill_concepts,
+)
 from src.modules.matching.schemas import (
     CanonicalJob,
     GroundedJobText,
@@ -98,10 +101,8 @@ def job_description_to_matching_job(
         atomic_concepts = requirement.atomic_concepts
         recovered_group_operator = requirement.group_operator
         if recovered_concepts:
-            if len(recovered_concepts) == 1:
-                concept = recovered_concepts[0]
-            else:
-                atomic_concepts = recovered_concepts
+            atomic_concepts = recovered_concepts
+            if len(recovered_concepts) > 1:
                 # Recovery is based on explicit aliases co-occurring in one
                 # evidence-grounded skill requirement.  Legacy records did not
                 # persist composition metadata, so represent the recovered
