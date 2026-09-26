@@ -77,3 +77,18 @@ def test_snapshot_freezes_question_rubric_expected_points_and_target():
     assert snapshot["taxonomyTarget"]["conceptId"] == "skill.python"
     assert snapshot["taxonomyTarget"]["mappingPurpose"] == "TARGET_SKILL"
     assert snapshot["selectionRank"] == 2
+
+
+def test_rank_salt_creates_session_level_diversity():
+    c1 = candidate(question_version_id="qv-1111", stable_key="key-a")
+    c2 = candidate(question_version_id="qv-2222", stable_key="key-b")
+
+    # Without salt, key-a is always first
+    ranked_default = sorted([c2, c1], key=lambda item: _candidate_rank(item, difficulty="foundational", locale="en-US"))
+    assert ranked_default[0].question_version_id == "qv-1111"
+
+    # With session salt, ordering is deterministic per session
+    rank_a = sorted([c1, c2], key=lambda item: _candidate_rank(item, difficulty="foundational", locale="en-US", salt="session-alpha"))
+    rank_b = sorted([c1, c2], key=lambda item: _candidate_rank(item, difficulty="foundational", locale="en-US", salt="session-alpha"))
+    assert rank_a == rank_b
+
