@@ -21,6 +21,21 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.modules.ai.facade import generate_text
+from src.modules.interviews.core.interview_engine import (
+    SAFE_FALLBACK_PROBE_EN,
+    SAFE_FALLBACK_PROBE_VI,
+    InterviewCoreEngine,
+    validate_probe_text,
+)
+from src.modules.interviews.core.interview_types import (
+    CandidateTurnInput,
+    InterviewerTurnOutput,
+    InterviewStage,
+    SessionExitReason,
+    TurnAction,
+)
+
+_validate_probe_text = validate_probe_text
 
 MessageType = Literal[
     "GREETING",
@@ -30,18 +45,10 @@ MessageType = Literal[
     "CANDIDATE_ANSWER",
     "ACKNOWLEDGMENT",
     "WRAP_UP",
+    "CONFIRM_ABORT",
 ]
 
 EndReason = Literal["COMPLETED", "USER_ENDED", "TECHNICAL_FAILURE"]
-
-SAFE_FALLBACK_PROBE_VI = (
-    "Bạn có thể phân tích rõ hơn về lý do bạn lựa chọn giải pháp này "
-    "và điểm hạn chế cần lưu ý của nó không?"
-)
-SAFE_FALLBACK_PROBE_EN = (
-    "Could you elaborate on the main reasoning behind this approach "
-    "and any trade-offs you considered?"
-)
 
 
 class ChatRuntimeError(RuntimeError):
@@ -141,23 +148,56 @@ async def get_chat_runtime(
             {
                 "turnId": current_turn["id"],
                 "turnIndex": current_turn["turn_index"],
+                "stage": (
+                    (current_turn.get("question_snapshot") or {}).get("stage")
+                    or ("WARM_UP" if current_turn["turn_index"] == 0 else "VALIDATE" if current_turn["turn_index"] == 1 else "DEEP_DIVE")
+                ),
                 "competency": (
-                    current_turn.get("question_snapshot", {})
+                    (current_turn.get("question_snapshot") or {})
+                    .get("taxonomyTarget", {})
+                    .get("label")
+                    or (current_turn.get("question_snapshot") or {})
                     .get("target", {})
                     .get("conceptId")
-                    if isinstance(current_turn.get("question_snapshot"), dict)
-                    else None
-                )
-                or "Chuyên môn",
+                    or (
+                        "Khởi động"
+                        if current_turn["turn_index"] == 0
+                        else "Thẩm định kinh nghiệm"
+                        if current_turn["turn_index"] == 1
+                        else "Chuyên môn"
+                    )
+                ),
                 "questionVersionId": str(current_turn["question_version_id"])
                 if current_turn["question_version_id"]
                 else None,
+                "questionType": (current_turn.get("question_snapshot") or {}).get("questionType") or "technical",
+                "starterCode": (current_turn.get("question_snapshot") or {}).get("starterCode"),
+                "testCasesCode": (current_turn.get("question_snapshot") or {}).get("testCasesCode"),
+                "language": (current_turn.get("question_snapshot") or {}).get("language", "python"),
             }
             if current_turn
             else None
         ),
         "messages": messages,
         "isAwaitingCandidate": is_awaiting,
+        "durationMinutes": int(session_row.get("duration_minutes") or 25),
+        "startedAt": session_row.get("started_at").isoformat() if session_row.get("started_at") else None,
+        "turns": [
+            {
+                "turnId": t["id"],
+                "turnIndex": t["turn_index"],
+                "stage": (
+                    (t.get("question_snapshot") or {}).get("stage")
+                    or ("WARM_UP" if t["turn_index"] == 0 else "VALIDATE" if t["turn_index"] == 1 else "DEEP_DIVE")
+                ),
+                "status": t["status"],
+                "questionType": (t.get("question_snapshot") or {}).get("questionType") or "technical",
+                "starterCode": (t.get("question_snapshot") or {}).get("starterCode"),
+                "testCasesCode": (t.get("question_snapshot") or {}).get("testCasesCode"),
+                "language": (t.get("question_snapshot") or {}).get("language", "python"),
+            }
+            for t in turns
+        ],
     }
 
 
@@ -213,49 +253,39 @@ async def start_chat_session(
     is_vi = (session_row.get("locale") or "vi").lower().startswith("vi")
     job_title = await _get_job_title(db, session_row.get("job_id"))
 
-    # 1. Greeting message
-    if is_vi:
-        greeting_text = (
-            f"Chào bạn, tôi là AI Interviewer của INTERVIA. Hôm nay chúng ta sẽ cùng phỏng vấn "
-            f"cho vị trí {job_title} dựa trên yêu cầu công việc và hồ sơ của bạn. "
-            f"Hãy trả lời một cách tự nhiên và cụ thể kinh nghiệm thực tế của bạn nhé. "
-            f"Chúng ta sẽ bắt đầu ngay với chủ đề đầu tiên."
-        )
-    else:
-        greeting_text = (
-            f"Hello, I am the INTERVIA AI Interviewer. Today we will conduct an interview "
-            f"for the {job_title} position based on your resume and job requirements. "
-            f"Please answer naturally and share specific insights from your experience. "
-            f"Let's begin with our first topic."
-        )
-
-    greeting_id = str(uuid4())
-    await db.execute(
-        text(
-            """
-            INSERT INTO interview_chat_messages
-            (id, session_id, role, content, metadata, turn_id, message_type, sequence, created_at)
-            VALUES
-            (:id, :sid, 'assistant', :content, '{}'::jsonb, NULL, 'GREETING', 1, now())
-            """
-        ),
-        {"id": greeting_id, "sid": session_id, "content": greeting_text},
-    )
-
-    # 2. Main Question message
+    # Single opening message: greeting + first turn question
     q_snapshot = first_turn.get("question_snapshot") or {}
     q_text = (
         q_snapshot.get("questionText")
         or q_snapshot.get("question_text")
-        or "Hãy giới thiệu về kinh nghiệm chuyên môn liên quan của bạn."
+        or (
+            f"Để bắt đầu và giúp bạn thoải mái hơn, bạn hãy giới thiệu đôi nét về bản thân và kinh nghiệm làm việc gần đây của mình nhé?"
+            if is_vi
+            else "To help you get comfortable, please give a brief introduction of yourself and your recent experience."
+        )
     )
+
+    if "Chào bạn" not in q_text and "Hello" not in q_text:
+        opening_text = (
+            f"Chào bạn, tôi là AI Interviewer của INTERVIA. Hôm nay chúng ta sẽ cùng phỏng vấn "
+            f"cho vị trí {job_title} dựa trên yêu cầu công việc và hồ sơ của bạn.\n\n"
+            f"{q_text}"
+            if is_vi
+            else f"Hello, I am the INTERVIA AI Interviewer. Today we will conduct an interview "
+            f"for the {job_title} position based on your resume and job requirements.\n\n"
+            f"{q_text}"
+        )
+    else:
+        opening_text = q_text
 
     question_id = str(uuid4())
     q_meta = {
         "questionVersionId": str(first_turn["question_version_id"])
         if first_turn.get("question_version_id")
         else None,
-        "turnIndex": 0,
+        "turnIndex": first_turn.get("turn_index", 0),
+        "stage": q_snapshot.get("stage", "WARM_UP"),
+        "competency": q_snapshot.get("taxonomyTarget", {}).get("label") or "Giới thiệu & Khởi động",
     }
     await db.execute(
         text(
@@ -263,13 +293,13 @@ async def start_chat_session(
             INSERT INTO interview_chat_messages
             (id, session_id, role, content, metadata, turn_id, message_type, sequence, created_at)
             VALUES
-            (:id, :sid, 'assistant', :content, CAST(:metadata AS jsonb), :turn_id, 'MAIN_QUESTION', 2, now())
+            (:id, :sid, 'assistant', :content, CAST(:metadata AS jsonb), :turn_id, 'MAIN_QUESTION', 1, now())
             """
         ),
         {
             "id": question_id,
             "sid": session_id,
-            "content": q_text,
+            "content": opening_text,
             "metadata": json.dumps(q_meta),
             "turn_id": first_turn["id"],
         },
@@ -279,113 +309,92 @@ async def start_chat_session(
     return await get_chat_runtime(db, session_row)
 
 
-def _validate_probe_text(probe_text: str) -> bool:
-    """Post-generation validator for probe questions.
-
-    Rejects probes that leak scoring, grading, rubrics, or exceed length limit.
-    """
-    cleaned = probe_text.strip()
-    if not cleaned or len(cleaned) > 280:
-        return False
-
-    # Prohibited leak patterns
-    prohibited_patterns = [
-        r"\b(điểm|điểm số|thang điểm|barem|rubric|tiêu chí|bạn được|bạn đạt)\b",
-        r"\b(score|scores|grade|grading|rubrics|criterion|criteria|points)\b",
-        r"\b\d+\s*/\s*10\b",
-        r"\b\d+\s*điểm\b",
-    ]
-    for pattern in prohibited_patterns:
-        if re.search(pattern, cleaned, re.IGNORECASE):
-            return False
-
-    return True
+def _format_rubric_criteria(criteria_val: Any) -> str:
+    """Chuẩn hóa tiêu chí chấm điểm từ rubric snapshot sang dạng text dễ đọc cho LLM."""
+    if isinstance(criteria_val, list):
+        parts = []
+        for c in criteria_val:
+            if isinstance(c, dict):
+                name = c.get("name") or c.get("stableKey") or "Tiêu chí"
+                desc = c.get("description") or ""
+                parts.append(f"- {name}: {desc}")
+            else:
+                parts.append(f"- {c}")
+        return "\n".join(parts)
+    elif isinstance(criteria_val, dict):
+        return json.dumps(criteria_val, ensure_ascii=False)
+    return str(criteria_val or "")
 
 
-async def _decide_next_step(
-    *,
-    is_vi: bool,
-    job_title: str,
-    question_text: str,
-    candidate_answer: str,
+def build_session_state_from_db(
+    session_row: dict[str, Any],
+    turns: list[dict[str, Any]],
+    current_turn: dict[str, Any] | None,
     has_probed: bool,
-    working_memory: str = "",
-) -> tuple[MessageType, str]:
-    """Controller decision engine with strict guardrails, prompt isolation, and validation."""
-    # Hard limit: if already probed once, must advance
-    if has_probed:
-        return "NEXT_TOPIC", ""
+) -> dict[str, Any]:
+    """Trích xuất và ánh xạ dữ liệu session/turns sang session_state cho InterviewCoreEngine."""
+    session_id = session_row["id"]
+    snap = (current_turn.get("question_snapshot") or {}) if current_turn else {}
+    current_stage = (snap.get("stage") if current_turn else None) or InterviewStage.DEEP_DIVE.value
+    q_text = snap.get("questionText") or snap.get("question_text") or ""
+    rubric_criteria = _format_rubric_criteria((snap.get("rubric") or {}).get("criteria", ""))
 
-    cleaned_answer = candidate_answer.strip().lower()
-
-    # Early refusal or skip keywords
-    refusal_keywords = [
-        "không biết",
-        "chưa rõ",
-        "không rõ",
-        "bỏ qua",
-        "qua câu",
-        "don't know",
-        "no idea",
-        "skip",
+    asked_question_ids = [
+        str(t.get("question_version_id") or t["id"])
+        for t in turns
+        if t.get("status") in {"ANSWERED", "COMPLETED"}
     ]
-    if any(k in cleaned_answer for k in refusal_keywords) and len(cleaned_answer) < 40:
-        return "NEXT_TOPIC", ""
+    if current_turn and has_probed:
+        current_qid = str(current_turn.get("question_version_id") or current_turn["id"])
+        if current_qid not in asked_question_ids:
+            asked_question_ids.append(current_qid)
 
-    # Extremely short answer -> neutral clarification
-    if len(cleaned_answer) < 25:
-        if is_vi:
-            clarify_text = "Bạn có thể chia sẻ cụ thể hơn hoặc đưa ra ví dụ thực tế liên quan đến câu hỏi này không?"
-        else:
-            clarify_text = "Could you elaborate more or provide a concrete example related to this question?"
-        return "CLARIFY", clarify_text
-
-    # Prompt isolation: ONLY pass current question & current candidate answer
-    instructions = (
-        "You are an expert technical interviewer conducting an interview for "
-        f"the position of '{job_title}'.\n"
-        "Your goal: Decide whether to ask ONE follow-up probe question (PROBE) or advance to the next topic (NEXT_TOPIC).\n"
-        "Rules:\n"
-        "1. Never invent projects or experience not mentioned by the candidate.\n"
-        "2. Never leak evaluation rubrics, scoring criteria, or grades/points.\n"
-        "3. If candidate's answer introduces a specific technical solution, ask a short, insightful follow-up question (PROBE) about trade-offs, architecture, edge cases, or reasons behind their choice.\n"
-        "4. If candidate's answer is already exhaustive or complete, choose NEXT_TOPIC.\n"
-        f"5. Output language MUST BE {'Vietnamese' if is_vi else 'English'}.\n"
-        "6. Return ONLY a valid JSON object with keys:\n"
-        '   - "decision": "PROBE" or "NEXT_TOPIC"\n'
-        '   - "reply_text": "your follow-up question if PROBE, or empty string if NEXT_TOPIC"'
-    )
-    user_input = (
-        f"Main Question: {question_text}\n"
-        f"Candidate Answer: {candidate_answer}\n"
-    )
-
-    try:
-        raw_res = await generate_text(
-            instructions=instructions,
-            input_text=user_input,
-            max_output_tokens=300,
-            temperature=0.2,
+    questions_pool: dict[str, list[dict[str, Any]]] = {}
+    for t in turns:
+        t_snap = t.get("question_snapshot") or {}
+        t_stage = t_snap.get("stage") or InterviewStage.DEEP_DIVE.value
+        if t_stage not in questions_pool:
+            questions_pool[t_stage] = []
+        prompt = t_snap.get("questionText") or t_snap.get("question_text") or ""
+        q_id = str(t.get("question_version_id") or t["id"])
+        comp = (
+            (t_snap.get("taxonomyTarget") or {}).get("label")
+            or (t_snap.get("target") or {}).get("conceptId")
+            or "Chuyên môn"
         )
-        data = json.loads(raw_res)
-        dec = str(data.get("decision", "NEXT_TOPIC")).upper()
-        reply = str(data.get("reply_text", "")).strip()
+        questions_pool[t_stage].append({
+            "question_id": q_id,
+            "question_version_id": str(t.get("question_version_id")) if t.get("question_version_id") else None,
+            "competency": comp,
+            "stage": t_stage,
+            "main_prompt": prompt,
+            "rubric_criteria": _format_rubric_criteria((t_snap.get("rubric") or {}).get("criteria", "")),
+        })
 
-        if dec == "PROBE" and reply:
-            # Deterministic post-validator
-            if _validate_probe_text(reply):
-                return "PROBE", reply
-            # If validation fails, use safe deterministic fallback
-            safe_probe = SAFE_FALLBACK_PROBE_VI if is_vi else SAFE_FALLBACK_PROBE_EN
-            return "PROBE", safe_probe
+    metadata_json = session_row.get("metadata") or {}
+    if isinstance(metadata_json, str):
+        try:
+            metadata_json = json.loads(metadata_json)
+        except Exception:
+            metadata_json = {}
 
-        return "NEXT_TOPIC", ""
-    except Exception:
-        # Graceful fallback heuristic
-        if len(candidate_answer.split()) < 25:
-            safe_probe = SAFE_FALLBACK_PROBE_VI if is_vi else SAFE_FALLBACK_PROBE_EN
-            return "PROBE", safe_probe
-        return "NEXT_TOPIC", ""
+    return {
+        "session_id": session_id,
+        "current_stage": current_stage,
+        "consecutive_fails": metadata_json.get("consecutive_fails", 0),
+        "current_turn_in_question": 1 if has_probed else 0,
+        "target_duration_minutes": session_row.get("duration_minutes") or 25,
+        "started_at": session_row.get("started_at"),
+        "locale": session_row.get("locale") or "vi-VN",
+        "allow_early_exit": metadata_json.get("allow_early_exit", True),
+        "asked_question_ids": asked_question_ids,
+        "current_question_context": {
+            "question_id": str(current_turn.get("question_version_id") or current_turn["id"]) if current_turn else "",
+            "main_prompt": q_text,
+            "rubric_criteria": rubric_criteria,
+        } if current_turn else {},
+        "questions_pool": questions_pool,
+    }
 
 
 async def process_candidate_message(
@@ -394,6 +403,8 @@ async def process_candidate_message(
     *,
     client_message_id: str | None,
     content: str,
+    telemetry: dict[str, Any] | None = None,
+    core_engine: InterviewCoreEngine | None = None,
 ) -> dict[str, Any]:
     session_id = session_row["id"]
     if session_row["status"] == "CLOSED":
@@ -517,79 +528,7 @@ async def process_candidate_message(
     is_vi = (session_row.get("locale") or "vi").lower().startswith("vi")
     job_title = await _get_job_title(db, session_row.get("job_id"))
 
-    # Check for early exit request
-    lower_c = cleaned_content.lower()
-    early_exit_requested = any(
-        k in lower_c
-        for k in [
-            "dừng phỏng vấn",
-            "kết thúc phỏng vấn",
-            "tôi muốn dừng",
-            "stop interview",
-            "end interview",
-            "quit interview",
-        ]
-    )
-
     asst_msg_id = str(uuid4())
-
-    if early_exit_requested:
-        wrap_text = (
-            "Cảm ơn bạn. Buổi phỏng vấn sẽ kết thúc tại đây theo nguyện vọng của bạn. "
-            "Chúc bạn một ngày làm việc hiệu quả và thành công!"
-            if is_vi
-            else "Thank you. The interview will conclude here per your request. Have a great day!"
-        )
-        await db.execute(
-            text(
-                """
-                INSERT INTO interview_chat_messages
-                (id, session_id, role, content, metadata, turn_id, message_type, sequence, created_at)
-                VALUES
-                (:id, :sid, 'assistant', :content, '{}'::jsonb, NULL, 'WRAP_UP', :seq, now())
-                """
-            ),
-            {"id": asst_msg_id, "sid": session_id, "content": wrap_text, "seq": asst_seq},
-        )
-        await db.execute(
-            text(
-                """
-                UPDATE interview_sessions
-                SET status = 'CLOSED', end_reason = 'USER_ENDED', ended_at = now(), updated_at = now()
-                WHERE id = :sid
-                """
-            ),
-            {"sid": session_id},
-        )
-        await db.commit()
-        return {
-            "userMessage": {
-                "messageId": user_msg_id,
-                "role": "user",
-                "messageType": "CANDIDATE_ANSWER",
-                "turnId": current_turn_id,
-                "sequence": user_seq,
-                "content": cleaned_content,
-                "createdAt": datetime.now(UTC).isoformat(),
-            },
-            "assistantResponse": {
-                "messageId": asst_msg_id,
-                "role": "assistant",
-                "messageType": "WRAP_UP",
-                "turnId": None,
-                "sequence": asst_seq,
-                "content": wrap_text,
-                "createdAt": datetime.now(UTC).isoformat(),
-            },
-            "turnStatus": {
-                "turnId": current_turn_id,
-                "turnIndex": current_turn_index,
-                "isFollowUp": False,
-                "completed": True,
-            },
-            "sessionStatus": "CLOSED",
-            "endReason": "USER_ENDED",
-        }
 
     # Count how many probes already occurred in this turn
     probes_count = await db.scalar(
@@ -604,36 +543,55 @@ async def process_candidate_message(
     )
     has_probed = bool(probes_count and probes_count >= 1)
 
-    q_snap = current_turn.get("question_snapshot") or {}
-    q_text = q_snap.get("questionText") or q_snap.get("question_text") or ""
+    # Call Modality-Agnostic Core Engine
+    engine = core_engine or InterviewCoreEngine(ai_generator=generate_text)
+    session_state = build_session_state_from_db(session_row, turns, current_turn, has_probed)
 
-    decision, reply_text = await _decide_next_step(
-        is_vi=is_vi,
-        job_title=job_title,
-        question_text=q_text,
-        candidate_answer=cleaned_content,
-        has_probed=has_probed,
+    turn_input = CandidateTurnInput(
+        session_id=session_id,
+        turn_index=current_turn_index,
+        text_content=cleaned_content,
+        modality="CHAT",
+        duration_seconds=0.0,
+        telemetry=telemetry or {},
+    )
+
+    core_output = await engine.handle_turn(turn_input, session_state)
+
+    # Persist updated consecutive_fails and allow_early_exit in session metadata
+    meta = dict(session_row.get("metadata") or {})
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
+    meta["consecutive_fails"] = core_output.metadata.get("consecutive_fails", 0)
+    meta["allow_early_exit"] = session_state.get("allow_early_exit", True)
+    session_row["metadata"] = meta
+    await db.execute(
+        text("UPDATE interview_sessions SET metadata = CAST(:meta AS jsonb), updated_at = now() WHERE id = :sid"),
+        {"meta": json.dumps(meta), "sid": session_id},
     )
 
     # =========================================================================
     # PHASE 3: Commit Assistant Response & Advance Turn
     # =========================================================================
-    if decision in {"PROBE", "CLARIFY"}:
+    # KÍCH HOẠT DUAL-TRIGGER CONFIRM_ABORT MODAL
+    if core_output.action == TurnAction.CONFIRM_ABORT:
         await db.execute(
             text(
                 """
                 INSERT INTO interview_chat_messages
                 (id, session_id, role, content, metadata, turn_id, message_type, sequence, created_at)
                 VALUES
-                (:id, :sid, 'assistant', :content, '{}'::jsonb, :turn_id, :msg_type, :seq, now())
+                (:id, :sid, 'assistant', :content, '{"action": "CONFIRM_ABORT"}'::jsonb, :turn_id, 'CONFIRM_ABORT', :seq, now())
                 """
             ),
             {
                 "id": asst_msg_id,
                 "sid": session_id,
-                "content": reply_text,
+                "content": core_output.message_text,
                 "turn_id": current_turn_id,
-                "msg_type": decision,
                 "seq": asst_seq,
             },
         )
@@ -651,10 +609,59 @@ async def process_candidate_message(
             "assistantResponse": {
                 "messageId": asst_msg_id,
                 "role": "assistant",
-                "messageType": decision,
+                "messageType": "CONFIRM_ABORT",
                 "turnId": current_turn_id,
                 "sequence": asst_seq,
-                "content": reply_text,
+                "content": core_output.message_text,
+                "createdAt": datetime.now(UTC).isoformat(),
+            },
+            "action": "CONFIRM_ABORT",
+            "turnStatus": {
+                "turnId": current_turn_id,
+                "turnIndex": current_turn_index,
+                "isFollowUp": False,
+                "completed": False,
+            },
+            "sessionStatus": "OPEN",
+        }
+
+    if core_output.action == TurnAction.PROBE:
+        await db.execute(
+            text(
+                """
+                INSERT INTO interview_chat_messages
+                (id, session_id, role, content, metadata, turn_id, message_type, sequence, created_at)
+                VALUES
+                (:id, :sid, 'assistant', :content, '{}'::jsonb, :turn_id, :msg_type, :seq, now())
+                """
+            ),
+            {
+                "id": asst_msg_id,
+                "sid": session_id,
+                "content": core_output.message_text,
+                "turn_id": current_turn_id,
+                "msg_type": "PROBE",
+                "seq": asst_seq,
+            },
+        )
+        await db.commit()
+        return {
+            "userMessage": {
+                "messageId": user_msg_id,
+                "role": "user",
+                "messageType": "CANDIDATE_ANSWER",
+                "turnId": current_turn_id,
+                "sequence": user_seq,
+                "content": cleaned_content,
+                "createdAt": datetime.now(UTC).isoformat(),
+            },
+            "assistantResponse": {
+                "messageId": asst_msg_id,
+                "role": "assistant",
+                "messageType": "PROBE",
+                "turnId": current_turn_id,
+                "sequence": asst_seq,
+                "content": core_output.message_text,
                 "createdAt": datetime.now(UTC).isoformat(),
             },
             "turnStatus": {
@@ -680,7 +687,7 @@ async def process_candidate_message(
     )
 
     next_turn = next((t for t in turns if t["turn_index"] == current_turn_index + 1), None)
-    if next_turn:
+    if next_turn and not core_output.is_session_finished:
         # Start next turn
         await db.execute(
             text(
@@ -700,16 +707,18 @@ async def process_candidate_message(
         )
 
         # Bridge Transition: natural acknowledgment + next main question
-        if is_vi:
-            next_content = (
-                f"Cảm ơn chia sẻ thực tế của bạn. Chúng ta hãy cùng tiếp nối sang chủ đề tiếp theo:\n\n"
-                f"{next_q_text}"
-            )
-        else:
-            next_content = (
-                f"Thank you for your insights. Let's move on to our next topic:\n\n"
-                f"{next_q_text}"
-            )
+        next_content = core_output.message_text
+        if not next_content or next_q_text not in next_content:
+            if is_vi:
+                next_content = (
+                    f"Cảm ơn chia sẻ thực tế của bạn. Chúng ta hãy cùng tiếp nối sang chủ đề tiếp theo:\n\n"
+                    f"{next_q_text}"
+                )
+            else:
+                next_content = (
+                    f"Thank you for your insights. Let's move on to our next topic:\n\n"
+                    f"{next_q_text}"
+                )
 
         q_meta = {
             "questionVersionId": str(next_turn["question_version_id"])
@@ -764,19 +773,30 @@ async def process_candidate_message(
             "sessionStatus": "OPEN",
         }
 
-    # All turns finished -> WRAP_UP with end_reason = 'COMPLETED'
-    if is_vi:
-        wrap_text = (
-            "Cảm ơn bạn đã tham gia buổi phỏng vấn hôm nay! Chúng ta đã hoàn thành tất cả các chủ đề "
-            "chuyên môn theo kế hoạch. Bạn có thể xem lại toàn bộ nội dung trò chuyện tại đây. "
-            "Chúc bạn luôn gặt hái nhiều thành công!"
-        )
-    else:
-        wrap_text = (
-            "Thank you for participating in today's interview! We have completed all the planned "
-            "topics. You can review the full conversation transcript here. "
-            "Wishing you great success!"
-        )
+    # All turns finished or terminated
+    end_reason: EndReason = "COMPLETED"
+    if core_output.exit_reason:
+        if core_output.exit_reason == SessionExitReason.CANDIDATE_ABORT:
+            end_reason = "USER_ENDED"
+        else:
+            end_reason = "COMPLETED"
+    elif not next_turn:
+        end_reason = "COMPLETED"
+
+    wrap_text = core_output.message_text if core_output.is_session_finished else ""
+    if not wrap_text:
+        if is_vi:
+            wrap_text = (
+                "Cảm ơn bạn đã tham gia buổi phỏng vấn hôm nay! Chúng ta đã hoàn thành tất cả các chủ đề "
+                "chuyên môn theo kế hoạch. Bạn có thể xem lại toàn bộ nội dung trò chuyện tại đây. "
+                "Chúc bạn luôn gặt hái nhiều thành công!"
+            )
+        else:
+            wrap_text = (
+                "Thank you for participating in today's interview! We have completed all the planned "
+                "topics. You can review the full conversation transcript here. "
+                "Wishing you great success!"
+            )
 
     await db.execute(
         text(
@@ -793,11 +813,11 @@ async def process_candidate_message(
         text(
             """
             UPDATE interview_sessions
-            SET status = 'CLOSED', end_reason = 'COMPLETED', ended_at = now(), updated_at = now()
+            SET status = 'CLOSED', end_reason = :reason, ended_at = now(), updated_at = now()
             WHERE id = :sid
             """
         ),
-        {"sid": session_id},
+        {"sid": session_id, "reason": end_reason},
     )
     await db.commit()
 
