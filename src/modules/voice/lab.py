@@ -1,5 +1,6 @@
 """Opt-in audio experiment. No question-bank or interview-runtime mutations."""
 
+from datetime import timedelta
 from time import perf_counter
 
 import httpx
@@ -20,6 +21,10 @@ ALLOWED_AUDIO_TYPES = {"audio/webm", "audio/wav", "audio/x-wav", "audio/mpeg", "
 
 class LabSessionRequest(BaseModel):
     sessionId: str = Field(min_length=1)
+
+
+class LiveKitTokenRequest(LabSessionRequest):
+    roomName: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
 
 
 class LabSpeechRequest(LabSessionRequest):
@@ -129,3 +134,48 @@ async def realtime_token(
         },
     )
     return result.json()
+
+
+@router.post("/livekit-token")
+async def livekit_token(
+    payload: LiveKitTokenRequest,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Issue a short-lived room token and explicitly dispatch the voice agent."""
+    await _ready(payload.sessionId, user, db)
+    settings = get_settings()
+    if not settings.livekit_url or not settings.livekit_api_key or not settings.livekit_api_secret:
+        raise HTTPException(status_code=503, detail="LiveKit is not configured")
+    try:
+        from livekit import api
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="LiveKit dependencies are not installed") from exc
+
+    token = (
+        api.AccessToken(settings.livekit_api_key, settings.livekit_api_secret)
+        .with_identity(f"candidate-{user['sub']}")
+        .with_name("Interview candidate")
+        .with_ttl(timedelta(minutes=10))
+        .with_grants(
+            api.VideoGrants(
+                room_join=True,
+                room=payload.roomName,
+                can_publish=True,
+                can_subscribe=True,
+                can_publish_data=True,
+            )
+        )
+        .with_room_config(
+            api.RoomConfiguration(
+                agents=[api.RoomAgentDispatch(agent_name=settings.livekit_agent_name)]
+            )
+        )
+        .to_jwt()
+    )
+    return {
+        "serverUrl": settings.livekit_url,
+        "participantToken": token,
+        "agentName": settings.livekit_agent_name,
+        "expiresInSeconds": 600,
+    }

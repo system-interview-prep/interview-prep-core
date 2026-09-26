@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     voice_lab_transcription_model: str = "gpt-4o-mini-transcribe"
     voice_lab_tts_model: str = "gpt-4o-mini-tts"
     voice_lab_voice: str = "marin"
+    livekit_url: str | None = None
+    livekit_api_key: str | None = None
+    livekit_api_secret: str | None = None
+    livekit_agent_name: str = "intervia-voice"
     llm_provider: str = "openai"
     # Pin the snapshot so an alias update cannot silently change eval behavior.
     llm_model: str = "gpt-5.4-mini-2026-03-17"
