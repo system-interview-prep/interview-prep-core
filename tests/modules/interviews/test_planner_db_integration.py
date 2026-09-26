@@ -164,7 +164,7 @@ async def test_planner_persists_grounded_competency_agenda(monkeypatch) -> None:
             plan = await build_interview_plan(created["sessionId"], user=user, db=db)
             assert plan["status"] == "READY"
             assert plan["policyVersion"] == "interview-planner-v1"
-            assert plan["questionBudget"] == 5
+            assert plan["questionBudget"] == 4
             assert plan["targetQuestionCount"] == 3
             assert plan["targets"][0]["conceptId"] == "skill.python"
             assert plan["targets"][0]["rationale"]["requirementIds"] == ["req-python"]
