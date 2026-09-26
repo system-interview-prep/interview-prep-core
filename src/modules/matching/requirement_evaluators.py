@@ -41,6 +41,20 @@ _PROGRAMMING_LANGUAGES: dict[str, tuple[str, ...]] = {
     "go": ("golang", "go language"),
     "rust": ("rust",),
 }
+_CONCEPT_ALIASES: dict[str, tuple[str, ...]] = {
+    "artificial intelligence": ("artificial intelligence", "ai"),
+    "machine learning": ("machine learning", "ml"),
+    "natural language processing": ("natural language processing", "nlp"),
+    "generative ai": ("generative ai", "genai"),
+    "large language models": ("large language model", "large language models", "llm"),
+    "kubernetes": ("kubernetes", "k8s"),
+    "c++": ("c++", "cpp"),
+    "c#": ("c#", "csharp"),
+    ".net": (".net", "dotnet", "asp.net", "aspnet"),
+    "react": ("react", "reactjs"),
+    "postgresql": ("postgresql", "postgres", "psql"),
+    "aws": ("aws", "amazon web services"),
+}
 _STRENGTH_RANK = {"mention": 1, "claimed": 2, "applied": 3, "demonstrated": 4}
 
 
@@ -556,9 +570,15 @@ def _evaluate_atomic_concept(
         if claim.concept.concept_id == concept.concept_id
         for ref in claim.evidence_refs
     ]
+    label_key = concept.label.casefold().strip()
+    match_phrases = [concept.label]
+    if label_key in _CONCEPT_ALIASES:
+        match_phrases.extend(_CONCEPT_ALIASES[label_key])
+    elif concept.concept_id in _CONCEPT_ALIASES:
+        match_phrases.extend(_CONCEPT_ALIASES[concept.concept_id])
     candidates = _dedupe_evidence(
         [evidence_by_id[ref] for ref in structured_refs if ref in evidence_by_id]
-        + _matching_evidence(resume, (concept.label,))
+        + _matching_evidence(resume, tuple(dict.fromkeys(match_phrases)))
     )
     ranked = sorted(
         candidates,
