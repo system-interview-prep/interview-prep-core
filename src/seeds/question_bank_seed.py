@@ -142,6 +142,34 @@ _CONCEPT_FIXTURES: list[dict[str, Any]] = [
                 "type": "technical",
                 "locale": "vi-VN",
             },
+            {
+                "stable_key": "ai-python-concurrency-race-condition",
+                "text": "Đoạn mã thu thập metrics thống kê dưới đây đang gặp lỗi Race Condition khi chạy đa luồng/bất đồng bộ khiến biến đếm counter bị sai lệch. Bạn hãy tìm nguyên nhân, sửa lại hàm increment() trên editor bên phải và bấm Chạy thử test cases nhé.",
+                "objective": "Phát hiện critical section chưa được bảo vệ; sử dụng asyncio.Lock() hoặc Semaphore; giải thích được cơ chế Event loop và nguy cơ deadlock nếu code bên trong Lock bắn exception.",
+                "difficulty": "intermediate",
+                "type": "coding",
+                "locale": "vi-VN",
+                "canonical_snapshot": {
+                    "language": "python",
+                    "starter_code": "import asyncio\n\nclass MetricsCollector:\n    def __init__(self):\n        self.counter = 0\n\n    async def increment(self):\n        # BUG: Race condition xảy ra ở đây khi chạy đồng thời\n        temp = self.counter\n        await asyncio.sleep(0.001)\n        self.counter = temp + 1\n",
+                    "test_cases_code": "async def run_tests():\n    collector = MetricsCollector()\n    await asyncio.gather(*[collector.increment() for _ in range(100)])\n    assert collector.counter == 100, f'Expected 100, but got {collector.counter}'\n    print('TEST PASSED: Concurrency handled correctly!')\n",
+                    "solution_code": "import asyncio\n\nclass MetricsCollector:\n    def __init__(self):\n        self.counter = 0\n        self._lock = asyncio.Lock()\n\n    async def increment(self):\n        async with self._lock:\n            temp = self.counter\n            await asyncio.sleep(0.001)\n            self.counter = temp + 1\n",
+                },
+            },
+            {
+                "stable_key": "ai-python-memory-leak-session",
+                "text": "Hàm gọi Model Inference dưới đây tạo HTTP client session mới cho mỗi request nhưng không đóng lại, gây rò rỉ connection pool khi tải cao. Hãy tối ưu lại bằng Connection Pooling hoặc Singleton Client.",
+                "objective": "Đánh giá khả năng quản lý tài nguyên HTTP/Async client và connection pooling trong FastAPI/Python.",
+                "difficulty": "intermediate",
+                "type": "coding",
+                "locale": "vi-VN",
+                "canonical_snapshot": {
+                    "language": "python",
+                    "starter_code": "import asyncio\n\nclass InferenceClient:\n    def __init__(self):\n        self.active_sessions = []\n\n    async def predict(self, prompt: str):\n        # BUG: Tạo session mới nhưng không cleanup\n        session = {'id': len(self.active_sessions) + 1, 'closed': False}\n        self.active_sessions.append(session)\n        return f'Result for {prompt}'\n",
+                    "test_cases_code": "async def run_tests():\n    client = InferenceClient()\n    for i in range(10):\n        await client.predict(f'prompt {i}')\n    unclosed = [s for s in client.active_sessions if not s['closed']]\n    assert len(unclosed) == 0, f'Leaked {len(unclosed)} unclosed sessions!'\n    print('TEST PASSED: No connection leak!')\n",
+                    "solution_code": "import asyncio\n\nclass InferenceClient:\n    def __init__(self):\n        self.active_sessions = []\n\n    async def predict(self, prompt: str):\n        session = {'id': len(self.active_sessions) + 1, 'closed': True}\n        self.active_sessions.append(session)\n        return f'Result for {prompt}'\n",
+                },
+            },
         ],
     },
     # ------------------------------------------------------------------ #
@@ -427,6 +455,7 @@ async def seed_question_bank(session_factory: Callable[[], AsyncSession]) -> dic
                     difficulty_band=q["difficulty"],
                     question_type=q["type"],
                     canonical_locale=q.get("locale", "en-US"),
+                    canonical_snapshot=q.get("canonical_snapshot"),
                 )
                 if created:
                     seeded += 1
@@ -448,6 +477,7 @@ async def _seed_one_question(
     difficulty_band: str,
     question_type: str,
     canonical_locale: str = "en-US",
+    canonical_snapshot: dict[str, Any] | None = None,
 ) -> bool:
     """Insert a single fully-eligible question. Returns True if newly created."""
 
@@ -490,14 +520,19 @@ async def _seed_one_question(
             ),
             {"version_id": str(version_id), "stable_key": stable_key},
         )
-        # Synchronize canonical_locale if fixture locale was updated
+        # Synchronize canonical_locale and canonical_snapshot if fixture was updated
         await db.execute(
             text(
                 "UPDATE interview_question_versions "
-                "SET canonical_locale = :canonical_locale "
-                "WHERE id = CAST(:version_id AS uuid) AND canonical_locale != :canonical_locale"
+                "SET canonical_locale = :canonical_locale, "
+                "    canonical_snapshot = CAST(:canonical_snapshot AS jsonb) "
+                "WHERE id = CAST(:version_id AS uuid)"
             ),
-            {"version_id": str(version_id), "canonical_locale": canonical_locale},
+            {
+                "version_id": str(version_id),
+                "canonical_locale": canonical_locale,
+                "canonical_snapshot": json.dumps(canonical_snapshot or {}),
+            },
         )
         return False
 
@@ -517,7 +552,7 @@ async def _seed_one_question(
             "CAST(:id AS uuid), CAST(:question_id AS uuid), :version, '1.0', :taxonomy_version, 'APPROVED', "
             ":question_type, :difficulty_band, :canonical_locale, :canonical_text, :objective, "
             "30, 120, 180, "
-            "CAST('{}' AS jsonb), CAST('{}' AS jsonb), CAST('{}' AS jsonb), "
+            "CAST('{}' AS jsonb), CAST('{}' AS jsonb), CAST(:canonical_snapshot AS jsonb), "
             ":created_by, :created_at, :created_at, :approved_at, 'Initial dev seed')"
         ),
         {
@@ -530,6 +565,7 @@ async def _seed_one_question(
             "canonical_locale": canonical_locale,
             "canonical_text": canonical_text,
             "objective": objective,
+            "canonical_snapshot": json.dumps(canonical_snapshot or {}),
             "created_by": _SEED_AUTHOR,
             "created_at": now,
             "approved_at": now,
