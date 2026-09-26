@@ -6,9 +6,9 @@ Tests are grouped into:
   3. Eligibility integration: full stack via seed → selector
 
 These tests cover all 8 scenarios listed in the task:
-  ✓ empty bank → 0 eligible → QuestionUnavailableError
+  ✓ empty bank → deterministic unreviewed fallback prompts
   ✓ seeded competency with enough questions → selection succeeds
-  ✓ fewer eligible than target → 409 / QuestionUnavailableError
+  ✓ partial bank coverage → curated questions plus fallback prompts
   ✓ unapproved question excluded
   ✓ uncalibrated (wrong status) excluded
   ✓ wrong taxonomy concept excluded
@@ -27,7 +27,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.modules.interviews.question_selector import (
-    QuestionUnavailableError,
     _allowed_purposes,
     _Candidate,
     _candidate_rank,
@@ -290,8 +289,8 @@ class TestSelectorEligibilityRules:
             for i in range(n)
         ]
 
-    async def test_empty_bank_raises_unavailable_error(self) -> None:
-        """0 eligible → QuestionUnavailableError (mirrors the production 409)."""
+    async def test_empty_bank_uses_deterministic_fallbacks(self) -> None:
+        """An empty bank still produces a usable, explicitly unreviewed interview."""
         from src.modules.interviews.question_selector import select_and_freeze_questions
 
         db = AsyncMock()
@@ -354,11 +353,10 @@ class TestSelectorEligibilityRules:
             "locale": "en-US",
         }
 
-        with pytest.raises(QuestionUnavailableError) as exc_info:
-            await select_and_freeze_questions(db=db, session_row=session_row)
+        result = await select_and_freeze_questions(db=db, session_row=session_row)
 
-        assert "skill-artificial-intelligence" in str(exc_info.value)
-        assert "requires 3" in str(exc_info.value)
+        assert result["status"] == "LOCKED"
+        assert result["fallbackQuestionCount"] == 3
 
     async def test_sufficient_candidates_do_not_raise(self) -> None:
         """3+ eligible questions → no error raised from the selector."""
@@ -507,8 +505,8 @@ class TestSelectorEligibilityRules:
         candidates = await _load_candidates(db, target=target, locale="en-US", difficulty="intermediate")
         assert len(candidates) == 0  # ja-JP != en-US, not even language match
 
-    async def test_fewer_than_needed_raises_unavailable(self) -> None:
-        """Only 2 candidates for a target requiring 3 → QuestionUnavailableError."""
+    async def test_fewer_candidates_are_filled_with_fallbacks(self) -> None:
+        """Available curated questions are retained and only the shortfall falls back."""
         from src.modules.interviews.question_selector import select_and_freeze_questions
 
         db = AsyncMock()
@@ -584,8 +582,7 @@ class TestSelectorEligibilityRules:
             "locale": "en-US",
         }
 
-        with pytest.raises(QuestionUnavailableError) as exc_info:
-            await select_and_freeze_questions(db=db, session_row=session_row)
+        result = await select_and_freeze_questions(db=db, session_row=session_row)
 
-        assert "requires 3" in str(exc_info.value)
-        assert "only 2 eligible" in str(exc_info.value)
+        assert result["status"] == "LOCKED"
+        assert result["fallbackQuestionCount"] == 1

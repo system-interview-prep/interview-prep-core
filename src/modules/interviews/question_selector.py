@@ -1,7 +1,9 @@
 """Deterministic P2 question selector for the structured interview runtime.
 
-P2 consumes a READY P1 plan and freezes immutable Question Bank versions into
-interview_turns. It never generates fallback questions.
+P2 consumes a READY P1 plan and freezes Question Bank versions into
+interview_turns. When the curated bank cannot cover a target, it freezes a
+deterministic competency prompt so the interview can still run; snapshots mark
+these prompts as uncalibrated fallbacks for downstream evaluation.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-SELECTOR_POLICY_VERSION = "interview-question-selector-v1"
+SELECTOR_POLICY_VERSION = "interview-question-selector-v2"
 _ELIGIBLE_STATUSES = {"APPROVED", "CALIBRATED"}
 _DIFFICULTY_ORDER = {
     "foundational": 0,
@@ -306,6 +308,65 @@ def _snapshot(
     }
 
 
+def _fallback_snapshot(
+    target: dict[str, Any],
+    *,
+    locale: str,
+    target_question_index: int,
+) -> dict[str, Any]:
+    """Build a stable, competency-specific prompt when the bank has no match.
+
+    This is a continuity path, not a substitute for reviewed question-bank
+    content. The explicit source marker lets the evaluator and UI distinguish
+    these prompts from calibrated questions.
+    """
+    label = str(target.get("label") or target.get("conceptId") or "the target competency").strip()
+    is_vi = (locale or "vi").lower().startswith("vi")
+    prompts_vi = (
+        f"Hãy kể về một tình huống thực tế bạn đã vận dụng {label}. Bối cảnh là gì, "
+        "bạn trực tiếp chịu trách nhiệm phần nào và kết quả ra sao?",
+        f"Khi xử lý một vấn đề liên quan đến {label}, bạn thường phân tích và chọn hướng giải quyết như thế nào? "
+        "Hãy nêu một ví dụ cụ thể và giải thích các bước của bạn.",
+        f"Hãy mô tả một quyết định khó liên quan đến {label}. Bạn đã cân nhắc những phương án và đánh đổi nào, "
+        "và nhìn lại bạn sẽ làm gì khác?",
+    )
+    prompts_en = (
+        f"Tell me about a real situation where you applied {label}. What was the context, "
+        "what were you personally responsible for, and what was the outcome?",
+        f"How do you analyze and solve a problem involving {label}? Give a specific example and walk me through your steps.",
+        f"Describe a difficult decision involving {label}. What options and trade-offs did you consider, "
+        "and what would you do differently in retrospect?",
+    )
+    prompt_index = min(max(target_question_index, 0), 2)
+    return {
+        "schemaVersion": "1.0",
+        "selectorPolicyVersion": SELECTOR_POLICY_VERSION,
+        "questionVersionId": None,
+        "stableKey": f"fallback-{target['taxonomyVersion']}-{target['conceptId']}-{prompt_index + 1}",
+        "version": "1.0.0",
+        "questionType": "COMPETENCY_FALLBACK",
+        "stage": "DEEP_DIVE",
+        "difficulty": "intermediate",
+        "locale": locale,
+        "canonicalLocale": locale,
+        "questionText": (prompts_vi if is_vi else prompts_en)[prompt_index],
+        "objective": f"Elicit concrete evidence of the candidate's {label} competency.",
+        "softAnswerSeconds": 180,
+        "hardAnswerSeconds": 300,
+        "taxonomyTarget": {
+            "taxonomyVersion": target["taxonomyVersion"],
+            "conceptId": target["conceptId"],
+            "label": label,
+            "mappingPurpose": "DETERMINISTIC_FALLBACK",
+            "relevance": 1.0,
+        },
+        "selectionRank": None,
+        "expectedPoints": [],
+        "rubric": None,
+        "questionSource": "deterministic_fallback_unreviewed",
+    }
+
+
 async def select_and_freeze_questions(
     *,
     db: AsyncSession,
@@ -333,11 +394,16 @@ async def select_and_freeze_questions(
         raise ValueError("Interview plan not found")
     if plan["status"] == "LOCKED":
         turns = await read_frozen_turns(db=db, session_id=session_row["id"])
+        fallback_count = sum(
+            turn["question"].get("questionSource") == "deterministic_fallback_unreviewed"
+            for turn in turns
+        )
         return {
             "sessionId": session_row["id"],
             "planId": plan_id,
             "status": "LOCKED",
             "selectorPolicyVersion": SELECTOR_POLICY_VERSION,
+            "fallbackQuestionCount": fallback_count,
             "turns": turns,
         }
     if plan["status"] != "READY":
@@ -375,7 +441,7 @@ async def select_and_freeze_questions(
     difficulty = (payload.get("difficulty") or {}).get("level", "unspecified")
     locale = session_row["locale"]
     used_versions: set[str] = set()
-    frozen: list[tuple[_Candidate, dict[str, Any], int]] = []
+    frozen: list[tuple[_Candidate | None, dict[str, Any], int, dict[str, Any] | None]] = []
 
     for target in targets:
         candidates = await _load_candidates(
@@ -387,15 +453,17 @@ async def select_and_freeze_questions(
         )
         available = [item for item in candidates if item.question_version_id not in used_versions]
         needed = target["targetQuestionCount"]
-        if len(available) < needed:
-            raise QuestionUnavailableError(
-                "question_unavailable: "
-                f"{target['taxonomyVersion']}:{target['conceptId']} requires {needed} "
-                f"question(s), but only {len(available)} eligible approved/calibrated version(s) exist"
-            )
-        for candidate in available[:needed]:
-            frozen.append((candidate, target, len(frozen)))
+        selected = available[:needed]
+        for candidate in selected:
+            frozen.append((candidate, target, len(frozen), None))
             used_versions.add(candidate.question_version_id)
+        for fallback_index in range(needed - len(selected)):
+            fallback = _fallback_snapshot(
+                target,
+                locale=locale,
+                target_question_index=fallback_index,
+            )
+            frozen.append((None, target, len(frozen), fallback))
 
     # Do not partially write turns before every target is satisfiable.
     await db.execute(
@@ -591,7 +659,7 @@ async def select_and_freeze_questions(
     )
 
     # Deep-dive and challenge technical questions from Question Bank start at turn_index = 2
-    for idx, (candidate, target, _orig_rank) in enumerate(frozen):
+    for idx, (candidate, target, _orig_rank, fallback) in enumerate(frozen):
         turn_index = idx + 2
         target_rationale = target.get("rationale") or {}
         match_statuses = target_rationale.get("matchStatuses") or []
@@ -599,13 +667,18 @@ async def select_and_freeze_questions(
         # Nếu competency là thế mạnh đã có trong CV (met) -> gắn nhãn DEEP_DIVE
         is_gap = any(s in ("not_met", "unknown") for s in match_statuses)
         stage = "CHALLENGE" if is_gap and idx >= 1 else "DEEP_DIVE"
-        snapshot = _snapshot(
-            candidate,
-            target=target,
-            locale=locale,
-            selection_rank=turn_index,
-            stage=stage,
-        )
+        if candidate is None:
+            snapshot = dict(fallback or {})
+            snapshot["selectionRank"] = turn_index
+            snapshot["stage"] = stage
+        else:
+            snapshot = _snapshot(
+                candidate,
+                target=target,
+                locale=locale,
+                selection_rank=turn_index,
+                stage=stage,
+            )
         await db.execute(
             text(
                 """
@@ -623,8 +696,8 @@ async def select_and_freeze_questions(
                 "id": str(uuid4()),
                 "session_id": session_row["id"],
                 "turn_index": turn_index,
-                "question_version_id": candidate.question_version_id,
-                "rubric_version_id": candidate.rubric_version_id,
+                "question_version_id": candidate.question_version_id if candidate else None,
+                "rubric_version_id": candidate.rubric_version_id if candidate else None,
                 "snapshot": json.dumps(snapshot),
             },
         )
@@ -635,11 +708,13 @@ async def select_and_freeze_questions(
     ] + [
         {
             "turnIndex": idx + 2,
-            "questionVersionId": candidate.question_version_id,
-            "rubricVersionId": candidate.rubric_version_id,
+            "questionVersionId": candidate.question_version_id if candidate else None,
+            "rubricVersionId": candidate.rubric_version_id if candidate else None,
+            "questionSource": "question_bank" if candidate else "deterministic_fallback_unreviewed",
+            "fallbackKey": fallback["stableKey"] if fallback else None,
             "target": f"{target['taxonomyVersion']}:{target['conceptId']}",
         }
-        for idx, (candidate, target, _) in enumerate(frozen)
+        for idx, (candidate, target, _, fallback) in enumerate(frozen)
     ]
     fingerprint = hashlib.sha256(
         json.dumps(selection_contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -662,6 +737,7 @@ async def select_and_freeze_questions(
                         "policyVersion": SELECTOR_POLICY_VERSION,
                         "fingerprint": fingerprint,
                         "turnCount": len(frozen) + 2,
+                        "fallbackQuestionCount": sum(candidate is None for candidate, _, _, _ in frozen),
                     }
                 }
             ),
@@ -673,6 +749,7 @@ async def select_and_freeze_questions(
         "planId": plan_id,
         "status": "LOCKED",
         "selectorPolicyVersion": SELECTOR_POLICY_VERSION,
+        "fallbackQuestionCount": sum(candidate is None for candidate, _, _, _ in frozen),
         "fingerprint": fingerprint,
         "turns": await read_frozen_turns(db=db, session_id=session_row["id"]),
     }
