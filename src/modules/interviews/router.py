@@ -5,7 +5,7 @@ available during migration, but new product flows should create sessions here.
 """
 
 import json
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -21,6 +21,11 @@ from src.modules.interviews.chat_runtime import (
     get_chat_runtime,
     process_candidate_message,
     start_chat_session,
+)
+from src.modules.interviews.evaluation.evaluation_service import (
+    EvaluationServiceError,
+    evaluate_closed_session,
+    get_session_evaluation,
 )
 from src.modules.interviews.planner import build_and_persist_session_plan, read_session_plan
 from src.modules.interviews.question_selector import (
@@ -52,6 +57,7 @@ EndReason = Literal["COMPLETED", "USER_ENDED", "TECHNICAL_FAILURE"]
 class SendChatMessage(BaseModel):
     client_message_id: str | None = Field(default=None, alias="clientMessageId")
     content: str = Field(min_length=1, max_length=10000)
+    telemetry: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"populate_by_name": True}
 
@@ -73,7 +79,7 @@ class CreateInterviewSession(BaseModel):
     job_id: str = Field(alias="jobId", min_length=1)
     mode: InterviewMode = "text"
     experience_type: ExperienceType = Field(default="interview_chat", alias="experienceType")
-    locale: str = Field(default="en-US", min_length=2, max_length=35)
+    locale: str = Field(default="vi-VN", min_length=2, max_length=35)
     duration_minutes: int = Field(default=25, alias="durationMinutes", ge=5, le=120)
 
     model_config = {"populate_by_name": True}
@@ -106,7 +112,7 @@ def _session_payload(row: dict) -> dict:
 
 _SESSION_SELECT = """
     SELECT s.id, s.resume_id, s.job_id, s.mode, s.locale, s.duration_minutes,
-           s.status, s.started_at, s.ended_at, s.experience_type, s.end_reason,
+           s.status, s.started_at, s.ended_at, s.experience_type, s.end_reason, s.metadata,
            p.id AS plan_id, p.schema_version AS plan_schema_version,
            p.status AS plan_status
     FROM interview_sessions s
@@ -435,6 +441,7 @@ async def send_chat(
             session_row=session,
             client_message_id=payload.client_message_id,
             content=payload.content,
+            telemetry=payload.telemetry,
         )
     except ValueError as exc:
         await db.rollback()
@@ -461,4 +468,45 @@ async def complete_chat(
     except ChatRuntimeError as exc:
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/evaluate")
+async def evaluate_session_endpoint(
+    session_id: str,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await _owned_session(db, user["sub"], session_id)
+    try:
+        await evaluate_closed_session(db=db, session_id=session["id"])
+        eval_data = await get_session_evaluation(db=db, session_id=session["id"])
+        if not eval_data:
+            raise HTTPException(status_code=500, detail="Không thể tạo báo cáo đánh giá.")
+        return eval_data
+    except EvaluationServiceError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/sessions/{session_id}/evaluation")
+async def get_session_evaluation_endpoint(
+    session_id: str,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await _owned_session(db, user["sub"], session_id)
+    eval_data = await get_session_evaluation(db=db, session_id=session["id"])
+    if not eval_data:
+        raise HTTPException(status_code=404, detail="Phiên phỏng vấn chưa có kết quả đánh giá.")
+    return eval_data
+
+
+@router.get("/sessions/{session_id}/report")
+async def get_session_report_endpoint(
+    session_id: str,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return await get_session_evaluation_endpoint(session_id=session_id, user=user, db=db)
+
 
