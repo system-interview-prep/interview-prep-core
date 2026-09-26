@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
@@ -45,6 +45,7 @@ class _Candidate:
     relevance: float
     expected_points: list[dict[str, Any]]
     rubric: dict[str, Any]
+    canonical_snapshot: dict[str, Any] = field(default_factory=dict)
 
 
 def _allowed_purposes(target: dict[str, Any]) -> tuple[str, ...]:
@@ -72,21 +73,38 @@ def _locale_rank(candidate: str, requested: str) -> int:
         return 0
     if candidate.split("-", 1)[0].lower() == requested.split("-", 1)[0].lower():
         return 1
+    if requested.lower().startswith("vi") and candidate.lower().startswith("en"):
+        return 10
+    if requested.lower().startswith("en") and candidate.lower().startswith("vi"):
+        return 10
     return 99
 
 
-def _candidate_rank(candidate: _Candidate, *, difficulty: str, locale: str) -> tuple[Any, ...]:
+def _candidate_rank(
+    candidate: _Candidate,
+    *,
+    difficulty: str,
+    locale: str,
+    salt: str = "",
+) -> tuple[Any, ...]:
     purpose_rank = {
         "PRIMARY_COMPETENCY": 0,
         "TARGET_SKILL": 1,
         "TARGET_ROLE": 2,
     }.get(candidate.mapping_purpose, 9)
+    # Session-salted tiebreaker creates diversity across candidates/sessions
+    # while guaranteeing strict reproducibility for the same session.
+    tiebreaker = (
+        hashlib.md5(f"{salt}:{candidate.question_version_id}".encode("utf-8")).hexdigest()
+        if salt
+        else candidate.stable_key
+    )
     return (
         _locale_rank(candidate.canonical_locale, locale),
         _difficulty_distance(candidate.difficulty_band, difficulty),
         purpose_rank,
         -candidate.relevance,
-        candidate.stable_key,
+        tiebreaker,
         candidate.version,
         candidate.question_version_id,
     )
@@ -98,6 +116,7 @@ async def _load_candidates(
     target: dict[str, Any],
     locale: str,
     difficulty: str,
+    salt: str = "",
 ) -> list[_Candidate]:
     purposes = _allowed_purposes(target)
     result = await db.execute(
@@ -107,6 +126,7 @@ async def _load_candidates(
                    qv.status, qv.question_type, qv.difficulty_band,
                    qv.canonical_locale, qv.canonical_text, qv.objective,
                    qv.soft_answer_seconds, qv.hard_answer_seconds,
+                   qv.canonical_snapshot,
                    map.purpose AS mapping_purpose, map.relevance,
                    qvr.rubric_version_id
             FROM interview_questions q
@@ -118,9 +138,14 @@ async def _load_candidates(
               ON qvr.question_version_id = qv.id
             WHERE q.retired_at IS NULL
               AND qv.status IN ('APPROVED', 'CALIBRATED')
-              AND qv.taxonomy_version = :taxonomy_version
-              AND map.taxonomy_version = :taxonomy_version
               AND map.concept_id = :concept_id
+              AND (
+                  map.taxonomy_version = :taxonomy_version
+                  OR (
+                      :taxonomy_version IN ('internal-2026.1', 'internal-career-2026.1')
+                      AND map.taxonomy_version IN ('internal-2026.1', 'internal-career-2026.1')
+                  )
+              )
               AND map.purpose = ANY(:purposes)
             """
         ),
@@ -220,6 +245,7 @@ async def _load_candidates(
                 mapping_purpose=row["mapping_purpose"],
                 relevance=float(row["relevance"]),
                 expected_points=expected_points,
+                canonical_snapshot=dict(row.get("canonical_snapshot") or {}),
                 rubric={
                     "rubricVersionId": str(rubric_row["id"]),
                     "version": rubric_row["version"],
@@ -234,7 +260,7 @@ async def _load_candidates(
         )
     return sorted(
         candidates,
-        key=lambda item: _candidate_rank(item, difficulty=difficulty, locale=locale),
+        key=lambda item: _candidate_rank(item, difficulty=difficulty, locale=locale, salt=salt),
     )
 
 
@@ -244,7 +270,9 @@ def _snapshot(
     target: dict[str, Any],
     locale: str,
     selection_rank: int,
+    stage: str = "DEEP_DIVE",
 ) -> dict[str, Any]:
+    c_snap = candidate.canonical_snapshot or {}
     return {
         "schemaVersion": "1.0",
         "selectorPolicyVersion": SELECTOR_POLICY_VERSION,
@@ -252,6 +280,7 @@ def _snapshot(
         "stableKey": candidate.stable_key,
         "version": candidate.version,
         "questionType": candidate.question_type,
+        "stage": stage,
         "difficulty": candidate.difficulty_band,
         "locale": locale,
         "canonicalLocale": candidate.canonical_locale,
@@ -269,6 +298,11 @@ def _snapshot(
         "selectionRank": selection_rank,
         "expectedPoints": candidate.expected_points,
         "rubric": candidate.rubric,
+        "canonicalSnapshot": c_snap,
+        "starterCode": c_snap.get("starter_code"),
+        "testCasesCode": c_snap.get("test_cases_code"),
+        "solutionCode": c_snap.get("solution_code"),
+        "language": c_snap.get("language", "python"),
     }
 
 
@@ -349,6 +383,7 @@ async def select_and_freeze_questions(
             target=target,
             locale=locale,
             difficulty=difficulty,
+            salt=str(session_row.get("id") or ""),
         )
         available = [item for item in candidates if item.question_version_id not in used_versions]
         needed = target["targetQuestionCount"]
@@ -367,12 +402,209 @@ async def select_and_freeze_questions(
         text("DELETE FROM interview_turns WHERE session_id = :session_id"),
         {"session_id": session_row["id"]},
     )
-    for candidate, target, turn_index in frozen:
+
+    is_vi = (locale or "vi").lower().startswith("vi")
+    job_title = "ứng viên"
+    if session_row.get("job_id"):
+        title_res = await db.scalar(
+            text("SELECT title FROM job_descriptions WHERE id = :job_id"),
+            {"job_id": session_row["job_id"]},
+        )
+        if title_res:
+            job_title = str(title_res)
+
+    project_name = None
+    key_technologies: list[str] = []
+    if session_row.get("resume_id"):
+        cv_res = await db.scalar(
+            text("SELECT parsed_data FROM user_cvs WHERE id = :cv_id"),
+            {"cv_id": session_row["resume_id"]},
+        )
+        if isinstance(cv_res, str):
+            try:
+                cv_res = json.loads(cv_res)
+            except Exception:
+                cv_res = {}
+        if cv_res and isinstance(cv_res, dict):
+            # 1. Trích xuất dự án tiêu biểu từ mục projects
+            projects = cv_res.get("projects") or []
+            if projects and isinstance(projects, list):
+                for p in projects:
+                    if isinstance(p, dict) and p.get("name"):
+                        project_name = str(p["name"]).strip()
+                        break
+            # 2. Nếu không có mục projects riêng, trích xuất từ kinh nghiệm làm việc (employment)
+            if not project_name:
+                employment = cv_res.get("employment") or []
+                if employment and isinstance(employment, list):
+                    for emp in employment:
+                        if isinstance(emp, dict):
+                            role = emp.get("job_title")
+                            org = emp.get("organization")
+                            if role and org:
+                                project_name = f"{role} tại {org}"
+                                break
+                            elif role:
+                                project_name = role
+                                break
+            # 3. Trích xuất kỹ năng / công nghệ cốt lõi
+            skills = cv_res.get("skills") or []
+            if skills and isinstance(skills, list):
+                for s in skills:
+                    if isinstance(s, dict):
+                        label = (
+                            s.get("raw_label")
+                            or (s.get("concept") or {}).get("label")
+                            or (s.get("concept") or {}).get("concept_id")
+                        )
+                        if label and str(label).strip() not in key_technologies:
+                            key_technologies.append(str(label).strip())
+                    elif isinstance(s, str) and s.strip() not in key_technologies:
+                        key_technologies.append(s.strip())
+
+    warmup_text = (
+        f"Chào bạn, chào mừng bạn đến với buổi phỏng vấn vị trí {job_title} tại INTERVIA. "
+        f"Để bắt đầu và giúp bạn thoải mái hơn, bạn hãy giới thiệu đôi nét về bản thân và kinh nghiệm làm việc gần đây của mình nhé?"
+        if is_vi
+        else f"Hello and welcome to the interview for the {job_title} position at INTERVIA. "
+             f"To help you get comfortable, please give a brief introduction of yourself and your recent experience."
+    )
+
+    if project_name:
+        validate_text = (
+            f"Cảm ơn phần giới thiệu của bạn. Trong CV mình rất ấn tượng với dự án '{project_name}'. "
+            f"Bạn có thể chia sẻ cụ thể hơn về vai trò của bạn trong dự án này, "
+            f"và bài toán kỹ thuật phức tạp nhất mà bạn đã trực tiếp giải quyết là gì không?"
+            if is_vi
+            else f"Thank you for your introduction. Looking at your CV, I was very interested in the '{project_name}' project. "
+                 f"Could you share more specifically about your role in this project, "
+                 f"and what was the most complex technical problem you directly solved?"
+        )
+    elif key_technologies:
+        tech_str = ", ".join(key_technologies[:3])
+        validate_text = (
+            f"Cảm ơn bạn. Nhìn vào CV, mình thấy bạn có thế mạnh về {tech_str}. "
+            f"Bạn có thể chia sẻ về một bài toán kỹ thuật thực tế gần đây nhất mà bạn áp dụng các công nghệ này không?"
+            if is_vi
+            else f"Thank you. Looking at your CV, I see you have strong background in {tech_str}. "
+                 f"Could you share a recent practical technical problem where you applied these technologies?"
+        )
+    else:
+        validate_text = (
+            "Cảm ơn phần giới thiệu của bạn. Nhìn vào hồ sơ CV của bạn, bạn có thể chia sẻ sâu hơn về một dự án "
+            "kỹ thuật nổi bật nhất mà bạn từng tham gia: vai trò cụ thể của bạn và bài toán khó nhất bạn đã trực tiếp giải quyết là gì không?"
+            if is_vi
+            else "Thank you for your introduction. Looking at your CV, could you share more details about your most "
+                 "prominent technical project: your specific role and the hardest problem you directly solved?"
+        )
+
+    warmup_snapshot = {
+        "schemaVersion": "1.0",
+        "selectorPolicyVersion": SELECTOR_POLICY_VERSION,
+        "questionVersionId": None,
+        "stableKey": "warmup-intro",
+        "version": "1.0.0",
+        "questionType": "WARM_UP",
+        "stage": "WARM_UP",
+        "difficulty": "foundational",
+        "locale": locale,
+        "canonicalLocale": locale,
+        "questionText": warmup_text,
+        "objective": "Chào hỏi, tạo không khí thoải mái và giới thiệu bản thân.",
+        "softAnswerSeconds": 120,
+        "hardAnswerSeconds": 180,
+        "taxonomyTarget": {
+            "taxonomyVersion": "internal-2026.1",
+            "conceptId": "warmup",
+            "label": "Giới thiệu & Khởi động",
+            "mappingPurpose": "WARM_UP",
+            "relevance": 1.0,
+        },
+        "selectionRank": 0,
+        "expectedPoints": [],
+        "rubric": None,
+    }
+
+    validate_snapshot = {
+        "schemaVersion": "1.0",
+        "selectorPolicyVersion": SELECTOR_POLICY_VERSION,
+        "questionVersionId": None,
+        "stableKey": "cv-validation",
+        "version": "1.0.0",
+        "questionType": "VALIDATE_CV",
+        "stage": "VALIDATE",
+        "difficulty": "intermediate",
+        "locale": locale,
+        "canonicalLocale": locale,
+        "questionText": validate_text,
+        "objective": "Xác thực kinh nghiệm thực tế và dự án kỹ thuật tiêu biểu trong CV.",
+        "softAnswerSeconds": 180,
+        "hardAnswerSeconds": 240,
+        "taxonomyTarget": {
+            "taxonomyVersion": "internal-2026.1",
+            "conceptId": "cv-validation",
+            "label": "Xác thực CV & Dự án",
+            "mappingPurpose": "VALIDATE",
+            "relevance": 1.0,
+        },
+        "selectionRank": 1,
+        "expectedPoints": [],
+        "rubric": None,
+    }
+
+    # Insert Turn 0 (WARM_UP)
+    await db.execute(
+        text(
+            """
+            INSERT INTO interview_turns
+                (id, session_id, turn_index, status, question_version_id,
+                 rubric_version_id, question_snapshot)
+            VALUES
+                (:id, :session_id, 0, 'PLANNED',
+                 NULL, NULL, CAST(:snapshot AS jsonb))
+            """
+        ),
+        {
+            "id": str(uuid4()),
+            "session_id": session_row["id"],
+            "snapshot": json.dumps(warmup_snapshot),
+        },
+    )
+
+    # Insert Turn 1 (VALIDATE)
+    await db.execute(
+        text(
+            """
+            INSERT INTO interview_turns
+                (id, session_id, turn_index, status, question_version_id,
+                 rubric_version_id, question_snapshot)
+            VALUES
+                (:id, :session_id, 1, 'PLANNED',
+                 NULL, NULL, CAST(:snapshot AS jsonb))
+            """
+        ),
+        {
+            "id": str(uuid4()),
+            "session_id": session_row["id"],
+            "snapshot": json.dumps(validate_snapshot),
+        },
+    )
+
+    # Deep-dive and challenge technical questions from Question Bank start at turn_index = 2
+    for idx, (candidate, target, _orig_rank) in enumerate(frozen):
+        turn_index = idx + 2
+        target_rationale = target.get("rationale") or {}
+        match_statuses = target_rationale.get("matchStatuses") or []
+        # Nếu competency là gap kỹ năng (chưa có trong CV hoặc unknown) -> gắn nhãn CHALLENGE
+        # Nếu competency là thế mạnh đã có trong CV (met) -> gắn nhãn DEEP_DIVE
+        is_gap = any(s in ("not_met", "unknown") for s in match_statuses)
+        stage = "CHALLENGE" if is_gap and idx >= 1 else "DEEP_DIVE"
         snapshot = _snapshot(
             candidate,
             target=target,
             locale=locale,
             selection_rank=turn_index,
+            stage=stage,
         )
         await db.execute(
             text(
@@ -398,13 +630,16 @@ async def select_and_freeze_questions(
         )
 
     selection_contract = [
+        {"turnIndex": 0, "stage": "WARM_UP"},
+        {"turnIndex": 1, "stage": "VALIDATE"},
+    ] + [
         {
-            "turnIndex": turn_index,
+            "turnIndex": idx + 2,
             "questionVersionId": candidate.question_version_id,
             "rubricVersionId": candidate.rubric_version_id,
             "target": f"{target['taxonomyVersion']}:{target['conceptId']}",
         }
-        for candidate, target, turn_index in frozen
+        for idx, (candidate, target, _) in enumerate(frozen)
     ]
     fingerprint = hashlib.sha256(
         json.dumps(selection_contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -426,7 +661,7 @@ async def select_and_freeze_questions(
                     "questionSelection": {
                         "policyVersion": SELECTOR_POLICY_VERSION,
                         "fingerprint": fingerprint,
-                        "turnCount": len(frozen),
+                        "turnCount": len(frozen) + 2,
                     }
                 }
             ),

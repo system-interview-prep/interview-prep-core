@@ -27,7 +27,7 @@ def test_create_interview_session_defaults_are_safe() -> None:
     )
 
     assert payload.mode == "text"
-    assert payload.locale == "en-US"
+    assert payload.locale == "vi-VN"
     assert payload.duration_minutes == 25
 
 

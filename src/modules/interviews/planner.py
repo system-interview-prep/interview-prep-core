@@ -80,9 +80,21 @@ class _CandidateTarget:
 
 
 def _question_budget(duration_minutes: int) -> int:
-    """Bound the P1 agenda without pretending each question has exact duration."""
-    estimated = round(duration_minutes / 4)
-    return max(3, min(8, estimated))
+    """Ma trận phân bổ câu hỏi kỹ thuật theo thời lượng (Question Allocation Matrix).
+
+    Tổng số câu phỏng vấn thực tế = technical budget + 2 câu mở đầu (Turn 0: Warm-up, Turn 1: Validate CV).
+    - Gói 15 phút (Flash Screen): 2 câu kỹ thuật -> Tổng 4 câu
+    - Gói 25 phút (Standard, 20-30m): 4 câu kỹ thuật -> Tổng 6 câu
+    - Gói 45 phút (Deep Dive, 35-50m): 6 câu kỹ thuật -> Tổng 8 câu
+    - Trên 50 phút: tối đa 8 câu kỹ thuật -> Tổng 10 câu
+    """
+    if duration_minutes <= 15:
+        return 2
+    elif duration_minutes <= 30:
+        return 4
+    elif duration_minutes <= 50:
+        return 6
+    return min(8, max(3, round((duration_minutes - 10) / 5)))
 
 
 def _requirement_concepts(requirement: Any) -> list[TaxonomyRef]:
@@ -259,6 +271,17 @@ def derive_competency_plan(
     evaluation_targets = build_evaluation_targets(job=job, match=match)
     validate_must_have_coverage(job=job, evaluation_targets=evaluation_targets)
 
+    strengths_to_verify = [
+        t["label"] or t["conceptId"]
+        for t in targets
+        if "met" in (t.get("rationale", {}).get("matchStatuses") or [])
+    ]
+    gap_competencies = [
+        t["label"] or t["conceptId"]
+        for t in targets
+        if any(s in ("not_met", "unknown") for s in (t.get("rationale", {}).get("matchStatuses") or []))
+    ]
+
     plan = {
         "policyVersion": PLANNER_POLICY_VERSION,
         "questionBudget": budget,
@@ -268,6 +291,10 @@ def derive_competency_plan(
         "targets": targets,
         "evaluationTargets": evaluation_targets,
         "nonCompetencyRequirementIds": non_competency_requirement_ids,
+        "candidateMatrix": {
+            "strengthsToVerify": strengths_to_verify,
+            "gapCompetencies": gap_competencies,
+        },
     }
     canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     plan["fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
