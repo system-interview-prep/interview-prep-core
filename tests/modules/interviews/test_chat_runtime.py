@@ -103,7 +103,7 @@ class MockChatSession:
                 "content": params["content"],
                 "turn_id": params.get("turn_id"),
                 "message_type": params.get("msg_type") or ("GREETING" if "GREETING" in sql else "MAIN_QUESTION" if "MAIN_QUESTION" in sql else "WRAP_UP" if "WRAP_UP" in sql else "CANDIDATE_ANSWER"),
-                "sequence": params["seq"] if "seq" in params else (1 if "GREETING" in sql else 2),
+                "sequence": params["seq"] if "seq" in params else (1 if "'MAIN_QUESTION', 1" in sql or "GREETING" in sql else 2),
                 "client_message_id": params.get("cid"),
                 "created_at": datetime.now(UTC),
             }
@@ -111,6 +111,8 @@ class MockChatSession:
             return MockResult([])
 
         if "UPDATE interview_sessions" in sql:
+            if "metadata" in sql and params.get("meta"):
+                self.session_row["metadata"] = params.get("meta")
             if "SET status = 'CLOSED'" in sql:
                 self.session_row["status"] = "CLOSED"
                 if "USER_ENDED" in sql or params.get("reason") == "USER_ENDED":
@@ -191,17 +193,15 @@ async def test_inv1_and_inv5_start_chat_session_success(mock_session_data):
     runtime = await start_chat_session(db, session_row)
     assert runtime["sessionId"] == "sess-123"
     assert runtime["sessionStatus"] == "OPEN"
-    assert len(runtime["messages"]) == 2
+    assert len(runtime["messages"]) == 1
 
     # Check Sequence Monotonicity
     assert runtime["messages"][0]["sequence"] == 1
-    assert runtime["messages"][1]["sequence"] == 2
-    assert runtime["messages"][0]["messageType"] == "GREETING"
-    assert runtime["messages"][1]["messageType"] == "MAIN_QUESTION"
+    assert runtime["messages"][0]["messageType"] == "MAIN_QUESTION"
 
     # Check Provenance
-    assert runtime["messages"][1]["turnId"] == "turn-1"
-    assert "RAG architecture" in runtime["messages"][1]["content"]
+    assert runtime["messages"][0]["turnId"] == "turn-1"
+    assert "RAG architecture" in runtime["messages"][0]["content"]
     assert db.turns["turn-1"]["status"] == "ASKED"
 
 
@@ -221,8 +221,8 @@ async def test_inv2_idempotency_duplicate_client_message(mock_session_data):
             client_message_id="msg-client-duplicate",
             content="Tôi dùng FAISS index và rerank bằng cross-encoder.",
         )
-        assert res1["userMessage"]["sequence"] == 3
-        assert res1["assistantResponse"]["sequence"] == 4
+        assert res1["userMessage"]["sequence"] == 2
+        assert res1["assistantResponse"]["sequence"] == 3
 
         # Duplicate call with exact same client_message_id
         res2 = await process_candidate_message(
@@ -232,9 +232,9 @@ async def test_inv2_idempotency_duplicate_client_message(mock_session_data):
             content="Tôi dùng FAISS index và rerank bằng cross-encoder.",
         )
         # Should return existing messages, no new messages created
-        assert res2["userMessage"]["sequence"] == 3
-        assert res2["assistantResponse"]["sequence"] == 4
-        assert len(db.messages) == 4
+        assert res2["userMessage"]["sequence"] == 2
+        assert res2["assistantResponse"]["sequence"] == 3
+        assert len(db.messages) == 3
 
 
 # INV-3: Probe Budget Cap (Never exceed 1 probe per turn)
@@ -322,15 +322,22 @@ async def test_early_exit_sets_user_ended(mock_session_data):
     db = MockChatSession(session_row, turns)
     await start_chat_session(db, session_row)
 
+    # 1. Ứng viên gửi tin nhắn muốn dừng -> Backend kích hoạt CONFIRM_ABORT để mở Modal
     res = await process_candidate_message(
         db,
         session_row,
         client_message_id="msg-client-quit",
         content="Tôi muốn dừng phỏng vấn tại đây.",
     )
-    assert res["assistantResponse"]["messageType"] == "WRAP_UP"
-    assert res["sessionStatus"] == "CLOSED"
-    assert res["endReason"] == "USER_ENDED"
+    assert res["action"] == "CONFIRM_ABORT"
+    assert res["assistantResponse"]["messageType"] == "CONFIRM_ABORT"
+    assert "hộp thoại xác nhận" in res["assistantResponse"]["content"]
+    assert res["sessionStatus"] == "OPEN"
+
+    # 2. Ứng viên xác nhận dừng trên Modal -> Đóng session với USER_ENDED
+    close_res = await complete_chat_session(db, session_row, reason="USER_ENDED")
+    assert close_res["sessionStatus"] == "CLOSED"
+    assert close_res["endReason"] == "USER_ENDED"
     assert db.session_row["end_reason"] == "USER_ENDED"
 
 
@@ -345,3 +352,34 @@ async def test_complete_chat_session_with_reason(mock_session_data):
     assert res["endReason"] == "USER_ENDED"
     assert "Phiên phỏng vấn đã kết thúc" in res["summary"]
     assert db.session_row["status"] == "CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_two_consecutive_give_up_messages_trigger_early_exit(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # First give-up: "ừm" -> score = 1.0, consecutive_fails = 1, next question asked
+    res1 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="giveup-1",
+        content="ừm",
+    )
+    assert res1["sessionStatus"] == "OPEN"
+    assert res1["assistantResponse"]["messageType"] == "MAIN_QUESTION"
+
+    # Second give-up: "không biết" -> consecutive_fails = 2 -> 2-Strike Early Exit
+    res2 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="giveup-2",
+        content="không biết",
+    )
+    assert res2["sessionStatus"] == "CLOSED"
+    assert res2["assistantResponse"]["messageType"] == "WRAP_UP"
+    assert res2["endReason"] == "COMPLETED"
+    assert "kết thúc phiên phỏng vấn tại đây" in res2["assistantResponse"]["content"]
+    assert db.session_row["status"] == "CLOSED"
+
