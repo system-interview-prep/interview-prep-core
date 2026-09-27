@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -93,6 +94,19 @@ class MockChatSession:
                     self.turns[turn_id]["status"] = "ANSWERED"
                 if ":ans" in sql:
                     self.turns[turn_id]["answer_text"] = params.get("ans")
+            return MockResult([])
+
+        if "INSERT INTO interview_turns" in sql:
+            new_turn = {
+                "id": params["id"],
+                "session_id": params["sid"],
+                "turn_index": params["tidx"],
+                "status": "ASKED",
+                "question_snapshot": json.loads(params["snap"]) if isinstance(params.get("snap"), str) else params.get("snap", {}),
+                "answer_text": None,
+                "question_version_id": None,
+            }
+            self.turns[params["id"]] = new_turn
             return MockResult([])
 
         if "INSERT INTO interview_chat_messages" in sql:
@@ -382,4 +396,101 @@ async def test_two_consecutive_give_up_messages_trigger_early_exit(mock_session_
     assert res2["endReason"] == "COMPLETED"
     assert "kết thúc phiên phỏng vấn tại đây" in res2["assistantResponse"]["content"]
     assert db.session_row["status"] == "CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_turn_transition_does_not_repeat_question(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # Candidate provides a comprehensive answer to Turn 0 (RAG architecture)
+    good_answer = (
+        "Hệ thống RAG của mình gồm Embedding Model, Vector DB (Milvus) để truy xuất top-k chunk "
+        "kết hợp Hybrid Search (BM25 + Dense Vector), sau đó dùng Cross-Encoder Reranker để rerank. "
+        "Prompt cuối cùng đưa vào LLM kèm context giúp giảm thiểu hallucination xuống dưới 2%."
+    )
+    res = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="msg-ans-1",
+        content=good_answer,
+    )
+    assert res["sessionStatus"] == "OPEN"
+
+    # If probed, answer the probe to advance turn
+    if res["turnStatus"].get("isFollowUp"):
+        res = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="msg-ans-probe",
+            content="Mình dùng Async Task Queue với RabbitMQ để retry khi Milvus chậm.",
+        )
+        assert res["sessionStatus"] == "OPEN"
+
+    assert res["turnStatus"]["turnIndex"] == 1
+    # Ensure next question is Turn 1 (Docker) and NOT repeating Turn 0 (RAG)
+    assert "Docker" in res["assistantResponse"]["content"]
+    assert "Trình bày về RAG architecture?" not in res["assistantResponse"]["content"]
+    assert db.turns["turn-1"]["status"] == "ANSWERED"
+    assert db.turns["turn-2"]["status"] == "ASKED"
+
+
+@pytest.mark.asyncio
+async def test_closing_reverse_qna_flow(mock_session_data):
+    session_row, turns = mock_session_data
+    # Only 1 turn in session
+    turns = [turns[0]]
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # 1. Candidate answers the only technical question well
+    good_answer = (
+        "Hệ thống RAG của mình gồm Embedding Model, Vector DB (Milvus) để truy xuất top-k chunk "
+        "kết hợp Hybrid Search (BM25 + Dense Vector), sau đó dùng Cross-Encoder Reranker để rerank. "
+        "Prompt cuối cùng đưa vào LLM kèm context giúp giảm thiểu hallucination xuống dưới 2%."
+    )
+    res1 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="msg-tech-done-1",
+        content=good_answer,
+    )
+    assert res1["sessionStatus"] == "OPEN"
+
+    # If probed, candidate answers the probe
+    if res1["turnStatus"].get("isFollowUp"):
+        res1_probe = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="msg-tech-done-2",
+            content="Nếu Milvus timeout quá 500ms, hệ thống sẽ tự động fallback sang BM25 trên Elasticsearch và giảm số chunk rerank.",
+        )
+        assert res1_probe["sessionStatus"] == "OPEN"
+        assert "văn hóa công ty" in res1_probe["assistantResponse"]["content"] or "thắc mắc" in res1_probe["assistantResponse"]["content"]
+    else:
+        assert "văn hóa công ty" in res1["assistantResponse"]["content"] or "thắc mắc" in res1["assistantResponse"]["content"]
+
+    # 2. Candidate asks a question about INTERVIA tech stack
+    res2 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="msg-qna-1",
+        content="Cho mình hỏi dự án sắp tới của team AI sẽ sử dụng những công nghệ và framework nào vậy?",
+    )
+    assert res2["sessionStatus"] == "OPEN"
+    assert res2["turnStatus"]["isFollowUp"] is True
+
+    # 3. Candidate wraps up
+    res3 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="msg-qna-done",
+        content="Dạ mình nắm rõ rồi, mình không còn câu hỏi nào nữa. Cảm ơn bạn rất nhiều!",
+    )
+    assert res3["sessionStatus"] == "CLOSED"
+    assert "Chúc mừng bạn đã hoàn thành" in res3["assistantResponse"]["content"] or "báo cáo đánh giá" in res3["assistantResponse"]["content"]
+    assert db.session_row["status"] == "CLOSED"
+
+
 
