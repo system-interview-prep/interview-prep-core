@@ -367,6 +367,45 @@ def _fallback_snapshot(
     }
 
 
+def _behavioral_snapshot(locale: str) -> dict[str, Any]:
+    is_vi = (locale or "vi").lower().startswith("vi")
+    prompts_vi = (
+        "Hãy kể về một tình huống thực tế khi bạn phải đối mặt với một vấn đề kỹ thuật khó "
+        "hoặc bất đồng ý kiến trong đội ngũ. Bạn đã phân tích, giải quyết tình huống đó như thế nào (theo mô hình STAR) và kết quả ra sao?"
+    )
+    prompts_en = (
+        "Describe a challenging situation at work where you faced a tough technical hurdle or a disagreement in your team. "
+        "How did you address the challenge using the STAR approach, and what was the outcome?"
+    )
+    return {
+        "schemaVersion": "1.0",
+        "selectorPolicyVersion": SELECTOR_POLICY_VERSION,
+        "questionVersionId": None,
+        "stableKey": "behavioral-star-collaboration",
+        "version": "1.0.0",
+        "questionType": "BEHAVIORAL",
+        "stage": "BEHAVIORAL",
+        "difficulty": "intermediate",
+        "locale": locale,
+        "canonicalLocale": locale,
+        "questionText": prompts_vi if is_vi else prompts_en,
+        "objective": "Đánh giá kỹ năng mềm, giải quyết xung đột và làm việc nhóm theo mô hình STAR.",
+        "softAnswerSeconds": 180,
+        "hardAnswerSeconds": 240,
+        "taxonomyTarget": {
+            "taxonomyVersion": "internal-2026.1",
+            "conceptId": "soft-skill.star",
+            "label": "Kỹ năng mềm & Tình huống (STAR)",
+            "mappingPurpose": "BEHAVIORAL",
+            "relevance": 1.0,
+        },
+        "selectionRank": 99,
+        "expectedPoints": [],
+        "rubric": None,
+        "questionSource": "behavioral_star_preset",
+    }
+
+
 async def select_and_freeze_questions(
     *,
     db: AsyncSession,
@@ -452,8 +491,15 @@ async def select_and_freeze_questions(
             salt=str(session_row.get("id") or ""),
         )
         available = [item for item in candidates if item.question_version_id not in used_versions]
-        needed = target["targetQuestionCount"]
+        needed = max(target["targetQuestionCount"], 2)
         selected = available[:needed]
+        # Guarantee technical diversity: if eligible coding questions exist in available,
+        # ensure at least one coding question is represented in the selected batch.
+        if needed >= 2 and not any(c.question_type == "coding" for c in selected):
+            coding_cand = next((c for c in available if c.question_type == "coding"), None)
+            if coding_cand:
+                selected = selected[:needed - 1] + [coding_cand]
+
         for candidate in selected:
             frozen.append((candidate, target, len(frozen), None))
             used_versions.add(candidate.question_version_id)
@@ -663,10 +709,10 @@ async def select_and_freeze_questions(
         turn_index = idx + 2
         target_rationale = target.get("rationale") or {}
         match_statuses = target_rationale.get("matchStatuses") or []
-        # Nếu competency là gap kỹ năng (chưa có trong CV hoặc unknown) -> gắn nhãn CHALLENGE
-        # Nếu competency là thế mạnh đã có trong CV (met) -> gắn nhãn DEEP_DIVE
+        # Nếu là câu hỏi coding hoặc gap kỹ năng -> gắn nhãn CHALLENGE
+        is_coding = (candidate.question_type == "coding") if candidate else False
         is_gap = any(s in ("not_met", "unknown") for s in match_statuses)
-        stage = "CHALLENGE" if is_gap and idx >= 1 else "DEEP_DIVE"
+        stage = "CHALLENGE" if (is_coding or (is_gap and idx >= 1)) else "DEEP_DIVE"
         if candidate is None:
             snapshot = dict(fallback or {})
             snapshot["selectionRank"] = turn_index
@@ -702,6 +748,29 @@ async def select_and_freeze_questions(
             },
         )
 
+    # Thêm câu hỏi BEHAVIORAL theo chuẩn STAR vào cuối Question Queue
+    behavioral_snap = _behavioral_snapshot(locale=locale)
+    behavioral_turn_index = len(frozen) + 2
+    behavioral_snap["selectionRank"] = behavioral_turn_index
+    await db.execute(
+        text(
+            """
+            INSERT INTO interview_turns
+                (id, session_id, turn_index, status, question_version_id,
+                 rubric_version_id, question_snapshot)
+            VALUES
+                (:id, :session_id, :turn_index, 'PLANNED',
+                 NULL, NULL, CAST(:snapshot AS jsonb))
+            """
+        ),
+        {
+            "id": str(uuid4()),
+            "session_id": session_row["id"],
+            "turn_index": behavioral_turn_index,
+            "snapshot": json.dumps(behavioral_snap),
+        },
+    )
+
     selection_contract = [
         {"turnIndex": 0, "stage": "WARM_UP"},
         {"turnIndex": 1, "stage": "VALIDATE"},
@@ -715,6 +784,12 @@ async def select_and_freeze_questions(
             "target": f"{target['taxonomyVersion']}:{target['conceptId']}",
         }
         for idx, (candidate, target, _, fallback) in enumerate(frozen)
+    ] + [
+        {
+            "turnIndex": behavioral_turn_index,
+            "stage": "BEHAVIORAL",
+            "questionSource": "behavioral_star_preset",
+        }
     ]
     fingerprint = hashlib.sha256(
         json.dumps(selection_contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
