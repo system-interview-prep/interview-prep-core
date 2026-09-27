@@ -339,15 +339,17 @@ def build_session_state_from_db(
     q_text = snap.get("questionText") or snap.get("question_text") or ""
     rubric_criteria = _format_rubric_criteria((snap.get("rubric") or {}).get("criteria", ""))
 
-    asked_question_ids = [
-        str(t.get("question_version_id") or t["id"])
-        for t in turns
-        if t.get("status") in {"ANSWERED", "COMPLETED"}
-    ]
-    if current_turn and has_probed:
-        current_qid = str(current_turn.get("question_version_id") or current_turn["id"])
-        if current_qid not in asked_question_ids:
-            asked_question_ids.append(current_qid)
+    asked_question_ids: list[str] = []
+    for t in turns:
+        if t.get("status") in {"ASKED", "ANSWERED", "COMPLETED"}:
+            if t.get("question_version_id"):
+                asked_question_ids.append(str(t["question_version_id"]))
+            asked_question_ids.append(str(t["id"]))
+    if current_turn:
+        if current_turn.get("question_version_id"):
+            asked_question_ids.append(str(current_turn["question_version_id"]))
+        asked_question_ids.append(str(current_turn["id"]))
+    asked_question_ids = list(set(asked_question_ids))
 
     questions_pool: dict[str, list[dict[str, Any]]] = {}
     for t in turns:
@@ -546,6 +548,7 @@ async def process_candidate_message(
     # Call Modality-Agnostic Core Engine
     engine = core_engine or InterviewCoreEngine(ai_generator=generate_text)
     session_state = build_session_state_from_db(session_row, turns, current_turn, has_probed)
+    session_state["job_title"] = job_title
 
     turn_input = CandidateTurnInput(
         session_id=session_id,
@@ -673,6 +676,55 @@ async def process_candidate_message(
             "sessionStatus": "OPEN",
         }
 
+    is_in_closing = (current_turn.get("question_snapshot") or {}).get("stage") == "CLOSING"
+    if is_in_closing and not core_output.is_session_finished:
+        # Candidate asked a question in Q&A stage: reply directly within the CLOSING turn
+        await db.execute(
+            text(
+                """
+                INSERT INTO interview_chat_messages
+                (id, session_id, role, content, metadata, turn_id, message_type, sequence, created_at)
+                VALUES
+                (:id, :sid, 'assistant', :content, '{"is_qna_answer": true}'::jsonb, :turn_id, 'MAIN_QUESTION', :seq, now())
+                """
+            ),
+            {
+                "id": asst_msg_id,
+                "sid": session_id,
+                "content": core_output.message_text,
+                "turn_id": current_turn_id,
+                "seq": asst_seq,
+            },
+        )
+        await db.commit()
+        return {
+            "userMessage": {
+                "messageId": user_msg_id,
+                "role": "user",
+                "messageType": "CANDIDATE_ANSWER",
+                "turnId": current_turn_id,
+                "sequence": user_seq,
+                "content": cleaned_content,
+                "createdAt": datetime.now(UTC).isoformat(),
+            },
+            "assistantResponse": {
+                "messageId": asst_msg_id,
+                "role": "assistant",
+                "messageType": "MAIN_QUESTION",
+                "turnId": current_turn_id,
+                "sequence": asst_seq,
+                "content": core_output.message_text,
+                "createdAt": datetime.now(UTC).isoformat(),
+            },
+            "turnStatus": {
+                "turnId": current_turn_id,
+                "turnIndex": current_turn_index,
+                "isFollowUp": True,
+                "completed": False,
+            },
+            "sessionStatus": "OPEN",
+        }
+
     # Advance to NEXT_TOPIC
     # 1. Complete current turn
     await db.execute(
@@ -686,7 +738,71 @@ async def process_candidate_message(
         {"turn_id": current_turn_id},
     )
 
-    next_turn = next((t for t in turns if t["turn_index"] == current_turn_index + 1), None)
+    target_qid = core_output.metadata.get("question_id")
+    next_turn = None
+    if target_qid:
+        next_turn = next(
+            (
+                t
+                for t in turns
+                if (
+                    str(t.get("question_version_id") or "") == str(target_qid)
+                    or str(t["id"]) == str(target_qid)
+                )
+                and t["id"] != current_turn_id
+                and t["turn_index"] > current_turn_index
+                and t["status"] in ("PLANNED", "ASKED")
+            ),
+            None,
+        )
+    if not next_turn:
+        next_turn = next(
+            (
+                t
+                for t in turns
+                if t["id"] != current_turn_id
+                and t["turn_index"] > current_turn_index
+                and t["status"] in ("PLANNED", "ASKED")
+            ),
+            None,
+        )
+
+    # ĐẶC BIỆT: NẾU BƯỚC VÀO GIAI ĐOẠN CLOSING MÀ CHƯA CÓ TURN TRONG DB
+    if not next_turn and core_output.current_stage == InterviewStage.CLOSING and not core_output.is_session_finished:
+        closing_turn_id = str(uuid4())
+        closing_turn_index = current_turn_index + 1
+        closing_snap = {
+            "stage": "CLOSING",
+            "questionText": core_output.message_text,
+            "target": {"conceptId": "closing-qna"},
+            "taxonomyTarget": {"label": "Hỏi đáp & Tổng kết"},
+        }
+        await db.execute(
+            text(
+                """
+                INSERT INTO interview_turns
+                (id, session_id, turn_index, status, question_snapshot, started_at, created_at, updated_at)
+                VALUES
+                (:id, :sid, :tidx, 'ASKED', CAST(:snap AS jsonb), now(), now(), now())
+                """
+            ),
+            {
+                "id": closing_turn_id,
+                "sid": session_id,
+                "tidx": closing_turn_index,
+                "snap": json.dumps(closing_snap),
+            },
+        )
+        next_turn = {
+            "id": closing_turn_id,
+            "session_id": session_id,
+            "turn_index": closing_turn_index,
+            "status": "ASKED",
+            "question_snapshot": closing_snap,
+            "question_version_id": None,
+        }
+        turns.append(next_turn)
+
     if next_turn and not core_output.is_session_finished:
         # Start next turn
         await db.execute(
@@ -708,17 +824,15 @@ async def process_candidate_message(
 
         # Bridge Transition: natural acknowledgment + next main question
         next_content = core_output.message_text
-        if not next_content or next_q_text not in next_content:
+        if not next_content:
+            next_content = next_q_text
+        elif next_q_text not in next_content:
+            parts = next_content.split("\n\n")
+            ack = parts[0] if parts else ""
             if is_vi:
-                next_content = (
-                    f"Cảm ơn chia sẻ thực tế của bạn. Chúng ta hãy cùng tiếp nối sang chủ đề tiếp theo:\n\n"
-                    f"{next_q_text}"
-                )
+                next_content = f"{ack}\n\nChúng ta hãy cùng chuyển sang câu hỏi tiếp theo nhé:\n\n{next_q_text}"
             else:
-                next_content = (
-                    f"Thank you for your insights. Let's move on to our next topic:\n\n"
-                    f"{next_q_text}"
-                )
+                next_content = f"{ack}\n\nLet's move on to the next question:\n\n{next_q_text}"
 
         q_meta = {
             "questionVersionId": str(next_turn["question_version_id"])
