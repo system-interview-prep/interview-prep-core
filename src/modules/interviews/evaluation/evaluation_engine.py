@@ -63,7 +63,8 @@ class InterviewEvaluationEngine:
             '  "evidence_quotes": ["<trích dẫn 1>", "<trích dẫn 2>"],\n'
             '  "feedback": "<nhận xét tổng quan cho câu trả lời này>",\n'
             '  "strengths": ["<điểm mạnh 1>", "<điểm mạnh 2>"],\n'
-            '  "weaknesses": ["<điểm cần cải thiện 1>"]\n'
+            '  "weaknesses": ["<điểm cần cải thiện 1>"],\n'
+            '  "what_good_looks_like": "<gợi ý câu trả lời mẫu đạt điểm 9-10 dựa trên chính dự án và bối cảnh của ứng viên>"\n'
             "}"
         )
 
@@ -158,6 +159,7 @@ class InterviewEvaluationEngine:
                 feedback=str(data.get("feedback", "Câu trả lời đã được ghi nhận.")),
                 strengths=[str(s) for s in data.get("strengths", [])],
                 weaknesses=[str(w) for w in data.get("weaknesses", [])],
+                what_good_looks_like=str(data.get("what_good_looks_like", "")),
             )
         except Exception as exc:
             logger.warning(f"Fallback turn evaluation used due to: {exc}")
@@ -175,6 +177,7 @@ class InterviewEvaluationEngine:
                 feedback="Không thể phân tích dữ liệu đánh giá chi tiết cho lượt này.",
                 strengths=[],
                 weaknesses=["Câu trả lời chưa đủ rõ ràng để trích xuất cấu trúc STAR."],
+                what_good_looks_like="",
             )
 
     def calculate_decision_recommendation(self, score: float) -> DecisionRecommendation:
