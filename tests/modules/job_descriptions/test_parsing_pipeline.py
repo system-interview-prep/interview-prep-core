@@ -64,11 +64,11 @@ async def test_jd_pipeline_persists_artifact_and_canonical_result() -> None:
     result = await pipeline.run("jd-1")
 
     assert result.status == "DONE"
-    assert result.parser_version == "deterministic-jd-v4"
+    assert result.parser_version == "deterministic-jd-v5"
     assert repository.completed is not None
     persisted = json.loads(repository.completed[1]["parsed"].model_dump_json(by_alias=True))
     assert persisted["jobTitle"] == "Backend Engineer"
-    assert repository.completed[1]["parse_source"] == "mineru+deterministic-jd-v4"
+    assert repository.completed[1]["parse_source"] == "mineru+deterministic-jd-v5"
     assert next(iter(storage.writes)).endswith("/mineru.json")
 
 

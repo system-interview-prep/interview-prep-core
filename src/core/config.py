@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     celery_result_backend: str = "rpc://"
     database_url: str = "postgresql://user:password@localhost:5432/matching_db"
     openai_api_key: str | None = None
+    voice_lab_enabled: bool = False
+    voice_lab_realtime_model: str = "gpt-realtime-2.1"
+    voice_lab_transcription_model: str = "gpt-4o-mini-transcribe"
+    voice_lab_tts_model: str = "gpt-4o-mini-tts"
+    voice_lab_voice: str = "marin"
     llm_provider: str = "openai"
     # Pin the snapshot so an alias update cannot silently change eval behavior.
     llm_model: str = "gpt-5.4-mini-2026-03-17"

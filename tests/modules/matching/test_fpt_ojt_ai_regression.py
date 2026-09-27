@@ -162,9 +162,11 @@ def test_fpt_ojt_ai_sample_is_evidence_evaluated_without_duplicate_requirements(
     assert result.score_provenance.unknown_requirement_count == 1
     assert result.score_provenance.requirement_coverage == 1.0
     assert sum(result.score_provenance.factor_contributions.values()) == pytest.approx(
-        result.suitability_score
+        result.diagnostic_score
     )
     assert result.eligibility == "review_required"
+    assert result.suitability_score is None
+    assert result.diagnostic_score is not None
     assert result.decision == "abstained"
 
 

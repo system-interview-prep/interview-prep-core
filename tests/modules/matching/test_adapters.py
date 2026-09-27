@@ -1,6 +1,6 @@
 import pytest
 
-from src.modules.job_descriptions.schemas import CanonicalJobDescription
+from src.modules.job_descriptions.schemas import CanonicalJobDescription, JobRequirement
 from src.modules.matching.adapters import job_description_to_matching_job
 from src.modules.matching.facade import MatchingFacade
 from src.modules.matching.schemas import MatchRequest, SkillRequirement, UnresolvedRequirement
@@ -177,3 +177,29 @@ def test_adapter_does_not_invent_taxonomy_for_unknown_legacy_skill_text() -> Non
     requirement = adapted.requirements[0]
     assert isinstance(requirement, UnresolvedRequirement)
     assert requirement.atomic_concepts == []
+
+
+def test_adapter_keeps_baseline_when_current_hybrid_adds_new_llm_claim() -> None:
+    parsed = _parsed_jd().model_copy(
+        update={
+            "requirements": [
+                *_parsed_jd().requirements,
+                JobRequirement(
+                    requirementId="req-llm-015",
+                    kind="education",
+                    priority="must_have",
+                    rawLabel="College degree or higher",
+                    evidenceRefs=["jd-ev"],
+                ),
+            ],
+            "parsing": _parsed_jd().parsing.model_copy(update={"parser_version": "hybrid-jd-v4"}),
+        }
+    )
+
+    adapted = job_description_to_matching_job(parsed, job_id="job-1")
+
+    assert [item.requirement_id for item in adapted.requirements] == [
+        "req-python",
+        "req-degree",
+        "req-llm-015",
+    ]

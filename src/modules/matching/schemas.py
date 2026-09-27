@@ -21,6 +21,9 @@ class RequirementBase(CanonicalModel):
 class SkillRequirement(RequirementBase):
     type: Literal["skill"]
     skill: TaxonomyRef
+    # Preserve the original JD wording when the taxonomy parser resolves only
+    # one concept from a compound line (for example Docker + Linux).
+    raw_label: str | None = None
     operator: Literal["required", "gte", "proficiency_gte"] = "required"
     minimum_experience_months: int | None = Field(default=None, ge=0)
     minimum_proficiency_level: ProficiencyLevel | None = None
@@ -168,6 +171,19 @@ class MatchAccepted(CanonicalModel):
     status: Literal["PENDING"] = "PENDING"
 
 
+class EvidenceCandidateTrace(CanonicalModel):
+    evidence_ref: str = Field(min_length=1)
+    concept_id: str | None = None
+    retrieval_method: str = Field(min_length=1)
+    lexical_score: float = Field(ge=0, le=1)
+    dense_score: float | None = Field(default=None, ge=0, le=1)
+    semantic_score: float = Field(ge=0, le=1)
+    score_model: str = "capability-expansion-bm25-v1"
+    threshold_version: str = "semantic-expansion-v1"
+    evidence_strength: Literal["mention", "claimed", "applied", "demonstrated"] | None = None
+    rank: int = Field(ge=1)
+
+
 class RequirementResult(CanonicalModel):
     requirement_id: str
     status: Literal["met", "not_met", "unknown", "not_applicable"]
@@ -177,6 +193,7 @@ class RequirementResult(CanonicalModel):
     reason_code: str
     evidence_explanation: str | None = None
     concept_results: list["ConceptResult"] = Field(default_factory=list)
+    retrieval_candidates: list[EvidenceCandidateTrace] = Field(default_factory=list)
     group_operator: Literal["atomic", "all_of", "any_of"] = "atomic"
 
     @model_validator(mode="after")
@@ -250,9 +267,14 @@ class MatchResult(CanonicalModel):
     compatibility_status: Literal[
         "compatible", "incompatible", "unknown", "not_applicable"
     ] = "not_applicable"
+    # A diagnostic score may be available even when the strict must-have gate
+    # prevents a final suitability conclusion.  Keep the two values distinct
+    # so clients can show useful feedback without implying eligibility.
+    diagnostic_score: float | None = Field(default=None, ge=0, le=1)
     suitability_score: float | None = Field(default=None, ge=0, le=1)
     fit_band: Literal["strong_fit", "partial_fit", "review_required", "not_eligible", "insufficient_evidence"]
     decision: Literal["assessed", "abstained"]
+    failed_must_have_requirements: list[str] = Field(default_factory=list)
     requirement_results: list[RequirementResult]
     compatibility_results: list[CompatibilityResult] = Field(default_factory=list)
     factor_results: list[FactorResult]

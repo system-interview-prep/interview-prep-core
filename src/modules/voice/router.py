@@ -10,8 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.security import current_user
 from src.infrastructure.database import get_db
 from src.modules.ai.facade import generate_text, synthesize_speech
+from src.modules.voice.lab import router as lab_router
 
 router = APIRouter(prefix="/ai", tags=["voice"])
+router.include_router(lab_router)
 
 
 class VoiceChatRequest(BaseModel):

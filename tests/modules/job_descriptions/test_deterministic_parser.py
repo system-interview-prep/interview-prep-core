@@ -115,6 +115,31 @@ def test_parser_does_not_assign_experience_or_priority_across_requirement_lines(
     assert requirements["skill-spring-boot"].minimum_experience_months == 24
 
 
+def test_parser_drops_layout_section_metadata_without_label_allowlist() -> None:
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown="fallback",
+            content_list=[
+                {"type": "text", "text": "Backend Developer", "page_idx": 0},
+                {"type": "text", "text": "Requirements", "page_idx": 0},
+                {"type": "text", "text": "- Python", "page_idx": 0},
+                {"type": "text", "text": "Preferred Qualifications", "page_idx": 0},
+                {"type": "text", "text": "- FastAPI is a plus", "page_idx": 0},
+                {"type": "text", "text": "Applicant context", "page_idx": 0},
+                {"type": "text", "text": "Domain context", "page_idx": 0},
+                {"type": "text", "text": "Product area", "page_idx": 0},
+                {"type": "text", "text": "Benefits", "page_idx": 0},
+            ],
+        ),
+        document_id="jd-structural-labels",
+        document_sha256="d" * 64,
+    )
+
+    parsed = DeterministicJobDescriptionParser().parse(source, extraction_version="mineru-test")
+
+    assert [item.raw_label for item in parsed.requirements] == ["Python", "FastAPI"]
+
+
 def test_parser_handles_vietnamese_game_jd_sections_title_and_priority() -> None:
     source = build_source_document(
         DocumentArtifacts(
