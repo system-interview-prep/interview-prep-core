@@ -44,6 +44,7 @@ class TurnEvaluationResult(BaseModel):
     feedback: str = Field(default="", description="Nhận xét chi tiết cho lượt trả lời này")
     strengths: List[str] = Field(default_factory=list, description="Các điểm mạnh được ghi nhận")
     weaknesses: List[str] = Field(default_factory=list, description="Các điểm hạn chế cần cải thiện")
+    what_good_looks_like: str = Field(default="", description="Gợi ý câu trả lời mẫu đạt điểm 9-10 dựa trên bối cảnh của ứng viên")
 
 
 class CompetencyScore(BaseModel):
