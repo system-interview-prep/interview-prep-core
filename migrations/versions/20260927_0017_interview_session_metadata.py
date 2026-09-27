@@ -17,11 +17,23 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "interview_sessions",
-        sa.Column("metadata", postgresql.JSONB(), nullable=False, server_default="{}"),
-    )
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = [c["name"] for c in inspector.get_columns("interview_sessions")]
+    if "metadata" not in columns:
+        op.add_column(
+            "interview_sessions",
+            sa.Column("metadata", postgresql.JSONB(), nullable=False, server_default="{}"),
+        )
+    else:
+        op.execute("UPDATE interview_sessions SET metadata = '{}' WHERE metadata IS NULL")
+        op.alter_column("interview_sessions", "metadata", nullable=False, server_default="{}")
 
 
 def downgrade() -> None:
-    op.drop_column("interview_sessions", "metadata")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = [c["name"] for c in inspector.get_columns("interview_sessions")]
+    if "metadata" in columns:
+        op.drop_column("interview_sessions", "metadata")
+
