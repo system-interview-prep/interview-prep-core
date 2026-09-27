@@ -20,6 +20,15 @@ from src.modules.interviews.core.interview_types import (
 
 logger = logging.getLogger("InterviewCoreEngine")
 
+TIME_THRESHOLDS = {
+    InterviewStage.WARM_UP: 0.10,     # Chiếm 10% đầu
+    InterviewStage.VALIDATE: 0.30,    # Chiếm đến 30% tổng thời gian
+    InterviewStage.DEEP_DIVE: 0.75,   # Kéo dài từ 30% đến 75%
+    InterviewStage.CHALLENGE: 0.85,   # Kéo dài đến 85%
+    InterviewStage.BEHAVIORAL: 0.95,  # Kéo dài đến 95%
+    InterviewStage.CLOSING: 1.00,     # 5% cuối cùng
+}
+
 PROHIBITED_LEAK_PATTERNS = [
     r"\b(điểm|điểm số|thang điểm|barem|rubric|tiêu chí|bạn được|bạn đạt)\b",
     r"\b(score|scores|grade|grading|rubrics|criterion|criteria|points)\b",
@@ -201,9 +210,9 @@ class InterviewCoreEngine:
         # =========================================================================
         if is_abort_request(candidate_text):
             confirm_msg = (
-                "Mình đã mở hộp thoại xác nhận kết thúc buổi phỏng vấn. Bạn vui lòng kiểm tra và xác nhận nhé."
+                "Mình đã mở hộp thoại xác nhận kết thúc buổi phỏng vấn ngay bên dưới khung chat. Bạn có thể bấm xác nhận để hoàn tất phiên nhé."
                 if is_vi
-                else "I have opened the confirmation dialog to end the interview. Please check and confirm."
+                else "I have opened the confirmation dialog to end the interview right below in this chat. Please confirm if you wish to conclude."
             )
             return InterviewerTurnOutput(
                 session_id=session_id,
@@ -303,6 +312,15 @@ class InterviewCoreEngine:
         consecutive_fails = session_state.get("consecutive_fails", 0)
         current_turn_in_question = session_state.get("current_turn_in_question", 0)  # 0: Câu chính, 1: Câu probe
         allow_early_exit = session_state.get("allow_early_exit", True)
+        # NẾU ĐANG Ở GIAI ĐOẠN CLOSING (CANDIDATE ASKS AI - REVERSE Q&A):
+        if current_stage == InterviewStage.CLOSING:
+            return await self._handle_closing_turn(
+                turn_input=turn_input,
+                session_state=session_state,
+                is_vi=is_vi,
+                time_remaining_seconds=time_remaining_seconds,
+            )
+
         current_question = session_state.get("current_question_context", {})
         question_prompt = current_question.get("main_prompt", "")
 
@@ -320,9 +338,9 @@ class InterviewCoreEngine:
         # BẢO HIỂM TẦNG 2: Nếu LLM nhận diện ý định xin dừng phỏng vấn -> Kích hoạt Modal xác nhận
         if eval_result.get("intent") == "CANDIDATE_ABORT":
             confirm_msg = (
-                "Mình đã mở hộp thoại xác nhận kết thúc buổi phỏng vấn. Bạn vui lòng kiểm tra và xác nhận nhé."
+                "Mình đã mở hộp thoại xác nhận kết thúc buổi phỏng vấn ngay bên dưới khung chat. Bạn có thể bấm xác nhận để hoàn tất phiên nhé."
                 if is_vi
-                else "I have opened the confirmation dialog to end the interview. Please check and confirm."
+                else "I have opened the confirmation dialog to end the interview right below in this chat. Please confirm if you wish to conclude."
             )
             return InterviewerTurnOutput(
                 session_id=session_id,
@@ -342,6 +360,18 @@ class InterviewCoreEngine:
         is_sufficient = bool(eval_result.get("is_sufficient", True))
 
         is_give_up = (intent == "GIVE_UP")
+
+        # Adaptive Probing: Nếu ứng viên trả lời quá ngắn (< 15 từ hoặc < 70 ký tự)
+        # trong khi câu hỏi không phải là Yes/No và chưa từng probe ở câu này:
+        words = candidate_text.split()
+        is_too_brief = (
+            len(words) < 15
+            and len(candidate_text) < 70
+            and not is_yes_no_question(question_prompt)
+            and not is_give_up
+        )
+        if is_too_brief:
+            is_sufficient = False
 
         # 3. KIỂM TRA ĐIỀU KIỆN DỪNG SỚM (2-STRIKE SYSTEM)
         if is_failed_answer:
@@ -411,6 +441,7 @@ class InterviewCoreEngine:
                 current_question=current_question,
                 is_vi=is_vi,
                 telemetry=turn_input.telemetry,
+                missing_aspect=eval_result.get("missing_aspect", ""),
             )
             return InterviewerTurnOutput(
                 session_id=session_id,
@@ -469,6 +500,95 @@ class InterviewCoreEngine:
         )
 
     # ----------------- CÁC HÀM BỔ TRỢ (HELPER METHODS) ----------------- #
+
+    async def _handle_closing_turn(
+        self,
+        turn_input: CandidateTurnInput,
+        session_state: Dict[str, Any],
+        is_vi: bool,
+        time_remaining_seconds: int,
+    ) -> InterviewerTurnOutput:
+        """Xử lý vòng Q&A ngược: ứng viên đặt câu hỏi cho phỏng vấn viên về công ty/văn hóa/dự án."""
+        session_id = session_state.get("session_id", turn_input.session_id)
+        candidate_text = turn_input.text_content.strip()
+        job_title = session_state.get("job_title") or "Vị trí ứng tuyển"
+
+        no_questions_patterns = [
+            r"\b(không|k|hết|chưa)\b.*?\b(câu hỏi|thắc mắc|gì nữa|hỏi gì|hỏi thêm)\b",
+            r"\b(cảm ơn|thank you|thanks)\b.*?\b(nhiều|bạn|anh|chị)?\b",
+            r"\b(nắm rõ|hiểu rõ|đầy đủ|rõ rồi|oke|ok|dạ rồi)\b",
+            r"\b(kết thúc|dừng|kết thúc tại đây)\b",
+            r"^(không|không ạ|dạ không|k ạ|hết rồi|dạ rõ rồi|ok|oke)$",
+        ]
+        has_no_more_q = any(re.search(pat, candidate_text, re.IGNORECASE) for pat in no_questions_patterns)
+
+        if has_no_more_q or time_remaining_seconds <= 90:
+            farewell = (
+                "Rất cảm ơn bạn đã tham gia buổi phỏng vấn hôm nay cùng INTERVIA! "
+                "Chúc mừng bạn đã hoàn thành trọn vẹn tất cả các phần thi. "
+                "Hệ thống đang tiến hành tổng hợp báo cáo đánh giá toàn diện năng lực của bạn. "
+                "Chúc bạn một ngày làm việc thật nhiều năng lượng và thành công!"
+                if is_vi
+                else "Thank you very much for taking the time to interview with INTERVIA today! "
+                     "Congratulations on completing all sections of the interview. "
+                     "The system is now compiling your comprehensive evaluation report. "
+                     "Wishing you a great day and all the best in your career!"
+            )
+            return self._terminate_session(
+                session_id=session_id,
+                turn_index=turn_input.turn_index + 1,
+                reason=SessionExitReason.NORMAL_COMPLETION,
+                message=farewell,
+            )
+
+        system_prompt = (
+            f"Bạn là Tech Lead kiêm Phỏng vấn viên kỹ thuật tại công ty công nghệ INTERVIA.\n"
+            f"Vị trí ứng viên đang phỏng vấn: {job_title}.\n"
+            "Giai đoạn phỏng vấn: 5-10 phút cuối, dành cho ứng viên đặt câu hỏi về công ty, văn hóa, dự án hoặc công nghệ.\n"
+            "Nhiệm vụ: Trả lời câu hỏi của ứng viên một cách chân thực, cởi mở, chuyên nghiệp và truyền cảm hứng.\n"
+            "Văn hóa & Môi trường INTERVIA: Đề cao tính tự chủ (ownership), văn hóa data-driven và thực nghiệm nhanh, "
+            "áp dụng các công nghệ hiện đại (Microservices, Python/FastAPI, Next.js, Kubernetes, AI/LLM pipelines, MLOps).\n"
+            "Sau khi trả lời câu hỏi của ứng viên, hãy hỏi thêm 1 câu lịch sự:\n"
+            "- 'Bạn có còn thắc mắc nào khác nữa không, hoặc chúng ta có thể khép lại buổi phỏng vấn tại đây nhé?'\n"
+            "Tuyệt đối không chấm điểm hay nhận xét điểm số."
+        )
+        user_content = f"Câu hỏi của ứng viên: {candidate_text}"
+
+        try:
+            if hasattr(self.llm, "generate_text"):
+                answer = await self.llm.generate_text(system_prompt=system_prompt, user_content=user_content)
+            else:
+                answer = await self._generate_fn(
+                    instructions=system_prompt,
+                    input_text=user_content,
+                    max_output_tokens=300,
+                    temperature=0.4,
+                )
+            answer_text = str(answer).strip()
+        except Exception as e:
+            logger.warning(f"Error generating Q&A response in CLOSING stage: {e}")
+            answer_text = (
+                "Tại INTERVIA, đội ngũ kỹ thuật luôn đề cao văn hóa chia sẻ, tự chủ và thử nghiệm các công nghệ mới nhất. "
+                "Chúng mình rất chú trọng đào tạo nội bộ và xây dựng quy trình CI/CD/MLOps bài bản.\n\n"
+                "Bạn có còn thắc mắc nào khác muốn tìm hiểu thêm không, hoặc chúng ta có thể kết thúc buổi phỏng vấn tại đây nhé?"
+                if is_vi
+                else "At INTERVIA, our engineering team values ownership, continuous learning, and state-of-the-art tech. "
+                     "Do you have any further questions, or shall we conclude our interview here?"
+            )
+
+        return InterviewerTurnOutput(
+            session_id=session_id,
+            turn_index=turn_input.turn_index + 1,
+            message_text=answer_text,
+            action=TurnAction.NEXT_QUESTION,
+            current_stage=InterviewStage.CLOSING,
+            current_competency="Hỏi đáp & Văn hóa doanh nghiệp",
+            time_remaining_seconds=time_remaining_seconds,
+            metadata={
+                "is_qna_followup": True,
+                "turn_in_question": 1,
+            },
+        )
 
     def _terminate_session(
         self,
@@ -548,18 +668,21 @@ class InterviewCoreEngine:
                     "acknowledgement": ack,
                 }
 
-        system_prompt = """Bạn là trợ lý đánh giá kỹ thuật thời gian thực.
-Đọc câu trả lời của ứng viên cho câu hỏi phỏng vấn, trả về JSON duy nhất:
+        system_prompt = """Bạn là chuyên gia phân tích kỹ thuật thời gian thực của hệ thống phỏng vấn INTERVIA.
+Đọc câu trả lời của ứng viên đối chiếu với Câu hỏi gốc và Barem tiêu chí, trả về đúng 1 JSON duy nhất:
 {
   "intent": "ANSWER" | "CANDIDATE_ABORT" | "SKIP_QUESTION" | "GIVE_UP",
   "score": <điểm từ 1.0 đến 10.0>,
-  "is_sufficient": <true nếu đã đủ ý, false nếu câu trả lời quá ngắn, né tránh hoặc thiếu chi tiết then chốt>,
-  "acknowledgement": "<1 câu chuyển ý ngắn gọn lịch sự ghi nhận câu trả lời của ứng viên, văn phong tự nhiên>"
+  "is_sufficient": <true nếu đã đáp ứng trên 70% ý chính, false nếu câu trả lời quá ngắn, né tránh hoặc thiếu chi tiết then chốt>,
+  "missing_aspect": "<mô tả ngắn gọn 1-2 khía cạnh cốt lõi mà ứng viên chưa làm rõ hoặc nêu sai, để trống nếu is_sufficient = true>",
+  "acknowledgement": "<1 câu xác nhận lịch sự, tự nhiên bằng tiếng Việt khoảng 5-10 từ, tuyệt đối không khen ngợi quá mức, không lộ điểm số hay tiêu chí>"
 }
 Lưu ý quan trọng:
+- Đánh giá khách quan, không thiên vị, không nịnh bợ (Anti-Sycophancy).
+- Chấp nhận hiện tượng Code-Switching (chêm từ tiếng Anh chuyên ngành như API, Microservices, Cache, Scale, Deploy). Tuyệt đối không trừ điểm vì lý do này.
 - Nếu ứng viên bày tỏ mong muốn dừng/nghỉ phỏng vấn, bận việc riêng/gia đình: đặt "intent": "CANDIDATE_ABORT".
 - Nếu ứng viên xin đổi câu hỏi khác: đặt "intent": "SKIP_QUESTION".
-- Nếu ứng viên bỏ cuộc hoặc không biết: đặt "intent": "GIVE_UP".
+- Nếu ứng viên bỏ cuộc hoặc không biết: đặt "intent": "GIVE_UP", score từ 1.0 đến 3.0.
 - Nếu câu hỏi là dạng Yes/No hoặc khảo sát kinh nghiệm (Ví dụ: 'Bạn đã từng làm việc với Kubernetes chưa?') và ứng viên trả lời thành thật 'Chưa' hoặc 'Không', đặt "intent": "ANSWER", hãy ghi nhận câu trả lời chân thật đó một cách tôn trọng, cho mức điểm trung tính hợp lý (5.0 - 6.0) thay vì coi là bỏ cuộc."""
         user_content = f"""Câu hỏi: {current_question.get('main_prompt', '')}
 Tiêu chí đánh giá: {current_question.get('rubric_criteria', '')}
@@ -592,6 +715,7 @@ Câu trả lời của ứng viên:
                     "intent": "ANSWER",
                     "score": 5.0 if is_probe else 8.0,
                     "is_sufficient": not is_probe,
+                    "missing_aspect": "",
                     "acknowledgement": "Cảm ơn câu trả lời của bạn." if is_vi else "Thank you for your response.",
                     "reply_text": data.get("reply_text", ""),
                 }
@@ -600,6 +724,7 @@ Câu trả lời của ứng viên:
                 "intent": str(data.get("intent", "ANSWER")),
                 "score": float(data.get("score", 6.0)),
                 "is_sufficient": bool(data.get("is_sufficient", True)),
+                "missing_aspect": str(data.get("missing_aspect", "")),
                 "acknowledgement": str(data.get("acknowledgement", "Cảm ơn bạn.")),
             }
         except Exception as e:
@@ -609,7 +734,7 @@ Câu trả lời của ứng viên:
                 fallback_score = 5.0
             else:
                 fallback_score = 2.0 if len(candidate_text.strip()) < 20 else 5.0
-            return {"intent": "ANSWER", "score": fallback_score, "is_sufficient": False, "acknowledgement": ack}
+            return {"intent": "ANSWER", "score": fallback_score, "is_sufficient": False, "missing_aspect": "", "acknowledgement": ack}
 
     async def _generate_probe_question(
         self,
@@ -617,6 +742,7 @@ Câu trả lời của ứng viên:
         current_question: Dict[str, Any],
         is_vi: bool = True,
         telemetry: Optional[Dict[str, Any]] = None,
+        missing_aspect: str = "",
     ) -> str:
         """Sinh câu hỏi đào sâu (Probe) duy nhất kèm guardrail chống rò rỉ rubric."""
         is_coding = bool(
@@ -653,16 +779,18 @@ Hãy đưa ra nhận xét ngắn và 1 câu hỏi phản biện sâu:"""
             )
         else:
             system_prompt = (
-                f"Bạn là Tech Lead {'người Việt Nam' if is_vi else ''} đang phỏng vấn ứng viên.\n"
-                "Nhiệm vụ: Đặt đúng 1 câu hỏi đào sâu (follow-up/probe) dựa trên những gì ứng viên vừa nói.\n"
-                "Yêu cầu:\n"
-                "1. Giao tiếp tự nhiên, giữ nguyên thuật ngữ tiếng Anh kỹ thuật (Deploy, Redis, Microservices, Scale...).\n"
-                "2. Tuyệt đối không nhắc tới barem, điểm số, tiêu chí chấm thi hay rubric.\n"
-                "3. Không hỏi lan man sang chủ đề khác, chỉ xoáy sâu vào cơ chế thực hiện hoặc lý do lựa chọn."
+                f"Bạn là một Tech Lead {'người Việt Nam' if is_vi else ''} phỏng vấn ứng viên kỹ sư phần mềm.\n"
+                "Nhiệm vụ: Đặt ĐÚNG 1 CÂU HỎI ĐÀO SÂU (Follow-up / Probe) dựa trên câu trả lời của ứng viên và khía cạnh còn thiếu.\n"
+                "CÁC NGUYÊN TẮC BẤT DI BẤT DỊCH:\n"
+                "1. Độ dài: Đúng 1 câu duy nhất (dưới 35 từ), trực diện vào giải pháp hoặc đánh đổi kỹ thuật (trade-offs, concurrency, failure handling).\n"
+                "2. Ngôn ngữ: Tiếng Việt tự nhiên của dân công nghệ, giữ nguyên các thuật ngữ tiếng Anh gốc (ví dụ: Deadlock, Cache invalidation, Index, Latency). Không dùng tiếng Việt dịch thô.\n"
+                "3. Nghiêm cấm rò rỉ barem: Tuyệt đối không chứa các từ ngữ liên quan đến 'điểm', 'thang điểm', 'rubric', 'tiêu chí', 'bạn chưa đạt điểm này'.\n"
+                "4. Không bao bọc bằng lời chào hỏi rườm rà (ví dụ không thêm 'Chào bạn', 'Tôi muốn hỏi...'). Chỉ xuất trực tiếp nội dung câu hỏi."
             )
+            missing_hint = f"\nKhía cạnh còn thiếu cần khoét sâu: {missing_aspect}" if missing_aspect else ""
             user_content = f"""Câu hỏi gốc: {current_question.get('main_prompt', '')}
-Ứng viên vừa trả lời: {candidate_text}
-Hãy đưa ra 1 câu hỏi đào sâu trực diện:"""
+Ứng viên vừa trả lời: {candidate_text}{missing_hint}
+Hãy đưa ra câu hỏi probe:"""
             fallback_coding_probe = SAFE_FALLBACK_PROBE_VI if is_vi else SAFE_FALLBACK_PROBE_EN
 
         try:
@@ -711,7 +839,130 @@ Hãy đưa ra 1 câu hỏi đào sâu trực diện:"""
         self,
         session_state: Dict[str, Any],
     ) -> Tuple[InterviewStage, Optional[QuestionItem]]:
-        """Lấy câu hỏi tiếp theo từ Question Bank đã freeze theo FSM."""
+        """Lấy câu hỏi tiếp theo từ Question Pool theo Dynamic Time-Budgeted Pacing."""
+        current_stage = InterviewStage(session_state.get("current_stage", InterviewStage.WARM_UP))
+        questions_pool = session_state.get("questions_pool", {})
+        asked_ids = set(str(qid) for qid in session_state.get("asked_question_ids", []))
+        curr_qid = str((session_state.get("current_question_context") or {}).get("question_id") or "")
+        if curr_qid:
+            asked_ids.add(curr_qid)
+
+        is_vi = (session_state.get("locale") or "vi").lower().startswith("vi")
+
+        # 1. Tính toán ngân sách thời gian thực
+        target_duration_minutes = session_state.get("target_duration_minutes", 25)
+        target_duration_seconds = max(60, target_duration_minutes * 60)
+        now = datetime.now(timezone.utc)
+        started_at = session_state.get("started_at") or now
+        if isinstance(started_at, str):
+            try:
+                started_at = datetime.fromisoformat(started_at)
+            except Exception:
+                started_at = now
+        if started_at is None:
+            started_at = now
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+
+        elapsed_seconds = max(0, int((now - started_at).total_seconds()))
+        time_remaining_seconds = max(0, target_duration_seconds - elapsed_seconds)
+        elapsed_ratio = min(1.0, elapsed_seconds / target_duration_seconds)
+
+        # 2. Khẩn cấp: Còn dưới 90 giây -> Ép kết thúc phiên để tổng kết
+        if time_remaining_seconds <= 90 and current_stage not in (InterviewStage.WARM_UP,):
+            return InterviewStage.CLOSED, None
+
+        # Helper lấy câu hỏi chưa hỏi trong 1 stage
+        def pop_from_stage(st: InterviewStage) -> Optional[QuestionItem]:
+            stage_qs = questions_pool.get(st.value, [])
+            for q in stage_qs:
+                qid = str(q.get("question_id") or "")
+                qvid = str(q.get("question_version_id") or "")
+                if (qid and qid in asked_ids) or (qvid and qvid in asked_ids):
+                    continue
+                q_data = dict(q)
+                if "stage" not in q_data:
+                    q_data["stage"] = st
+                return QuestionItem(**q_data)
+            return None
+
+        # 3. Điều phối theo Tỷ lệ Thời gian Thực (Dynamic Pacing Controller)
+        if current_stage == InterviewStage.WARM_UP:
+            # Warm-up hoàn thành 1 lượt -> Luôn chuyển sang VALIDATE
+            q = pop_from_stage(InterviewStage.VALIDATE)
+            if q:
+                return InterviewStage.VALIDATE, q
+            q = pop_from_stage(InterviewStage.DEEP_DIVE)
+            if q:
+                return InterviewStage.DEEP_DIVE, q
+
+        elif current_stage == InterviewStage.VALIDATE:
+            # Nếu chưa vượt ngưỡng 30% thời gian -> Ưu tiên kiểm tra tiếp Validate nếu còn câu
+            if elapsed_ratio < TIME_THRESHOLDS[InterviewStage.VALIDATE]:
+                q = pop_from_stage(InterviewStage.VALIDATE)
+                if q:
+                    return InterviewStage.VALIDATE, q
+            # Đã xong Validate hoặc chạm mốc -> Chuyển sang DEEP_DIVE
+            q = pop_from_stage(InterviewStage.DEEP_DIVE)
+            if q:
+                return InterviewStage.DEEP_DIVE, q
+
+        elif current_stage == InterviewStage.DEEP_DIVE:
+            # Dynamic Loop: Còn thời gian (< 75%) -> Tiếp tục rút từ Queue DEEP_DIVE
+            if elapsed_ratio < TIME_THRESHOLDS[InterviewStage.DEEP_DIVE]:
+                q = pop_from_stage(InterviewStage.DEEP_DIVE)
+                if q:
+                    return InterviewStage.DEEP_DIVE, q
+                # Nếu đã hết câu DEEP_DIVE trong pool mà còn nhiều giờ -> Rút tiếp CHALLENGE hoặc BEHAVIORAL
+                q = pop_from_stage(InterviewStage.CHALLENGE) or pop_from_stage(InterviewStage.BEHAVIORAL)
+                if q:
+                    return q.stage, q
+            else:
+                # Đã chạm hoặc vượt 75% -> Ưu tiên chuyển sang CHALLENGE hoặc BEHAVIORAL
+                q = pop_from_stage(InterviewStage.CHALLENGE) or pop_from_stage(InterviewStage.BEHAVIORAL)
+                if q:
+                    return q.stage, q
+                # Nếu pool không có CHALLENGE/BEHAVIORAL -> Rút nốt câu DEEP_DIVE còn lại
+                q = pop_from_stage(InterviewStage.DEEP_DIVE)
+                if q:
+                    return InterviewStage.DEEP_DIVE, q
+
+        elif current_stage == InterviewStage.CHALLENGE:
+            if elapsed_ratio < TIME_THRESHOLDS[InterviewStage.CHALLENGE]:
+                q = pop_from_stage(InterviewStage.CHALLENGE)
+                if q:
+                    return InterviewStage.CHALLENGE, q
+            q = pop_from_stage(InterviewStage.BEHAVIORAL)
+            if q:
+                return InterviewStage.BEHAVIORAL, q
+
+        elif current_stage == InterviewStage.BEHAVIORAL:
+            if elapsed_ratio < TIME_THRESHOLDS[InterviewStage.BEHAVIORAL]:
+                q = pop_from_stage(InterviewStage.BEHAVIORAL)
+                if q:
+                    return InterviewStage.BEHAVIORAL, q
+            # ĐÃ HẾT CÂU BEHAVIORAL:
+            # Nếu còn >= 180s (3 phút) -> Mở phần Q&A Ngược (Candidate Asks AI)
+            if time_remaining_seconds >= 180:
+                prompt = (
+                    "Chúng ta đã hoàn thành toàn bộ các câu hỏi chuyên môn và tình huống. "
+                    f"Hiện tại buổi phỏng vấn vẫn còn khoảng {max(1, time_remaining_seconds // 60)} phút, "
+                    "bạn có câu hỏi hoặc thắc mắc nào muốn đặt cho mình về văn hóa công ty, dự án sắp tới, "
+                    "hoặc stack công nghệ tại INTERVIA không?"
+                    if is_vi
+                    else "We have completed all technical and behavioral questions. "
+                         f"We still have about {max(1, time_remaining_seconds // 60)} minutes remaining. "
+                         "Do you have any questions for me regarding our company culture, upcoming projects, or tech stack at INTERVIA?"
+                )
+                return InterviewStage.CLOSING, QuestionItem(
+                    question_id="closing-candidate-qna",
+                    stage=InterviewStage.CLOSING,
+                    competency="Hỏi đáp & Văn hóa doanh nghiệp",
+                    main_prompt=prompt,
+                )
+            return InterviewStage.CLOSED, None
+
+        # 4. Fallback: Duyệt tuần tự qua các stage còn lại
         stage_order = [
             InterviewStage.WARM_UP,
             InterviewStage.VALIDATE,
@@ -721,33 +972,31 @@ Hãy đưa ra 1 câu hỏi đào sâu trực diện:"""
             InterviewStage.CLOSING,
             InterviewStage.CLOSED,
         ]
-        current_stage = InterviewStage(session_state.get("current_stage", InterviewStage.WARM_UP))
-        questions_pool = session_state.get("questions_pool", {})
-        asked_ids = set(session_state.get("asked_question_ids", []))
+        curr_idx = stage_order.index(current_stage) if current_stage in stage_order else 0
+        for next_st in stage_order[curr_idx + 1:]:
+            if next_st == InterviewStage.CLOSED:
+                break
+            q = pop_from_stage(next_st)
+            if q:
+                return next_st, q
 
-        # Lấy câu hỏi chưa dùng trong stage hiện tại
-        stage_questions = questions_pool.get(current_stage.value, [])
-        for q in stage_questions:
-            q_id = q.get("question_id") or q.get("question_version_id")
-            if q_id not in asked_ids:
-                q_data = dict(q)
-                if "stage" not in q_data:
-                    q_data["stage"] = current_stage
-                return current_stage, QuestionItem(**q_data)
-
-        # Nếu đã hết câu hỏi ở stage hiện tại -> Chuyển sang stage kế tiếp
-        curr_idx = stage_order.index(current_stage)
-        for next_stage in stage_order[curr_idx + 1:]:
-            if next_stage == InterviewStage.CLOSED:
-                return InterviewStage.CLOSED, None
-
-            next_stage_questions = questions_pool.get(next_stage.value, [])
-            for q in next_stage_questions:
-                q_id = q.get("question_id") or q.get("question_version_id")
-                if q_id not in asked_ids:
-                    q_data = dict(q)
-                    if "stage" not in q_data:
-                        q_data["stage"] = next_stage
-                    return next_stage, QuestionItem(**q_data)
+        # Nếu đã duyệt hết tất cả câu hỏi trong pool mà còn dư thời gian (>= 3 phút):
+        if time_remaining_seconds >= 180 and current_stage not in (InterviewStage.CLOSING, InterviewStage.CLOSED):
+            prompt = (
+                "Chúng ta đã hoàn thành toàn bộ các câu hỏi chuyên môn cốt lõi. "
+                f"Hiện tại buổi phỏng vấn vẫn còn khoảng {max(1, time_remaining_seconds // 60)} phút, "
+                "bạn có câu hỏi hoặc thắc mắc nào muốn đặt cho mình về văn hóa công ty, dự án sắp tới, "
+                "hoặc stack công nghệ tại INTERVIA không?"
+                if is_vi
+                else "We have completed all core technical questions. "
+                     f"We still have about {max(1, time_remaining_seconds // 60)} minutes left. "
+                     "Do you have any questions for me regarding company culture, upcoming projects, or tech stack at INTERVIA?"
+            )
+            return InterviewStage.CLOSING, QuestionItem(
+                question_id="closing-candidate-qna",
+                stage=InterviewStage.CLOSING,
+                competency="Hỏi đáp & Văn hóa doanh nghiệp",
+                main_prompt=prompt,
+            )
 
         return InterviewStage.CLOSED, None
