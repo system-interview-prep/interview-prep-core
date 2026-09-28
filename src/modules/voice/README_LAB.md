@@ -12,7 +12,7 @@ LiveKit does not attach a free-form LLM. It sends each final transcript to Inter
 
 ## Configuration
 
-Set these values in the API environment:
+Set these values in the project-root `.env` file:
 
 ```env
 VOICE_LAB_ENABLED=true

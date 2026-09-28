@@ -33,8 +33,6 @@ services:
     env_file:
       - path: .env
         required: false
-      - path: src/modules/voice/.env
-        required: false
     environment:
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-interview}:${RABBITMQ_PASSWORD:-interview_password}@rabbitmq:5672/
       CELERY_BROKER_URL: amqp://${RABBITMQ_USER:-interview}:${RABBITMQ_PASSWORD:-interview_password}@rabbitmq:5672/

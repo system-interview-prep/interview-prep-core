@@ -20,9 +20,9 @@ from livekit.agents.voice.turn import EndpointingOptions
 from livekit.plugins import elevenlabs
 
 
-# Prefer variables supplied by Docker/the backend environment. The module
+# Prefer variables supplied by Docker/the backend environment. The project-root
 # .env file only fills values that are not already present.
-load_dotenv(Path(__file__).with_name(".env"), override=False)
+load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
 
 # The ElevenLabs plugin uses ELEVEN_API_KEY, while the existing Voice Lab uses
 # the more explicit ELEVENLABS_API_KEY name.
