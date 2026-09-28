@@ -406,6 +406,8 @@ async def process_candidate_message(
     client_message_id: str | None,
     content: str,
     telemetry: dict[str, Any] | None = None,
+    modality: str = "CHAT",
+    duration_seconds: float = 0.0,
     core_engine: InterviewCoreEngine | None = None,
 ) -> dict[str, Any]:
     session_id = session_row["id"]
@@ -554,8 +556,8 @@ async def process_candidate_message(
         session_id=session_id,
         turn_index=current_turn_index,
         text_content=cleaned_content,
-        modality="CHAT",
-        duration_seconds=0.0,
+        modality=modality,
+        duration_seconds=duration_seconds,
         telemetry=telemetry or {},
     )
 
