@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY pyproject.toml README.md ./
-RUN pip install --upgrade pip && pip install ".[embeddings]"
+RUN pip install ".[embeddings,voice-realtime]"
 
 COPY src ./src
 COPY tests ./tests

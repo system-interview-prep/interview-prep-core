@@ -33,10 +33,17 @@ services:
     env_file:
       - path: .env
         required: false
+      - path: src/modules/voice/.env
+        required: false
     environment:
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-interview}:${RABBITMQ_PASSWORD:-interview_password}@rabbitmq:5672/
       CELERY_BROKER_URL: amqp://${RABBITMQ_USER:-interview}:${RABBITMQ_PASSWORD:-interview_password}@rabbitmq:5672/
       DATABASE_URL: postgresql://user:password@postgres-db:5432/matching_db
+      LIVEKIT_AGENT_AUTOSTART: ${LIVEKIT_AGENT_AUTOSTART:-true}
+      LIVEKIT_AGENT_RUN_MODE: ${LIVEKIT_AGENT_RUN_MODE:-dev}
+      LIVEKIT_STT_MODEL: ${LIVEKIT_STT_MODEL:-assemblyai/universal-3-5-pro}
+      LIVEKIT_STT_LANGUAGE: ${LIVEKIT_STT_LANGUAGE:-auto}
+      VOICE_LAB_STT_LANGUAGE: ${VOICE_LAB_STT_LANGUAGE:-vi}
       # Docker Desktop on Windows/macOS needs polling to reliably notice bind-mounted edits.
       WATCHFILES_FORCE_POLLING: "true"
     ports: ["5000:5000"]

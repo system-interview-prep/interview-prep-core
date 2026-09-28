@@ -1,6 +1,8 @@
 """LiveKit streaming voice agent for the standalone Voice Lab.
 
-Run from the repository root after installing the optional dependency group:
+The API lifespan starts this worker automatically when ``LIVEKIT_AGENT_AUTOSTART``
+is enabled. For an isolated worker process, run it manually from the repository
+root after installing the optional dependency group:
 
     python -m pip install -e ".[voice-realtime]"
     python src/modules/voice/livekit_agent.py dev
@@ -27,7 +29,9 @@ from livekit.agents.voice.turn import EndpointingOptions
 from livekit.plugins import elevenlabs, openai
 
 
-load_dotenv(Path(__file__).with_name(".env"), override=True)
+# Prefer variables supplied by Docker/the backend environment. The module
+# .env file only fills values that are not already present.
+load_dotenv(Path(__file__).with_name(".env"), override=False)
 
 # The ElevenLabs plugin uses ELEVEN_API_KEY, while the existing Voice Lab uses
 # the more explicit ELEVENLABS_API_KEY name.
@@ -68,13 +72,56 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
     if not voice_id:
         raise RuntimeError("ELEVENLABS_VOICE_ID is missing")
 
-    session = AgentSession(
-        # Vietnamese is the primary language. Set VOICE_LAB_STT_LANGUAGE=multi
-        # when testing automatic Vietnamese/English code-switch detection.
-        stt=inference.STT(
-            model="deepgram/nova-3",
+    stt_model = os.getenv("LIVEKIT_STT_MODEL", "assemblyai/universal-3-5-pro").strip()
+    is_assemblyai = stt_model.startswith("assemblyai/")
+    if is_assemblyai:
+        # AssemblyAI Universal-3.5 Pro supports Vietnamese and automatic
+        # Vietnamese/English code-switching when language is omitted.
+        stt_language = os.getenv("LIVEKIT_STT_LANGUAGE", "auto").strip().lower()
+        assemblyai_options: dict[str, object] = {
+            "prompt": "Vietnamese IT interview with English technical terms.",
+            "keyterms_prompt": [
+                "REST API",
+                "Docker",
+                "Kubernetes",
+                    "React",
+                    "Next.js",
+                    "NestJS",
+                    "FastAPI",
+                    "JWT",
+                    "CI/CD",
+                    "Cloudflare R2",
+                    "vector database",
+                    "Model Context Protocol",
+                    "MCP",
+                    "microservices",
+                    "scalable system",
+                    "high throughput",
+                    "data consistency",
+                ],
+            # Keep natural pauses inside one answer instead of finalizing
+            # every short clause as a separate turn.
+            "mode": "balanced",
+            "min_turn_silence": 700,
+            "max_turn_silence": 2200,
+            "previous_context_n_turns": 5,
+        }
+        if stt_language not in {"", "auto", "multi"}:
+            assemblyai_options["language"] = stt_language
+        stt = inference.STT(
+            model=stt_model,
+            extra_kwargs=assemblyai_options,
+        )
+    else:
+        stt = inference.STT(
+            model=stt_model,
             language=os.getenv("VOICE_LAB_STT_LANGUAGE", "vi"),
-        ),
+        )
+
+    session = AgentSession(
+        # Vietnamese mode is more reliable for short utterances. Set the env
+        # value to "multi" only when the candidate frequently code-switches.
+        stt=stt,
         # Raise the Silero activation threshold and require a short amount of
         # speech before opening a turn. This prevents air conditioners and
         # short background noises from keeping the turn open indefinitely.
@@ -94,8 +141,12 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
         # End a user turn after a short, stable silence. This makes the lab
         # predictable for measurement and prevents waiting for manual input.
         turn_handling=TurnHandlingOptions(
-            turn_detection="vad",
-            endpointing=EndpointingOptions(mode="fixed", min_delay=1.6, max_delay=2.8),
+            turn_detection="stt" if is_assemblyai else "vad",
+            endpointing=EndpointingOptions(
+                mode="fixed",
+                min_delay=0.0 if is_assemblyai else 1.6,
+                max_delay=2.8,
+            ),
         ),
     )
 

@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     livekit_api_key: str | None = None
     livekit_api_secret: str | None = None
     livekit_agent_name: str = "intervia-voice"
+    # Start the LiveKit worker from the API process during local development.
+    # Keep this opt-in for deployments that run the worker as its own service.
+    livekit_agent_autostart: bool = False
+    livekit_agent_run_mode: str = "dev"
     llm_provider: str = "openai"
     # Pin the snapshot so an alias update cannot silently change eval behavior.
     llm_model: str = "gpt-5.4-mini-2026-03-17"
