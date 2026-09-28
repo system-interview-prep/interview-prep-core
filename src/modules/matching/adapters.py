@@ -41,8 +41,27 @@ def _canonical_requirements(parsed: CanonicalJobDescription) -> list[JobRequirem
     if (
         llm_requirements
         and baseline_requirements
-        and parsed.parsing.parser_version == "hybrid-jd-v2"
+        and parsed.parsing.parser_version in {"hybrid-jd-v1", "hybrid-jd-v2"}
     ):
+        # Legacy hybrid artifacts can contain a paraphrased req-llm-* set that
+        # predates taxonomy grounding.  Selecting that set unconditionally
+        # discards valid concept IDs from the deterministic baseline and leaves
+        # downstream interview planning with no bank-addressable targets.
+        #
+        # Keep the historical LLM source when it carries any taxonomy-backed
+        # requirement.  Fall back to the baseline only when the LLM set has
+        # zero grounded concepts and the baseline has at least one.  This is a
+        # provenance-based compatibility repair, not fuzzy re-grounding.
+        def grounded_concept_count(items: list[JobRequirement]) -> int:
+            return sum(
+                (1 if item.concept is not None else 0) + len(item.atomic_concepts)
+                for item in items
+            )
+
+        llm_grounded = grounded_concept_count(llm_requirements)
+        baseline_grounded = grounded_concept_count(baseline_requirements)
+        if llm_grounded == 0 and baseline_grounded > 0:
+            return baseline_requirements
         return llm_requirements
     return parsed.requirements
 
@@ -105,7 +124,7 @@ def job_description_to_matching_job(
                 SkillRequirement(
                     **common,
                     type="skill",
-                    skill=requirement.concept,
+                    skill=concept,
                     rawLabel=requirement.raw_label,
                     operator="gte" if requirement.minimum_experience_months is not None else "required",
                     minimumExperienceMonths=requirement.minimum_experience_months,
