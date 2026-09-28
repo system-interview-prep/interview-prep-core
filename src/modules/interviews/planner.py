@@ -6,6 +6,7 @@ It does not select questions and it does not ask an LLM to invent competencies.
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -19,6 +20,10 @@ from src.modules.interviews.plan_structure import (
     build_sections,
     derive_difficulty,
     validate_must_have_coverage,
+)
+from src.modules.interviews.planner_config import (
+    PlannerPolicyConfig,
+    resolve_strict_hands_on_precedence,
 )
 from src.modules.job_descriptions.schemas import CanonicalJobDescription
 from src.modules.matching.facade import canonical_job_from_description, evaluate_match
@@ -34,6 +39,7 @@ from src.modules.matching.schemas import (
 from src.modules.user_cvs.schemas import CanonicalResume
 
 PLANNER_POLICY_VERSION = "interview-planner-v1"
+PLANNER_POLICY_VERSION_DYNAMIC = "interview-planner-v2-dynamic"
 
 _PRIORITY_WEIGHT = {
     "must_have": 1.0,
@@ -157,19 +163,13 @@ def _allocate_question_counts(weights: list[float], budget: int) -> list[int]:
     return counts
 
 
-def derive_competency_plan(
+def _derive_competency_plan_legacy(
     *,
     job: CanonicalJob,
     match: MatchResult,
     duration_minutes: int,
 ) -> dict[str, Any]:
-    """Build a deterministic competency agenda from canonical requirements.
-
-    Requirement priority is the primary signal. Matching status only boosts
-    areas that need more validation/practice; a CV claim marked MET still
-    remains interviewable and is never treated as proof that the interview can
-    skip that competency.
-    """
+    """Legacy fixed question budget algorithm (interview-planner-v1)."""
     result_by_id = {item.requirement_id: item for item in match.requirement_results}
     candidates: dict[tuple[str, str], _CandidateTarget] = {}
     non_competency_requirement_ids: list[str] = []
@@ -206,9 +206,6 @@ def derive_competency_plan(
                 weight=per_concept_weight,
             )
 
-    # A canonical role classification is a controlled fallback only when the JD
-    # has no taxonomy-backed requirement concepts. It is explicitly marked so
-    # P2 can treat it differently from requirement-level competencies.
     if not candidates and not had_taxonomy_concepts:
         classifications = sorted(
             job.career_classifications,
@@ -299,6 +296,520 @@ def derive_competency_plan(
     canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     plan["fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return plan
+
+
+_CODING_KEYWORDS = {"coding_problem", "live_coding", "algorithm", "data_structures", "coding"}
+
+
+def _is_coding_target(concept: TaxonomyRef, requirements: list[Any]) -> bool:
+    """Classify preliminarily whether a canonical concept target is CODING or TEXT.
+
+    Checks tags, labels, and evidence metadata without querying Question Bank.
+    """
+    for req in requirements:
+        req_tags = {str(t).lower() for t in getattr(req, "tags", [])}
+        if req_tags & _CODING_KEYWORDS:
+            return True
+        raw_label = (getattr(req, "raw_label", "") or "").lower()
+        if any(kw in raw_label for kw in ("coding", "algorithm", "data structure", "live coding")):
+            return True
+
+    concept_tags = {str(t).lower() for t in getattr(concept, "tags", [])}
+    if concept_tags & _CODING_KEYWORDS:
+        return True
+
+    text_corpus = f"{concept.concept_id} {concept.label}".lower()
+    return any(kw in text_corpus for kw in ("coding", "algorithm", "data_structure", "live_coding"))
+
+
+def _derive_competency_plan_dynamic(
+    *,
+    job: CanonicalJob,
+    match: MatchResult,
+    duration_minutes: int,
+    config: PlannerPolicyConfig,
+) -> dict[str, Any]:
+    """Gate 2 dynamic time envelope allocation algorithm (interview-planner-v2-dynamic)."""
+    result_by_id = {item.requirement_id: item for item in match.requirement_results}
+    non_competency_requirement_ids: list[str] = []
+    had_taxonomy_concepts = False
+
+    # 1. Map all canonical concepts and requirements (C_all partition tracking)
+    canonical_map: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for requirement in job.requirements:
+        concepts = _requirement_concepts(requirement)
+        if not concepts:
+            non_competency_requirement_ids.append(requirement.requirement_id)
+            continue
+        had_taxonomy_concepts = True
+
+        result = result_by_id.get(requirement.requirement_id)
+        priority_weight = _PRIORITY_WEIGHT.get(requirement.priority, 0.0)
+        concept_count = len(concepts)
+
+        for concept in concepts:
+            match_status = _status_for_concept(result, concept.concept_id)
+            status_boost = _STATUS_BOOST.get(match_status, 1.0)
+            per_concept_weight = (priority_weight * status_boost / concept_count) if status_boost > 0.0 else 0.0
+
+            key = (concept.taxonomy_version, concept.concept_id)
+            if key not in canonical_map:
+                canonical_map[key] = {
+                    "concept": concept,
+                    "requirements": [],
+                    "requirement_ids": [],
+                    "priorities": [],
+                    "match_statuses": [],
+                    "source_evidence_refs": [],
+                    "raw_weight": 0.0,
+                    "source": "job_requirement",
+                }
+            entry = canonical_map[key]
+            entry["requirements"].append(requirement)
+            entry["raw_weight"] += per_concept_weight
+            if requirement.requirement_id not in entry["requirement_ids"]:
+                entry["requirement_ids"].append(requirement.requirement_id)
+            if requirement.priority not in entry["priorities"]:
+                entry["priorities"].append(requirement.priority)
+            if match_status not in entry["match_statuses"]:
+                entry["match_statuses"].append(match_status)
+            if requirement.source_evidence_ref not in entry["source_evidence_refs"]:
+                entry["source_evidence_refs"].append(requirement.source_evidence_ref)
+
+    if not canonical_map and not had_taxonomy_concepts:
+        classifications = sorted(
+            job.career_classifications,
+            key=lambda item: (not item.is_primary, -item.confidence, item.code),
+        )
+        for classification in classifications[:2]:
+            concept = TaxonomyRef(
+                conceptId=classification.code,
+                scheme="career",
+                taxonomyVersion=classification.taxonomy_version,
+                label=classification.label,
+            )
+            key = (concept.taxonomy_version, concept.concept_id)
+            canonical_map[key] = {
+                "concept": concept,
+                "requirements": [],
+                "requirement_ids": [],
+                "priorities": ["must_have" if classification.is_primary else "nice_to_have"],
+                "match_statuses": ["unknown"],
+                "source_evidence_refs": [],
+                "raw_weight": 1.0 if classification.is_primary else 0.5,
+                "source": "career_classification_fallback",
+            }
+
+    if not canonical_map:
+        raise ValueError("No applicable taxonomy-backed interview competencies could be derived from the job")
+
+    # 2. Compute T_tech_pool
+    total_session_seconds = duration_minutes * 60
+    t_onboarding = config.t_onboarding_base + config.t_cv_addon_inclusive
+    t_probe_pool = round(config.probe_pool_ratio * total_session_seconds)
+    total_reserves = (
+        t_onboarding
+        + config.t_cv_standalone_reserve
+        + config.t_behavioral
+        + t_probe_pool
+        + config.t_closing_reserve
+    )
+    if total_reserves > total_session_seconds:
+        raise ValueError(
+            f"Invalid budget configuration: total reserves ({total_reserves}s) "
+            f"exceed session duration ({total_session_seconds}s)."
+        )
+    tech_pool_seconds = total_session_seconds - total_reserves
+
+    # 3. Step 0: Pre-filtering 100% not_applicable targets
+    candidates: list[dict[str, Any]] = []
+    non_interviewed_targets: list[dict[str, Any]] = []
+
+    for key, entry in canonical_map.items():
+        concept = entry["concept"]
+        reqs = entry["requirements"]
+        match_statuses = entry["match_statuses"]
+        is_all_na = bool(match_statuses) and all(s == "not_applicable" for s in match_statuses)
+
+        is_coding = _is_coding_target(concept, reqs)
+        preliminary_archetype = "CODING" if is_coding else "TEXT"
+        entry["archetype"] = preliminary_archetype
+
+        highest_priority = (
+            "must_have"
+            if "must_have" in entry["priorities"]
+            else ("nice_to_have" if "nice_to_have" in entry["priorities"] else "context")
+        )
+        entry["priority"] = highest_priority
+
+        if is_all_na:
+            non_interviewed_targets.append({
+                "conceptId": concept.concept_id,
+                "taxonomyVersion": concept.taxonomy_version,
+                "label": concept.label,
+                "priority": highest_priority,
+                "targetArchetype": preliminary_archetype,
+                "omissionReason": "not_applicable_for_candidate",
+                "omissionDetail": {
+                    "matchStatus": "not_applicable",
+                    "weight": 0.0,
+                    "reason": "100% of underlying requirements evaluated as not_applicable",
+                },
+            })
+        else:
+            candidates.append(entry)
+
+    evaluation_targets = build_evaluation_targets(job=job, match=match)
+    validate_must_have_coverage(job=job, evaluation_targets=evaluation_targets)
+
+    # 4. Handle Case: 100% of targets are not_applicable (Option B)
+    if not candidates:
+        plan = {
+            "policyVersion": PLANNER_POLICY_VERSION_DYNAMIC,
+            "sessionDurationMinutes": duration_minutes,
+            "sessionDurationSeconds": total_session_seconds,
+            "onboardingReserveSeconds": t_onboarding,
+            "cvStandaloneReserveSeconds": config.t_cv_standalone_reserve,
+            "behavioralReserveSeconds": config.t_behavioral,
+            "probePoolSeconds": t_probe_pool,
+            "closingReserveSeconds": config.t_closing_reserve,
+            "techPoolSeconds": tech_pool_seconds,
+            "unallocatedBufferSeconds": tech_pool_seconds,
+            "difficulty": derive_difficulty(job),
+            "sections": build_sections(duration_minutes),
+            "targets": [],
+            "nonInterviewedTargets": non_interviewed_targets,
+            "evaluationTargets": evaluation_targets,
+            "nonCompetencyRequirementIds": non_competency_requirement_ids,
+            "estimatedTurnsRange": {
+                "estimatedFrozenTurnsRange": [
+                    config.n_onboarding + (1 if config.t_behavioral > 0 else 0),
+                    config.n_onboarding + (1 if config.t_behavioral > 0 else 0),
+                ],
+                "estimatedTotalInteractionTurnsRange": [
+                    config.n_onboarding + (1 if config.t_behavioral > 0 else 0),
+                    None,
+                ],
+            },
+            "candidateMatrix": {
+                "strengthsToVerify": [],
+                "gapCompetencies": [],
+            },
+        }
+        canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        plan["fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return plan
+
+    # 5. Deterministic Ranking of Candidate Targets
+    ranked_candidates = sorted(
+        candidates,
+        key=lambda item: (
+            0 if "must_have" in item["priorities"] else 1,
+            -item["raw_weight"],
+            item["concept"].taxonomy_version,
+            item["concept"].concept_id,
+        ),
+    )
+
+    # 6. Step 1: Sequential Allocation & Policy Decisions (Decisions 5 & 7)
+    eligible_targets: list[dict[str, Any]] = []
+    accumulated_floor = 0
+    precedence_hands_on = resolve_strict_hands_on_precedence(job=job, config=config)
+
+    for i, item in enumerate(ranked_candidates):
+        rem = tech_pool_seconds - accumulated_floor
+        arch = item["archetype"]
+        remaining_candidates = ranked_candidates[i + 1:]
+
+        if arch == "TEXT":
+            floor = config.t_arch_text_min
+            if accumulated_floor + floor <= tech_pool_seconds:
+                item["targetArchetype"] = "TEXT"
+                item["floorSeconds"] = floor
+                eligible_targets.append(item)
+                accumulated_floor += floor
+            else:
+                non_interviewed_targets.append({
+                    "conceptId": item["concept"].concept_id,
+                    "taxonomyVersion": item["concept"].taxonomy_version,
+                    "label": item["concept"].label,
+                    "priority": item["priority"],
+                    "targetArchetype": "TEXT",
+                    "omissionReason": "insufficient_tech_pool_for_minimum_envelope",
+                    "omissionDetail": {
+                        "poolRemainingSeconds": rem,
+                        "floorRequiredSeconds": floor,
+                    },
+                })
+                if config.strict_priority_stop:
+                    for rem_t in remaining_candidates:
+                        non_interviewed_targets.append({
+                            "conceptId": rem_t["concept"].concept_id,
+                            "taxonomyVersion": rem_t["concept"].taxonomy_version,
+                            "label": rem_t["concept"].label,
+                            "priority": rem_t["priority"],
+                            "targetArchetype": rem_t["archetype"],
+                            "omissionReason": "strict_priority_halted_due_to_higher_rank",
+                            "omissionDetail": {
+                                "haltedByConceptId": item["concept"].concept_id,
+                                "reason": "Strict priority stop halted due to higher rank target insufficiency",
+                            },
+                        })
+                    break
+                else:
+                    continue
+
+        elif arch == "CODING":
+            coding_floor = config.t_arch_code_min
+            if rem >= coding_floor:
+                item["targetArchetype"] = "CODING"
+                item["floorSeconds"] = coding_floor
+                eligible_targets.append(item)
+                accumulated_floor += coding_floor
+            else:
+                # Decision 5 Coding Fallback applies BEFORE deciding eligibility
+                # Precedence: True or None (missing flag -> fail-safe omission) prevents downgrade
+                if precedence_hands_on is True or precedence_hands_on is None:
+                    non_interviewed_targets.append({
+                        "conceptId": item["concept"].concept_id,
+                        "taxonomyVersion": item["concept"].taxonomy_version,
+                        "label": item["concept"].label,
+                        "priority": item["priority"],
+                        "targetArchetype": "CODING",
+                        "omissionReason": "insufficient_envelope_for_coding_assessment",
+                        "omissionDetail": {
+                            "poolRemainingSeconds": rem,
+                            "floorRequiredSeconds": coding_floor,
+                            "strictHandsOnRequired": precedence_hands_on,
+                        },
+                    })
+                    if config.strict_priority_stop:
+                        for rem_t in remaining_candidates:
+                            non_interviewed_targets.append({
+                                "conceptId": rem_t["concept"].concept_id,
+                                "taxonomyVersion": rem_t["concept"].taxonomy_version,
+                                "label": rem_t["concept"].label,
+                                "priority": rem_t["priority"],
+                                "targetArchetype": rem_t["archetype"],
+                                "omissionReason": "strict_priority_halted_due_to_higher_rank",
+                                "omissionDetail": {
+                                    "haltedByConceptId": item["concept"].concept_id,
+                                    "reason": "Strict priority stop halted due to higher rank target insufficiency",
+                                },
+                            })
+                        break
+                    else:
+                        continue
+                else:
+                    # precedence_hands_on is False: adhere to coding_fallback_policy
+                    if config.coding_fallback_policy == "downgrade_to_text":
+                        text_floor = config.t_arch_text_min
+                        if accumulated_floor + text_floor <= tech_pool_seconds:
+                            item["targetArchetype"] = "TEXT"
+                            item["floorSeconds"] = text_floor
+                            eligible_targets.append(item)
+                            accumulated_floor += text_floor
+                        else:
+                            non_interviewed_targets.append({
+                                "conceptId": item["concept"].concept_id,
+                                "taxonomyVersion": item["concept"].taxonomy_version,
+                                "label": item["concept"].label,
+                                "priority": item["priority"],
+                                "targetArchetype": "TEXT",
+                                "omissionReason": "insufficient_tech_pool_for_minimum_envelope",
+                                "omissionDetail": {
+                                    "poolRemainingSeconds": rem,
+                                    "floorRequiredSeconds": text_floor,
+                                },
+                            })
+                            if config.strict_priority_stop:
+                                for rem_t in remaining_candidates:
+                                    non_interviewed_targets.append({
+                                        "conceptId": rem_t["concept"].concept_id,
+                                        "taxonomyVersion": rem_t["concept"].taxonomy_version,
+                                        "label": rem_t["concept"].label,
+                                        "priority": rem_t["priority"],
+                                        "targetArchetype": rem_t["archetype"],
+                                        "omissionReason": "strict_priority_halted_due_to_higher_rank",
+                                        "omissionDetail": {
+                                            "haltedByConceptId": item["concept"].concept_id,
+                                            "reason": "Strict priority stop halted due to higher rank target insufficiency",
+                                        },
+                                    })
+                                break
+                            else:
+                                continue
+                    else:
+                        # 5B: omit
+                        non_interviewed_targets.append({
+                            "conceptId": item["concept"].concept_id,
+                            "taxonomyVersion": item["concept"].taxonomy_version,
+                            "label": item["concept"].label,
+                            "priority": item["priority"],
+                            "targetArchetype": "CODING",
+                            "omissionReason": "insufficient_envelope_for_coding_assessment",
+                            "omissionDetail": {
+                                "poolRemainingSeconds": rem,
+                                "floorRequiredSeconds": coding_floor,
+                            },
+                        })
+                        if config.strict_priority_stop:
+                            for rem_t in remaining_candidates:
+                                non_interviewed_targets.append({
+                                    "conceptId": rem_t["concept"].concept_id,
+                                    "taxonomyVersion": rem_t["concept"].taxonomy_version,
+                                    "label": rem_t["concept"].label,
+                                    "priority": rem_t["priority"],
+                                    "targetArchetype": rem_t["archetype"],
+                                    "omissionReason": "strict_priority_halted_due_to_higher_rank",
+                                    "omissionDetail": {
+                                        "haltedByConceptId": item["concept"].concept_id,
+                                        "reason": "Strict priority stop halted due to higher rank target insufficiency",
+                                    },
+                                })
+                            break
+                        else:
+                            continue
+
+    # 7. Step 2: Surplus Allocation via Hamilton-Hare on Integer Seconds
+    targets: list[dict[str, Any]] = []
+    if not eligible_targets:
+        unallocated_buffer_seconds = tech_pool_seconds
+    else:
+        surplus = tech_pool_seconds - accumulated_floor
+        total_w = sum(t["raw_weight"] for t in eligible_targets)
+        if total_w == 0.0:
+            # Defensive Zero-Weight Fallback: Equal share allocation without ZeroDivisionError
+            normalized_w = [1.0 / len(eligible_targets)] * len(eligible_targets)
+        else:
+            normalized_w = [t["raw_weight"] / total_w for t in eligible_targets]
+
+        ideal_surplus = [surplus * w for w in normalized_w]
+        floor_surplus = [int(math.floor(val)) for val in ideal_surplus]
+        fractions = [ideal_surplus[i] - floor_surplus[i] for i in range(len(eligible_targets))]
+        delta = surplus - sum(floor_surplus)
+
+        sorted_indices = sorted(
+            range(len(eligible_targets)),
+            key=lambda idx: (-fractions[idx], idx),
+        )
+        bonus = [0] * len(eligible_targets)
+        for idx in sorted_indices[:delta]:
+            bonus[idx] += 1
+
+        for rank, (item, norm_w, fl_s, b) in enumerate(zip(eligible_targets, normalized_w, floor_surplus, bonus)):
+            envelope = item["floorSeconds"] + fl_s + b
+            arch = item["targetArchetype"]
+            if arch == "CODING":
+                min_q = max(1, envelope // config.t_arch_code_max)
+                max_q = max(1, math.ceil(envelope / config.t_arch_code_min))
+            else:
+                min_q = max(1, envelope // config.t_arch_text_max)
+                max_q = max(1, math.ceil(envelope / config.t_arch_text_min))
+
+            targets.append({
+                "selectionRank": rank,
+                "taxonomyVersion": item["concept"].taxonomy_version,
+                "conceptId": item["concept"].concept_id,
+                "label": item["concept"].label,
+                "targetArchetype": arch,
+                "timeEnvelopeSeconds": envelope,
+                "floorSeconds": item["floorSeconds"],
+                "estimatedQuestionsRange": [min_q, max_q],
+                "importance": round(norm_w, 6),
+                "targetQuestionCount": max(1, min_q),
+                "rationale": {
+                    "source": item["source"],
+                    "requirementIds": item["requirement_ids"],
+                    "priorities": item["priorities"],
+                    "matchStatuses": item["match_statuses"],
+                    "jobEvidenceRefs": item["source_evidence_refs"],
+                },
+            })
+        unallocated_buffer_seconds = 0
+
+    # Verification of Invariants
+    total_env = sum(t["timeEnvelopeSeconds"] for t in targets)
+    assert total_env + unallocated_buffer_seconds == tech_pool_seconds, "Invariant 1 & 2 Conservation Violation"
+    assert len(canonical_map) == len(targets) + len(non_interviewed_targets), "Invariant 4B Partition Violation"
+
+    strengths_to_verify = [
+        t["label"] or t["conceptId"]
+        for t in targets
+        if "met" in (t.get("rationale", {}).get("matchStatuses") or [])
+    ]
+    gap_competencies = [
+        t["label"] or t["conceptId"]
+        for t in targets
+        if any(s in ("not_met", "unknown") for s in (t.get("rationale", {}).get("matchStatuses") or []))
+    ]
+
+    min_tech = sum(t["estimatedQuestionsRange"][0] for t in targets)
+    max_tech = sum(t["estimatedQuestionsRange"][1] for t in targets)
+    star_turns = 1 if config.t_behavioral > 0 else 0
+    min_frozen = config.n_onboarding + min_tech + star_turns
+    max_frozen = config.n_onboarding + max_tech + star_turns
+
+    plan = {
+        "policyVersion": PLANNER_POLICY_VERSION_DYNAMIC,
+        "sessionDurationMinutes": duration_minutes,
+        "sessionDurationSeconds": total_session_seconds,
+        "onboardingReserveSeconds": t_onboarding,
+        "cvStandaloneReserveSeconds": config.t_cv_standalone_reserve,
+        "behavioralReserveSeconds": config.t_behavioral,
+        "probePoolSeconds": t_probe_pool,
+        "closingReserveSeconds": config.t_closing_reserve,
+        "techPoolSeconds": tech_pool_seconds,
+        "unallocatedBufferSeconds": unallocated_buffer_seconds,
+        "difficulty": derive_difficulty(job),
+        "sections": build_sections(duration_minutes),
+        "targets": targets,
+        "nonInterviewedTargets": non_interviewed_targets,
+        "evaluationTargets": evaluation_targets,
+        "nonCompetencyRequirementIds": non_competency_requirement_ids,
+        "estimatedTurnsRange": {
+            "estimatedFrozenTurnsRange": [min_frozen, max_frozen],
+            "estimatedTotalInteractionTurnsRange": [min_frozen, None],
+        },
+        "candidateMatrix": {
+            "strengthsToVerify": strengths_to_verify,
+            "gapCompetencies": gap_competencies,
+        },
+    }
+    canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    plan["fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return plan
+
+
+def derive_competency_plan(
+    *,
+    job: CanonicalJob,
+    match: MatchResult,
+    duration_minutes: int,
+    policy_config: PlannerPolicyConfig | None = None,
+) -> dict[str, Any]:
+    """Build a deterministic competency agenda from canonical requirements.
+
+    When `policy_config` is None, executes the strict legacy allocation algorithm
+    (policyVersion "interview-planner-v1") to preserve full backward compatibility
+    for existing callers without imposing unapproved Product assumptions.
+
+    When `policy_config` is explicitly provided, executes the Gate 2 dynamic time
+    envelope allocation algorithm (policyVersion "interview-planner-v2-dynamic").
+    """
+    if policy_config is None:
+        return _derive_competency_plan_legacy(
+            job=job,
+            match=match,
+            duration_minutes=duration_minutes,
+        )
+    return _derive_competency_plan_dynamic(
+        job=job,
+        match=match,
+        duration_minutes=duration_minutes,
+        config=policy_config,
+    )
 
 
 async def _load_resume(
