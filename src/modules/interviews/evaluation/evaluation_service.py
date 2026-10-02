@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.core.trace_logging import trace_event
 
 from src.modules.interviews.evaluation.evaluation_engine import InterviewEvaluationEngine
 from src.modules.interviews.evaluation.evaluation_types import (
@@ -35,6 +38,8 @@ async def evaluate_closed_session(
     """
     Trích xuất dữ liệu từ PostgreSQL, gọi P4 Evaluation Engine và lưu kết quả vào CSDL.
     """
+    started_at = time.monotonic()
+    trace_event("interviewer", "evaluation_pipeline_started", session_id=session_id)
     eval_engine = engine or InterviewEvaluationEngine()
 
     # 1. Kiểm tra session
@@ -213,6 +218,15 @@ async def evaluate_closed_session(
         )
 
     await db.commit()
+    trace_event(
+        "interviewer",
+        "evaluation_pipeline_completed",
+        session_id=session_id,
+        overall_score=result.overall_score,
+        decision=result.decision_recommendation.value,
+        turns_evaluated=len(result.turn_evaluations),
+        duration_ms=round((time.monotonic() - started_at) * 1000),
+    )
     return result
 
 
