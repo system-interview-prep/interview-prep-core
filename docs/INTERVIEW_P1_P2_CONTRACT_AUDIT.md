@@ -60,7 +60,7 @@ Tuy nhiên, module P2 Question Selector (`src/modules/interviews/question_select
    - *Vị trí mã nguồn*: `src/modules/interviews/question_selector.py:506-512`.
    - *Hậu quả*: Code P2 hiện tại đang tự sinh prompt tạm không qua kiểm duyệt (`_fallback_snapshot`) khi thiếu câu trong kho.
    - *Chính sách đã phê duyệt & Ràng buộc thẩm quyền*:
-     - **Chính sách Deficit đã duyệt (Q2: 2A Fail-Closed — Product Approved 28/09/2026)**: P2 Dynamic chỉ sử dụng câu hỏi đạt chuẩn phê duyệt/calibration và có rubric hợp lệ. Nếu bất kỳ target bắt buộc nào không có tập câu đạt đúng archetype và floor của target, P2 không đóng băng queue thiếu hụt và không mở phiên; trả về lỗi `QuestionUnavailableError` với HTTP 409 và mã lỗi ổn định `question_bank_insufficient`. Response chỉ ra target/concept bị thiếu ở dạng an toàn, tuyệt đối không trả nội dung nội bộ của rubric hoặc câu hỏi không được phép hiển thị.
+     - **Chính sách Deficit đã duyệt (Q2: 2A Fail-Closed — Product Approved 28/09/2026)**: P2 Dynamic chỉ sử dụng câu hỏi đạt chuẩn phê duyệt/calibration (`qv.status IN ('APPROVED', 'CALIBRATED')` theo hằng số `_ELIGIBLE_STATUSES` tại `src/modules/interviews/question_selector.py:23, 144`, `q.retired_at IS NULL`, trỏ đúng `current_approved_version_id`, và có rubric chấm điểm hợp lệ qua bảng `question_version_rubrics`). Nếu bất kỳ target bắt buộc nào không có tập câu đạt đúng archetype và floor của target, P2 không đóng băng queue thiếu hụt và không mở phiên; trả về lỗi `QuestionUnavailableError` với HTTP 409 và mã lỗi ổn định `question_bank_insufficient`. Response chỉ ra target/concept bị thiếu ở dạng an toàn, tuyệt đối không trả nội dung nội bộ của rubric hoặc câu hỏi không được phép hiển thị.
      - **Đối với nhánh dynamic**: P2 là module thực thi kế hoạch cấp thấp, tuyệt đối **không tự ý loại bỏ target** (chỉ P1 mới có thẩm quyền omit target ở khâu lập kế hoạch), **không tự ý tái phân bổ ngân sách**, **không sinh câu hỏi giả lập** (synthetic prompt), **không gọi LLM fallback ad-hoc** tại runtime, và **không chỉnh sửa dữ liệu hay schema của Question Bank**.
      - **Đối với nhánh legacy**: Hành vi fallback cũ (`_fallback_snapshot`) tiếp tục được duy trì nguyên vẹn để bảo đảm tính tương thích ngược cho các phiên legacy hiện hành cho tới khi có quyết định rollout/loại bỏ riêng. Tuyệt đối không tuyên bố toàn hệ thống đã ngừng fallback. Phương án 2B không được chọn.
 
@@ -112,7 +112,7 @@ flowchart TD
     subgraph P2_Proposed["P2 Dynamic Selector (Gate 3 Work - Phạm vi A)"]
         E2 --> F2["Dual-Mode Dispatch kiểm tra plan_payload.policyVersion"]
         F2 -->|='interview-planner-v2-dynamic'| G2["Đọc targets[]: timeEnvelopeSeconds, targetArchetype, floorSeconds"]
-        G2 --> H2["Lọc Question Bank: APPROVED, đúng Locale, đúng Archetype\n(CẤM tự chèn coding vào target TEXT)"]
+        G2 --> H2["Lọc Question Bank: qv.status IN ('APPROVED', 'CALIBRATED')\nq.retired_at IS NULL, đúng version & rubric, đúng Locale/Archetype\n(CẤM tự chèn coding vào target TEXT)"]
         H2 --> I2["Thuật toán đóng gói (Packing Algorithm):\nQuét liên tục không ngắt sớm, kiểm tra Feasibility, thỏa Floor,\nHard Ceiling (Q4 Approved: <= timeEnvelopeSeconds)"]
         I2 --> J2["Xử lý thiếu câu: Q2 Approved 2A Fail-Closed\n(Trả HTTP 409 question_bank_insufficient an toàn;\nCẤM sinh câu giả, CẤM LLM fallback, CẤM tự ý bỏ target)"]
         J2 --> K2["Ghi interview_turns (PLANNED) & Lock Plan"]
@@ -240,7 +240,8 @@ Lần theo mã nguồn thực tế tại `src/modules/interviews/question_select
   2. *Hàm mục tiêu / Trật tự ưu tiên khi so sánh các tập khả thi*: Tiêu chí ưu tiên khi so sánh giữa các tập (ví dụ: tối đa hóa tổng relevance $\sum \text{relevance}$, ưu tiên độ khớp difficulty, hay ưu tiên thứ tự từ điển candidate cao nhất).
   3. *Cơ chế tie-break ổn định (Deterministic Tie-Break)*: Quy tắc phá vỡ thế hòa dứt điểm giữa hai tập câu hỏi có chất lượng ngang nhau dựa trên session salt và `question_version_id`, bảo đảm không phụ thuộc vào thứ tự trả về bất định của SQL query.
   4. *Giới hạn chi phí tính toán & Benchmark thực tế*: Thiết lập cơ chế kiểm soát chi phí tính toán và thực hiện benchmark đo kiểm với kích thước candidate pool thực tế trên cơ sở dữ liệu Question Bank.
-- **Ranh giới Quyết định**: Tuyệt đối không tự ghi thuật toán cụ thể đã được Product chốt; việc lựa chọn giữa Phương án A và Phương án B, định nghĩa hàm mục tiêu và tie-break là **quyết định kỹ thuật thuộc thẩm quyền Lead Architect** và hiện đang ở trạng thái **Pending Lead Architect approval**.
+  5. *Quy tắc sắp xếp thứ tự turns nội bộ (Intra-subset Turn Ordering)*: Lead Architect đã hoàn tất đánh giá và chốt **Phương án 1 (Sắp xếp theo `_candidate_rank` tăng dần)** để xác định thứ tự `turn_index = 0, 1, ...`, bảo đảm ưu tiên giá trị sư phạm và độc lập 100% với thứ tự trả về bất định của database row trong SQL query.
+- **Ranh giới Quyết định**: Việc lựa chọn giữa Phương án A và Phương án B, định nghĩa hàm mục tiêu $R(S)$, tie-break MD5 và thứ tự turns nội bộ đã được Lead Architect hoàn tất thiết kế trong [`docs/INTERVIEW_P2_PACKING_ALGORITHM_ADR.md`](INTERVIEW_P2_PACKING_ALGORITHM_ADR.md) và hiện đang ở trạng thái **Pending Formal Lead Architect Sign-off** (ADR giữ `PROPOSED` chờ xác nhận chính thức).
 
 #### 4.3.3. Các Điều Kiện Đóng Gói Cốt Lõi
 1. **Quét đóng gói không ngắt sớm (Continuous Scan)**:
@@ -265,7 +266,7 @@ Lần theo mã nguồn thực tế tại `src/modules/interviews/question_select
 ### 4.4. Chính Sách Khi Thiếu Câu Hỏi trong Question Bank (Decision 2: 2A Fail-Closed APPROVED)
 - **Quyết định Product đã phê duyệt (Product Approved 28/09/2026)**: **Phương án 2A — Fail-Closed**.
 - **Quy tắc thực thi chuẩn hóa**:
-  1. *Tiêu chuẩn câu hỏi*: P2 Dynamic chỉ sử dụng các câu hỏi đạt điều kiện phê duyệt / calibration (`status == 'APPROVED'`) và có rubric chấm điểm hợp lệ.
+  1. *Tiêu chuẩn câu hỏi*: P2 Dynamic chỉ sử dụng các câu hỏi đạt điều kiện phê duyệt / calibration (`qv.status IN ('APPROVED', 'CALIBRATED')` theo đúng hằng số `_ELIGIBLE_STATUSES` tại `src/modules/interviews/question_selector.py:23, 144`), có `q.retired_at IS NULL`, phiên bản trỏ đúng `current_approved_version_id`, và có rubric chấm điểm hợp lệ qua bảng `question_version_rubrics`.
   2. *Quy tắc Fail-Closed*: Nếu bất kỳ target bắt buộc nào không có tập câu hỏi đạt chuẩn thỏa mãn đúng `targetArchetype` và mức sàn `floorSeconds` trong trần `timeEnvelopeSeconds`, hệ thống **tuyệt đối không đóng băng queue thiếu hụt một phần và không mở phiên phỏng vấn**.
   3. *Mã lỗi & HTTP Status*: P2 ném lỗi `QuestionUnavailableError` với mã trạng thái HTTP **409 Conflict** và mã lỗi định danh ổn định:
      ```json
@@ -404,7 +405,7 @@ Product Owner đã chính thức phê duyệt phạm vi triển khai Gate 3 ngà
 | **1. Quyết định 4 (Ceiling Policy)** | Product Owner | **Lựa chọn A: Hard Ceiling** ($\sum \text{cost} \le \text{timeEnvelopeSeconds}$). Không dung sai %, không phụ trội s/câu. Soft Ceiling B/C rejected. | 🟢 **APPROVED (28/09/2026)** |
 | **2. Quyết định 2 (Question Bank Deficit)** | Product Owner | **Phương án 2A: Fail-Closed**. Thiếu câu đạt sàn $\implies$ HTTP 409 `question_bank_insufficient`. Response an toàn không leak rubric. Cấm omit/reallocate/synthetic/LLM fallback. Nhánh legacy giữ `_fallback_snapshot`. Phương án 2B rejected. | 🟢 **APPROVED (28/09/2026)** |
 | **3. Yêu cầu Hành vi Feasibility** | Product Owner | Bắt buộc chọn được tập câu đạt sàn nếu candidate pool có tập hợp lệ thỏa cả sàn và Hard Ceiling. Fixture 300s/180s/180s bắt buộc chọn B+C, không dừng ở A=300s. Không có tập thỏa $\implies$ Q2 Fail-Closed. | 🟢 **APPROVED (28/09/2026)** |
-| **4. Thuật toán Chọn câu & Tiêu chí Tối ưu** | Lead Architect | Chọn giữa **Phương án A (Lookahead)** và **Phương án B (Two-Phase Subset Search)**; định nghĩa ranking tuple ở cấp tập câu, objective function, tie-break ổn định không phụ thuộc SQL, và benchmark kích thước candidate pool thực tế. | 🟡 **PENDING Lead Architect Approval** |
+| **4. Thuật toán Chọn câu & Tiêu chí Tối ưu** | Lead Architect | Thiết kế kỹ thuật đã hoàn tất review: **Phương án B: Two-Phase Subset Search** kèm tỉa nhánh branch-and-bound, vector $R(S)$, tie-break MD5, kiến trúc atomic preflight, và **Phương án 1 (Sắp theo ranking tuple)** cho thứ tự `turn_index` nội bộ (xem [`docs/INTERVIEW_P2_PACKING_ALGORITHM_ADR.md`](INTERVIEW_P2_PACKING_ALGORITHM_ADR.md)). Trạng thái chính thức chờ formal sign-off. | 🟡 **PENDING Formal Sign-Off (PROPOSED)** |
 | **5. Phạm vi Triển khai Gate 3** | Product Owner | **Phạm vi A: P2 Module Testing**. Triển khai & test P2 bằng plan v2 fixtures. Không sửa caller thật, không sửa persistence bridge. | 🟢 **APPROVED (28/09/2026)** |
 | **6. Phạm vi B Staging Integration & Persistence Bridge** | Product Owner & Lead Architect | Persistence bridge trong `planner.py` và configuration layer cho staging. Hoãn sang pha sau, cần phê duyệt riêng. | ⚪ **DEFERRED (Ngoài phạm vi Gate 3)** |
 
@@ -476,7 +477,7 @@ Cần phân định rạch ròi phạm vi công việc của Gate 3 để không
 | Quyết định 2 (Question Bank Deficit Policy) | **Quyết định Product đã chốt (28/09/2026)** | **2A Fail-Closed**: Trả HTTP 409 `question_bank_insufficient` an toàn nếu thiếu câu đạt chuẩn/sàn. Phương án 2B rejected. |
 | Quyết định 4 (Ceiling Policy) | **Quyết định Product đã chốt (28/09/2026)** | **Lựa chọn A: Hard Ceiling** ($\le \text{timeEnvelopeSeconds}$). Không dung sai %, không phụ trội s/câu. Soft Ceiling B/C rejected. |
 | Phạm vi triển khai Gate 3 | **Quyết định Product đã chốt (28/09/2026)** | **Phạm vi A: P2 Module Testing**. Triển khai & test P2 bằng plan v2 fixtures. Không sửa caller thật, không sửa persistence bridge. |
-| Thuật toán packing (Lookahead A vs Subset Search B), Objective Function, Tie-Break | **Quyết định Kỹ thuật đang mở** | Thuộc thẩm quyền Lead Architect, đang chờ Lead Architect chính thức phê duyệt trước khi code. |
+| Thuật toán packing, Objective Function, Tie-Break, Intra-subset Turn Ordering | **Quyết định Kỹ thuật đã hoàn tất review (Chờ Formal Sign-off)** | Thiết kế kỹ thuật đã chốt Phương án B: Two-Phase Subset Search, vector $R(S)$, tie-break MD5, atomic preflight và Phương án 1 (Sắp xếp theo ranking tuple cho `turn_index` nội bộ) trong [`docs/INTERVIEW_P2_PACKING_ALGORITHM_ADR.md`](INTERVIEW_P2_PACKING_ALGORITHM_ADR.md); trạng thái chính thức chờ formal sign-off. |
 | Phạm vi B Staging Integration & Persistence Bridge | **Dependency hoãn sang pha sau** | Cần một phê duyệt staging riêng sau khi hoàn tất Phạm vi A. |
 | Ràng buộc Production | **Ràng buộc an toàn vận hành** | Không bật dynamic trên production, không truyền `PlannerPolicyConfig` vào caller production. |
 | Công thức ước tính chi phí $\text{cost} = \text{thinking} + \text{soft}$ | **Giả định / Đề xuất kỹ thuật** | Đề xuất phân tích, cần đối soát telemetry thực tế. |
