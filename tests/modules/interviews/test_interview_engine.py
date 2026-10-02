@@ -167,8 +167,8 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output.metadata.get("turn_in_question"), 0)
         self.assertIn("Microservices", output.message_text)
 
-    async def test_early_exit_2_strikes_in_validation_stage(self):
-        """4. 2 điểm trừ liên tiếp ở vòng Validate -> Kích hoạt dừng sớm FAST_FAIL_VALIDATION."""
+    async def test_low_score_and_insufficient_do_not_fast_fail_validation(self):
+        """Low score/insufficiency in Validate may probe but cannot terminate the session."""
         llm = MockLLM(eval_result={"score": 2.5, "is_sufficient": False, "acknowledgement": "Cảm ơn bạn."})
         engine = InterviewCoreEngine(llm_client=llm)
 
@@ -190,10 +190,10 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
 
         output = await engine.handle_turn(turn_input, session_state)
 
-        self.assertEqual(output.action, TurnAction.TERMINATE)
-        self.assertEqual(output.exit_reason, SessionExitReason.FAST_FAIL_VALIDATION)
-        self.assertTrue(output.is_session_finished)
-        self.assertEqual(output.current_stage, InterviewStage.CLOSED)
+        self.assertEqual(output.action, TurnAction.PROBE)
+        self.assertFalse(output.is_session_finished)
+        self.assertEqual(output.metadata["consecutive_uncooperative"], 0)
+        self.assertEqual(output.metadata["consecutive_fails"], 0)
 
     async def test_early_exit_disabled_in_mock_practice_mode(self):
         """5. Khi allow_early_exit = False (chế độ luyện tập) -> Không ngắt phiên dù trượt 2 lần."""
@@ -252,6 +252,199 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
         # Vì trễ giờ nên bị ép chuyển câu (NEXT_QUESTION) thay vì PROBE
         self.assertEqual(output.action, TurnAction.NEXT_QUESTION)
         self.assertIn("B-Tree và Hash Index", output.message_text)
+
+    async def test_behavioral_reserve_uses_frozen_behavioral_turn_when_available(self):
+        engine = InterviewCoreEngine(llm_client=MockLLM())
+        state = {
+            "current_stage": InterviewStage.DEEP_DIVE.value,
+            "target_duration_minutes": 25,
+            "remaining_time": 200,
+            "elapsed_time": 1300,
+            "closing_reserve_seconds": 60,
+            "behavioral_reserve_seconds": 180,
+            "questions_pool": {
+                InterviewStage.DEEP_DIVE.value: self.sample_questions_pool["DEEP_DIVE"],
+                InterviewStage.BEHAVIORAL.value: [{
+                    "question_id": "q-beh-1",
+                    "competency": "Behavioral",
+                    "stage": InterviewStage.BEHAVIORAL.value,
+                    "main_prompt": "Hãy kể về một lần bạn xử lý xung đột.",
+                }],
+            },
+            "asked_question_ids": ["q-deep-1"],
+        }
+
+        stage, question = engine._get_next_stage_and_question(state)
+
+        self.assertEqual(stage, InterviewStage.BEHAVIORAL)
+        self.assertIsNotNone(question)
+        self.assertEqual(question.question_id, "q-beh-1")
+
+    async def test_no_behavioral_and_exhausted_assessment_closes_without_synthetic_closing(self):
+        engine = InterviewCoreEngine(llm_client=MockLLM())
+        state = {
+            "current_stage": InterviewStage.CHALLENGE.value,
+            "target_duration_minutes": 25,
+            "remaining_time": 300,
+            "questions_pool": {InterviewStage.CHALLENGE.value: []},
+            "asked_question_ids": ["q-challenge-1"],
+        }
+
+        stage, question = engine._get_next_stage_and_question(state)
+
+        self.assertEqual(stage, InterviewStage.CLOSED)
+        self.assertIsNone(question)
+
+    async def test_frozen_closing_cannot_bypass_missing_behavioral(self):
+        engine = InterviewCoreEngine(llm_client=MockLLM())
+        state = {
+            "current_stage": InterviewStage.CHALLENGE.value,
+            "target_duration_minutes": 25,
+            "remaining_time": 300,
+            "questions_pool": {
+                InterviewStage.CLOSING.value: [{
+                    "question_id": "q-closing-frozen",
+                    "competency": "Candidate Q&A",
+                    "stage": InterviewStage.CLOSING.value,
+                    "main_prompt": "Bạn có câu hỏi nào cho chúng tôi không?",
+                }],
+            },
+            "asked_question_ids": [],
+        }
+
+        stage, question = engine._get_next_stage_and_question(state)
+
+        self.assertEqual(stage, InterviewStage.CLOSED)
+        self.assertIsNone(question)
+
+    async def test_pending_behavioral_is_asked_before_closing_even_after_95_percent(self):
+        engine = InterviewCoreEngine(llm_client=MockLLM())
+        state = {
+            "current_stage": InterviewStage.BEHAVIORAL.value,
+            "target_duration_minutes": 25,
+            "remaining_time": 180,
+            "elapsed_time": 1425,
+            "questions_pool": {
+                InterviewStage.BEHAVIORAL.value: [{
+                    "question_id": "q-beh-pending",
+                    "competency": "Behavioral",
+                    "stage": InterviewStage.BEHAVIORAL.value,
+                    "main_prompt": "Hãy kể về một lần bạn xử lý xung đột.",
+                }],
+            },
+            "asked_question_ids": [],
+        }
+
+        stage, question = engine._get_next_stage_and_question(state)
+
+        self.assertEqual(stage, InterviewStage.BEHAVIORAL)
+        self.assertIsNotNone(question)
+        self.assertEqual(question.question_id, "q-beh-pending")
+
+    async def test_completed_behavioral_allows_closing_at_exactly_180_seconds(self):
+        engine = InterviewCoreEngine(llm_client=MockLLM())
+        state = {
+            "current_stage": InterviewStage.BEHAVIORAL.value,
+            "target_duration_minutes": 25,
+            "remaining_time": 180,
+            "questions_pool": {
+                InterviewStage.BEHAVIORAL.value: [{
+                    "question_id": "q-beh-1",
+                    "competency": "Behavioral",
+                    "stage": InterviewStage.BEHAVIORAL.value,
+                    "main_prompt": "Hãy kể về một lần bạn xử lý xung đột.",
+                }],
+            },
+            "asked_question_ids": ["q-beh-1"],
+        }
+
+        stage, question = engine._get_next_stage_and_question(state)
+
+        self.assertEqual(stage, InterviewStage.CLOSING)
+        self.assertIsNotNone(question)
+        self.assertEqual(question.question_id, "closing-candidate-qna")
+
+    async def test_completed_behavioral_may_use_valid_frozen_closing_turn(self):
+        engine = InterviewCoreEngine(llm_client=MockLLM())
+        state = {
+            "current_stage": InterviewStage.BEHAVIORAL.value,
+            "target_duration_minutes": 25,
+            "remaining_time": 180,
+            "questions_pool": {
+                InterviewStage.BEHAVIORAL.value: [{
+                    "question_id": "q-beh-1",
+                    "competency": "Behavioral",
+                    "stage": InterviewStage.BEHAVIORAL.value,
+                    "main_prompt": "Hãy kể về một lần bạn xử lý xung đột.",
+                }],
+                InterviewStage.CLOSING.value: [{
+                    "question_id": "q-closing-frozen",
+                    "competency": "Candidate Q&A",
+                    "stage": InterviewStage.CLOSING.value,
+                    "main_prompt": "Bạn có câu hỏi nào cho chúng tôi không?",
+                }],
+            },
+            "asked_question_ids": ["q-beh-1"],
+        }
+
+        stage, question = engine._get_next_stage_and_question(state)
+
+        self.assertEqual(stage, InterviewStage.CLOSING)
+        self.assertIsNotNone(question)
+        self.assertEqual(question.question_id, "q-closing-frozen")
+
+    async def test_completed_behavioral_below_180_seconds_closes_without_closing_turn(self):
+        engine = InterviewCoreEngine(llm_client=MockLLM())
+        state = {
+            "current_stage": InterviewStage.BEHAVIORAL.value,
+            "target_duration_minutes": 25,
+            "remaining_time": 179,
+            "questions_pool": {
+                InterviewStage.BEHAVIORAL.value: [{
+                    "question_id": "q-beh-1",
+                    "competency": "Behavioral",
+                    "stage": InterviewStage.BEHAVIORAL.value,
+                    "main_prompt": "Hãy kể về một lần bạn xử lý xung đột.",
+                }],
+            },
+            "asked_question_ids": ["q-beh-1"],
+        }
+
+        stage, question = engine._get_next_stage_and_question(state)
+
+        self.assertEqual(stage, InterviewStage.CLOSED)
+        self.assertIsNone(question)
+
+    async def test_cutoff_stops_new_question_without_opening_closing(self):
+        engine = InterviewCoreEngine(llm_client=MockLLM())
+        state = {
+            "current_stage": InterviewStage.DEEP_DIVE.value,
+            "target_duration_minutes": 25,
+            "remaining_time": 90,
+            "elapsed_time": 1410,
+            "questions_pool": self.sample_questions_pool,
+            "asked_question_ids": ["q-deep-1"],
+        }
+
+        stage, question = engine._get_next_stage_and_question(state)
+
+        self.assertEqual(stage, InterviewStage.CLOSED)
+        self.assertIsNone(question)
+
+    async def test_cutoff_applies_during_warm_up(self):
+        engine = InterviewCoreEngine(llm_client=MockLLM())
+        state = {
+            "current_stage": InterviewStage.WARM_UP.value,
+            "target_duration_minutes": 25,
+            "remaining_time": 90,
+            "questions_pool": self.sample_questions_pool,
+            "asked_question_ids": ["q-warmup-1"],
+        }
+
+        stage, question = engine._get_next_stage_and_question(state)
+
+        self.assertEqual(stage, InterviewStage.CLOSED)
+        self.assertIsNone(question)
 
     async def test_hard_timeout_terminates_session(self):
         """7. Thời lượng còn lại <= 30 giây -> Dừng phiên ngay lập tức (HARD_TIMEOUT)."""
@@ -434,6 +627,91 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
         # Không bị terminate
         self.assertNotEqual(output.action, TurnAction.TERMINATE)
         self.assertEqual(output.metadata.get("consecutive_fails"), 0)
+        self.assertEqual(output.metadata.get("consecutive_uncooperative"), 0)
+
+    async def test_two_explicit_give_ups_fast_fail_only_in_technical_stage(self):
+        engine = InterviewCoreEngine(llm_client=MockLLM())
+        first_state = {
+            "current_stage": InterviewStage.DEEP_DIVE.value,
+            "started_at": datetime.now(timezone.utc),
+            "target_duration_minutes": 25,
+            "consecutive_uncooperative": 0,
+            "allow_early_exit": True,
+            "questions_pool": self.sample_questions_pool,
+            "asked_question_ids": ["q-deep-1"],
+            "current_turn_in_question": 0,
+            "current_question_context": self.sample_questions_pool["DEEP_DIVE"][0],
+        }
+        first = await engine.handle_turn(
+            CandidateTurnInput(session_id=self.session_id, turn_index=2, text_content="không biết"),
+            first_state,
+        )
+        self.assertNotEqual(first.action, TurnAction.TERMINATE)
+        self.assertEqual(first.metadata["consecutive_uncooperative"], 1)
+        self.assertEqual(first.metadata["consecutive_fails"], 1)
+
+        second_state = {
+            **first_state,
+            "consecutive_uncooperative": 1,
+            "asked_question_ids": ["q-deep-1", "q-deep-2"],
+            "current_question_context": self.sample_questions_pool["DEEP_DIVE"][1],
+        }
+        second = await engine.handle_turn(
+            CandidateTurnInput(session_id=self.session_id, turn_index=3, text_content="em chịu"),
+            second_state,
+        )
+        self.assertEqual(second.action, TurnAction.TERMINATE)
+        self.assertEqual(second.exit_reason, SessionExitReason.FAST_FAIL_TECH)
+        self.assertEqual(second.metadata["consecutive_uncooperative"], 2)
+        self.assertEqual(second.metadata["consecutive_fails"], 2)
+
+    async def test_give_up_in_validate_does_not_fast_fail(self):
+        engine = InterviewCoreEngine(llm_client=MockLLM())
+        state = {
+            "current_stage": InterviewStage.VALIDATE.value,
+            "started_at": datetime.now(timezone.utc),
+            "target_duration_minutes": 25,
+            "consecutive_uncooperative": 1,
+            "allow_early_exit": True,
+            "questions_pool": self.sample_questions_pool,
+            "asked_question_ids": ["q-val-1"],
+            "current_turn_in_question": 0,
+            "current_question_context": self.sample_questions_pool["VALIDATE"][0],
+        }
+
+        output = await engine.handle_turn(
+            CandidateTurnInput(session_id=self.session_id, turn_index=1, text_content="không biết"),
+            state,
+        )
+
+        self.assertNotEqual(output.action, TurnAction.TERMINATE)
+        self.assertEqual(output.metadata["consecutive_uncooperative"], 2)
+        self.assertEqual(output.metadata["consecutive_fails"], 2)
+
+    async def test_probe_has_no_session_level_cap(self):
+        engine = InterviewCoreEngine(
+            llm_client=MockLLM(
+                eval_result={"score": 4.0, "is_sufficient": False, "acknowledgement": "Cảm ơn."},
+            )
+        )
+        state = {
+            "current_stage": InterviewStage.DEEP_DIVE.value,
+            "started_at": datetime.now(timezone.utc),
+            "target_duration_minutes": 25,
+            "session_probe_count": 999,
+            "max_runtime_probes": 0,
+            "questions_pool": self.sample_questions_pool,
+            "asked_question_ids": ["q-deep-1"],
+            "current_turn_in_question": 0,
+            "current_question_context": self.sample_questions_pool["DEEP_DIVE"][0],
+        }
+
+        output = await engine.handle_turn(
+            CandidateTurnInput(session_id=self.session_id, turn_index=2, text_content="Tôi dùng index."),
+            state,
+        )
+
+        self.assertEqual(output.action, TurnAction.PROBE)
 
     async def test_voluntary_abort_triggers_confirm_abort_modal(self):
         """13. Ứng viên xin phép dừng phỏng vấn vì lý do cá nhân -> Kích hoạt CONFIRM_ABORT modal."""
