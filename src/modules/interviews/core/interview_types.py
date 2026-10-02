@@ -19,6 +19,7 @@ class InterviewStage(str, Enum):
 
 class TurnAction(str, Enum):
     PROBE = "PROBE"                 # Hỏi đào sâu câu hiện tại (tối đa 1 lần)
+    CLARIFY = "CLARIFY"             # Giải thích / làm rõ câu hỏi khi ứng viên thắc mắc hoặc mơ hồ
     NEXT_QUESTION = "NEXT_QUESTION" # Chuyển sang câu hỏi tiếp theo
     WRAP_UP = "WRAP_UP"             # Chuẩn bị kết thúc phiên
     TERMINATE = "TERMINATE"         # Dừng phỏng vấn ngay lập tức (Early-exit / Hết giờ)
