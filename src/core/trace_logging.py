@@ -21,6 +21,8 @@ _WORKFLOW_DIRECTORIES = {
     "cv_parser": "cv",
     "jd_parser": "jd",
     "matching": "matching",
+    "interviewer": "interview",
+    "interview": "interview",
 }
 
 

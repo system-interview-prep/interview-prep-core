@@ -15,12 +15,15 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.trace_logging import trace_event
+
 from src.modules.interviews.plan_structure import (
     build_evaluation_targets,
     build_sections,
     derive_difficulty,
     validate_must_have_coverage,
 )
+from src.modules.interviews.project_evidence import extract_project_evidences
 from src.modules.interviews.planner_config import (
     PlannerPolicyConfig,
     resolve_strict_hands_on_precedence,
@@ -904,6 +907,16 @@ async def build_and_persist_session_plan(
         match=match,
         duration_minutes=session_row["duration_minutes"],
     )
+    trace_event(
+        "interviewer",
+        "plan_derived",
+        session_id=session_row.get("id"),
+        resume_id=session_row.get("resume_id"),
+        job_id=session_row.get("job_id"),
+        matching_decision=match.decision,
+        question_budget=plan.get("questionBudget"),
+        targets_count=len(plan.get("targets", [])),
+    )
 
     # Re-acquire the plan row under a write lock immediately before
     # persistence. Matching can take time, so the session snapshot received by
@@ -939,6 +952,11 @@ async def build_and_persist_session_plan(
         "plannerPolicyVersion": plan["policyVersion"],
         "questionBudget": plan["questionBudget"],
         "nonCompetencyRequirementIds": plan["nonCompetencyRequirementIds"],
+        "projectEvidences": [p.to_dict() for p in extract_project_evidences(
+            projects_data=resume.projects,
+            job_requirements=job.requirements,
+            cv_skills=resume.skills,
+        )] if hasattr(resume, "projects") and resume.projects else [],
     }
 
     await db.execute(

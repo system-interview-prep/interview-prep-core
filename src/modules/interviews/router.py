@@ -5,6 +5,7 @@ available during migration, but new product flows should create sessions here.
 """
 
 import json
+import time
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import current_user
+from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
 from src.modules.interviews.chat_runtime import (
     ChatRuntimeError,
@@ -51,7 +53,23 @@ ExperienceType = Literal[
     "video_interview",
     "interview_chat",
 ]
-EndReason = Literal["COMPLETED", "USER_ENDED", "TECHNICAL_FAILURE"]
+# Server/Session End Reason: all valid terminal states persisted in DB & returned by GET / runtime
+SessionEndReason = Literal[
+    "COMPLETED",
+    "USER_ENDED",
+    "TECHNICAL_FAILURE",
+    "HARD_TIMEOUT",
+    "FAST_FAIL_TECH",
+]
+EndReason = SessionEndReason  # Backward compatibility alias
+
+# Client-Initiated Completion Reason: only user-driven reasons allowed in client request payload.
+# System-determined terminal reasons (FAST_FAIL_TECH, HARD_TIMEOUT) must NOT be injected by client.
+ClientEndReason = Literal[
+    "COMPLETED",
+    "USER_ENDED",
+    "TECHNICAL_FAILURE",
+]
 
 
 class SendChatMessage(BaseModel):
@@ -63,7 +81,7 @@ class SendChatMessage(BaseModel):
 
 
 class CompleteChatSession(BaseModel):
-    reason: EndReason = Field(default="USER_ENDED")
+    reason: ClientEndReason = Field(default="USER_ENDED")
 
     model_config = {"populate_by_name": True}
 
@@ -172,52 +190,80 @@ async def create_interview_session(
     canonical CV/JD/matching context; P2 freezes approved question versions.
     """
 
-    await _validate_context(db, user, payload.resume_id, payload.job_id)
+    started_at = time.monotonic()
+    try:
+        await _validate_context(db, user, payload.resume_id, payload.job_id)
 
-    session_id = str(uuid4())
-    plan_id = str(uuid4())
-    legacy_type = {"text": "Chat", "voice": "Voice", "video": "Call"}[payload.mode]
-    legacy_language = "Vietnamese" if payload.locale.lower().startswith("vi") else "English"
+        session_id = str(uuid4())
+        plan_id = str(uuid4())
+        legacy_type = {"text": "Chat", "voice": "Voice", "video": "Call"}[payload.mode]
+        legacy_language = "Vietnamese" if payload.locale.lower().startswith("vi") else "English"
 
-    await db.execute(
-        text(
-            "INSERT INTO interview_sessions "
-            "(id, user_id, type, language, status, resume_id, job_id, mode, locale, duration_minutes, experience_type) "
-            "VALUES (:id, :uid, :type, :language, 'OPEN', :resume_id, :job_id, :mode, :locale, :duration, :experience_type)"
-        ),
-        {
-            "id": session_id,
-            "uid": user["sub"],
-            "type": legacy_type,
-            "language": legacy_language,
-            "resume_id": payload.resume_id,
-            "job_id": payload.job_id,
-            "mode": payload.mode,
-            "locale": payload.locale,
-            "duration": payload.duration_minutes,
-            "experience_type": payload.experience_type,
-        },
-    )
-    await db.execute(
-        text(
-            "INSERT INTO interview_session_plans "
-            "(id, session_id, schema_version, status, source_context) "
-            "VALUES (:id, :sid, '1.0', 'DRAFT', CAST(:context AS jsonb))"
-        ),
-        {
-            "id": plan_id,
-            "sid": session_id,
-            "context": json.dumps(
-                {
-                    "resumeId": payload.resume_id,
-                    "jobId": payload.job_id,
-                    "source": "p0-session-context",
-                }
+        await db.execute(
+            text(
+                "INSERT INTO interview_sessions "
+                "(id, user_id, type, language, status, resume_id, job_id, mode, locale, duration_minutes, experience_type) "
+                "VALUES (:id, :uid, :type, :language, 'OPEN', :resume_id, :job_id, :mode, :locale, :duration, :experience_type)"
             ),
-        },
-    )
-    await db.commit()
-    return _session_payload(await _owned_session(db, user["sub"], session_id))
+            {
+                "id": session_id,
+                "uid": user["sub"],
+                "type": legacy_type,
+                "language": legacy_language,
+                "resume_id": payload.resume_id,
+                "job_id": payload.job_id,
+                "mode": payload.mode,
+                "locale": payload.locale,
+                "duration": payload.duration_minutes,
+                "experience_type": payload.experience_type,
+            },
+        )
+        await db.execute(
+            text(
+                "INSERT INTO interview_session_plans "
+                "(id, session_id, schema_version, status, source_context) "
+                "VALUES (:id, :sid, '1.0', 'DRAFT', CAST(:context AS jsonb))"
+            ),
+            {
+                "id": plan_id,
+                "sid": session_id,
+                "context": json.dumps(
+                    {
+                        "resumeId": payload.resume_id,
+                        "jobId": payload.job_id,
+                        "source": "p0-session-context",
+                    }
+                ),
+            },
+        )
+        await db.commit()
+        session_data = _session_payload(await _owned_session(db, user["sub"], session_id))
+        trace_event(
+            "interviewer",
+            "session_created",
+            session_id=session_id,
+            user_id=user["sub"],
+            resume_id=payload.resume_id,
+            job_id=payload.job_id,
+            mode=payload.mode,
+            experience_type=payload.experience_type,
+            locale=payload.locale,
+            duration_minutes=payload.duration_minutes,
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        return session_data
+    except Exception as exc:
+        trace_event(
+            "interviewer",
+            "session_creation_failed",
+            user_id=user.get("sub"),
+            resume_id=payload.resume_id,
+            job_id=payload.job_id,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        raise
 
 
 @router.get("/sessions/{session_id}")
@@ -252,18 +298,56 @@ async def build_interview_plan(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    started_at = time.monotonic()
+    trace_event("interviewer", "plan_started", session_id=session_id, user_id=user["sub"])
     session = await _owned_session(db, user["sub"], session_id)
     try:
-        return await build_and_persist_session_plan(
+        result = await build_and_persist_session_plan(
             db=db,
             user=user,
             session_row=session,
         )
+        trace_event(
+            "interviewer",
+            "plan_completed",
+            session_id=session_id,
+            plan_id=result.get("planId"),
+            policy_version=result.get("policyVersion"),
+            targets_count=len(result.get("targets", [])),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        return result
     except RuntimeError as exc:
+        trace_event(
+            "interviewer",
+            "plan_failed",
+            session_id=session_id,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
+        trace_event(
+            "interviewer",
+            "plan_failed",
+            session_id=session_id,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         await db.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        trace_event(
+            "interviewer",
+            "plan_failed",
+            session_id=session_id,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        raise
 
 
 @router.get("/sessions/{session_id}/plan")
@@ -289,18 +373,64 @@ async def select_interview_questions(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    started_at = time.monotonic()
+    trace_event("interviewer", "question_selection_started", session_id=session_id)
     session = await _owned_session(db, user["sub"], session_id)
     try:
-        return await select_and_freeze_questions(db=db, session_row=session)
+        result = await select_and_freeze_questions(db=db, session_row=session)
+        trace_event(
+            "interviewer",
+            "question_selection_completed",
+            session_id=session_id,
+            plan_id=result.get("planId"),
+            turns_count=len(result.get("turns", [])),
+            fallback_count=result.get("fallbackQuestionCount", 0),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        return result
     except QuestionUnavailableError as exc:
+        trace_event(
+            "interviewer",
+            "question_selection_failed",
+            session_id=session_id,
+            error_type="QuestionUnavailableError",
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         await db.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=exc.to_payload()) from exc
     except RuntimeError as exc:
+        trace_event(
+            "interviewer",
+            "question_selection_failed",
+            session_id=session_id,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
+        trace_event(
+            "interviewer",
+            "question_selection_failed",
+            session_id=session_id,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         await db.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        trace_event(
+            "interviewer",
+            "question_selection_failed",
+            session_id=session_id,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        raise
 
 
 @router.get("/sessions/{session_id}/turns")
@@ -336,13 +466,41 @@ async def ask_interview_turn(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    started_at = time.monotonic()
+    trace_event("interviewer", "text_turn_ask_requested", session_id=session_id, turn_id=turn_id)
     session = await _owned_session(db, user["sub"], session_id)
     try:
-        return await ask_turn(db=db, session_row=session, turn_id=turn_id)
+        result = await ask_turn(db=db, session_row=session, turn_id=turn_id)
+        trace_event(
+            "interviewer",
+            "text_turn_asked",
+            session_id=session_id,
+            turn_id=turn_id,
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        return result
     except ValueError as exc:
+        trace_event(
+            "interviewer",
+            "text_turn_ask_failed",
+            session_id=session_id,
+            turn_id=turn_id,
+            error_type="ValueError",
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         await db.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except TurnStateError as exc:
+        trace_event(
+            "interviewer",
+            "text_turn_ask_failed",
+            session_id=session_id,
+            turn_id=turn_id,
+            error_type="TurnStateError",
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -355,18 +513,52 @@ async def answer_interview_turn(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    started_at = time.monotonic()
+    trace_event(
+        "interviewer",
+        "text_turn_answer_received",
+        session_id=session_id,
+        turn_id=turn_id,
+        answer_length=len(payload.answer_text),
+    )
     session = await _owned_session(db, user["sub"], session_id)
     try:
-        return await answer_turn(
+        result = await answer_turn(
             db=db,
             session_row=session,
             turn_id=turn_id,
             answer_text=payload.answer_text,
         )
+        trace_event(
+            "interviewer",
+            "text_turn_answered",
+            session_id=session_id,
+            turn_id=turn_id,
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        return result
     except ValueError as exc:
+        trace_event(
+            "interviewer",
+            "text_turn_answer_failed",
+            session_id=session_id,
+            turn_id=turn_id,
+            error_type="ValueError",
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         await db.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except TurnStateError as exc:
+        trace_event(
+            "interviewer",
+            "text_turn_answer_failed",
+            session_id=session_id,
+            turn_id=turn_id,
+            error_type="TurnStateError",
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -377,10 +569,27 @@ async def complete_interview_runtime(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    started_at = time.monotonic()
+    trace_event("interviewer", "text_runtime_complete_requested", session_id=session_id)
     session = await _owned_session(db, user["sub"], session_id)
     try:
-        return await complete_text_runtime(db=db, session_row=session)
+        result = await complete_text_runtime(db=db, session_row=session)
+        trace_event(
+            "interviewer",
+            "text_runtime_completed",
+            session_id=session_id,
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        return result
     except TurnStateError as exc:
+        trace_event(
+            "interviewer",
+            "text_runtime_complete_failed",
+            session_id=session_id,
+            error_type="TurnStateError",
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -400,6 +609,7 @@ async def close_interview_session(
         {"sid": session_id, "uid": user["sub"]},
     )
     await db.commit()
+    trace_event("interviewer", "session_closed", session_id=session_id, user_id=user["sub"])
     return _session_payload(await _owned_session(db, user["sub"], session_id))
 
 
@@ -409,12 +619,39 @@ async def start_chat(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    started_at = time.monotonic()
+    trace_event("interviewer", "chat_start_requested", session_id=session_id)
     session = await _owned_session(db, user["sub"], session_id)
     try:
-        return await start_chat_session(db=db, session_row=session)
+        result = await start_chat_session(db=db, session_row=session)
+        trace_event(
+            "interviewer",
+            "chat_start_completed",
+            session_id=session_id,
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        return result
     except ChatRuntimeError as exc:
+        trace_event(
+            "interviewer",
+            "chat_start_failed",
+            session_id=session_id,
+            error_type="ChatRuntimeError",
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        trace_event(
+            "interviewer",
+            "chat_start_failed",
+            session_id=session_id,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        raise
 
 
 @router.get("/sessions/{session_id}/chat/runtime")
@@ -434,21 +671,69 @@ async def send_chat(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    started_at = time.monotonic()
+    trace_event(
+        "interviewer",
+        "candidate_message_received",
+        session_id=session_id,
+        client_message_id=payload.client_message_id,
+        content_length=len(payload.content),
+    )
     session = await _owned_session(db, user["sub"], session_id)
     try:
-        return await process_candidate_message(
+        result = await process_candidate_message(
             db=db,
             session_row=session,
             client_message_id=payload.client_message_id,
             content=payload.content,
             telemetry=payload.telemetry,
         )
+        asst_type = (result.get("assistantResponse") or {}).get("messageType")
+        trace_event(
+            "interviewer",
+            "candidate_message_processed",
+            session_id=session_id,
+            client_message_id=payload.client_message_id,
+            assistant_message_type=asst_type,
+            turn_completed=(result.get("turnStatus") or {}).get("completed"),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        return result
     except ValueError as exc:
+        trace_event(
+            "interviewer",
+            "candidate_message_failed",
+            session_id=session_id,
+            client_message_id=payload.client_message_id,
+            error_type="ValueError",
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         await db.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ChatRuntimeError as exc:
+        trace_event(
+            "interviewer",
+            "candidate_message_failed",
+            session_id=session_id,
+            client_message_id=payload.client_message_id,
+            error_type="ChatRuntimeError",
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        trace_event(
+            "interviewer",
+            "candidate_message_failed",
+            session_id=session_id,
+            client_message_id=payload.client_message_id,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        raise
 
 
 @router.post("/sessions/{session_id}/chat/complete")
@@ -458,16 +743,46 @@ async def complete_chat(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    started_at = time.monotonic()
+    trace_event("interviewer", "chat_complete_requested", session_id=session_id, reason=payload.reason)
     session = await _owned_session(db, user["sub"], session_id)
     try:
-        return await complete_chat_session(
+        result = await complete_chat_session(
             db=db,
             session_row=session,
             reason=payload.reason,
         )
+        trace_event(
+            "interviewer",
+            "chat_completed",
+            session_id=session_id,
+            reason=payload.reason,
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        return result
     except ChatRuntimeError as exc:
+        trace_event(
+            "interviewer",
+            "chat_complete_failed",
+            session_id=session_id,
+            reason=payload.reason,
+            error_type="ChatRuntimeError",
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        trace_event(
+            "interviewer",
+            "chat_complete_failed",
+            session_id=session_id,
+            reason=payload.reason,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        raise
 
 
 @router.post("/sessions/{session_id}/evaluate")
@@ -476,16 +791,52 @@ async def evaluate_session_endpoint(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    started_at = time.monotonic()
+    trace_event("interviewer", "evaluation_endpoint_requested", session_id=session_id)
     session = await _owned_session(db, user["sub"], session_id)
     try:
         await evaluate_closed_session(db=db, session_id=session["id"])
         eval_data = await get_session_evaluation(db=db, session_id=session["id"])
         if not eval_data:
+            trace_event(
+                "interviewer",
+                "evaluation_endpoint_failed",
+                session_id=session_id,
+                error_type="MissingEvaluationReport",
+                error_message="Không thể tạo báo cáo đánh giá.",
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+            )
             raise HTTPException(status_code=500, detail="Không thể tạo báo cáo đánh giá.")
+        trace_event(
+            "interviewer",
+            "evaluation_endpoint_completed",
+            session_id=session_id,
+            overall_score=eval_data.get("overall_score") or eval_data.get("overallScore"),
+            decision=eval_data.get("decision_recommendation") or eval_data.get("recommendation"),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         return eval_data
     except EvaluationServiceError as exc:
+        trace_event(
+            "interviewer",
+            "evaluation_endpoint_failed",
+            session_id=session_id,
+            error_type="EvaluationServiceError",
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         await db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        trace_event(
+            "interviewer",
+            "evaluation_endpoint_failed",
+            session_id=session_id,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        raise
 
 
 @router.get("/sessions/{session_id}/evaluation")

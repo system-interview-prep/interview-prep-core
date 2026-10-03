@@ -2,8 +2,22 @@
 **Tài liệu Phân tích Kiến trúc & Mô phỏng Ngân sách Phỏng vấn (P1 / P2 / Runtime / P4)**  
 *Dự án: INTERVIA — Interview Chat Core*  
 *Nhánh: `feat/interview-text-runtime`*  
-*Ngày cập nhật: 27/09/2026*  
-*Trạng thái: Đã rà soát code; các kịch bản là mô hình phân tích theo giả định — Chờ Product duyệt Decision Log để triển khai Gate 2*  
+*Ngày cập nhật: 02/10/2026*
+*Trạng thái: Gate 4 text runtime đã được Product duyệt semantics; Gate 3 ADR vẫn chờ Formal Lead Architect sign-off; production tiếp tục dùng `interview-planner-v1`; Gate 5/P4 chưa được tuyên bố hoàn tất*
+
+---
+
+## PHỤ LỤC PHÊ DUYỆT GATE 4 TEXT RUNTIME — 02/10/2026
+
+Phụ lục này là contract có hiệu lực cho Gate 4 và thay thế các mô tả Gate 4 còn ghi “chờ Product duyệt” ở các phần cũ của tài liệu. Phạm vi phê duyệt chỉ gồm text runtime; không phải phê duyệt ADR Gate 3, Gate 5/P4, Question Bank hay Dynamic Planner production.
+
+- **Pacing / Closing**: Runtime chuyển sang `BEHAVIORAL` khi pacing yêu cầu và trong frozen queue có một Behavioral turn hợp lệ. `CLOSING` chỉ được mở sau khi Behavioral hoàn tất và thời gian còn lại `>= 180s`; không được mở Closing trước Behavioral. Nếu queue không có Behavioral, runtime tiếp tục assessment turn còn lại đến Emergency Turn Cutoff `<= 90s`; nếu assessment queue hết trước đó thì đóng an toàn. Không tự sinh Behavioral question hoặc Closing.
+- **Fast-fail**: Điểm thấp và `is_sufficient=False` không kết thúc session. Hai lần explicit Give Up liên tiếp chỉ tạo `FAST_FAIL_TECH` tại Technical stage (`DEEP_DIVE`/`CHALLENGE`). `VALIDATE` không fast-fail vì điểm thấp, thiếu evidence hay Give Up; requirement bị từ chối xác minh không được coi là đã thẩm định.
+- **Abort / Clarify**: Tín hiệu abort có precedence cao hơn Clarify. Runtime trả `CONFIRM_ABORT` và không đóng session trước khi ứng viên xác nhận; chỉ Clarify khi không có tín hiệu abort.
+- **Counter contract**: `consecutive_uncooperative` là tên canonical. Chỉ explicit Give Up làm tăng counter; answer yếu, insufficient, Clarify và một câu “Không” hợp lệ không tăng counter. `consecutive_fails` là compatibility alias deprecated tại boundary và phải có cùng giá trị; score không cập nhật counter.
+- **Probe / budget**: Product chọn Decision 6B và 8A. Gate 4 không thêm `max_runtime_probes` cấp session; probe chỉ theo guard cục bộ hiện hành. Phần `T_probe_pool` chưa dùng được giữ làm safety buffer, không reclaim để cấp thêm câu.
+- **UI**: Product chọn Decision 3A: stage stepper và thời gian còn lại, không hiển thị lượt cố định `X/N`. Đây là AC cho checkpoint Frontend riêng, chưa triển khai Frontend trong Gate 4 Runtime.
+- **Production boundary**: Caller production tiếp tục dùng `interview-planner-v1`; không bật Dynamic Planner production trong checkpoint này.
 
 ---
 
@@ -20,7 +34,7 @@ Hệ thống phỏng vấn INTERVIA hiện áp dụng quy trình chia pha độc
 Để tránh nhầm lẫn giữa hàng đợi chuẩn bị trước phiên và các lượt phát sinh theo diễn biến thực tế, tài liệu sử dụng nhất quán 4 khái niệm:
 1. **`P2 frozen turns`**: Các lượt câu hỏi được P2 chọn, khởi tạo sẵn và đóng băng trong cơ sở dữ liệu (`interview_turns`) trước khi ứng viên bắt đầu phỏng vấn. Bao gồm: Turn 0 (Warm-up), Turn 1 (CV-Validate), các câu hỏi chuyên môn (từ Question Bank hoặc Fallback) và Turn cuối (Behavioral STAR).
 2. **`runtime follow-up` (Probe / Clarify)**: Câu hỏi đào sâu phát sinh động tại Runtime khi ứng viên trả lời chưa đủ ý (`not is_sufficient`). Lượt này **không** nằm trong `P2 frozen turns`.
-3. **`runtime closing` (Closing Q&A)**: Lượt hỏi đáp ngược (ứng viên hỏi AI) do Runtime sinh ra tức thời nếu sau khi hoàn thành phần Behavioral mà thời gian thực tế của phiên còn dư $\ge 180$ giây. Lượt này **không** nằm trong `P2 frozen turns`.
+3. **`runtime closing` (Closing Q&A)**: Lượt hỏi đáp ngược (ứng viên hỏi AI) chỉ được mở sau khi một Behavioral turn hợp lệ đã hoàn tất và thời gian thực tế còn dư $\ge 180$ giây. Runtime ưu tiên frozen Closing turn hợp lệ nếu boundary đã cung cấp; nếu không, Runtime mới sinh Closing Q&A. Frozen Closing không được phép bypass Behavioral.
 4. **`completed turns`**: Tổng số lượt thực sự được ứng viên và hệ thống hoàn tất trong suốt phiên phỏng vấn (bao gồm cả các câu P2 hoàn tất, probe và closing).
 
 ### 1.2. Vấn đề cốt lõi phát hiện trong mã nguồn
@@ -39,7 +53,7 @@ Hệ thống phỏng vấn INTERVIA hiện áp dụng quy trình chia pha độc
      - **Ngưỡng BEHAVIORAL (95%)**: Thực sự được dùng (`elapsed_ratio < 0.95`).
    - **Quy tắc Probe**: Hạn chế cấm probe sau mốc 80% (`is_behind_schedule`) **chỉ áp dụng riêng cho hai stage `VALIDATE` và `DEEP_DIVE`** (`interview_engine.py:416-419`). Stage `CHALLENGE` theo mã nguồn hiện tại **vẫn được phép probe sau mốc 80%**. Stage `WARM_UP` bị khóa probe tuyệt đối (`should_probe = False`).
    - **Cơ chế ngắt phiên**:
-     - *Emergency Turn Cutoff (90 giây)*: Khi chọn câu tiếp theo, nếu thời gian còn lại $\le 90$ giây và không ở `WARM_UP`, runtime chủ động đóng phiên (`InterviewStage.CLOSED, None`) để tránh giao câu mới khi không đủ giờ.
+     - *Emergency Turn Cutoff (90 giây)*: Khi chọn câu tiếp theo, nếu thời gian còn lại $\le 90$ giây ở **bất kỳ stage nào, bao gồm `WARM_UP`**, runtime chủ động đóng phiên (`InterviewStage.CLOSED, None`) để tránh giao câu mới khi không đủ giờ.
      - *Hard Session Timeout (30 giây)*: Khi ứng viên gửi câu trả lời, nếu thời gian còn lại $\le 30$ giây và chưa ở `CLOSING`, runtime lập tức ngắt phiên với lý do `HARD_TIMEOUT`.
 3. **Định hướng ngân sách động đã được Product phê duyệt**:
    - Xóa bỏ tư duy áp đặt số câu cố định cho từng gói thời lượng (không cố định 15m = 2, 25m = 3 hay 4 câu).
@@ -95,9 +109,11 @@ flowchart TD
         CheckCutoff -->|Có| ForceNormalClose[Đóng phiên an toàn: CLOSED]
         CheckCutoff -->|Không| CheckThresholds{Kiểm tra TIME_THRESHOLDS}
         CheckThresholds -->|elapsed < threshold| PopNextSameStage[Lấy câu tiếp cùng stage]
-        CheckThresholds -->|elapsed >= 75% ở Deep Dive| PreferChallengeOrStar[Ưu tiên Challenge / Behavioral]
-        PreferChallengeOrStar --> CheckRemainingTime{Còn >= 180s sau Behavioral?}
-        CheckRemainingTime -->|Có| DynamicClosingTurn[runtime closing: Tạo Closing Q&A Turn]
+        CheckThresholds -->|elapsed >= 75% ở Deep Dive| PreferChallengeOrStar[Ưu tiên Challenge / Behavioral hợp lệ trong frozen queue]
+        PreferChallengeOrStar --> BehavioralComplete{Behavioral đã hoàn tất?}
+        BehavioralComplete -->|Chưa / không có Behavioral| ContinueAssessment[Tiếp tục assessment queue; hết queue thì CLOSED]
+        BehavioralComplete -->|Đã hoàn tất| CheckRemainingTime{Còn >= 180s?}
+        CheckRemainingTime -->|Có| DynamicClosingTurn[runtime closing: Frozen Closing hợp lệ hoặc Q&A tổng hợp]
         CheckRemainingTime -->|Không| EndSession[Kết thúc phiên: CLOSED]
     end
 ```
@@ -114,7 +130,7 @@ flowchart TD
 | **Competency Fallback** | P2 (`question_selector.py:507`) | **CÓ** (Khi Bank thiếu câu đạt chuẩn) | **KHÔNG** (`unreviewed_fallback`, rubric rỗng) | **CÓ** | Trọng số 1.0. LLM tự chấm dựa trên prompt thô; rủi ro thiếu chuẩn mực đánh giá. |
 | **Behavioral (STAR)** | P2 (`question_selector.py:752`) | **CÓ** (P2 tự thêm vào Turn cuối) | **KHÔNG** (Dùng rubric mặc định theo khung STAR) | **CÓ** | Trọng số 1.0. Prompt chỉ thị bóc tách 4 cấu phần: Situation, Task, Action, Result. |
 | **Probe / Clarify** | Runtime (`chat_runtime.py:631`) | **KHÔNG** (Là `runtime follow-up` phát sinh động) | Dùng chung rubric của câu chính hiện tại | **KHÔNG CHẤM RIÊNG** | Nội dung trả lời probe được gộp chung vào câu trả lời chính trước khi gửi sang P4. |
-| **Closing Q&A (Ứng viên hỏi AI)** | Runtime (`chat_runtime.py:770`) | **KHÔNG** (Là `runtime closing` sinh khi dư $\ge 180$s) | **KHÔNG** | **KHÔNG CHẤM** | Chỉ lưu transcript tương tác, không tính điểm năng lực. |
+| **Closing Q&A (Ứng viên hỏi AI)** | Runtime (`chat_runtime.py`) | Thông thường **KHÔNG**; có thể dùng frozen Closing turn hợp lệ tại compatibility boundary | **KHÔNG** | **KHÔNG CHẤM** | Chỉ mở sau Behavioral hoàn tất và còn $\ge 180$s; chỉ lưu transcript, không tính điểm năng lực. |
 
 ---
 
@@ -189,7 +205,7 @@ Tất cả các dòng đều sử dụng thống nhất một định nghĩa đ�
      + *Khi chọn 1C.2b (Cấp quỹ riêng qua Cách 1 Inclusive hoặc Cách 2 Decoupled)*: CV follow-up đã có quỹ thời gian riêng (nằm trong $T_{\text{cv\_addon\_inclusive}}$ hoặc $T_{\text{cv\_standalone\_reserve}}$). Do đó, `T_probe_pool` **chỉ dành riêng cho probe chuyên môn kỹ thuật**, hoàn toàn không gánh thêm lượt CV follow-up. Điều này ngăn chặn triệt để nguy cơ vừa gộp CV vào onboarding/quỹ riêng vừa giữ nguyên `T_probe_pool` bao gồm chính lượt CV đó (loại trừ double counting). Lựa chọn này được giữ ở trạng thái mở chờ Product phê duyệt tại Quyết định 1.
    - **Làm rõ bản chất và chính sách quyết toán `T_probe_pool`**:
      + *Bản chất & Quy mô*: `T_probe_pool` là khoản dự trữ thời gian vĩ mô trong kế hoạch P1 (macro planning reserve), được tính theo công thức $T_{\text{probe\_pool}} = \text{probe\_pool\_ratio} \times T_{\text{session}}$ (với tỷ lệ `probe_pool_ratio` = 15%–20%, tương ứng từng gói phiên: 15m $\rightarrow$ 135–180s; 25m $\rightarrow$ 225–300s; 45m $\rightarrow$ 405–540s), **KHÔNG PHẢI bộ đếm thời gian runtime thực thi đã có trong mã nguồn hiện tại**. Runtime hiện hữu (`interview_engine.py`) chỉ pacing cục bộ theo tỷ lệ thời gian `elapsed_ratio` từng turn; việc theo dõi cạn quỹ probe tại runtime là tính năng mới cần lập trình ở Gate 4.
-     + *Khi không dùng hết `T_probe_pool`*: Mặc định phần dư được giữ lại làm buffer an toàn đến cuối phiên (cho Closing hoặc bù độ trễ mạng). Phương án hoàn lại (reclaim) thời gian dư cho câu chuyên môn mới được đưa vào Quyết định 8 (Mục 6) chờ Product Owner phê duyệt kèm các điều kiện ngắt an toàn nghiêm ngặt; tuyệt đối không mô tả như hành vi runtime hiện có.
+     + *Khi không dùng hết `T_probe_pool`*: Theo Decision 8A được PO duyệt ngày 02/10/2026, phần dư được giữ lại làm buffer an toàn đến cuối phiên (cho Closing hoặc bù độ trễ mạng), không reclaim để cấp câu chuyên môn mới.
      + *Khi dùng hết `T_probe_pool`*: Nếu Gate 4 triển khai bộ đếm quỹ probe, runtime ngừng kích hoạt probe mới theo ngân sách thời gian, đồng thời vẫn áp dụng đầy đủ các điều kiện runtime khác (`not is_sufficient`, `consecutive_fails < 2`, cấm probe khi `elapsed > 80%` tại Validate/Deep Dive).
    - Sắp xếp thứ tự ưu tiên các competency dựa trên trọng số requirement (`must_have` vs `nice_to_have`) và tín hiệu matching (`unknown`, `not_met` được ưu tiên trước `met`).
    - Phân bổ cho từng competency mục tiêu một **ngân sách thời gian khả dụng (Time Envelope)**: $\text{time\_envelope}(c_i)$ theo thuật toán hạn ngạch quy định tại Mục 5.6.
@@ -256,8 +272,8 @@ Các tham số dưới đây quy định trực tiếp hành vi phân bổ ngân
 | **`T_onboarding`** | Phụ thuộc Cách 1 (Inclusive) vs Cách 2 (Decoupled) | Thời lượng mở đầu phiên đưa vào công thức $T_{\text{tech\_pool}}$: <br>• **Cách 1 (Inclusive)**: Tổng gói $T_{\text{onboarding}} = T_{\text{onboarding\_base}} + T_{\text{cv\_addon\_inclusive}}$ (~3.0 – 4.0 phút cho Mode 1 lượt gồm cơ sở + dự phòng; ~3.5 – 4.5 phút cho Mode 2 lượt). <br>• **Cách 2 (Decoupled)**: Chỉ gồm cơ sở $T_{\text{onboarding}} = T_{\text{onboarding\_base}}$ (~1.5 – 2.0 phút cho Mode 1 lượt; ~3.5 – 4.5 phút cho Mode 2 lượt). | Quyết định 1 (Cách 1 vs Cách 2). |
 | **`N_onboarding`** | 1 hoặc 2 lượt | Số lượt mở đầu tương ứng với mode cấu hình (1 lượt nếu gộp/conditional, 2 lượt nếu tách). | Quyết định 1 (Cách A: duyệt trước Gate 2; Cách B: Gate 2 nhận cấu hình tham số hóa). |
 | **`T_behavioral`** | 3.0 – 4.0 phút | Thời gian dành cho câu hỏi tình huống STAR cuối phiên. | Chính sách chuẩn hóa STAR. |
-| **`probe_pool_ratio`** (`T_probe_pool`) | 15% – 20% thời lượng phiên <br>($T_{\text{probe\_pool}} = \text{probe\_pool\_ratio} \times T_{\text{session}}$: 15m $\rightarrow$ 135–180s; 25m $\rightarrow$ 225–300s; 45m $\rightarrow$ 405–540s) | Tỷ lệ và quỹ thời gian bảo lưu cho các câu hỏi đào sâu (Probe) tại Runtime ($T_{\text{probe\_pool}} = \text{probe\_pool\_ratio} \times T_{\text{session}}$). Khoản dự trữ P1 vĩ mô; phần dư giữ làm buffer an toàn hoặc hoàn lại theo Quyết định 8. | Chính sách điều phối Runtime Pacing & Quyết định 8. |
-| **`max_runtime_probes`** | 1 (15m), 2 (25m), 3 (45m) | **[Đề xuất chính sách - Chờ Product duyệt]**: Đề xuất policy mới để kiểm soát trần số lượt probe tối đa trong toàn phiên; **không phải giới hạn runtime đã có trong mã nguồn hiện tại** (code hiện tại chỉ kiểm tra điều kiện cục bộ từng turn như `is_behind_schedule`, chưa có biến đếm trần session). | Quyết định 6 (Runtime Probe Guardrail Policy). |
+| **`probe_pool_ratio`** (`T_probe_pool`) | 15% – 20% thời lượng phiên <br>($T_{\text{probe\_pool}} = \text{probe\_pool\_ratio} \times T_{\text{session}}$: 15m $\rightarrow$ 135–180s; 25m $\rightarrow$ 225–300s; 45m $\rightarrow$ 405–540s) | Khoản dự trữ P1 vĩ mô. Theo Decision 8A, phần dư giữ làm safety buffer và không reclaim tại Runtime. | Chính sách điều phối Runtime Pacing & Quyết định 8A. |
+| **`max_runtime_probes`** | Không áp dụng tại Gate 4 | **[PO duyệt Decision 6B ngày 02/10/2026]**: Không có trần/bộ đếm điều khiển cấp session; Runtime dùng guard cục bộ từng turn. Các giá trị 1/2/3 trong mô hình cũ không phải production contract. | Quyết định 6B. |
 | **`closing_reserve_seconds`** | 180 giây (3.0 phút) | Thời gian tối thiểu cần bảo lưu để mở phần hỏi đáp ngược và kết thúc phiên. | Runtime Pacing Closing Cutoff. |
 | **`buffer_read_and_latency`** | 30 – 45 giây / lượt | Thời gian overhead dự kiến cho ứng viên đọc đề và LLM sinh phản hồi. | Cơ chế ước lượng $t_{\text{expected}}$ của P2. |
 | **`t_arch_text_min`** | 180 giây (3.0 phút) | Mức sàn thời gian tối thiểu cho competency lý thuyết/kiến trúc. | Thuật toán phân bổ Time Envelope. |
@@ -388,7 +404,7 @@ Các con số dưới đây thuần túy là **đầu vào minh họa** dùng tr
       $$\max_{\text{interaction}} = \max_{\text{frozen}} + \text{max\_runtime\_probes} + 1_{\text{cv\_followup}} + 1_{\text{closing}}$$
 - **Lưu ý nghiệp vụ quan trọng về tính ước tính tham khảo & sự phụ thuộc chính sách (Policy Dependency)**:
   Dải `estimated_total_interaction_turns_range` thuần túy là **dải ước tính heuristic tham khảo để phục vụ hiển thị định hướng trên giao diện (UI UX guideline)** hoặc logging phân tích hệ thống. Dải này **hoàn toàn không được dùng làm điều kiện cứng (hard constraint) hay căn cứ ngắt phiên trong Runtime Engine**. Tiến trình phỏng vấn thực tế tại Runtime luôn được điều phối động theo thời gian thực (real-time elapsed time vs `is_behind_schedule`).
-- **Quyết định Product cần chốt về hiển thị UI**: Giao diện người dùng tại Gate 4 có nên hiển thị dải lượt ước tính này hay không (theo Quyết định 3)? Khuyến nghị UX là chỉ hiển thị Giai đoạn (Stage Stepper) và đồng hồ đếm ngược, không hiển thị tổng số lượt tuyệt đối để tránh tạo kỳ vọng sai cho ứng viên.
+- **Quyết định UI đã chốt**: PO chọn Decision 3A ngày 02/10/2026: chỉ hiển thị Giai đoạn (Stage Stepper) và đồng hồ đếm ngược, không hiển thị tổng số lượt tuyệt đối. Triển khai và evidence Frontend thuộc checkpoint riêng.
 
 ### 5.6.5. Bảng ma trận hạch toán ngân sách và kiểm tra số học minh họa (Analytical Specification Check)
 
@@ -440,8 +456,8 @@ Các con số dưới đây thuần túy là **đầu vào minh họa** dùng tr
 - **Phương án 1C (Khuyến nghị xem xét)**: **Lượt mở đầu kết hợp, hỏi tiếp về CV khi cần xác thực thêm (Conditional Follow-up)** ($N_{\text{onboarding}} = 1$ trong P2 frozen turns).
   - Mặc định mở đầu bằng 1 lượt tích hợp ngắn gọn. Chỉ khi câu trả lời quá sơ sài hoặc CV có điểm nghi vấn, Runtime mới kích hoạt thêm 1 lượt hỏi CV bổ sung (trừ vào quỹ thời gian linh hoạt).
   - *Phân định chính sách quota lượt và ngân sách thời gian cho lượt CV Follow-up*:
-    + *Lựa chọn 1C.1 (Dùng chung cả quota lượt và quỹ thời gian)*: Tính gộp lượt CV follow-up vào chung trần `max_runtime_probes` toàn phiên. Khi kích hoạt CV follow-up, số lượt probe dành cho chuyên môn kỹ thuật sẽ giảm đi 1 lượt ($N_{\text{cv\_followup\_max}} = 0$). Thời gian tiêu hao trừ trực tiếp vào `T_probe_pool`. Cả hai biến quỹ riêng đều bằng 0 ($T_{\text{cv\_addon\_inclusive}} = 0, T_{\text{cv\_standalone\_reserve}} = 0$).
-    + *Lựa chọn 1C.2 (Hạn ngạch quota lượt riêng biệt: tối đa 1 lượt, $N_{\text{cv\_followup\_max}} = 1$, không trừ vào `max_runtime_probes`)*:
+    + *Lựa chọn 1C.1 (mô hình lịch sử, không áp dụng cho Gate 4)*: Phương án này từng giả định gộp lượt CV follow-up vào một trần probe toàn phiên. Decision 6B đã bác bỏ session-level probe cap, vì vậy giả định này không phải Runtime contract.
+    + *Lựa chọn 1C.2 (Hạn ngạch CV riêng biệt: tối đa 1 lượt, $N_{\text{cv\_followup\_max}} = 1$; độc lập với probe kỹ thuật)*:
       Về mặt ngân sách thời gian của CV follow-up, cần Product Owner phê duyệt một trong hai phương án (giữ ở trạng thái mở chờ Product duyệt, kỹ thuật không tự quyết thay):
       - **Phương án 1C.2a (Dùng chung quỹ thời gian `T_probe_pool`)**:
         Thời gian cho lượt CV follow-up trích từ quỹ thời gian linh hoạt `T_probe_pool`.
@@ -451,7 +467,7 @@ Các con số dưới đây thuần túy là **đầu vào minh họa** dùng tr
         $$N_{\text{probe}} \times t_{\text{probe\_min}} + N_{\text{cv}} \times t_{\text{cv\_followup\_expected}} \le T_{\text{probe\_pool}}$$
         với các hạn ngạch quota: $0 \le N_{\text{probe}} \le \text{max\_runtime\_probes}$ và $0 \le N_{\text{cv}} \le 1$.
         *Không tạo cận trên giả tạo khi thiếu telemetry*: Do chưa có dữ liệu telemetry đo đạc thực tế đủ tin cậy để xác định chính xác các mức thời lượng tối thiểu, hệ thống không tạo ra con số cận trên có vẻ chính xác; ghi rõ cận trên lượt là **“Chưa xác định, chờ policy/telemetry”**, và giữ dải tổng lượt ở dạng **heuristic chưa có cận trên định lượng** $[\min_{\text{frozen}}, \dots)$ cho mode này.
-        *Lưu ý cốt lõi tránh hiểu nhầm*: **Quota lượt riêng KHÔNG đồng nghĩa với quỹ thời gian riêng**. Dù số lượt probe kỹ thuật không bị cấn trừ về mặt danh mục (`max_runtime_probes`), việc kích hoạt lượt CV follow-up vẫn tiêu hao thời gian thực tế của `T_probe_pool`, khiến runtime có thể chạm ngưỡng cấm probe (`is_behind_schedule` khi `elapsed > 80%`) sớm hơn. Cả hai biến quỹ riêng đều bằng 0 ($T_{\text{cv\_addon\_inclusive}} = 0$ và $T_{\text{cv\_standalone\_reserve}} = 0$), $T_{\text{onboarding}} = T_{\text{onboarding\_base}}$.
+        *Lưu ý cốt lõi tránh hiểu nhầm*: **Quota lượt riêng KHÔNG đồng nghĩa với quỹ thời gian riêng**. Gate 4 không có `max_runtime_probes`; probe kỹ thuật tiếp tục chịu các guard cục bộ như `is_behind_schedule`. Cả hai biến quỹ riêng đều bằng 0 ($T_{\text{cv\_addon\_inclusive}} = 0$ và $T_{\text{cv\_standalone\_reserve}} = 0$), $T_{\text{onboarding}} = T_{\text{onboarding\_base}}$.
       - **Phương án 1C.2b (Cấp quỹ thời gian riêng cho CV follow-up)**:
         Nếu muốn bảo toàn trọn vẹn quỹ thời gian probe kỹ thuật `T_probe_pool` mà không bị lượt CV follow-up lấn chiếm, hệ thống cấp một quỹ thời gian riêng biệt: 90–120 giây.
         *Điều kiện đủ cho tối đa 1 lượt*: Quỹ riêng chỉ bảo đảm đủ cho tối đa **đúng 1 lượt** CV follow-up ($N_{\text{cv\_followup\_max}} = 1$) **khi và chỉ khi thời lượng dự kiến của lượt đó không vượt quá quỹ được cấp**: $t_{\text{cv\_followup\_expected}} \le T_{\text{cv\_reserve}}$ (với $T_{\text{cv\_reserve}} \in \{T_{\text{cv\_standalone\_reserve}}, T_{\text{cv\_addon\_inclusive}}\}$). Nếu chưa có căn cứ đo đạc telemetry thực tế để xác định chắc chắn thời lượng, điều kiện này phải được ghi nhận rõ ràng và cận trên lượt tương tác được giữ ở trạng thái **chờ policy/telemetry**.
@@ -505,7 +521,7 @@ Các con số dưới đây thuần túy là **đầu vào minh họa** dùng tr
 - **Phương án 3B**: **Hiển thị khoảng ước lượng linh hoạt**.
   - Hiển thị nhãn: `Lượt 3 (Ước tính khoảng 4-6 lượt)`.
   - *Trade-off*: Đơn giản cho frontend nhưng vẫn có thể làm ứng viên thắc mắc khi số lượt thực tế chạm cận dưới.
-- **Tiến độ**: 🟢 **Dành cho Frontend / Gate 4**.
+- **Tiến độ**: ✅ **PO duyệt Phương án 3A ngày 02/10/2026; triển khai Frontend ở checkpoint riêng sau Runtime**.
 
 ---
 
@@ -536,16 +552,17 @@ Các con số dưới đây thuần túy là **đầu vào minh họa** dùng tr
 
 ---
 
-### Quyết định 6: Chính sách trần câu hỏi đào sâu Runtime (`max_runtime_probes`) [Quyết định Gate 4 - Cần Product duyệt]
+### Quyết định 6: Chính sách trần câu hỏi đào sâu Runtime (`max_runtime_probes`) [PO duyệt 6B]
 - **Câu hỏi cần chốt**: Có nên áp đặt hạn mức trần số lượt probe tối đa trong toàn phiên (`max_runtime_probes`) hay để Runtime tự do kích hoạt theo điều kiện cục bộ từng turn?
-- **Phương án 6A (Khuyến nghị đề xuất chính sách)**:
+- **Phương án 6A (Đã bác bỏ cho Gate 4)**:
   - Áp đặt trần probe toàn phiên theo gói thời lượng phiên (ví dụ đề xuất policy: 1 lượt cho phiên 15m, 2 lượt cho phiên 25m, 3 lượt cho phiên 45m).
   - Bổ sung bộ đếm trần session-level (`session_probe_count`) trong Runtime Engine ở Gate 4; khi đạt trần, Runtime khóa probe cho các turn còn lại.
   - *Trade-off*: Kiểm soát chặt chẽ nhịp độ phiên, tránh nguy cơ probe kéo dài làm dồn toa; nhưng có thể bỏ qua cơ hội đào sâu câu trả lời chưa đầy đủ ở các câu cuối.
 - **Phương án 6B**:
   - Giữ nguyên cơ chế hiện hữu của mã nguồn (không có trần session, chỉ dựa vào điều kiện cục bộ từng turn và cấm probe khi `elapsed > 80%` tại Validate/Deep Dive).
+  - `session_probe_count` chỉ phục vụ telemetry/observability; không được dùng làm điều kiện khóa probe.
   - *Trade-off*: Tận dụng tối đa khả năng làm rõ câu trả lời; nhưng tiềm ẩn rủi ro phiên bị kéo dài nếu LLM kích hoạt probe liên tục ở các stage được phép.
-- **Tiến độ & Trách nhiệm duyệt**: 🟡 **Quyết định chính sách thuộc Gate 4 (Runtime Integration); cần Product Owner phê duyệt trước khi lập trình bộ đếm trần phiên ở Gate 4**.
+- **Tiến độ & Trách nhiệm duyệt**: ✅ **PO duyệt Phương án 6B ngày 02/10/2026: không thêm bộ đếm/trần probe cấp session trong Gate 4; giữ các guard cục bộ hiện hành**.
 
 ---
 
@@ -561,25 +578,23 @@ Các con số dưới đây thuần túy là **đầu vào minh họa** dùng tr
 
 ---
 
-### Quyết định 8: Chính sách quyết toán và điều phối quỹ thời gian Probe (`T_probe_pool`) tại Runtime [Cần Product duyệt]
+### Quyết định 8: Chính sách quyết toán và điều phối quỹ thời gian Probe (`T_probe_pool`) tại Runtime [PO duyệt 8A]
 - **Câu hỏi cần chốt**: Khi runtime không dùng hết hoặc dùng hết quỹ thời gian dự trữ `T_probe_pool`, hệ thống quyết toán ra sao?
-- **Phân biệt bản chất kiến trúc**: `T_probe_pool` là khoản dự trữ thời gian trong kế hoạch vĩ mô của P1 (macro planning reserve), **KHÔNG PHẢI bộ đếm thời gian runtime thực thi đã có trong code hiện tại**. Runtime hiện hữu (`interview_engine.py`) chỉ pacing cục bộ theo tỷ lệ trôi qua `elapsed_ratio` từng turn; việc theo dõi cạn quỹ probe hay tái phân bổ probe pool tại runtime là tính năng mới cần lập trình ở Gate 4.
+- **Phân biệt bản chất kiến trúc**: `T_probe_pool` là khoản dự trữ thời gian trong kế hoạch vĩ mô của P1 (macro planning reserve), **KHÔNG PHẢI bộ đếm thời gian runtime**. Theo Decision 8A, Gate 4 không triển khai theo dõi cạn quỹ, runtime pool counter hoặc tái phân bổ/reclaim.
 - **Xử lý khi không dùng hết `T_probe_pool`**:
   - **Phương án 8A (Retain as Safe Buffer - Khuyến nghị an toàn)**:
     - Giữ nguyên toàn bộ phần thời gian probe dôi dư làm buffer an toàn đến cuối phiên.
     - Phần thời gian này tự động chuyển thành quỹ dự phòng cho phần hỏi đáp ngược và kết thúc phiên (Closing Reverse Q&A) hoặc bù đắp độ trễ mạng/ứng viên đọc đề, giúp phiên kết thúc nhẹ nhàng, không bị vội vã.
     - *Trade-off*: An toàn tuyệt đối, loại trừ hoàn toàn nguy cơ vượt giờ phiên; nhưng không tận dụng thời gian dư để hỏi thêm câu hỏi chuyên môn.
-  - **Phương án 8B (Runtime Budget Reclaim - Hoàn lại cho câu hỏi chuyên môn)**:
-    - Cho phép Runtime kích hoạt cơ chế hoàn lại thời gian probe chưa dùng để chọn thêm câu hỏi chuyên môn từ Question Bank, với các điều kiện ngắt an toàn nghiêm ngặt:
+  - **Phương án 8B (ĐÃ BÁC BỎ / KHÔNG TRIỂN KHAI — Runtime Budget Reclaim)**:
+    - Nội dung dưới đây chỉ lưu lại phương án lịch sử đã bị PO bác bỏ, không phải contract hay backlog được phép triển khai trong Gate 4:
       + *Thời điểm hoàn*: Chỉ được xem xét sau khi ứng viên đã hoàn thành toàn bộ các câu hỏi chuyên môn theo agenda ban đầu của P1 và trước khi chuyển sang stage `BEHAVIORAL` (ví dụ tại mốc chuyển tiếp cuối `DEEP_DIVE` hoặc `CHALLENGE`).
       + *Điều kiện kiểm tra ngân sách thời gian còn lại*: Thời gian thực tế còn lại của phiên phải thỏa mãn: $T_{\text{remaining}} \ge t_{\text{expected}}(\text{câu mới}) + T_{\text{behavioral}} + T_{\text{closing\_reserve}} + 90\text{s}$ (đảm bảo không bao giờ xâm phạm vào thời gian dành cho câu STAR và phần Closing).
       + *Giới hạn câu được chọn*: Chỉ được chọn câu hỏi lý thuyết ngắn (`question_type == 'text'`, $t_{\text{expected}} \le 180$s) từ danh sách candidate chuẩn bị sẵn của các competency còn thiếu bằng chứng; **tuyệt đối không chọn bài tập coding dài** làm vỡ ngân sách phiên.
       + *Bảo đảm an toàn tuyệt đối*: Runtime vẫn bị ràng buộc bởi các chốt an toàn cứng: Emergency Turn Cutoff (cấm giao câu mới khi còn $\le 90$s) và Hard Session Timeout (ngắt phiên lập tức khi còn $\le 30$s).
     - *Trade-off*: Tối đa hóa dữ liệu đánh giá chuyên môn khi ứng viên trả lời nhanh, xuất sắc; nhưng tăng độ phức tạp điều phối runtime tại Gate 4.
-- **Xử lý khi dùng hết `T_probe_pool`**:
-  - Nếu Gate 4 triển khai bộ đếm quỹ thời gian probe: Khi thời gian tích lũy dành cho các lượt probe chạm trần `T_probe_pool`, runtime chủ động khóa chức năng probe cho các câu tiếp theo (time-budget exhaustion).
-  - Đồng thời, runtime vẫn phải áp dụng đầy đủ các điều kiện runtime khác (`not is_sufficient`, `consecutive_fails < 2`, `current_turn_in_question == 0`, cấm probe khi `elapsed > 80%` tại `VALIDATE` và `DEEP_DIVE`, và hạn mức `max_runtime_probes` nếu được duyệt).
-- **Tiến độ & Trách nhiệm duyệt**: 🟡 **Quyết định chính sách thuộc Gate 4 (Runtime Integration); cần Product Owner phê duyệt trước khi lập trình cơ chế reclaim/budget-tracking ở Gate 4. Tuyệt đối không coi là hành vi runtime hiện có.**
+- **Không có xử lý “cạn `T_probe_pool`” tại Runtime**: Gate 4 không có runtime probe-pool counter và không khóa probe theo quỹ tích lũy. Quyết định probe chỉ dùng các guard cục bộ đã được phê duyệt; `session_probe_count` là telemetry.
+- **Tiến độ & Trách nhiệm duyệt**: ✅ **PO duyệt Phương án 8A ngày 02/10/2026: giữ phần dư làm safety buffer; không triển khai reclaim hoặc runtime pool counter trong Gate 4.**
 
 ---
 
@@ -604,9 +619,9 @@ Các con số dưới đây thuần túy là **đầu vào minh họa** dùng tr
 4. **AC-P1-04 (P1 Output Transparency & Range Heuristics)**:
    - Output của P1 phải chứa trường `estimated_turns_range` phân tách rõ ràng:
      + `estimated_frozen_turns_range`: Tính theo mức sàn/trần riêng $t_{\text{arch\_min}}(c_i), t_{\text{arch\_max}}(c_i)$ của từng archetype target đã được cấp Time Envelope.
-     + `estimated_total_interaction_turns_range`: Dải ước tính tham khảo có tính đến `max_runtime_probes` [Quyết định 6], quota CV conditional follow-up $N_{\text{cv\_followup\_max}}$ [Quyết định 1], và giới hạn năng lực thời gian thực tế của `T_probe_pool`:
+     + `estimated_total_interaction_turns_range`: Dải ước tính tham khảo không được giả định một `max_runtime_probes` vì Decision 6B không có session-level cap; quota CV conditional follow-up $N_{\text{cv\_followup\_max}}$ [Quyết định 1] vẫn phải được trình bày riêng:
        - *Nguồn tham số*: $t_{\text{probe\_min}}$ (60–90s) và $t_{\text{cv\_followup\_expected}}$ (90–120s) được ghi nhận minh bạch là **giả định đề xuất mới của mô hình phân tích**, phân biệt với schema DB hiện có (`soft_answer_seconds`, `hard_answer_seconds` trong Question Bank) và chưa có cấu hình runtime.
-       - *Mode 1C.2a (Dùng chung quỹ thời gian `T_probe_pool`)*: Cận trên được tính theo ràng buộc tổng thời gian của cả hai loại lượt dùng chung quỹ: $N_{\text{probe}} \times t_{\text{probe\_min}} + N_{\text{cv}} \times t_{\text{cv\_followup\_expected}} \le T_{\text{probe\_pool}}$ (với $0 \le N_{\text{probe}} \le \text{max\_runtime\_probes}$, $0 \le N_{\text{cv}} \le 1$), tuyệt đối không tính độc lập hay cộng cơ học các quota; do chưa có dữ liệu telemetry thực tế đủ tin cậy để xác định thời lượng tối thiểu, không tạo con số cận trên giả tạo mà ghi nhận cận trên là **“Chưa xác định, chờ policy/telemetry”** và giữ dải tổng lượt ở dạng **heuristic chưa có cận trên định lượng** $[\min_{\text{frozen}}, \dots)$ cho mode này.
+       - *Mode 1C.2a (Dùng chung quỹ thời gian `T_probe_pool`)*: Vì Gate 4 không theo dõi quỹ này tại runtime và không có trần session, không được tính cận trên bằng quota probe giả định. Dải tổng lượt giữ ở dạng **heuristic chưa có cận trên định lượng** $[\min_{\text{frozen}}, \dots)$; `T_probe_pool` còn dư vẫn là safety buffer, không reclaim.
        - *Mode 1C.2b (Cấp quỹ riêng qua `T_cv_standalone_reserve` hoặc `T_cv_addon_inclusive`)*: Xác nhận quỹ riêng $T_{\text{cv\_reserve}} \in \{T_{\text{cv\_standalone\_reserve}}, T_{\text{cv\_addon\_inclusive}}\}$ đủ cho tối đa 1 lượt chỉ khi thời lượng dự kiến thỏa mãn $t_{\text{cv\_followup\_expected}} \le T_{\text{cv\_reserve}}$; nếu chưa có căn cứ đo đạc telemetry thực tế, ghi nhận rõ điều kiện này và giữ cận trên ở trạng thái **chờ policy/telemetry**. Quỹ `T_probe_pool` chỉ phục vụ probe kỹ thuật để bảo toàn ngân sách và loại trừ tính trùng.
        - *Bản chất định hướng*: Toàn bộ dải interaction turns thuần túy là heuristic định hướng hiển thị UI, không phải cam kết chính xác số lượt của phiên.
 
@@ -621,22 +636,35 @@ Các con số dưới đây thuần túy là **đầu vào minh họa** dùng tr
    - Không chọn trùng lặp câu hỏi (`question_version_id`) trong cùng một phiên. Thứ tự câu hỏi với cùng một session salt phải đảm bảo tính tái lập 100%.
 
 ### 7.3. Tiêu chí cho Gate 4 (Runtime Integration)
-1. **AC-RT-01 (Probe Condition Compliance & Budget Tracking)**:
-   - Runtime chỉ kích hoạt probe khi thỏa mãn: `not is_sufficient`, `not is_give_up`, `current_turn_in_question == 0`, `consecutive_fails < 2`, stage thuộc danh sách được phép và chưa cạn hạn mức probe được duyệt (`max_runtime_probes` [Đề xuất chính sách - Chờ Product duyệt tại Quyết định 6]).
-   - **Phạm vi áp dụng tiêu chí hạn mức**: Quy tắc kiểm tra trần `max_runtime_probes` (1/2/3 lượt) chỉ chính thức áp dụng tại Gate 4 sau khi Product Owner phê duyệt chính sách (Quyết định 6) và Runtime Engine được bổ sung bộ đếm trần cấp phiên (`session_probe_count`). Trước khi chính sách này được duyệt và triển khai, Runtime hiện hữu chỉ kiểm tra các điều kiện cục bộ từng turn (`is_behind_schedule`, `consecutive_fails`, `current_turn_in_question == 0`).
-   - **Chính sách lượt hỏi bổ sung CV**: Nếu Phương án 1C trong Quyết định 1 được duyệt, lượt hỏi CV conditional follow-up tại Runtime phải tuân thủ đúng quota lượt và nguồn quỹ thời gian:
-     + Theo Lựa chọn 1C.1: tính chung vào trần `max_runtime_probes` và tiêu hao thời gian từ `T_probe_pool`.
-     + Theo Lựa chọn 1C.2a: có quota lượt riêng ($N_{\text{cv\_followup\_max}} \le 1$, không trừ `max_runtime_probes`), nhưng dùng chung quỹ $T_{\text{probe\_pool}}$ và tuân thủ ràng buộc tổng thời gian: $N_{\text{probe}} \times t_{\text{probe\_min}} + N_{\text{cv}} \times t_{\text{cv\_followup\_expected}} \le T_{\text{probe\_pool}}$ (với $t_{\text{probe\_min}}$ và $t_{\text{cv\_followup\_expected}}$ là giả định đề xuất mới, chưa có trong DB). Không tính từng quota độc lập; ghi nhận cận trên lượt là "chưa xác định, chờ policy/telemetry" do chưa có dữ liệu telemetry thực tế để định lượng chính xác.
-     + Theo Lựa chọn 1C.2b: có quota lượt riêng ($N_{\text{cv\_followup\_max}} \le 1$) và kiểm soát theo quỹ thời gian riêng (được cấp qua $T_{\text{cv\_standalone\_reserve}}$ theo Decoupled hoặc $T_{\text{cv\_addon\_inclusive}}$ theo Inclusive; không lấn chiếm `T_probe_pool`, bảo đảm `T_probe_pool` chỉ phục vụ probe kỹ thuật để loại trừ tính hai lần); quỹ này chỉ bảo đảm đủ cho tối đa 1 lượt khi $t_{\text{cv\_followup\_expected}} \le T_{\text{cv\_reserve}}$; nếu chưa có căn cứ xác định thời lượng từ telemetry, ghi nhận điều kiện này và giữ cận trên chờ policy.
-   - **Quy tắc quyết toán `T_probe_pool` (nếu áp dụng Quyết định 8)**:
-     + Khi cạn quỹ thời gian probe, runtime ngừng tạo probe mới.
-     + Nếu Product duyệt cơ chế hoàn lại thời gian probe dư cho câu hỏi chuyên môn (Phương án 8B), runtime chỉ được kích hoạt khi hoàn tất agenda ban đầu, thời gian thực tế còn lại $T_{\text{remaining}} \ge t_{\text{expected}} + T_{\text{behavioral}} + T_{\text{closing\_reserve}} + 90$s, chỉ chọn câu lý thuyết ngắn $\le 180$s, và vẫn tuân thủ Emergency Turn Cutoff (90s) cùng Hard Timeout (30s).
-   - Điều kiện `is_behind_schedule` cấm probe khi `elapsed > 80%` phải tuân thủ đúng phạm vi stage trong mã nguồn (`VALIDATE` và `DEEP_DIVE`).
+1. **AC-RT-01 (Probe Local Guards & Safety Buffer)**:
+   - Probe chỉ được kích hoạt khi answer chưa đủ, không phải Give Up, đang ở lượt đầu của câu hỏi, stage cho phép và các guard pacing cục bộ cho phép.
+   - Không có `max_runtime_probes` cấp session trong Gate 4. `session_probe_count`, nếu xuất hiện ở boundary cũ, chỉ là telemetry và không điều khiển quyết định probe.
+   - Phần `T_probe_pool` chưa dùng giữ làm safety buffer; không reclaim để chọn thêm câu hỏi. Điều kiện `is_behind_schedule` tiếp tục áp dụng đúng phạm vi stage hiện hành.
 2. **AC-RT-02 (Emergency Cutoff & Hard Timeout)**:
-   - Khi thời gian còn lại $\le 90$s, hàm chọn câu tiếp theo không giao thêm câu mới mà chuyển sang trạng thái kết thúc an toàn `CLOSED`.
+   - Khi thời gian còn lại $\le 90$s ở bất kỳ stage nào, kể cả `WARM_UP`, hàm chọn câu tiếp theo không giao thêm câu mới mà chuyển sang trạng thái kết thúc an toàn `CLOSED`.
    - Khi thời gian còn lại $\le 30$s, hệ thống ngắt phiên với lý do `HARD_TIMEOUT`.
-3. **AC-RT-03 (Closing Reverse Q&A)**:
-   - Lượt hỏi đáp ngược `CLOSING` chỉ được kích hoạt khi sau khi hoàn tất `BEHAVIORAL` mà thời gian còn lại thực tế $\ge 180$s.
+3. **AC-RT-03 (Behavioral Pacing & Closing Reverse Q&A)**:
+   - Khi pacing yêu cầu, chỉ chuyển sang một Behavioral turn hợp lệ có sẵn trong frozen queue. Nếu không có Behavioral, tiếp tục assessment queue còn lại đến cutoff 90s và không sinh câu mới.
+   - Không mở `CLOSING` trước Behavioral. Frozen Closing turn và Closing tổng hợp chỉ được dùng sau khi có ít nhất một Behavioral turn hợp lệ đã hoàn tất và thời gian còn lại thực tế $\ge 180$s. Nếu không có Behavioral hoặc assessment queue đã hết trước Behavioral, đóng an toàn thay vì tạo Closing.
+4. **AC-RT-04 (Fast-fail & Counter Compatibility)**:
+   - Score thấp và `is_sufficient=False` không kết thúc session. Chỉ hai explicit Give Up liên tiếp tại `DEEP_DIVE`/`CHALLENGE` tạo `FAST_FAIL_TECH`; `VALIDATE` không fast-fail theo các tín hiệu này.
+   - `consecutive_uncooperative` là canonical; `consecutive_fails` là alias deprecated có cùng giá trị tại compatibility boundary. Answer yếu, insufficient, Clarify và một câu “Không” hợp lệ không làm tăng counter.
+5. **AC-RT-05 (Abort Precedence)**:
+   - Abort precedence cao hơn Clarify. Có tín hiệu abort thì trả `CONFIRM_ABORT`; session chỉ đóng sau xác nhận, không đóng tại bước yêu cầu xác nhận.
+6. **AC-RT-06 (Deployment & UI Boundary)**:
+   - Production caller vẫn dùng `interview-planner-v1`; Gate 4 không bật Dynamic Planner production.
+   - Frontend checkpoint sau phải hiển thị stage stepper và thời gian còn lại, không hiển thị `X/N` cố định.
+
+#### Gate 4 test mapping
+
+| AC | Automated evidence |
+|---|---|
+| AC-RT-01 | `test_rt04_local_one_probe_per_turn`, `test_probe_has_no_session_level_cap` |
+| AC-RT-02 | `test_cutoff_stops_new_question_without_opening_closing`, `test_cutoff_applies_during_warm_up`, `test_hard_timeout_terminates_session`, `test_rt18_reserve_precedence_over_elapsed_ratio_heuristic` |
+| AC-RT-03 | `test_no_behavioral_and_exhausted_assessment_closes_without_synthetic_closing`, `test_frozen_closing_cannot_bypass_missing_behavioral`, `test_pending_behavioral_is_asked_before_closing_even_after_95_percent`, `test_completed_behavioral_allows_closing_at_exactly_180_seconds`, `test_completed_behavioral_may_use_valid_frozen_closing_turn`, `test_completed_behavioral_below_180_seconds_closes_without_closing_turn`, `test_behavioral_reserve_uses_frozen_behavioral_turn_when_available`, `test_closing_reverse_qna_flow` |
+| AC-RT-04 | `test_low_score_and_insufficient_do_not_fast_fail_validation`, `test_two_explicit_give_ups_fast_fail_only_in_technical_stage`, `test_give_up_in_validate_does_not_fast_fail`, `test_yes_no_honest_answer_does_not_trigger_early_exit` |
+| AC-RT-05 | `test_voluntary_abort_triggers_confirm_abort_modal`, `test_llm_layer_2_intent_abort_triggers_confirm_abort_modal` |
+| AC-RT-06 | Runtime regression plus production caller inspection; Frontend implementation/evidence remains a separate checkpoint |
 
 ---
 
@@ -646,10 +674,10 @@ Tài liệu này đã hoàn thiện toàn diện vòng rà soát phân tích Gat
 1. Đã rà soát và đối chiếu toàn bộ các nhận định kỹ thuật với mã nguồn hiện hữu của P1, P2, Runtime và P4. Các kịch bản SC-01–SC-08 là **mô hình phân tích theo giả định (analytical scenario modeling)**, không phải kết quả runtime verification.
 2. Chuẩn hóa số lượt hoàn tất của SC-05 và SC-06 thành 10/11 P2 frozen turns hoàn tất theo đúng logic code tại mốc $75\%$.
 3. Hoàn thiện đặc tả mức sàn Time Envelope theo Archetype (lý thuyết 180s vs coding 360s) ngay từ P1 khi chưa biết câu cụ thể; xử lý rõ ràng khi target coding có envelope $< 360$s; giữ lựa chọn Hard Ceiling / Soft Ceiling ở trạng thái chờ Product duyệt; xử lý trường hợp $K_{\text{eligible}} = 0$ minh bạch cả khi pool nhỏ hơn mức sàn tối thiểu lẫn khi duyệt tuần tự gặp target ưu tiên đầu bảng vượt pool (đưa vào Quyết định 7 chờ Product duyệt, bảo đảm không chia cho tổng trọng số rỗng, phân biệt rõ tổng envelope không vượt pool với tổng envelope bằng pool); làm rõ sự phụ thuộc giữa $T_{\text{tech\_pool}}$ với thời lượng mở đầu và quỹ dự phòng CV follow-up ($T_{\text{cv\_addon\_inclusive}}$ hoặc $T_{\text{cv\_standalone\_reserve}}$) trong Quyết định 1 (phân định rõ $T_{\text{onboarding\_base}}$ cơ sở ~1.5–2.0m cho Mode 1 lượt với $T_{\text{onboarding}}$ tổng gói trong Cách 1 Inclusive ~3.0–4.0m đã gồm dự phòng follow-up và Cách 2 Decoupled bằng cơ sở ~1.5–2.0m để tránh mâu thuẫn số học và loại trừ tính trùng thời gian; loại trừ nguy cơ double-counting với `T_probe_pool`; cùng Cách A duyệt trước Gate 2 vs Cách B Gate 2 tham số hóa cấu hình cho phép kiểm thử cả hai mode); và thuật toán Hamilton-Hare trên đơn vị giây nguyên bảo đảm không vượt ngân sách khi $K_{\text{eligible}} > 0$.
-4. Bổ sung tham số `max_runtime_probes` thành Quyết định 6 và chính sách quyết toán `T_probe_pool` thành Quyết định 8 trong Decision Log thuộc phạm vi Gate 4; phân định rõ quota CV conditional follow-up $N_{\text{cv\_followup\_max}}$ và nguồn ngân sách thời gian trong Quyết định 1 (Lựa chọn 1C.2a quota lượt riêng nhưng dùng chung `T_probe_pool`, nêu rõ quota riêng không đồng nghĩa với quỹ riêng; vs Lựa chọn 1C.2b cấp quỹ riêng qua $T_{\text{cv\_addon\_inclusive}}$ hoặc $T_{\text{cv\_standalone\_reserve}}$ kèm quy định `T_probe_pool` chỉ dành cho probe kỹ thuật để chống tính trùng); định nghĩa rõ nguồn $t_{\text{probe\_min}}$ (60–90s) và $t_{\text{cv\_followup\_expected}}$ (90–120s) là giả định đề xuất mới phân biệt với schema DB hiện có; tính cận trên 1C.2a theo ràng buộc tổng thời gian của cả hai loại lượt $N_{\text{probe}} \times t_{\text{probe\_min}} + N_{\text{cv}} \times t_{\text{cv\_followup\_expected}} \le T_{\text{probe\_pool}}$, không tính độc lập từng quota, không tạo con số cận trên giả tạo khi thiếu telemetry mà ghi nhận cận trên là "chưa xác định, chờ policy/telemetry" và giữ dải heuristic chưa có cận trên định lượng cho mode này; xác nhận điều kiện $t_{\text{cv\_followup\_expected}} \le T_{\text{cv\_reserve}}$ cho 1C.2b để đủ tối đa 1 lượt, giữ cận trên chờ policy nếu chưa có căn cứ thời lượng; giữ các giá trị tham số ở trạng thái đề xuất chính sách chờ duyệt (không phải giới hạn runtime hiện có); nêu rõ AC-RT-01 chỉ áp dụng sau khi policy và bộ đếm session-level được chốt; và khẳng định rõ dải estimated interaction range chỉ là ước lượng tham khảo phục vụ hiển thị/định hướng, không phải cam kết chính xác số lượt của phiên.
+4. Gate 4 đã chốt Decision 6B và 8A: không thêm `max_runtime_probes` hoặc bộ đếm điều khiển cấp session; phần `T_probe_pool` chưa dùng giữ làm safety buffer và không reclaim. Các công thức 1/2/3 probe ở phần mô hình cũ chỉ là lịch sử phân tích, không phải production contract. Dải estimated interaction range vẫn chỉ là ước lượng tham khảo, không phải cam kết số lượt.
 5. Giữ nguyên định hướng cốt lõi: Ngân sách thời gian động theo từng phiên, không cố định số câu theo gói thời lượng.
 
 > [!NOTE]
-> **Dừng tại Gate 1 - Chưa tuyên bố nghiệm thu chính thức Gate 1**. Tài liệu hiện duy trì đầy đủ 8 quyết định nghiệp vụ mở trong Decision Log (Mục 6) để Product Owner xem xét và phê duyệt.
+> **Không suy rộng phê duyệt Gate 4 sang các gate khác**. Decision 3A, 6B và 8A đã được PO chốt cho Gate 4; các quyết định Gate 1/Gate 3 khác vẫn giữ trạng thái riêng. ADR Gate 3 tiếp tục Pending Formal Lead Architect Sign-off và Gate 5/P4 chưa được tuyên bố hoàn tất.
 > - *Điều kiện tiên quyết chuyển Gate 2*: Product Owner chốt các quyết định cốt lõi: Quyết định 4 (Trần Time Envelope), Quyết định 5 (Coding envelope nhỏ), Quyết định 7 (Duyệt ưu tiên khi đầu bảng vượt pool), và định hướng Quyết định 1 (chọn Cách A chốt mode hoặc Cách B tham số hóa cấu hình $T_{\text{onboarding}}$, $N_{\text{onboarding}}$, $T_{\text{cv\_standalone\_reserve}}$ / $T_{\text{cv\_addon\_inclusive}}$ để kiểm thử cả hai mode).
 > - Chỉ sau khi Product Owner phê duyệt các nội dung trên, dự án mới chính thức bắt đầu triển khai **GATE 2: Chốt đặc tả và cập nhật mã nguồn P1 Planner (`src/modules/interviews/planner.py`)**.

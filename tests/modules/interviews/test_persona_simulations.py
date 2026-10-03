@@ -245,10 +245,10 @@ class TestPersonaBasedSimulations(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out_2.action, TurnAction.NEXT_QUESTION)
 
     # =========================================================================
-    # PERSONA 3: THE CV FAKER (Ứng viên Bịa CV -> Kích hoạt 2-Strike Early Exit)
+    # PERSONA 3: THE CV FAKER (CV evidence remains unverified; session continues)
     # =========================================================================
-    async def test_persona_3_the_cv_faker_triggers_2_strike_early_exit(self):
-        """Kịch bản 3: Ứng viên thừa nhận bịa CV liên tiếp 2 lần -> FAST_FAIL_VALIDATION đóng phiên lịch sự."""
+    async def test_persona_3_the_cv_faker_does_not_fast_fail_validation(self):
+        """Low score/missing CV evidence cannot fast-fail the validation stage."""
         faker_llm = MockLLM(
             eval_result={
                 "score": 2.0,  # < 4.0 -> Fail
@@ -258,7 +258,7 @@ class TestPersonaBasedSimulations(unittest.IsolatedAsyncioTestCase):
         )
         engine = InterviewCoreEngine(llm_client=faker_llm)
 
-        # Lần fail thứ 1 ở Validate
+        # A weak/insufficient answer may be probed, but is not a Give Up strike.
         state = {
             "session_id": self.session_id,
             "current_stage": InterviewStage.VALIDATE.value,
@@ -277,23 +277,23 @@ class TestPersonaBasedSimulations(unittest.IsolatedAsyncioTestCase):
             text_content="Dự án Microservices đó thực ra em chỉ đứng tên trong nhóm thôi chứ em chưa trực tiếp cấu hình Kubernetes bao giờ.",
         )
         out_1 = await engine.handle_turn(turn_input_1, state)
-        # Sau lần fail thứ 1, consecutive_fails = 1
-        self.assertEqual(out_1.metadata.get("consecutive_fails"), 1)
+        self.assertEqual(out_1.action, TurnAction.PROBE)
+        self.assertFalse(out_1.is_session_finished)
+        self.assertEqual(out_1.metadata.get("consecutive_uncooperative"), 0)
+        self.assertEqual(out_1.metadata.get("consecutive_fails"), 0)
 
-        # Lần fail thứ 2: Ứng viên thừa nhận không biết làm gì
-        state["consecutive_fails"] = 1
+        # Even an explicit Give Up in Validate cannot trigger FAST_FAIL_TECH.
+        state["consecutive_uncooperative"] = out_1.metadata["consecutive_uncooperative"]
         turn_input_2 = CandidateTurnInput(
             session_id=self.session_id,
             turn_index=2,
-            text_content="Em không biết làm gì cả, phần lớn do bạn nhóm trưởng gánh team.",
+            text_content="Em không biết",
         )
         out_2 = await engine.handle_turn(turn_input_2, state)
-        # Kỳ vọng: Kích hoạt ngay 2-Strike Early Exit
-        self.assertEqual(out_2.action, TurnAction.TERMINATE)
-        self.assertEqual(out_2.exit_reason, SessionExitReason.FAST_FAIL_VALIDATION)
-        # Thông điệp lịch sự, không sỉ nhục ứng viên
-        self.assertIn("hoàn tất vòng sơ loại", out_2.message_text)
-        self.assertNotIn("trượt", out_2.message_text.lower())
+        self.assertNotEqual(out_2.action, TurnAction.TERMINATE)
+        self.assertFalse(out_2.is_session_finished)
+        self.assertEqual(out_2.metadata.get("consecutive_uncooperative"), 1)
+        self.assertEqual(out_2.metadata.get("consecutive_fails"), 1)
 
     # =========================================================================
     # PERSONA 4: THE JAILBREAKER (Tấn công Prompt Injection)
