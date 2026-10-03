@@ -358,7 +358,17 @@ _HEADERS = {
     "location": {"location", "dia diem", "dia diem lam viec"},
     # This is a section boundary only.  Without it, a requirements section can
     # accidentally consume application instructions at the end of a Vietnamese JD.
-    "application": {"how to apply", "cach thuc ung tuyen", "cach ung tuyen"},
+    # PaddleOCR occasionally confuses the Vietnamese ``ng`` cluster in
+    # ``ứng tuyển`` and emits ``ướng tuyển``. Keep both normalized forms as
+    # section boundaries so application instructions cannot become requirements
+    # or benefits.
+    "application": {
+        "how to apply",
+        "cach thuc ung tuyen",
+        "cach thuc uong tuyen",
+        "cach ung tuyen",
+        "cach uong tuyen",
+    },
 }
 
 def _key(value: str) -> str:
@@ -534,6 +544,14 @@ def is_probable_requirement_heading_value(text: str, value: str) -> bool:
         _key(line) == target and _is_probable_section_heading(lines, index)
         for index, (_, line) in enumerate(lines)
     )
+
+
+def is_in_application_section(text: str, char_start: int) -> bool:
+    """Return whether a grounded claim starts in the application-instructions tail."""
+    application_starts = [
+        offset for offset, line in _lines(text) if _heading(line) == "application"
+    ]
+    return bool(application_starts) and char_start >= min(application_starts)
 
 
 class DeterministicJobDescriptionParser:

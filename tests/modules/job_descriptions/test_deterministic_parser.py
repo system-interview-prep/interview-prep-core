@@ -251,6 +251,31 @@ def test_parser_accepts_ocr_variant_of_vietnamese_requirement_heading() -> None:
     assert not any("form" in item.raw_label for item in parsed.requirements)
 
 
+def test_parser_rejects_paddleocr_uong_tuyen_application_tail() -> None:
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown="fallback",
+            content_list=[
+                {"type": "text", "text": "QUYỀN LỢI:", "page_idx": 0},
+                {"type": "text", "text": "- Môi trường tốt", "page_idx": 0},
+                {"type": "text", "text": "YÊU CẦU ỨNG TUYỂN:", "page_idx": 0},
+                {"type": "text", "text": "- Biết NLP và GenAI", "page_idx": 0},
+                {"type": "text", "text": "## CÁCH THỨC ƯỚNG TUYỂN:", "page_idx": 0},
+                {"type": "text", "text": "- Điền form ứng tuyển tại link: https://forms.gle/example", "page_idx": 0},
+                {"type": "text", "text": "- #FPT #tuyendung #IT", "page_idx": 0},
+            ],
+        ),
+        document_id="jd-paddleocr-application-tail",
+        document_sha256="b" * 64,
+    )
+
+    parsed = DeterministicJobDescriptionParser().parse(source, extraction_version="paddleocr-test")
+
+    assert [item.text for item in parsed.benefits] == ["Môi trường tốt"]
+    assert [item.raw_label for item in parsed.requirements] == ["Biết NLP và GenAI"]
+    assert not any("form" in item.raw_label.casefold() for item in parsed.requirements)
+
+
 def test_parser_prefers_later_task_section_and_does_not_infer_manager_from_a_task() -> None:
     source = build_source_document(
         DocumentArtifacts(

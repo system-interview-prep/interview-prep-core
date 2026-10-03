@@ -7,6 +7,8 @@ from src.workers.mineru import extract_document_artifacts
 class MinerUDocumentExtractor:
     """MinerU adapter; application code does not depend on MinerU APIs."""
 
+    provider_name = "mineru"
+
     async def extract(
         self, document: bytes, filename: str, document_id: str
     ) -> DocumentArtifacts:
