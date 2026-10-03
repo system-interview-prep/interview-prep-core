@@ -190,3 +190,130 @@ async def test_hybrid_parser_preserves_preferred_when_reconciling_same_source_re
 
     assert len(parsed.requirements) == 1
     assert parsed.requirements[0].priority == "preferred"
+
+
+@pytest.mark.asyncio
+async def test_hybrid_parser_rejects_requirement_from_application_instructions() -> None:
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown="fallback",
+            content_list=[
+                {"type": "text", "text": "Requirements", "page_idx": 0},
+                {"type": "text", "text": "Python experience is required.", "page_idx": 0},
+                {"type": "text", "text": "CÁCH THỨC ƯỚNG TUYỂN:", "page_idx": 0},
+                {"type": "text", "text": "Điền thông tin tại https://forms.gle/example", "page_idx": 0},
+            ],
+        ),
+        document_id="hybrid-jd-application-tail",
+        document_sha256="c" * 64,
+    )
+    candidate = {
+        "jobTitle": None,
+        "responsibilities": [],
+        "requirements": [
+            {
+                "value": "Điền thông tin ứng tuyển",
+                "quote": "Điền thông tin tại https://forms.gle/example",
+                "kind": "other",
+                "priority": "preferred",
+            }
+        ],
+        "benefits": [],
+    }
+
+    parsed = await HybridJobDescriptionParser(client=FakeModelClient(json.dumps(candidate))).parse(
+        source, extraction_version="paddleocr-test"
+    )
+
+    assert any("Python" in item.raw_label for item in parsed.requirements)
+    assert not any("ứng tuyển" in item.raw_label for item in parsed.requirements)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_parser_deduplicates_fpt_disjunction_and_reworded_benefits() -> None:
+    benefit_original = (
+        "Làm việc trong môi trường toàn cầu cùng những chuyên gia AI và Data Scientist hàng đầu"
+    )
+    benefit_repeat = "Làm việc trong môi trường toàn cầu cùng các chuyên gia AI và Data Scientist hàng đầu"
+    student_line = "Sinh viên năm 4 hoặc mới tốt nghiệp ngành CNTT hoặc liên quan"
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown="fallback",
+            content_list=[
+                {"type": "text", "text": "Quyền lợi", "page_idx": 0},
+                {"type": "text", "text": f"- {benefit_original}", "page_idx": 0},
+                {"type": "text", "text": f"- {benefit_repeat}", "page_idx": 0},
+                {"type": "text", "text": "Yêu cầu ứng viên", "page_idx": 0},
+                {"type": "text", "text": f"- {student_line}", "page_idx": 0},
+            ],
+        ),
+        document_id="hybrid-jd-fpt-dedup",
+        document_sha256="d" * 64,
+    )
+    candidate = {
+        "requirements": [
+            {"value": student_line, "quote": student_line, "kind": "education", "priority": "must_have"},
+            {"value": benefit_original, "quote": benefit_original, "kind": "other", "priority": "preferred"},
+        ],
+        "benefits": [{"value": benefit_repeat, "quote": benefit_repeat}],
+    }
+
+    parsed = await HybridJobDescriptionParser(client=FakeModelClient(json.dumps(candidate))).parse(
+        source, extraction_version="paddleocr-test"
+    )
+
+    assert len(parsed.requirements) == 2
+    assert {item.group_operator for item in parsed.requirements} == {"any_of"}
+    assert len({item.group_id for item in parsed.requirements}) == 1
+    assert all(not item.requirement_id.startswith("req-llm-") for item in parsed.requirements)
+    assert len(parsed.benefits) == 1
+    assert parsed.benefits[0].text == benefit_original
+    assert len(parsed.benefits[0].evidence_refs) >= 2
+
+
+@pytest.mark.asyncio
+async def test_hybrid_parser_excludes_entire_application_tail_and_ambiguous_footer_skill() -> None:
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown="fallback",
+            content_list=[
+                {"type": "text", "text": "YÊU CẦU ỨNG TUYỂN:", "page_idx": 0},
+                {"type": "text", "text": "- Artificial Intelligence", "page_idx": 0},
+                {"type": "text", "text": "## CÁCH THỨC ƯỚNG TUYỀN:", "page_idx": 0},
+                {
+                    "type": "text",
+                    "text": "Điền thông tin ứng tuyển tại link: https://forms.gle/Dn7MP8VWbYZLwkDb9",
+                    "page_idx": 1,
+                },
+                {"type": "text", "text": "Artificial Intelligence", "page_idx": 1},
+                {"type": "text", "text": "#FPT #tuyendung #IT #StartWithYou", "page_idx": 1},
+            ],
+        ),
+        document_id="hybrid-jd-application-footer",
+        document_sha256="e" * 64,
+    )
+    candidate = {
+        "requirements": [
+            {
+                "value": value,
+                "quote": quote,
+                "kind": "other",
+                "priority": "preferred",
+            }
+            for value, quote in [
+                ("## CÁCH THỨC ƯỚNG TUYỀN:", "## CÁCH THỨC ƯỚNG TUYỀN:"),
+                ("Điền thông tin ứng tuyển", "Điền thông tin ứng tuyển tại link: https://forms.gle/Dn7MP8VWbYZLwkDb9"),
+                ("Artificial Intelligence", "Artificial Intelligence"),
+                ("#FPT #tuyendung #IT #StartWithYou", "#FPT #tuyendung #IT #StartWithYou"),
+            ]
+        ]
+    }
+
+    parsed = await HybridJobDescriptionParser(client=FakeModelClient(json.dumps(candidate))).parse(
+        source, extraction_version="paddleocr-test"
+    )
+
+    assert len(parsed.requirements) == 1
+    assert parsed.requirements[0].raw_label == "Artificial Intelligence"
+    assert parsed.requirements[0].priority == "must_have"
+    assert any(warning.code == "llm_claim_rejected" for warning in parsed.parsing.warnings)

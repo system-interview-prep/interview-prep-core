@@ -8,7 +8,11 @@ from src.modules.job_descriptions.parsing.infrastructure.repository import (
 )
 from src.modules.taxonomy.service import load_active_skill_taxonomy
 from src.modules.user_cvs.parsing.domain.source import build_source_document
-from src.modules.user_cvs.parsing.infrastructure.mineru_adapter import MinerUDocumentExtractor
+from src.modules.user_cvs.parsing.infrastructure.extractor_factory import build_document_extractor
+
+# Kept as a module symbol for integrations/tests that patched the old import
+# path before OCR provider selection moved to the factory.
+from src.modules.user_cvs.parsing.infrastructure.mineru_adapter import MinerUDocumentExtractor  # noqa: F401
 from src.modules.user_cvs.parsing.infrastructure.storage import R2ObjectStorage
 from src.workers.async_runner import worker_async_runner
 from src.workers.celery_app import celery_app
@@ -59,7 +63,7 @@ async def _parse_job_description(upload_id: str, version_id: str | None = None) 
             pipeline = JobDescriptionParsingPipeline(
                 repository=SqlAlchemyJobDescriptionParseRepository(db),
                 storage=R2ObjectStorage(),
-                extractor=MinerUDocumentExtractor(),
+                extractor=build_document_extractor(),
                 parser=parser,
                 source_builder=build_source_document,
             )

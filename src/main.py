@@ -1,5 +1,9 @@
+import asyncio
+import logging
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import socketio
 from fastapi import FastAPI, HTTPException, Request
@@ -53,6 +57,52 @@ MODULES = [
 ]
 
 SCHEMA_BOOTSTRAP_LOCK_KEY = 761_098_241
+logger = logging.getLogger(__name__)
+
+
+async def _start_livekit_agent(settings: object) -> asyncio.subprocess.Process | None:
+    """Start the LiveKit worker as a child of the API process when enabled."""
+    if not getattr(settings, "livekit_agent_autostart", False):
+        return None
+    if not all(
+        getattr(settings, name, None)
+        for name in ("voice_lab_enabled", "livekit_url", "livekit_api_key", "livekit_api_secret")
+    ):
+        logger.warning(
+            "LiveKit agent autostart is enabled but Voice Lab/LiveKit configuration is incomplete; "
+            "the worker was not started"
+        )
+        return None
+
+    run_mode = str(getattr(settings, "livekit_agent_run_mode", "dev")).strip().lower()
+    if run_mode not in {"dev", "start"}:
+        raise RuntimeError("LIVEKIT_AGENT_RUN_MODE must be 'dev' or 'start'")
+
+    agent_script = Path(__file__).resolve().parent / "modules" / "voice" / "livekit_agent.py"
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(agent_script),
+            run_mode,
+            cwd=str(agent_script.parents[3]),
+        )
+    except OSError:
+        logger.exception("Could not start the LiveKit agent process")
+        return None
+
+    logger.info("LiveKit agent started automatically (pid=%s, mode=%s)", process.pid, run_mode)
+    return process
+
+
+async def _stop_livekit_agent(process: asyncio.subprocess.Process | None) -> None:
+    if process is None or process.returncode is not None:
+        return
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=10)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
 
 
 async def bootstrap_question_bank_schema(engine: object) -> None:
@@ -74,13 +124,18 @@ async def bootstrap_question_bank_schema(engine: object) -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    livekit_agent: asyncio.subprocess.Process | None = None
     async with postgres_lifespan():
         from src.infrastructure.database import engine
 
         await bootstrap_question_bank_schema(engine)
         await run_all_seeds(SessionFactory)
         async with rabbitmq_lifespan():
-            yield
+            livekit_agent = await _start_livekit_agent(get_settings())
+            try:
+                yield
+            finally:
+                await _stop_livekit_agent(livekit_agent)
 
 
 def _message(detail: object) -> str:

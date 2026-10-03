@@ -411,6 +411,15 @@ _PROJECT_DETAIL_PREFIX_RE = re.compile(
 )
 
 
+_DATE_OR_STATUS_ONLY_RE = re.compile(
+    r"^(?:"
+    r"(?:(?:\d{1,2}[/-])?(?:19|20)\d{2}\s*[-–—/]\s*(?:present|current|nay|hiện tại|in progress|đang thực hiện|(?:\d{1,2}[/-])?(?:19|20)\d{2}))"
+    r"|(?:in progress|current|present|đang thực hiện|hoàn thành|completed)"
+    r")$",
+    re.IGNORECASE,
+)
+
+
 def _is_project_header(block_text: str) -> bool:
     stripped = block_text.strip()
     if not stripped or _is_section_title(stripped):
@@ -419,6 +428,8 @@ def _is_project_header(block_text: str) -> bool:
         return False
     without_bullet = re.sub(r"^[-*•–—+]\s*", "", stripped)
     if _PROJECT_DETAIL_PREFIX_RE.search(without_bullet):
+        return False
+    if _DATE_OR_STATUS_ONLY_RE.fullmatch(without_bullet):
         return False
     return True
 
@@ -453,6 +464,8 @@ class ProjectExtractor:
             if not lines or lines[0].casefold() in _SECTION_TITLES:
                 continue
             if re.search(r"\bwithout a declared project name\b", lines[0], re.I):
+                continue
+            if _DATE_OR_STATUS_ONLY_RE.fullmatch(lines[0].strip()):
                 continue
 
             name_raw = lines[0]

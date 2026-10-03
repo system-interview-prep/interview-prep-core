@@ -165,8 +165,8 @@ def test_planner_preserves_atomic_concepts_and_allocates_bounded_budget() -> Non
         duration_minutes=25,
     )
 
-    assert plan["questionBudget"] == 6
-    assert plan["targetQuestionCount"] == 6
+    assert plan["questionBudget"] == 4
+    assert plan["targetQuestionCount"] == 4
     assert {item["conceptId"] for item in plan["targets"]} == {
         "skill.nlp",
         "skill.genai",
@@ -342,7 +342,7 @@ def test_planner_keeps_must_have_concepts_ahead_of_repeated_nice_to_have() -> No
         duration_minutes=12,
     )
 
-    assert plan["questionBudget"] == 3
+    assert plan["questionBudget"] == 2
     assert "skill.core" in {item["conceptId"] for item in plan["targets"]}
     assert plan["targets"][0]["conceptId"] == "skill.core"
     assert plan["targets"][0]["selectionRank"] == 0

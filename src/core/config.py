@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     voice_lab_transcription_model: str = "gpt-4o-mini-transcribe"
     voice_lab_tts_model: str = "gpt-4o-mini-tts"
     voice_lab_voice: str = "marin"
+    livekit_url: str | None = None
+    livekit_api_key: str | None = None
+    livekit_api_secret: str | None = None
+    livekit_agent_name: str = "intervia-voice"
+    # Start the LiveKit worker from the API process during local development.
+    # Keep this opt-in for deployments that run the worker as its own service.
+    livekit_agent_autostart: bool = False
+    livekit_agent_run_mode: str = "dev"
     llm_provider: str = "openai"
     # Pin the snapshot so an alias update cannot silently change eval behavior.
     llm_model: str = "gpt-5.4-mini-2026-03-17"
@@ -64,6 +72,10 @@ class Settings(BaseSettings):
     embedding_cache_enabled: bool = True
     embedding_cache_dir: str = "models_cache/embedding_cache"
 
+    # Document extraction provider. Select the adapter used by CV and JD jobs.
+    # Supported values: mineru (default) and paddleocr.
+    ocr_provider: str = "mineru"
+
     # MinerU Precision Extract API. Set MINERU_API_KEY to enable CV parsing.
     mineru_api_key: str | None = None
     mineru_base_url: str = "https://mineru.net/api/v4"
@@ -75,6 +87,16 @@ class Settings(BaseSettings):
     mineru_http_pool_timeout_seconds: float = Field(default=20.0, gt=0)
     mineru_poll_interval_seconds: float = 2.0
     mineru_timeout_seconds: int = 300
+
+    # PaddleOCR Official API (AI Studio hosted service). The adapter uploads
+    # the document, polls the asynchronous job, and normalizes its result to
+    # DocumentArtifacts so the existing parser pipeline remains provider-neutral.
+    paddleocr_access_token: str | None = None
+    paddleocr_base_url: str = "https://paddleocr.aistudio-app.com"
+    paddleocr_model: str = "PaddleOCR-VL-1.6"
+    paddleocr_request_timeout_seconds: float = Field(default=120.0, gt=0)
+    paddleocr_poll_interval_seconds: float = Field(default=2.0, ge=0)
+    paddleocr_timeout_seconds: int = Field(default=600, gt=0)
     # API-side database observation interval for SSE status streams. The
     # browser holds one stream instead of independently polling resource APIs.
     sse_status_poll_interval_seconds: float = Field(default=1.0, ge=0.25, le=10.0)

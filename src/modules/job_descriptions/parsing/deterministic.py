@@ -11,7 +11,7 @@ from src.modules.job_descriptions.domain.schemas import (
     GroundedJobText,
     JobRequirement,
 )
-from src.modules.taxonomy.facade import classify_career
+from src.modules.taxonomy.facade import TAXONOMY_VERSION, classify_career
 from src.modules.user_cvs.facade import EvidenceMapper, SourceDocument
 from src.modules.user_cvs.schemas import CareerClassification, ParsingMetadata, TaxonomyRef
 
@@ -215,6 +215,47 @@ _SKILLS = {
     "skill-cplusplus": ("C++", ("c++", "cpp")),
 }
 
+
+def resolve_known_skill_concepts(
+    text: str,
+    *,
+    taxonomy: dict[str, tuple[str, tuple[str, ...]]] | None = None,
+    taxonomy_version: str = TAXONOMY_VERSION,
+) -> list[TaxonomyRef]:
+    """Resolve only explicit known skill aliases present in grounded text.
+
+    This is shared by parsing and legacy compatibility adapters.  It is
+    deliberately lexical and closed-world: unknown text never creates a
+    taxonomy concept.
+    """
+    source = taxonomy or _SKILLS
+    matches: list[tuple[int, int, TaxonomyRef]] = []
+    for concept_id, (label, aliases) in source.items():
+        for alias in aliases:
+            match = re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", text, re.I)
+            if match:
+                matches.append(
+                    (
+                        match.start(),
+                        match.end(),
+                        TaxonomyRef(
+                            conceptId=concept_id,
+                            scheme="internal",
+                            taxonomyVersion=taxonomy_version,
+                            label=label,
+                        ),
+                    )
+                )
+                break
+    matches.sort(key=lambda item: (item[0], -(item[1] - item[0]), item[2].concept_id))
+    resolved: list[TaxonomyRef] = []
+    seen: set[str] = set()
+    for _, _, concept in matches:
+        if concept.concept_id not in seen:
+            resolved.append(concept)
+            seen.add(concept.concept_id)
+    return resolved
+
 _GPA_RE = re.compile(
     r"\b(?:GPA|CPA|Điểm\s*(?:GPA)?)\s*(?:>=|>=|≥|tối\s*thiểu|từ|\s*:\s*)?\s*(?P<thresh>\d+(?:\.\d+)?)\s*(?:/|\s*trên\s*)(?P<scale>\d+(?:\.\d+)?)",
     re.I,
@@ -317,7 +358,17 @@ _HEADERS = {
     "location": {"location", "dia diem", "dia diem lam viec"},
     # This is a section boundary only.  Without it, a requirements section can
     # accidentally consume application instructions at the end of a Vietnamese JD.
-    "application": {"how to apply", "cach thuc ung tuyen", "cach ung tuyen"},
+    # PaddleOCR occasionally confuses the Vietnamese ``ng`` cluster in
+    # ``ứng tuyển`` and emits ``ướng tuyển``. Keep both normalized forms as
+    # section boundaries so application instructions cannot become requirements
+    # or benefits.
+    "application": {
+        "how to apply",
+        "cach thuc ung tuyen",
+        "cach thuc uong tuyen",
+        "cach ung tuyen",
+        "cach uong tuyen",
+    },
 }
 
 def _key(value: str) -> str:
@@ -493,6 +544,14 @@ def is_probable_requirement_heading_value(text: str, value: str) -> bool:
         _key(line) == target and _is_probable_section_heading(lines, index)
         for index, (_, line) in enumerate(lines)
     )
+
+
+def is_in_application_section(text: str, char_start: int) -> bool:
+    """Return whether a grounded claim starts in the application-instructions tail."""
+    application_starts = [
+        offset for offset, line in _lines(text) if _heading(line) == "application"
+    ]
+    return bool(application_starts) and char_start >= min(application_starts)
 
 
 class DeterministicJobDescriptionParser:

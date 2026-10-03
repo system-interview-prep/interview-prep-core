@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 from pydantic import ValidationError
@@ -19,6 +20,9 @@ from src.modules.job_descriptions.domain.schemas import (
 )
 from src.modules.job_descriptions.parsing.deterministic import (
     DeterministicJobDescriptionParser,
+    _key,
+    _ranges,
+    is_in_application_section,
     is_probable_requirement_heading_at,
     is_probable_requirement_heading_value,
 )
@@ -31,6 +35,16 @@ from src.modules.user_cvs.facade import EvidenceMapper, SourceDocument
 from src.modules.user_cvs.schemas import ParserWarning, TaxonomyRef
 
 PARSER_VERSION = "hybrid-jd-v4"
+
+
+def _near_duplicate_claim(left: str, right: str) -> bool:
+    """Recognize lightly reworded copies without merging short, distinct claims."""
+    normalized_left, normalized_right = _key(left), _key(right)
+    left_words, right_words = set(normalized_left.split()), set(normalized_right.split())
+    if min(len(left_words), len(right_words)) < 6:
+        return False
+    overlap = len(left_words & right_words) / min(len(left_words), len(right_words))
+    return overlap >= 0.75 and SequenceMatcher(None, normalized_left, normalized_right).ratio() >= 0.84
 
 
 def _evidence_id(kind: str, start: int, end: int) -> str:
@@ -199,14 +213,14 @@ class HybridJobDescriptionParser:
         # 1. Exact match
         matches = list(re.finditer(re.escape(quote), raw_text))
         if matches:
-            return matches[0].start(), matches[0].end()
+            return (matches[0].start(), matches[0].end()) if len(matches) == 1 else None
         # 2. Whitespace-tolerant match
         words = quote.split()
         if words:
             pattern = re.compile(r"\s+".join(re.escape(w) for w in words))
             matches = list(pattern.finditer(raw_text))
             if matches:
-                return matches[0].start(), matches[0].end()
+                return (matches[0].start(), matches[0].end()) if len(matches) == 1 else None
         return None
 
     def _merge(
@@ -240,7 +254,25 @@ class HybridJobDescriptionParser:
         def unique_text(
             existing: list[GroundedJobText], kind: str, items: list[TextCandidate]
         ) -> list[GroundedJobText]:
-            result = list(existing)
+            result: list[GroundedJobText] = []
+            for entry in existing:
+                duplicate = next(
+                    (idx for idx, prior in enumerate(result) if
+                     entry.text.casefold() == prior.text.casefold()
+                     or _near_duplicate_claim(entry.text, prior.text)),
+                    None,
+                )
+                if duplicate is None:
+                    result.append(entry)
+                else:
+                    prior = result[duplicate]
+                    result[duplicate] = prior.model_copy(
+                        update={
+                            "evidence_refs": list(
+                                dict.fromkeys([*prior.evidence_refs, *entry.evidence_refs])
+                            )
+                        }
+                    )
             for item in items:
                 evidence_id = ground(kind, item)
                 if not evidence_id:
@@ -248,12 +280,16 @@ class HybridJobDescriptionParser:
                 val = item.value.strip()
                 replaced = False
                 for idx, ex in enumerate(result):
-                    if val.casefold() == ex.text.casefold() or (
+                    exact_or_contained = val.casefold() == ex.text.casefold() or (
                         len(val) >= 5
                         and len(ex.text) >= 5
                         and (val.casefold() in ex.text.casefold() or ex.text.casefold() in val.casefold())
-                    ):
-                        result[idx] = GroundedJobText(text=val, evidenceRefs=[evidence_id])
+                    )
+                    if exact_or_contained or _near_duplicate_claim(val, ex.text):
+                        result[idx] = GroundedJobText(
+                            text=val if exact_or_contained else ex.text,
+                            evidenceRefs=list(dict.fromkeys([*ex.evidence_refs, evidence_id])),
+                        )
                         replaced = True
                         break
                 if not replaced:
@@ -274,11 +310,41 @@ class HybridJobDescriptionParser:
         # provenance. This retains stable IDs and structured numeric fields while
         # preventing the same source requirement from becoming two canonical rows.
         requirements = list(baseline.requirements)
+        requirement_section = _ranges(source.text).get("requirements")
         for index, item in enumerate(candidate.requirements, start=1):
             evidence_id = ground("requirement", item)
             if not evidence_id:
                 continue
             grounded_span = evidence[evidence_id]
+            if is_in_application_section(source.text, grounded_span.char_start):
+                trace_event(
+                    "jd_parser",
+                    "requirement_filtered",
+                    document_id=source.document_id,
+                    raw_label=item.value.strip(),
+                    char_start=grounded_span.char_start,
+                    char_end=grounded_span.char_end,
+                    reason_code="application_instructions",
+                    classifier="application_section_boundary",
+                    source="hybrid_candidate",
+                )
+                continue
+            if requirement_section and not (
+                requirement_section[0] <= grounded_span.char_start
+                and grounded_span.char_end <= requirement_section[1]
+            ):
+                trace_event(
+                    "jd_parser",
+                    "requirement_filtered",
+                    document_id=source.document_id,
+                    raw_label=item.value.strip(),
+                    char_start=grounded_span.char_start,
+                    char_end=grounded_span.char_end,
+                    reason_code="outside_requirements_section",
+                    classifier="section_boundary",
+                    source="hybrid_candidate",
+                )
+                continue
             if is_probable_requirement_heading_at(source.text, grounded_span.char_start):
                 # The candidate quote is a structurally identified section
                 # heading, not a candidate requirement.  This keeps the LLM
@@ -337,6 +403,22 @@ class HybridJobDescriptionParser:
                     }
                 )
                 continue
+            if len(matching_indices) > 1:
+                # A single quoted sentence can cover several atomic alternatives
+                # (for example, student OR graduate). They already represent the
+                # claim and must not acquire another combined LLM row.
+                trace_event(
+                    "jd_parser",
+                    "requirement_filtered",
+                    document_id=source.document_id,
+                    raw_label=item.value.strip(),
+                    char_start=grounded_span.char_start,
+                    char_end=grounded_span.char_end,
+                    reason_code="covered_by_multiple_requirements",
+                    classifier="evidence_overlap",
+                    source="hybrid_candidate",
+                )
+                continue
             requirements.append(
                 JobRequirement(
                     requirementId=f"req-llm-{index:03d}",
@@ -361,11 +443,14 @@ class HybridJobDescriptionParser:
                 (evidence[ref] for ref in requirement.evidence_refs if ref in evidence),
                 None,
             )
-            is_structural = is_probable_requirement_heading_value(source.text, requirement.raw_label)
-            if span is not None:
-                is_structural = is_structural or is_probable_requirement_heading_at(
-                    source.text, span.char_start
-                )
+            # The same label can appear once as a real requirement and again
+            # in a footer. Classify the grounded occurrence, not an arbitrary
+            # equal-valued line elsewhere in the document.
+            is_structural = (
+                is_probable_requirement_heading_at(source.text, span.char_start)
+                if span is not None
+                else is_probable_requirement_heading_value(source.text, requirement.raw_label)
+            )
             if is_structural:
                 trace_event(
                     "jd_parser",
