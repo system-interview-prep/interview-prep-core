@@ -199,7 +199,7 @@ _SECTION_HEADINGS = {
 def _repair_utf8_mojibake(value: str) -> str:
     """Recover UTF-8 text which an upstream extractor decoded as Windows-1252.
 
-    MinerU artifacts occasionally contain strings such as ``MÃ´ táº£``.  Repair only
+    Extracted artifacts occasionally contain strings such as ``MÃ´ táº£``. Repair only
     when the conversion succeeds and removes the characteristic corruption markers;
     ordinary Vietnamese/English text is left untouched.
     """

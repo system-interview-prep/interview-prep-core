@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -72,17 +72,8 @@ class Settings(BaseSettings):
     embedding_cache_enabled: bool = True
     embedding_cache_dir: str = "models_cache/embedding_cache"
 
-    # MinerU Precision Extract API. Set MINERU_API_KEY to enable CV parsing.
-    mineru_api_key: str | None = None
-    mineru_base_url: str = "https://mineru.net/api/v4"
-    mineru_model_version: str = "vlm"
-    mineru_language: str = "en"
-    mineru_http_connect_timeout_seconds: float = Field(default=20.0, gt=0)
-    mineru_http_read_timeout_seconds: float = Field(default=120.0, gt=0)
-    mineru_http_write_timeout_seconds: float = Field(default=120.0, gt=0)
-    mineru_http_pool_timeout_seconds: float = Field(default=20.0, gt=0)
-    mineru_poll_interval_seconds: float = 2.0
-    mineru_timeout_seconds: int = 300
+    # Local PaddleOCR inference runs in the document worker container.
+    paddleocr_device: Literal["cpu", "gpu"] = "cpu"
     # API-side database observation interval for SSE status streams. The
     # browser holds one stream instead of independently polling resource APIs.
     sse_status_poll_interval_seconds: float = Field(default=1.0, ge=0.25, le=10.0)

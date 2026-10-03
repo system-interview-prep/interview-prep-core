@@ -10,6 +10,7 @@ class DocumentArtifacts:
     content_list: list[Any] = field(default_factory=list)
     middle: dict[str, Any] | list[Any] | None = None
     extractor_version: str | None = None
+    extractor_name: str = "paddleocr"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -17,4 +18,5 @@ class DocumentArtifacts:
             "contentList": self.content_list,
             "middle": self.middle,
             "extractorVersion": self.extractor_version,
+            "extractorName": self.extractor_name,
         }

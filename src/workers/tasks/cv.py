@@ -5,7 +5,7 @@ from src.modules.user_cvs.parsing.application.pipeline import CvParsingPipeline
 from src.modules.user_cvs.parsing.domain.deterministic import DeterministicResumeParser
 from src.modules.user_cvs.parsing.domain.hybrid import HybridResumeParser
 from src.modules.user_cvs.parsing.domain.source import build_source_document
-from src.modules.user_cvs.parsing.infrastructure.mineru_adapter import MinerUDocumentExtractor
+from src.modules.user_cvs.parsing.infrastructure.paddleocr_adapter import PaddleOcrDocumentExtractor
 from src.modules.user_cvs.parsing.infrastructure.repository import SqlAlchemyCvParseRepository
 from src.modules.user_cvs.parsing.infrastructure.storage import R2ObjectStorage
 from src.workers.async_runner import worker_async_runner
@@ -38,7 +38,7 @@ async def _parse_cv(cv_id: str) -> dict:
         pipeline = CvParsingPipeline(
             repository=SqlAlchemyCvParseRepository(session),
             storage=R2ObjectStorage(),
-            extractor=MinerUDocumentExtractor(),
+            extractor=PaddleOcrDocumentExtractor(),
             parser=parser,
             source_builder=build_source_document,
         )

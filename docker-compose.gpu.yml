@@ -1,0 +1,5 @@
+services:
+  worker:
+    build:
+      target: worker-gpu
+    gpus: all

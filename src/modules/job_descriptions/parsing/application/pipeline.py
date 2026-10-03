@@ -102,7 +102,8 @@ class JobDescriptionParsingPipeline:
             artifacts = await self._extractor.extract(content, document.filename, document.upload_id)
             if not artifacts.markdown.strip() and not artifacts.content_list:
                 raise ValueError("document extractor returned no content")
-            artifact_key = f"{document.storage_key}.artifacts/{document.checksum}/mineru.json"
+            extractor_name = artifacts.extractor_name or "paddleocr"
+            artifact_key = f"{document.storage_key}.artifacts/{document.checksum}/{extractor_name}.json"
             self._storage.write_json(artifact_key, artifacts.as_dict())
             source = self._source_builder(
                 artifacts,
@@ -118,13 +119,13 @@ class JobDescriptionParsingPipeline:
             )
             parsed_or_awaitable = self._parser.parse(
                 source,
-                extraction_version=artifacts.extractor_version or "mineru-unknown",
+                extraction_version=artifacts.extractor_version or f"{extractor_name}-unknown",
                 artifact_key=artifact_key,
             )
             parsed = (
                 await parsed_or_awaitable if inspect.isawaitable(parsed_or_awaitable) else parsed_or_awaitable
             )
-            parse_source = f"mineru+{parsed.parsing.parser_version}"
+            parse_source = f"{extractor_name}+{parsed.parsing.parser_version}"
             await self._repository.complete(
                 document,
                 raw_text=source.text,

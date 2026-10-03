@@ -210,7 +210,7 @@ async def test_worker_copies_parsed_upload_into_requested_version_only() -> None
         patch("src.workers.tasks.job_description.DeterministicJobDescriptionParser"),
         patch("src.workers.tasks.job_description.SqlAlchemyJobDescriptionParseRepository"),
         patch("src.workers.tasks.job_description.R2ObjectStorage"),
-        patch("src.workers.tasks.job_description.MinerUDocumentExtractor"),
+                patch("src.workers.tasks.job_description.PaddleOcrDocumentExtractor"),
     ):
         response = await _parse_job_description(
             "upload-2", "00000000-0000-0000-0000-000000000002"

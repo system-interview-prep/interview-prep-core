@@ -92,3 +92,23 @@ unknown route/method và OpenAPI response contract.
 Khung FastAPI, module registry, infrastructure, matching/RAG source và worker đã
 được hợp nhất. Các module nghiệp vụ còn lại có package boundary sẵn để port lần lượt.
 Xem `MIGRATION.md` để biết contract và thứ tự chuyển đổi.
+
+## OCR worker
+
+CV/JD documents are parsed by PaddleOCR PP-StructureV3 in the Celery worker. The worker image contains the CUDA-enabled PaddlePaddle runtime and can execute on CPU or NVIDIA GPU. The PaddleOCR model files are downloaded the first time a document is processed, so the worker needs outbound network access then.
+
+For local worker development, install `.[ocr]` and make LibreOffice available on `PATH` to handle Word files. Set `PADDLEOCR_DEVICE=cpu` (default) or `PADDLEOCR_DEVICE=gpu` in `.env`. For GPU mode set `PADDLE_IMAGE_TARGET=worker-gpu` and use `docker-compose.gpu.yml` so Docker exposes the NVIDIA device. The host needs a CUDA-compatible NVIDIA GPU, driver, and NVIDIA Container Toolkit. The Docker build verifies the selected PaddlePaddle runtime.
+
+CPU:
+
+```powershell
+docker compose up -d --build worker
+```
+
+GPU:
+
+```powershell
+$env:PADDLEOCR_DEVICE = "gpu"
+$env:PADDLE_IMAGE_TARGET = "worker-gpu"
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build worker
+```

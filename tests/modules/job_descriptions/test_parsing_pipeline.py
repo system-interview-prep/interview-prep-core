@@ -47,7 +47,8 @@ class Extractor:
                 {"type": "text", "text": "Requirements"},
                 {"type": "text", "text": "- Python"},
             ],
-            extractor_version="mineru-test",
+            extractor_version="paddleocr-test",
+            extractor_name="paddleocr",
         )
 
 
@@ -68,8 +69,8 @@ async def test_jd_pipeline_persists_artifact_and_canonical_result() -> None:
     assert repository.completed is not None
     persisted = json.loads(repository.completed[1]["parsed"].model_dump_json(by_alias=True))
     assert persisted["jobTitle"] == "Backend Engineer"
-    assert repository.completed[1]["parse_source"] == "mineru+deterministic-jd-v5"
-    assert next(iter(storage.writes)).endswith("/mineru.json")
+    assert repository.completed[1]["parse_source"] == "paddleocr+deterministic-jd-v5"
+    assert next(iter(storage.writes)).endswith("/paddleocr.json")
 
 
 class FailingExtractor:

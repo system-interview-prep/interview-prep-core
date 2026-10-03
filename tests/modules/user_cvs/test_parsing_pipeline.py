@@ -51,7 +51,8 @@ class StubExtractor:
                 {"type": "text", "text": "Python", "page_idx": 0, "bbox": [0, 20, 50, 30]},
                 {"type": "text", "text": "English: B2", "page_idx": 0, "bbox": [0, 40, 80, 50]},
             ],
-            extractor_version="mineru-test",
+            extractor_version="paddleocr-test",
+            extractor_name="paddleocr",
         )
 
 
@@ -84,7 +85,7 @@ async def test_pipeline_runs_upload_artifact_to_structured_persistence_boundary(
     assert persisted["skills"][0]["concept"]["conceptId"] == "skill-python"
     assert persisted["languages"][0]["level"] == "B2"
     assert persisted["evidence"]
-    artifact_key = f"{document.storage_key}.artifacts/{SHA256}/mineru.json"
+    artifact_key = f"{document.storage_key}.artifacts/{SHA256}/paddleocr.json"
     assert artifact_key in storage.json_objects
     assert storage.json_objects[artifact_key]["contentList"][1]["bbox"] == [0, 20, 50, 30]
 
@@ -163,4 +164,4 @@ async def test_pipeline_awaits_async_parser_and_persists_its_version() -> None:
     await pipeline.run("cv-1")
 
     assert repository.completed is not None
-    assert repository.completed[1]["parse_source"] == "mineru+deterministic-resume-v5"
+    assert repository.completed[1]["parse_source"] == "paddleocr+deterministic-resume-v5"
