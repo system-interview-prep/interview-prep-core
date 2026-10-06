@@ -2,7 +2,7 @@ from src.modules.interviews.planner import (
     PLANNER_POLICY_VERSION,
     derive_competency_plan,
 )
-from src.modules.matching.schemas import (
+from src.modules.matching.domain.schemas import (
     CanonicalJob,
     ConceptResult,
     MatchResult,

@@ -4,7 +4,7 @@ from src.modules.interviews.plan_structure import (
     derive_difficulty,
     validate_must_have_coverage,
 )
-from src.modules.matching.schemas import (
+from src.modules.matching.domain.schemas import (
     CanonicalJob,
     LanguageRequirement,
     MatchResult,

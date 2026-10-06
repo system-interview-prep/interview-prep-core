@@ -16,7 +16,7 @@ from src.modules.interviews.router import (
     get_interview_plan,
 )
 from src.modules.job_descriptions.schemas import CanonicalJobDescription, JobRequirement
-from src.modules.matching.schemas import MatchResult, RequirementResult
+from src.modules.matching.domain.schemas import MatchResult, RequirementResult
 from src.modules.user_cvs.schemas import (
     CanonicalResume,
     EvidenceSpan,

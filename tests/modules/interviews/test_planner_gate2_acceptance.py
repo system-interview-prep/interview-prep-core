@@ -25,7 +25,7 @@ from src.modules.interviews.planner import (
 from src.modules.interviews.planner_config import (
     PlannerPolicyConfig,
 )
-from src.modules.matching.schemas import (
+from src.modules.matching.domain.schemas import (
     CanonicalJob,
     ConceptResult,
     MatchResult,
