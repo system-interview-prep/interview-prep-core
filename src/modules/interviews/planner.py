@@ -29,8 +29,8 @@ from src.modules.interviews.planner_config import (
     resolve_strict_hands_on_precedence,
 )
 from src.modules.job_descriptions.schemas import CanonicalJobDescription
-from src.modules.matching.facade import canonical_job_from_description, evaluate_match
-from src.modules.matching.schemas import (
+from src.modules.matching.application.facade import canonical_job_from_description, evaluate_match
+from src.modules.matching.domain.schemas import (
     CanonicalJob,
     LanguageRequirement,
     MatchRequest,

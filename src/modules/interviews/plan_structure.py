@@ -7,7 +7,7 @@ questions.
 
 from typing import Any
 
-from src.modules.matching.schemas import (
+from src.modules.matching.domain.schemas import (
     CanonicalJob,
     LanguageRequirement,
     MatchResult,
