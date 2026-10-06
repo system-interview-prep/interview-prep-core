@@ -35,6 +35,20 @@ class Settings(BaseSettings):
     celery_result_backend: str = "rpc://"
     database_url: str = "postgresql://user:password@localhost:5432/matching_db"
     openai_api_key: str | None = None
+    typesafe_api_key: str | None = None
+    typesafe_base_url: str = "https://api.typesafe.ai"
+    typesafe_default_model: str = "jev-latest"
+    jev_clarification_enabled: bool = False
+    jev_timeout_seconds: float = Field(default=5.0, gt=0)
+    jev_clarification_confidence_threshold: float = Field(default=0.75, ge=0, le=1)
+    jev_max_evidence_items: int = Field(default=5, ge=1, le=20)
+    matching_clarification_questions_enabled: bool = False
+    matching_clarification_model: str = "gpt-5.4-mini"
+    matching_llm_evidence_search_enabled: bool = True
+    matching_llm_evidence_search_max_chars: int = Field(default=12_000, ge=1_000, le=100_000)
+    matching_llm_evidence_search_max_requirements: int = Field(default=12, ge=1, le=30)
+    # Kept as text so a deliberately blank .env.example value stays valid.
+    matching_clarification_semantic_threshold: str | None = None
     voice_lab_enabled: bool = False
     voice_lab_realtime_model: str = "gpt-realtime-2.1"
     voice_lab_transcription_model: str = "gpt-4o-mini-transcribe"
