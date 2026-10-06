@@ -17,7 +17,7 @@ from src.modules.job_descriptions.router import (
     create_job_description_version,
 )
 from src.workers.tasks.job_description import _parse_job_description
-from src.modules.matching.router import _resolve_job
+from src.modules.matching.api.router import _resolve_job
 
 
 def _result(*, row=None, rows=None, rowcount=1):
