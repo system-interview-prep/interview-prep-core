@@ -1,6 +1,6 @@
 from src.core.config import get_settings
-from src.modules.matching.facade import get_matching_facade
-from src.modules.matching.schemas import MatchRequest
+from src.modules.matching.application.facade import get_matching_facade
+from src.modules.matching.domain.schemas import MatchRequest
 from src.workers.async_runner import worker_async_runner
 from src.workers.celery_app import celery_app
 
