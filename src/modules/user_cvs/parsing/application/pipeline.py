@@ -184,12 +184,17 @@ class CvParsingPipeline:
                 document_id=document.cv_id,
                 document_sha256=document.checksum,
             )
+            source_section_block_counts = {
+                section: sum(block.section == section for block in source.blocks)
+                for section in sorted({block.section for block in source.blocks})
+            }
             trace_event(
                 "cv_parser",
                 "parser_started",
                 cv_id=document.cv_id,
                 extractor_version=artifacts.extractor_version,
                 source_characters=len(source.text),
+                source_section_block_counts=source_section_block_counts,
             )
             parsed_or_awaitable = self._parser.parse(
                 source,

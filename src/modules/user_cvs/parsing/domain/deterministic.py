@@ -27,7 +27,7 @@ from src.modules.user_cvs.parsing.domain.structured import (
     ProjectExtractor,
 )
 
-PARSER_VERSION = "deterministic-resume-v5"
+PARSER_VERSION = "deterministic-resume-v6"
 TAXONOMY_VERSION = "internal-2026.1"
 
 _SKILLS = {
@@ -180,24 +180,52 @@ class TaxonomySkillExtractor:
         self._taxonomy_version = taxonomy_version
 
     def extract(self, source: SourceDocument, mapper: EvidenceMapper, draft: ResumeDraft) -> None:
+        eligible_texts: list[tuple[int, str]] = []
+        for block in source.blocks:
+            if block.section in {"education", "languages"}:
+                continue
+            text = block.text
+            offset = 0
+            if block.section == "employment":
+                # In compact/plain-text CVs the job title, employer and date
+                # can be rendered as one block.  Keep any responsibility text
+                # after the date, but do not treat the title itself as a
+                # skill declaration.
+                date_marker = re.search(r"\b(?:19|20)\d{2}\b", text)
+                if date_marker is not None:
+                    offset = date_marker.end()
+            if text[offset:].strip():
+                eligible_texts.append((block.char_start + offset, text[offset:]))
+
         for concept_id, (label, aliases) in self._taxonomy.items():
-            matches = [match for alias in aliases for match in _pattern(alias).finditer(source.text)]
+            # A job title such as "Azure Data Engineer" or "Java Developer"
+            # is not, by itself, an explicit skill claim.  Restrict taxonomy
+            # evidence to claim-bearing sections so employment titles and
+            # education text do not create false-positive skills.  ``other``
+            # remains eligible because many compact CVs have no section
+            # heading and put their skills in the opening content blocks.
+            matches = [
+                (offset + match.start(), offset + match.end())
+                for offset, text in eligible_texts
+                for alias in aliases
+                for match in _pattern(alias).finditer(text)
+            ]
             if not matches:
                 continue
-            matches.sort(key=lambda item: (item.start(), -(item.end() - item.start())))
+            matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
             refs: list[str] = []
-            for match in matches:
-                evidence_id = _evidence_id("skill", match.start(), match.end())
+            for start, end in matches:
+                evidence_id = _evidence_id("skill", start, end)
                 draft.evidence.setdefault(
                     evidence_id,
                     mapper.from_offsets(
                         evidence_id=evidence_id,
-                        char_start=match.start(),
-                        char_end=match.end(),
+                        char_start=start,
+                        char_end=end,
                     ),
                 )
                 refs.append(evidence_id)
-            first = matches[0]
+            first_start, first_end = matches[0]
             draft.skills.append(
                 SkillClaim(
                     claimId=f"claim-{concept_id}",
@@ -207,7 +235,7 @@ class TaxonomySkillExtractor:
                         taxonomyVersion=self._taxonomy_version,
                         label=label,
                     ),
-                    rawLabel=source.text[first.start() : first.end()],
+                    rawLabel=source.text[first_start:first_end],
                     evidenceRefs=list(dict.fromkeys(refs)),
                     assertionSource="explicit",
                     confidence=1.0,

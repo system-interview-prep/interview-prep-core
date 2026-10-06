@@ -28,7 +28,9 @@ _MONTH_VI = r"(?:thg\s*\d{1,2}|tháng\s*\d{1,2})"
 _MONTH = rf"(?:{_MONTH_EN}|{_MONTH_VI})"
 _DATE = rf"(?:(?:{_MONTH})\.?\s+)?{_YEAR}"
 _DATE_RANGE_RE = re.compile(
-    rf"(?P<start>{_DATE})\s*(?:-|–|—|to|đến)\s*(?P<end>{_DATE}|present|current|now|hiện\s*tại|nay)",
+    rf"(?P<start>{_DATE})\s*(?:-|\u2013|\u2014|to|\u0111\u1ebfn)\s*"
+    rf"(?:(?:expected|anticipated|est\.?|d\u1ef1\s*ki\u1ebfn)\s*)?"
+    rf"(?P<end>{_DATE}|present|current|now|hi\u1ec7n\s*t\u1ea1i|nay)",
     re.IGNORECASE,
 )
 _MONTH_NUMBER = {
@@ -57,7 +59,8 @@ _DEGREE_RE = re.compile(
     r"\b("
     r"bachelors?|masters?|ph\.?d|doctor|b\.?sc|m\.?sc|b\.?eng|m\.?eng|b\.?e|m\.?e|"
     r"b\.?s|m\.?s|mba|associate|adp|f\.?sc|intermediate|a[ -]?levels|o[ -]?levels|"
-    r"pre-?engineering|computer sciences?|diploma|hsc|ssc|bba|dba|mcs|bscs|bsit|"
+    r"pre-?engineering|computer sciences?|diploma|hsc|ssc|high[ -]?school|"
+    r"secondary school|higher secondary|trung hoc|bba|dba|mcs|bscs|bsit|"
     r"b\.?com|m\.?com|b\.?tech|m\.?tech|b\.?a|m\.?a|f\.?a|llb|degree|graduation|"
     r"cử nhân|thạc sĩ|tiến sĩ|kỹ sư|cao đẳng|đại học|trung học|phổ thông|bằng cấp|"
     r"student|undergraduate|sinh viên|năm cuối|final-year"
@@ -238,6 +241,29 @@ def _clean_institution(value: str) -> str:
     return cleaned.strip(" -–—|,")
 
 
+def _student_status(text: str) -> str | None:
+    if re.search(
+        r"\bfinal[ -]?year\b|\b(?:4th|fourth)[ -]+year\b|\byear[ -]+(?:4|four)\b|"
+        r"\bn\u0103m cu\u1ed1i\b|\bsinh vi\u00ean n\u0103m 4\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return "final_year"
+    if re.search(
+        r"\brecent graduate\b|\bm\u1edbi t\u1ed1t nghi\u1ec7p\b", text, re.IGNORECASE
+    ):
+        return "recent_graduate"
+    if re.search(r"\bstudent\b|\bsinh vi\u00ean\b", text, re.IGNORECASE):
+        return "student"
+    return None
+
+
+def _fold_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFD", value.casefold())
+    normalized = "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+    return re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+
+
 _INVALID_INSTITUTION_RE = re.compile(
     r"^(?:"
     r"information technology|software engineering|computer science|"
@@ -310,15 +336,10 @@ class EducationExtractor:
             student_status = None
             gpa = None
             gpa_scale = None
+            fallback_academic_parts: list[str] = []
 
             for b in group:
-                normalized = b.text.casefold()
-                if re.search(r"\bfinal[ -]?year\b|\bn[aă]m cu[oố]i\b", normalized):
-                    student_status = "final_year"
-                elif re.search(r"\brecent graduate\b|\bm[oớ]i t[oố]t nghi[eệ]p\b", normalized):
-                    student_status = "recent_graduate"
-                elif re.search(r"\bstudent\b|\bsinh vi[eê]n\b", normalized):
-                    student_status = student_status or "student"
+                student_status = _student_status(b.text) or student_status
                 gpa_match = re.search(
                     r"\b(?:GPA|CPA)\s*[:=]?\s*(?P<value>\d+(?:\.\d+)?)"
                     r"(?:\s*/\s*(?P<scale>\d+(?:\.\d+)?))?",
@@ -349,6 +370,8 @@ class EducationExtractor:
                     part_cleaned = _clean_institution(part)
                     if not part_cleaned:
                         continue
+                    if part_cleaned.casefold().startswith("major:"):
+                        part_cleaned = part_cleaned.split(":", 1)[1].strip()
                     if _DEGREE_RE.search(part_cleaned):
                         if not degree:
                             degree = part_cleaned
@@ -361,6 +384,19 @@ class EducationExtractor:
                         if part_cleaned != institution and part_cleaned != degree:
                             if not field_of_study:
                                 field_of_study = part_cleaned
+                    elif (
+                        not degree
+                        and not field_of_study
+                        and part_cleaned != institution
+                        and not _DATE_OR_STATUS_ONLY_RE.fullmatch(part_cleaned)
+                    ):
+                        # Some CVs use an unlabelled second column for the
+                        # qualification (for example ``Institution | I.R.``).
+                        # Preserve that value instead of silently dropping it.
+                        fallback_academic_parts.append(part_cleaned)
+
+            if not degree and fallback_academic_parts:
+                degree = fallback_academic_parts[0]
 
             # Never allow major, program, student-status, or GPA text to become institution
             if not _INSTITUTION_RE.search(institution) or _INVALID_INSTITUTION_RE.match(institution):
@@ -374,6 +410,19 @@ class EducationExtractor:
                 continue
 
             refs = [_add_block_evidence(draft, mapper, b, "education") for b in group]
+            if student_status not in {"final_year", "recent_graduate"} and field_of_study:
+                field_key = _fold_text(field_of_study.split("(", 1)[0])
+                for status_block in source.blocks:
+                    status = _student_status(status_block.text)
+                    if (
+                        status
+                        and status != "student"
+                        and field_key
+                        and field_key in _fold_text(status_block.text)
+                    ):
+                        student_status = status
+                        refs.append(_add_block_evidence(draft, mapper, status_block, "education"))
+                        break
             draft.education.append(
                 EducationEntry(
                     educationId=_stable_id("education", group[0]),
@@ -413,7 +462,9 @@ _PROJECT_DETAIL_PREFIX_RE = re.compile(
 
 _DATE_OR_STATUS_ONLY_RE = re.compile(
     r"^(?:"
-    r"(?:(?:\d{1,2}[/-])?(?:19|20)\d{2}\s*[-–—/]\s*(?:present|current|nay|hiện tại|in progress|đang thực hiện|(?:\d{1,2}[/-])?(?:19|20)\d{2}))"
+    r"(?:(?:\d{1,2}[/-])?(?:19|20)\d{2}\s*[-\u2013\u2014/]\s*"
+    r"(?:present|current|nay|hi\u1ec7n t\u1ea1i|in progress|"
+    r"\u0111ang th\u1ef1c hi\u1ec7n|(?:\d{1,2}[/-])?(?:19|20)\d{2}))"
     r"|(?:in progress|current|present|đang thực hiện|hoàn thành|completed)"
     r")$",
     re.IGNORECASE,
@@ -518,6 +569,10 @@ class CertificationExtractor:
             if re.search(r"^(no\s+certifications?|none|n/a|không\s+có)", name, re.I):
                 continue
             match = _DATE_RANGE_RE.search(name)
+            # Date-only or malformed OCR blocks should be ignored rather than
+            # causing canonical validation to abort parsing the whole resume.
+            if match and not name[: match.start()].strip():
+                continue
             ref = _add_block_evidence(draft, mapper, block, "certification")
             draft.certifications.append(
                 CertificationEntry(

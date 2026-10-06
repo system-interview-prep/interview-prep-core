@@ -359,6 +359,35 @@ def _artifact_items(content_list: list[Any]) -> list[tuple[dict[str, Any], int |
     ]
 
 
+def _split_text_lines(text: str, current_section: str) -> list[str]:
+    """Split page-sized items enough to recover headings and education evidence."""
+    segments: list[str] = []
+    current: list[str] = []
+
+    def flush() -> None:
+        block = "\n".join(current).strip()
+        if block:
+            segments.append(block)
+        current.clear()
+
+    for line in text.splitlines():
+        value = line.strip()
+        if not value:
+            continue
+        heading_section = _section_for_heading(value)
+        if heading_section:
+            flush()
+            segments.append(value)
+            current_section = heading_section
+        elif current_section in {"profile", "education"}:
+            flush()
+            segments.append(value)
+        else:
+            current.append(value)
+    flush()
+    return segments or [text]
+
+
 def build_source_document(
     artifacts: DocumentArtifacts, *, document_id: str, document_sha256: str
 ) -> SourceDocument:
@@ -370,10 +399,14 @@ def build_source_document(
         raw_items = [({"type": "markdown", "text": p}, None) for p in paragraphs]
 
     rendered: list[tuple[str, int | None, tuple[float, float, float, float] | None, str]] = []
+    rendered_section = "other"
     for item, page in raw_items:
         text = normalize_text(_content_text(item))
         if text:
-            rendered.append((text, page, _bbox(item.get("bbox")), str(item.get("type") or "text")))
+            for segment in _split_text_lines(text, rendered_section):
+                rendered.append((segment, page, _bbox(item.get("bbox")), str(item.get("type") or "text")))
+                if heading_section := _section_for_heading(segment):
+                    rendered_section = heading_section
 
     parts: list[str] = []
     blocks: list[SourceBlock] = []
