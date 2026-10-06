@@ -1,7 +1,10 @@
 import pytest
 from pydantic import ValidationError
 
+from src.modules.matching.domain.schemas import UnresolvedRequirement
+from src.modules.matching.evaluation.requirement_evaluators import evaluate_unresolved_requirement
 from src.modules.user_cvs.domain.schemas import CanonicalResume, EmploymentEntry, PartialDate
+from src.modules.user_cvs.parsing.application.pipeline import _coverage_snapshot
 from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
 from src.modules.user_cvs.parsing.domain.deterministic import DeterministicResumeParser
 from src.modules.user_cvs.parsing.domain.source import EvidenceMapper, build_source_document
@@ -32,6 +35,106 @@ def test_source_document_preserves_page_order_bbox_and_sections() -> None:
     assert source.blocks[1].bounding_box == (10.0, 50.0, 200.0, 80.0)
     assert source.blocks[1].section == "skills"
     assert source.blocks[2].section == "employment"
+
+
+def test_page_sized_markdown_keeps_final_year_education_evidence_for_matching() -> None:
+    cv_text = "\n".join(
+        [
+            "SUMMARY",
+            (
+                "Final-year Information Technology student at the University of Information "
+                "Technology (UIT-VNUHCM)."
+            ),
+            "EDUCATION",
+            (
+                "University of Information Technology - Vietnam National University Ho Chi Minh City "
+                "(UIT-VNUHCM) 2022- Expected 2026"
+            ),
+            "Major: Information Technology (Vietnam-Japan program)",
+            "PROJECTS",
+            "Mini search engine 2026",
+        ]
+    )
+    source = build_source_document(
+        DocumentArtifacts(markdown=cv_text),
+        document_id="cv-final-year",
+        document_sha256=SHA256,
+    )
+
+    parsed = DeterministicResumeParser().parse(source, extraction_version="test-extractor")
+    assert len(parsed.resume.education) == 1
+    education = parsed.resume.education[0]
+    assert "University of Information Technology" in education.institution
+    assert education.field_of_study.startswith("Information Technology")
+    assert education.start_date and education.start_date.value == "2022"
+    assert education.end_date and education.end_date.value == "2026"
+    assert education.student_status == "final_year"
+
+    coverage = _coverage_snapshot(parsed, source)
+    resume = parsed.resume.model_copy(
+        update={"parsing": parsed.resume.parsing.model_copy(update=coverage)}
+    )
+    requirement = UnresolvedRequirement(
+        requirementId="req-final-year",
+        type="unresolved",
+        kind="education",
+        priority="must_have",
+        sourceEvidenceRef="jd-education",
+        rawLabel="Sinh vi\u00ean n\u0103m 4",
+    )
+    result = evaluate_unresolved_requirement(requirement, resume)
+
+    assert result.status == "met"
+    assert result.reason_code == "education_status_and_field_evidenced"
+    assert result.evidence_refs
+    assert any(
+        "Final-year" in item.text and item.evidence_id in result.evidence_refs
+        for item in resume.evidence
+    )
+
+
+def test_taxonomy_skills_ignore_employment_titles() -> None:
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown=(
+                "Technical Skills\n"
+                "Python\n"
+                "Experience\n"
+                "Java Developer\n"
+                "Organization 1\n"
+                "Jun 2018 - Sep 2020"
+            )
+        ),
+        document_id="cv-skill-sections",
+        document_sha256=SHA256,
+    )
+
+    parsed = DeterministicResumeParser().parse(source, extraction_version="test-extractor")
+
+    assert [item.concept.concept_id for item in parsed.resume.skills] == ["skill-python"]
+
+
+def test_education_extractor_keeps_unlabelled_qualification_values() -> None:
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown=(
+                "Education\n"
+                "Institution 1 | LLB | 2011 - 2015\n"
+                "Institution 2 | I.R. | 2012 - 2016\n"
+                "Institution 3 | SEO and Digital Marketing | 2013 - 2017"
+            )
+        ),
+        document_id="cv-unlabelled-qualification",
+        document_sha256=SHA256,
+    )
+
+    parsed = DeterministicResumeParser().parse(source, extraction_version="test-extractor")
+
+    assert [item.degree for item in parsed.resume.education] == [
+        "LLB",
+        "I.R.",
+        "SEO and Digital Marketing",
+    ]
 
 
 def test_source_document_reads_mineru_v2_page_structure() -> None:
@@ -186,6 +289,20 @@ def test_deterministic_parser_extracts_structured_sections_with_grounded_evidenc
         *result.resume.certifications,
     ]
     assert all(owner.evidence_refs and set(owner.evidence_refs).issubset(evidence_ids) for owner in owners)
+
+
+def test_date_only_certification_block_does_not_abort_resume_parsing() -> None:
+    source = _source(
+        [
+            {"type": "title", "text": "Certifications"},
+            {"type": "text", "text": "2024 - 2025"},
+            {"type": "text", "text": "AWS Certified Developer | 2025"},
+        ]
+    )
+
+    result = DeterministicResumeParser().parse(source, extraction_version="test-extractor")
+
+    assert [item.name for item in result.resume.certifications] == ["AWS Certified Developer | 2025"]
 
 
 def test_deterministic_parser_keeps_degree_only_education_schema_valid() -> None:
