@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.modules.matching import router as matching_router
-from src.modules.matching.schemas import MatchResult
+import src.modules.matching.api.router as matching_router
+from src.modules.matching.domain.schemas import MatchResult
 from tests.modules.matching.test_matching_pipeline import _payload
 
 

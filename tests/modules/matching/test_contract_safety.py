@@ -57,8 +57,8 @@ def _stub_celery_modules() -> None:
 _stub_celery_modules()
 
 # Now we can safely import the router function
-from src.modules.matching.router import _resolve_job  # noqa: E402
-from src.modules.matching.schemas import CanonicalJob  # noqa: E402
+from src.modules.matching.api.router import _resolve_job  # noqa: E402
+from src.modules.matching.domain.schemas import CanonicalJob  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -159,16 +159,15 @@ async def test_2a_001_valid_structured_data_uses_canonical_path_not_legacy() -> 
 
     synthetic_entered = []
 
-    original_evidence_span = None
-    import src.modules.matching.router as router_mod
-    original_evidence_span_cls = router_mod.EvidenceSpan
+    import src.modules.matching.application.input_resolver as resolver_mod
+    original_evidence_span_cls = resolver_mod.EvidenceSpan
 
     class SpyEvidenceSpan(original_evidence_span_cls):
         def __init__(self, *args, **kwargs):
             synthetic_entered.append(True)
             super().__init__(*args, **kwargs)
 
-    with patch.object(router_mod, "EvidenceSpan", SpyEvidenceSpan):
+    with patch.object(resolver_mod, "EvidenceSpan", SpyEvidenceSpan):
         result = await _resolve_job(db, "job-test")
 
     # Legacy path was NOT entered
@@ -193,14 +192,14 @@ async def test_2a_002_invalid_structured_data_raises_422_not_fallback() -> None:
     db = _make_async_db(broken_data)
 
     synthetic_entered = []
-    import src.modules.matching.router as router_mod
+    import src.modules.matching.application.input_resolver as resolver_mod
 
-    class SpyEvidenceSpan(router_mod.EvidenceSpan):
+    class SpyEvidenceSpan(resolver_mod.EvidenceSpan):
         def __init__(self, *args, **kwargs):
             synthetic_entered.append(True)
             super().__init__(*args, **kwargs)
 
-    with patch.object(router_mod, "EvidenceSpan", SpyEvidenceSpan):
+    with patch.object(resolver_mod, "EvidenceSpan", SpyEvidenceSpan):
         with pytest.raises(HTTPException) as exc_info:
             await _resolve_job(db, "job-bad")
 
@@ -224,15 +223,15 @@ async def test_2a_003_adapter_value_error_raises_422_not_fallback() -> None:
     db = _make_async_db(_canonical_structured_data())
 
     synthetic_entered = []
-    import src.modules.matching.router as router_mod
+    import src.modules.matching.application.input_resolver as resolver_mod
 
-    class SpyEvidenceSpan(router_mod.EvidenceSpan):
+    class SpyEvidenceSpan(resolver_mod.EvidenceSpan):
         def __init__(self, *args, **kwargs):
             synthetic_entered.append(True)
             super().__init__(*args, **kwargs)
 
-    with patch.object(router_mod, "EvidenceSpan", SpyEvidenceSpan), patch.object(
-        router_mod,
+    with patch.object(resolver_mod, "EvidenceSpan", SpyEvidenceSpan), patch.object(
+        resolver_mod,
         "job_description_to_matching_job",
         side_effect=ValueError("requirement req-python has no evidence"),
     ) as mock_adapter:
@@ -274,14 +273,14 @@ async def test_2a_005_invalid_seniority_in_structured_data_raises_not_falls_back
     db = _make_async_db(data)
 
     synthetic_entered = []
-    import src.modules.matching.router as router_mod
+    import src.modules.matching.application.input_resolver as resolver_mod
 
-    class SpyEvidenceSpan(router_mod.EvidenceSpan):
+    class SpyEvidenceSpan(resolver_mod.EvidenceSpan):
         def __init__(self, *args, **kwargs):
             synthetic_entered.append(True)
             super().__init__(*args, **kwargs)
 
-    with patch.object(router_mod, "EvidenceSpan", SpyEvidenceSpan):
+    with patch.object(resolver_mod, "EvidenceSpan", SpyEvidenceSpan):
         with pytest.raises(HTTPException) as exc_info:
             await _resolve_job(db, "job-invalid-seniority")
 
@@ -303,14 +302,14 @@ async def test_2a_006_invalid_employment_type_in_structured_data_raises_not_fall
     db = _make_async_db(data)
 
     synthetic_entered = []
-    import src.modules.matching.router as router_mod
+    import src.modules.matching.application.input_resolver as resolver_mod
 
-    class SpyEvidenceSpan(router_mod.EvidenceSpan):
+    class SpyEvidenceSpan(resolver_mod.EvidenceSpan):
         def __init__(self, *args, **kwargs):
             synthetic_entered.append(True)
             super().__init__(*args, **kwargs)
 
-    with patch.object(router_mod, "EvidenceSpan", SpyEvidenceSpan):
+    with patch.object(resolver_mod, "EvidenceSpan", SpyEvidenceSpan):
         with pytest.raises(HTTPException) as exc_info:
             await _resolve_job(db, "job-invalid-emp-type")
 

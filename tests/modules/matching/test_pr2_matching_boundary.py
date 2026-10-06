@@ -1,8 +1,8 @@
 from src.modules.job_descriptions.domain.schemas import CanonicalJobDescription
 from src.modules.job_descriptions.parsing.deterministic import DeterministicJobDescriptionParser
-from src.modules.matching.adapters import job_description_to_matching_job
-from src.modules.matching.facade import MatchingFacade
-from src.modules.matching.schemas import MatchRequest, SkillRequirement, UnresolvedRequirement
+from src.modules.matching.domain.adapters import job_description_to_matching_job
+from src.modules.matching.application.facade import MatchingFacade
+from src.modules.matching.domain.schemas import MatchRequest, SkillRequirement, UnresolvedRequirement
 from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
 from src.modules.user_cvs.parsing.domain.source import build_source_document
 from tests.modules.matching.test_matching_pipeline import SHA256, StubEmbedder, _evidence, _payload
@@ -113,11 +113,13 @@ def test_boundary_case_c_unknown_concept():
     assert isinstance(adapted.requirements[0], UnresolvedRequirement)
     assert adapted.requirements[0].raw_label == "Strong programming foundation"
 
-    # 3. Matcher evaluates fail-closed as unknown / review_required
+    # 3. A weak programming-related CV passage is retained for clarification.
     request = _base_match_request(parsed)
     result = MatchingFacade(StubEmbedder()).match(request)
     req_res = result.requirement_results[0]
     assert req_res.status == "unknown"
+    assert req_res.evidence_refs
+    assert "nhắc đến" in (req_res.evidence_explanation or "").lower()
     assert result.eligibility == "review_required"
 
 
@@ -146,7 +148,7 @@ def test_boundary_case_d_structured_threshold():
     # 3. Matcher handles unresolved education without crashing
     request = _base_match_request(parsed)
     result = MatchingFacade(StubEmbedder()).match(request)
-    assert result.eligibility == "review_required"
+    assert result.eligibility == "eligible"
 
 
 # =========================================================================

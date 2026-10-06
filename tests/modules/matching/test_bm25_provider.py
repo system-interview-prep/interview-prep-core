@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.modules.matching.bm25_provider import (
+from src.modules.matching.retrieval.bm25_provider import (
     InMemoryBm25Provider,
     ParadeDbBm25Provider,
     get_bm25_provider,

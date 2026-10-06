@@ -1,8 +1,8 @@
 import pytest
 from pydantic import ValidationError
 
-from src.modules.matching.requirement_evaluators import evaluate_unresolved_requirement
-from src.modules.matching.schemas import RequirementResult, UnresolvedRequirement
+from src.modules.matching.evaluation.requirement_evaluators import evaluate_unresolved_requirement
+from src.modules.matching.domain.schemas import RequirementResult, UnresolvedRequirement
 from src.modules.user_cvs.schemas import CanonicalResume
 
 SHA = "d" * 64
@@ -81,7 +81,7 @@ def test_all_of_concepts_are_grounded_independently() -> None:
     assert result.concept_results[1].evidence_strength == "applied"
 
 
-def test_all_of_missing_one_concept_is_unknown() -> None:
+def test_all_of_missing_one_unmentioned_concept_is_not_met() -> None:
     result = evaluate_unresolved_requirement(
         _requirement(
             "Basic knowledge of NLP, GenAI and LLM",
@@ -93,8 +93,8 @@ def test_all_of_missing_one_concept_is_unknown() -> None:
         _resume("Built NLP pipeline.", "Built GenAI workflow."),
     )
 
-    assert result.status == "unknown"
-    assert [item.status for item in result.concept_results] == ["met", "met", "unknown"]
+    assert result.status == "not_met"
+    assert [item.status for item in result.concept_results] == ["met", "met", "not_met"]
     assert result.concept_results[2].evidence_refs == []
 
 
@@ -112,7 +112,7 @@ def test_any_of_one_supported_concept_is_met() -> None:
     assert result.group_operator == "any_of"
     assert result.status == "met"
     assert result.concept_results[0].status == "met"
-    assert result.concept_results[1].status == "unknown"
+    assert result.concept_results[1].status == "not_met"
 
 
 def test_mention_is_not_sufficient_for_production_experience() -> None:
@@ -142,14 +142,14 @@ def test_concept_keeps_only_two_strongest_deduplicated_evidence_refs() -> None:
     assert result.evidence_refs == concept.evidence_refs
 
 
-def test_no_evidence_is_unknown_and_similarity_cannot_promote_it() -> None:
+def test_no_evidence_is_not_met_and_similarity_cannot_promote_it() -> None:
     result = evaluate_unresolved_requirement(
         _requirement("Experience with Rust", ("skill-rust", "Rust")),
         _resume("Built a high-performance distributed systems service."),
     )
 
-    assert result.status == "unknown"
-    assert result.concept_results[0].status == "unknown"
+    assert result.status == "not_met"
+    assert result.concept_results[0].status == "not_met"
     assert result.concept_results[0].evidence_refs == []
 
 
@@ -166,7 +166,7 @@ def test_taxonomy_concepts_are_generic_not_fixture_specific() -> None:
 
     assert result.status == "met"
     assert [concept.label for concept in result.concept_results] == ["Ruby", "Elixir"]
-    assert [concept.status for concept in result.concept_results] == ["unknown", "met"]
+    assert [concept.status for concept in result.concept_results] == ["not_met", "met"]
 
 
 def test_same_evidence_found_via_claim_and_text_is_deduplicated() -> None:
@@ -238,3 +238,12 @@ def test_requirement_result_rejects_non_union_evidence_and_partial_status() -> N
             "confidence": 0.5,
             "reasonCode": "unsupported",
         })
+    for status in ("met", "unknown"):
+        with pytest.raises(ValidationError, match="must cite CV evidence"):
+            RequirementResult.model_validate({
+                "requirementId": "req-1",
+                "status": status,
+                "score": 1 if status == "met" else None,
+                "confidence": 0.5,
+                "reasonCode": "test",
+            })

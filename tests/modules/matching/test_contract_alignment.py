@@ -52,9 +52,9 @@ def _stub_celery_modules() -> None:
 _stub_celery_modules()
 
 from src.modules.job_descriptions.schemas import CanonicalJobDescription
-from src.modules.matching.adapters import job_description_to_matching_job
-from src.modules.matching.router import _resolve_job
-from src.modules.matching.schemas import CanonicalJob
+from src.modules.matching.domain.adapters import job_description_to_matching_job
+from src.modules.matching.api.router import _resolve_job
+from src.modules.matching.domain.schemas import CanonicalJob
 
 
 # ---------------------------------------------------------------------------
@@ -149,15 +149,15 @@ async def test_2b_001_fresher_seniority_is_supported_and_preserved() -> None:
 
     # Router path test: failsafe isolation
     db = _make_async_db(data)
-    import src.modules.matching.router as router_mod
+    import src.modules.matching.application.input_resolver as resolver_mod
 
     synthetic_entered = []
-    class SpyEvidenceSpan(router_mod.EvidenceSpan):
+    class SpyEvidenceSpan(resolver_mod.EvidenceSpan):
         def __init__(self, *args, **kwargs):
             synthetic_entered.append(True)
             super().__init__(*args, **kwargs)
 
-    with patch.object(router_mod, "EvidenceSpan", SpyEvidenceSpan):
+    with patch.object(resolver_mod, "EvidenceSpan", SpyEvidenceSpan):
         resolved = await _resolve_job(db, "job-fresher")
 
     assert resolved.seniority == "fresher"
@@ -193,15 +193,15 @@ async def test_2b_003_temporary_employment_type_is_supported_and_preserved() -> 
 
     # Router path test: failsafe isolation
     db = _make_async_db(data)
-    import src.modules.matching.router as router_mod
+    import src.modules.matching.application.input_resolver as resolver_mod
 
     synthetic_entered = []
-    class SpyEvidenceSpan(router_mod.EvidenceSpan):
+    class SpyEvidenceSpan(resolver_mod.EvidenceSpan):
         def __init__(self, *args, **kwargs):
             synthetic_entered.append(True)
             super().__init__(*args, **kwargs)
 
-    with patch.object(router_mod, "EvidenceSpan", SpyEvidenceSpan):
+    with patch.object(resolver_mod, "EvidenceSpan", SpyEvidenceSpan):
         resolved = await _resolve_job(db, "job-temp")
 
     assert resolved.employment_type == "temporary"
@@ -288,16 +288,16 @@ async def test_2b_007_unsupported_priority_fails_closed_without_legacy_fallback(
 
     # 2. Router test: adapter ValueError becomes HTTP 422, legacy fallback NOT entered
     db = _make_async_db(data)
-    import src.modules.matching.router as router_mod
+    import src.modules.matching.application.input_resolver as resolver_mod
 
     synthetic_entered = []
-    class SpyEvidenceSpan(router_mod.EvidenceSpan):
+    class SpyEvidenceSpan(resolver_mod.EvidenceSpan):
         def __init__(self, *args, **kwargs):
             synthetic_entered.append(True)
             super().__init__(*args, **kwargs)
 
-    with patch.object(router_mod, "EvidenceSpan", SpyEvidenceSpan), patch.object(
-        router_mod,
+    with patch.object(resolver_mod, "EvidenceSpan", SpyEvidenceSpan), patch.object(
+        resolver_mod,
         "job_description_to_matching_job",
         side_effect=ValueError("unsupported requirement priority 'unsupported_bonus'"),
     ):
@@ -329,16 +329,16 @@ async def test_2b_008_context_priority_fails_closed_at_adapter_boundary() -> Non
 
     # 2. Router test: adapter ValueError becomes HTTP 422, legacy fallback NOT entered
     db = _make_async_db(data)
-    import src.modules.matching.router as router_mod
+    import src.modules.matching.application.input_resolver as resolver_mod
 
     synthetic_entered = []
-    class SpyEvidenceSpan(router_mod.EvidenceSpan):
+    class SpyEvidenceSpan(resolver_mod.EvidenceSpan):
         def __init__(self, *args, **kwargs):
             synthetic_entered.append(True)
             super().__init__(*args, **kwargs)
 
-    with patch.object(router_mod, "EvidenceSpan", SpyEvidenceSpan), patch.object(
-        router_mod,
+    with patch.object(resolver_mod, "EvidenceSpan", SpyEvidenceSpan), patch.object(
+        resolver_mod,
         "job_description_to_matching_job",
         side_effect=ValueError("unsupported requirement priority 'context' for requirement 'req-1'"),
     ):
@@ -439,8 +439,8 @@ def test_2b_ctx_001_context_skill_requirement_behavior_in_facade() -> None:
     2. Context requirement enters the Skill Factor together with must-have skills.
     3. Context requirement contributes to suitabilityScore computation.
     """
-    from src.modules.matching.facade import MatchingFacade
-    from src.modules.matching.schemas import MatchRequest
+    from src.modules.matching.application.facade import MatchingFacade
+    from src.modules.matching.domain.schemas import MatchRequest
 
     payload = _make_diagnostic_match_payload(include_context_skill=True)
     facade = MatchingFacade(_StubEmbedder())
@@ -462,8 +462,8 @@ def test_2b_ctx_001_context_skill_requirement_behavior_in_facade() -> None:
 
 def test_2b_ctx_002_context_skill_requirement_changes_suitability_score() -> None:
     """Both must-have and context skills are applicable to the skill factor."""
-    from src.modules.matching.facade import MatchingFacade
-    from src.modules.matching.schemas import MatchRequest
+    from src.modules.matching.application.facade import MatchingFacade
+    from src.modules.matching.domain.schemas import MatchRequest
 
     payload_without = _make_diagnostic_match_payload(include_context_skill=False)
     payload_with = _make_diagnostic_match_payload(include_context_skill=True)

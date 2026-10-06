@@ -1,4 +1,4 @@
-from src.modules.matching.bm25 import (
+from src.modules.matching.retrieval.bm25 import (
     bm25_section_maxsim,
     bm25_similarity,
     tokenize_text,

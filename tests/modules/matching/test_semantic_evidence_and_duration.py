@@ -1,8 +1,8 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from src.modules.matching.requirement_evaluators import evaluate_unresolved_requirement
-from src.modules.matching.schemas import UnresolvedRequirement
+from src.modules.matching.evaluation.requirement_evaluators import evaluate_unresolved_requirement
+from src.modules.matching.domain.schemas import UnresolvedRequirement
 from src.modules.user_cvs.schemas import CanonicalResume
 
 FIXTURE = Path("tests/fixtures/matching/mock_cv_semantic_near_match_backend_middle.txt")
@@ -95,14 +95,14 @@ def test_semantic_result_metrics_upgrade_query_optimization_evidence() -> None:
     assert query_concept.evidence_strength == "demonstrated"
 
 
-def test_named_technology_is_not_inferred_from_near_synonyms() -> None:
+def test_named_technology_is_not_inferred_from_near_synonyms_and_is_not_met() -> None:
     result = evaluate_unresolved_requirement(
         _requirement("Experience with Kafka, Redis, and MySQL"),
         _resume_from_lines(),
     )
 
     assert result.status == "not_met"
-    assert result.reason_code == "requirement_not_evidenced"
+    assert result.reason_code == "requirement_not_found"
     assert not result.retrieval_candidates
 
 
@@ -194,6 +194,94 @@ def test_bachelor_degree_satisfies_college_or_higher_requirement() -> None:
     assert result.evidence_refs == ["degree-ev"]
 
 
+def test_current_education_date_range_satisfies_final_year_requirement() -> None:
+    current_year = datetime.now(UTC).year
+    evidence_text = (
+        "Cao dang Cong Thuong TP.HCM | Cao dang | Cong nghe thong tin | "
+        f"{current_year - 3} - {current_year}"
+    )
+    resume = CanonicalResume.model_validate(
+        {
+            "schemaVersion": "2.1",
+            "resumeId": "cv-current-education",
+            "documentId": "cv-current-education",
+            "documentSha256": "c" * 64,
+            "education": [
+                {
+                    "educationId": "education-current",
+                    "institution": "Cao dang Cong Thuong TP.HCM",
+                    "degree": "Cao dang",
+                    "fieldOfStudy": "Cong nghe thong tin",
+                    "startDate": {"value": f"{current_year - 3}", "precision": "year"},
+                    "endDate": {"value": f"{current_year}", "precision": "year"},
+                    "evidenceRefs": ["education-current-ev"],
+                }
+            ],
+            "evidence": [
+                {
+                    "evidenceId": "education-current-ev",
+                    "documentId": "cv-current-education",
+                    "documentSha256": "c" * 64,
+                    "section": "education",
+                    "text": evidence_text,
+                    "charStart": 0,
+                    "charEnd": len(evidence_text),
+                }
+            ],
+        }
+    )
+
+    result = evaluate_unresolved_requirement(
+        _requirement("Sinh vien nam 4", kind="education"),
+        resume,
+    )
+
+    assert result.status == "met"
+    assert result.reason_code == "education_status_and_field_evidenced"
+    assert result.evidence_refs == ["education-current-ev"]
+
+
+def test_recovered_raw_education_quote_can_prove_current_final_year_without_parsed_entry() -> None:
+    current_year = datetime.now(UTC).year
+    evidence_text = (
+        "University of Information Technology | Bachelor of Computer Science | "
+        f"{current_year - 4} - Expected {current_year}"
+    )
+    resume = CanonicalResume.model_validate(
+        {
+            "schemaVersion": "2.1",
+            "resumeId": "cv-raw-education",
+            "documentId": "cv-raw-education",
+            "documentSha256": "d" * 64,
+            "parsing": {
+                "parserVersion": "test",
+                "extractionVersion": "test",
+                "parsedAt": datetime.now(UTC).isoformat(),
+                "status": "review_required",
+                "rawTextCoverage": "complete",
+                "evidenceIndexCoverage": "complete",
+                "canonicalSectionCoverage": {"education": "partial"},
+            },
+            "evidence": [
+                {
+                    "evidenceId": "raw-education-ev",
+                    "documentId": "cv-raw-education",
+                    "documentSha256": "d" * 64,
+                    "section": "raw_text_llm_retrieval",
+                    "text": evidence_text,
+                    "charStart": 0,
+                    "charEnd": len(evidence_text),
+                }
+            ],
+        }
+    )
+
+    result = evaluate_unresolved_requirement(_requirement("Sinh vien nam 4", kind="education"), resume)
+
+    assert result.status == "met"
+    assert result.evidence_refs == ["raw-education-ev"]
+
+
 def test_duration_union_does_not_double_count_overlapping_employment() -> None:
     resume = _resume_from_lines(
         employment=[
@@ -223,22 +311,22 @@ def test_duration_union_does_not_double_count_overlapping_employment() -> None:
     assert result.reason_code == "experience_duration_below_minimum"
 
 
-def test_duration_without_employment_timeline_remains_unknown_with_reason() -> None:
+def test_duration_without_employment_timeline_is_not_found_without_cv_mention() -> None:
     result = evaluate_unresolved_requirement(
         _requirement("Minimum 3 years of professional Backend Development experience"),
         _resume_from_lines(),
     )
 
-    assert result.status == "unknown"
-    assert result.reason_code == "experience_duration_evidence_missing"
-    assert "timeline" in (result.evidence_explanation or "").lower()
+    assert result.status == "not_met"
+    assert result.reason_code == "requirement_not_found"
+    assert "Không tìm thấy" in (result.evidence_explanation or "")
 
 
-def test_complete_empty_employment_is_not_met_for_duration_requirement() -> None:
+def test_complete_empty_employment_marks_unmentioned_duration_not_met() -> None:
     result = evaluate_unresolved_requirement(
         _requirement("Minimum 3 years of professional Backend Development experience"),
         _resume_from_lines(employment_coverage="complete_empty"),
     )
 
     assert result.status == "not_met"
-    assert result.reason_code == "experience_duration_evidence_missing"
+    assert result.reason_code == "requirement_not_found"

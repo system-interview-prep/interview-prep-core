@@ -3,9 +3,9 @@ from __future__ import annotations
 import pytest
 
 from src.modules.job_descriptions.schemas import CanonicalJobDescription
-from src.modules.matching.adapters import job_description_to_matching_job
-from src.modules.matching.facade import MatchingFacade
-from src.modules.matching.schemas import MatchRequest
+from src.modules.matching.domain.adapters import job_description_to_matching_job
+from src.modules.matching.application.facade import MatchingFacade
+from src.modules.matching.domain.schemas import MatchRequest
 from src.modules.user_cvs.schemas import CanonicalResume
 
 SHA = "c" * 64
@@ -133,11 +133,11 @@ def test_fpt_ojt_ai_sample_is_evidence_evaluated_without_duplicate_requirements(
 
     statuses = [item.status for item in result.requirement_results]
     assert statuses.count("met") == 6
-    assert statuses.count("unknown") == 1
-    assert statuses.count("not_met") == 0
+    assert statuses.count("unknown") == 0
+    assert statuses.count("not_met") == 1
     assert result.requirement_results[0].evidence_refs == ["cv-education"]
     assert result.requirement_results[2].evidence_refs == ["cv-gpa"]
-    assert result.requirement_results[3].reason_code == "language_credential_evidence_missing"
+    assert result.requirement_results[3].reason_code == "requirement_not_found"
     assert result.requirement_results[3].evidence_refs == []
     assert set(result.requirement_results[5].evidence_refs) == {
         "cv-genai",
@@ -151,26 +151,26 @@ def test_fpt_ojt_ai_sample_is_evidence_evaluated_without_duplicate_requirements(
 
     factors = {item.factor: item for item in result.factor_results}
     assert factors["requirement_coverage"].status == "scored"
-    assert factors["requirement_coverage"].raw_score == 1.0
+    assert factors["requirement_coverage"].raw_score == pytest.approx(0.842519685)
     assert factors["skill"].status == "scored"
-    assert factors["language"].status == "unknown"
+    assert factors["language"].status == "scored"
     assert factors["experience"].status == "not_applicable"
     assert factors["semantic"].status == "scored"
     assert result.score_provenance.mode == "requirement_aware"
     assert result.score_provenance.supported_requirement_count == 7
-    assert result.score_provenance.scored_requirement_count == 6
-    assert result.score_provenance.unknown_requirement_count == 1
-    assert result.score_provenance.requirement_coverage == 1.0
+    assert result.score_provenance.scored_requirement_count == 7
+    assert result.score_provenance.unknown_requirement_count == 0
+    assert result.score_provenance.requirement_coverage == pytest.approx(0.842519685)
     assert sum(result.score_provenance.factor_contributions.values()) == pytest.approx(
         result.diagnostic_score
     )
-    assert result.eligibility == "review_required"
-    assert result.suitability_score is None
+    assert result.eligibility == "eligible"
+    assert result.suitability_score is not None
     assert result.diagnostic_score is not None
-    assert result.decision == "abstained"
+    assert result.decision == "assessed"
 
 
-def test_semantic_only_similarity_is_exposed_as_a_low_evidence_estimate() -> None:
+def test_unresolved_jd_requirement_does_not_get_promoted_by_semantic_similarity() -> None:
     job = job_description_to_matching_job(_canonical_jd(), job_id="job-fixture")
     unsupported = job.requirements[0].model_copy(
         update={"raw_label": "A criterion without an implemented evaluator"}
@@ -191,6 +191,5 @@ def test_semantic_only_similarity_is_exposed_as_a_low_evidence_estimate() -> Non
     assert semantic.status == "scored"
     assert semantic.raw_score is not None
     assert result.suitability_score is None
-    assert result.score_provenance.mode == "semantic_only_estimated"
-    assert "semantic_only_estimate" in result.warnings
-    assert "semantic_only_score_suppressed" in result.warnings
+    assert result.score_provenance.mode == "requirement_aware"
+    assert result.requirement_results[0].status == "not_met"
