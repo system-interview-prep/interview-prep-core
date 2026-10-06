@@ -193,7 +193,21 @@ _SKILLS = {
     "skill-typescript": ("TypeScript", ("typescript",)),
     "skill-docker": ("Docker", ("docker",)),
     "skill-kubernetes": ("Kubernetes", ("kubernetes", "k8s")),
+    "skill-container-orchestrator": (
+        "Kubernetes or Docker Swarm",
+        ("container orchestration",),
+    ),
     "skill-aws": ("AWS", ("aws",)),
+    "skill-monitoring": ("Monitoring", ("monitoring", "observability", "telemetry")),
+    "skill-cicd": ("CI/CD", ("ci/cd", "continuous integration", "continuous delivery", "continuous deployment")),
+    # Common backend requirements must be represented as separate atoms so an
+    # AND-list (for example Kafka, Redis, and MySQL) cannot pass on one hit.
+    "skill-csharp": ("C#", ("c#", "csharp")),
+    "skill-dotnet": (".NET", (".net", "dotnet", "asp.net", "aspnet")),
+    "skill-kafka": ("Kafka", ("kafka",)),
+    "skill-redis": ("Redis", ("redis",)),
+    "skill-mysql": ("MySQL", ("mysql",)),
+    "skill-linux": ("Linux", ("linux",)),
     "skill-git": ("Git", ("git",)),
     "skill-json": ("JSON", ("json",)),
     "skill-sql": ("SQL", ("sql",)),
@@ -621,6 +635,13 @@ class DeterministicJobDescriptionParser:
             if _heading(line) == "preferred":
                 priority = "preferred"
                 continue
+            section_key = _key(re.sub(r"^(?:[-â€¢o#*]+\s*)+", "", line).rstrip(": ").strip())
+            if section_key in {"experience", "work experience", "minimum qualifications"}:
+                # Some JDs place required duration under a separate Experience
+                # heading after an optional Preferred Qualifications section.
+                # Reset the inherited section priority at that boundary.
+                priority = "must_have"
+                continue
             if _is_probable_section_heading(lines, line_index):
                 value = line.strip()
                 absolute_start = start + offset
@@ -902,9 +923,30 @@ class DeterministicJobDescriptionParser:
 
             # 7. Check taxonomy skills
             found_skills = []
+            # A slash inside a requirement can denote alternatives rather than
+            # two independent must-haves. Model this common infrastructure
+            # phrase as one atom so Kubernetes or Docker Swarm can satisfy it.
+            orchestrator_matches = list(
+                re.finditer(r"\bkubernetes\s*/\s*docker\s+swarm\b", value, re.I)
+            )
+            for match in orchestrator_matches:
+                found_skills.append(
+                    (
+                        "skill-container-orchestrator",
+                        "Kubernetes or Docker Swarm",
+                        match.start(),
+                        match.end(),
+                    )
+                )
             for concept_id, (label, aliases) in self._taxonomy.items():
                 for alias in aliases:
                     for match in re.finditer(rf"(?<!\w){re.escape(alias)}(?!\w)", value, re.I):
+                        if any(
+                            match.start() < alternative.end()
+                            and alternative.start() < match.end()
+                            for alternative in orchestrator_matches
+                        ):
+                            continue
                         found_skills.append((concept_id, label, match.start(), match.end()))
                         break
 
