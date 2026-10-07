@@ -70,7 +70,7 @@ def test_creates_ai_question_with_semantic_alignment_and_provenance() -> None:
     assert result.requirement_id == "req-react-duration"
     assert result.evidence_refs == ["cv-ev-1"]
     assert result.semantic_alignment_score == 0.88
-    assert "how long" in scorer.calls[0][1]
+    assert "bao lâu" in scorer.calls[0][1]
 
 
 @pytest.mark.parametrize(
@@ -114,6 +114,26 @@ def test_rejects_question_that_drops_required_subject() -> None:
 def test_rejects_semantically_unrelated_question() -> None:
     scorer = FakeScorer(0.79)
     assert _service(scorer=scorer, threshold=0.8).create(_plan()) is None
+
+
+def test_retries_question_generation_after_semantic_rejection() -> None:
+    class SequenceScorer(FakeScorer):
+        def __init__(self):
+            super().__init__(0.79)
+            self.values = iter([0.79, 0.91])
+
+        def score(self, question, intent):
+            self.calls.append((question, intent))
+            return next(self.values)
+
+    generator = FakeGenerator()
+    scorer = SequenceScorer()
+    result = _service(generator=generator, scorer=scorer, threshold=0.8).create(_plan())
+
+    assert result is not None
+    assert result.semantic_alignment_score == 0.91
+    assert len(generator.plans) == 2
+    assert len(scorer.calls) == 2
 
 
 def test_semantic_validation_error_fails_closed() -> None:

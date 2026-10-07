@@ -3,17 +3,23 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
 from src.modules.matching.application.input_resolver import resolve_job, resolve_resume
 from src.modules.matching.clarifications.models import (
     MatchClarificationAnalysis,
     MatchClarificationIdsRequest,
+    MatchClarificationQuestionsIdsRequest,
     MatchClarificationRescoreIdsRequest,
     MatchClarificationRescoreRequest,
     MatchClarificationRescoreResult,
 )
 from src.modules.matching.clarifications.rescore import rescore_match_with_clarification_answers
-from src.modules.matching.clarifications.service import run_match_with_clarifications
+from src.modules.matching.clarifications.service import (
+    generate_match_clarifications,
+    prepare_match_clarifications,
+    run_match_with_clarifications,
+)
 from src.modules.matching.domain.schemas import MatchRequest
 
 router = APIRouter(prefix="/api/v1/matching", tags=["matching"])
@@ -48,8 +54,56 @@ async def analyze_clarifications_by_ids(
 ) -> MatchClarificationAnalysis:
     """Load canonical CV/JD data and return the match with AI clarification questions."""
 
+    trace_event(
+        "clarification",
+        "endpoint_requested",
+        endpoint="clarifications-by-ids",
+        candidate_id=payload.candidate_id,
+        job_id=payload.job_id,
+    )
     request = await _resolve_match_request(payload, db)
     return await run_match_with_clarifications(request)
+
+
+@router.post("/clarifications/prepare-by-ids", response_model=MatchClarificationAnalysis)
+async def prepare_clarifications_by_ids(
+    payload: MatchClarificationIdsRequest,
+    db: AsyncSession = Depends(get_db),
+) -> MatchClarificationAnalysis:
+    """Run matching and Jev's eligibility gate before generating a question."""
+
+    trace_event(
+        "clarification",
+        "endpoint_requested",
+        endpoint="clarifications/prepare-by-ids",
+        candidate_id=payload.candidate_id,
+        job_id=payload.job_id,
+    )
+    request = await _resolve_match_request(payload, db)
+    return await prepare_match_clarifications(request)
+
+
+@router.post("/clarifications/questions-by-ids", response_model=MatchClarificationAnalysis)
+async def generate_clarification_questions_by_ids(
+    payload: MatchClarificationQuestionsIdsRequest,
+    db: AsyncSession = Depends(get_db),
+) -> MatchClarificationAnalysis:
+    """Generate questions for requirements approved by the Jev phase."""
+
+    trace_event(
+        "clarification",
+        "endpoint_requested",
+        endpoint="clarifications/questions-by-ids",
+        candidate_id=payload.candidate_id,
+        job_id=payload.job_id,
+        requirement_ids=sorted(set(payload.requirement_ids)),
+    )
+    request = await _resolve_match_request(payload, db)
+    return await generate_match_clarifications(
+        request,
+        set(payload.requirement_ids),
+        payload.clarification_token,
+    )
 
 
 @router.post("/clarifications/rescore", response_model=MatchClarificationRescoreResult)

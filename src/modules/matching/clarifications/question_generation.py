@@ -15,25 +15,27 @@ from typing import Literal, Protocol
 
 from pydantic import Field, ValidationError, model_validator
 
+from src.core.trace_logging import trace_event
 from src.modules.matching.retrieval.semantic import cosine_similarity
 from src.modules.user_cvs.schemas import CanonicalModel
 
 logger = logging.getLogger(__name__)
 
 _DIMENSION_INTENTS = {
-    "duration": "ask how long the candidate personally used or performed the requirement",
-    "proficiency": "ask the candidate to describe their proficiency level for the requirement",
-    "scale": "ask about the scale of the candidate's own relevant work",
-    "responsibility": "ask what the candidate personally owned or did for the requirement",
-    "education": "ask for the candidate's relevant degree or field of study",
-    "language_level": "ask for the candidate's language proficiency level",
-    "certification": "ask whether the candidate holds the named certification",
-    "experience_context": "ask for a concrete example of the candidate's relevant hands-on experience",
-    "other": "ask for the specific factual detail needed to assess the requirement",
+    "duration": "hỏi ứng viên đã trực tiếp sử dụng hoặc thực hiện yêu cầu trong bao lâu",
+    "proficiency": "hỏi ứng viên mô tả mức độ thành thạo đối với yêu cầu",
+    "scale": "hỏi về quy mô công việc liên quan mà ứng viên trực tiếp thực hiện",
+    "responsibility": "hỏi ứng viên đã trực tiếp phụ trách hoặc thực hiện phần việc nào",
+    "education": "hỏi về bằng cấp hoặc chuyên ngành liên quan của ứng viên",
+    "language_level": "hỏi về trình độ ngôn ngữ của ứng viên",
+    "certification": "hỏi ứng viên có chứng chỉ được nêu hay không",
+    "experience_context": "hỏi một ví dụ cụ thể về kinh nghiệm thực tế liên quan của ứng viên",
+    "other": "hỏi thông tin thực tế cụ thể còn thiếu để đánh giá yêu cầu",
 }
 _NUMBER_RE = re.compile(r"(?<![\w])\d+(?:[.,]\d+)*(?![\w])")
 _PROPER_TERM_RE = re.compile(r"\b(?:[A-Z][A-Za-z0-9]*|[A-Z]{2,}[A-Z0-9]*)\b")
 _QUESTION_MARKS = ("?", "？")
+_MAX_GENERATION_ATTEMPTS = 3
 _VIETNAMESE_QUESTION_STARTERS = {
     "anh", "bạn", "chị", "em", "hãy", "nếu", "trong", "với", "ở", "khi", "đối"
 }
@@ -174,9 +176,23 @@ class OpenAIQuestionGenerator:
             return GeneratedQuestion.model_validate_json(response.output_text)
         except (ValidationError, ValueError, TypeError, AttributeError) as exc:
             logger.warning("Clarification question generation returned invalid output: %s", exc)
+            trace_event(
+                "clarification",
+                "question_generator_failed",
+                requirement_id=plan.requirement_id,
+                reason="invalid_output",
+                error_type=type(exc).__name__,
+            )
             return None
         except Exception as exc:  # provider errors must fail closed, not fail matching
             logger.warning("Clarification question generation failed: %s", type(exc).__name__)
+            trace_event(
+                "clarification",
+                "question_generator_failed",
+                requirement_id=plan.requirement_id,
+                reason="provider_error",
+                error_type=type(exc).__name__,
+            )
             return None
 
 
@@ -187,57 +203,151 @@ class ClarificationQuestionService:
         semantic_scorer: SemanticScorer,
         *,
         semantic_threshold: float,
+        max_attempts: int = _MAX_GENERATION_ATTEMPTS,
     ) -> None:
         if not 0.0 <= semantic_threshold <= 1.0:
             raise ValueError("semantic_threshold must be between 0 and 1")
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
         self._generator = generator
         self._semantic_scorer = semantic_scorer
         self._semantic_threshold = semantic_threshold
+        self._max_attempts = max_attempts
 
     def create(self, plan: ClarificationPlan) -> ClarificationQuestion | None:
-        draft = self._generator.generate(plan)
-        if draft is None or not self._is_structurally_grounded(draft, plan):
-            return None
-
         dimension_intent = _DIMENSION_INTENTS.get(
             plan.missing_dimension, _DIMENSION_INTENTS["other"]
         )
         subject = ", ".join(plan.subject_terms) or _NUMBER_RE.sub("", plan.requirement_text)
-        intent = f"Ask the candidate to clarify {dimension_intent} for: {subject}."
-        try:
-            alignment = self._semantic_scorer.score(draft.question_text, intent)
-        except Exception as exc:
-            logger.warning("Clarification semantic validation failed: %s", type(exc).__name__)
-            return None
-        if not 0.0 <= alignment <= 1.0 or alignment < self._semantic_threshold:
-            return None
-
-        return ClarificationQuestion(
-            requirementId=plan.requirement_id,
-            missingDimension=plan.missing_dimension,
-            confidence=plan.confidence,
-            evidenceRefs=draft.evidence_refs,
-            questionText=draft.question_text,
-            semanticAlignmentScore=round(alignment, 4),
+        intent = f"Hãy {dimension_intent} về {subject}."
+        trace_event(
+            "clarification",
+            "question_generation_started",
+            requirement_id=plan.requirement_id,
+            missing_dimension=plan.missing_dimension,
+            jev_confidence=plan.confidence,
+            semantic_threshold=self._semantic_threshold,
+            max_attempts=self._max_attempts,
         )
+        for attempt in range(1, self._max_attempts + 1):
+            draft = self._generator.generate(plan)
+            if draft is None:
+                logger.warning(
+                    "Clarification question generation produced no draft (attempt %s/%s)",
+                    attempt,
+                    self._max_attempts,
+                )
+                trace_event(
+                    "clarification",
+                    "question_generation_attempt",
+                    requirement_id=plan.requirement_id,
+                    attempt=attempt,
+                    max_attempts=self._max_attempts,
+                    outcome="generator_failed",
+                )
+                continue
+
+            grounding_failure = self._grounding_failure_reason(draft, plan)
+            if grounding_failure is not None:
+                logger.warning(
+                    "Clarification question rejected by grounding check (attempt %s/%s, reason=%s)",
+                    attempt,
+                    self._max_attempts,
+                    grounding_failure,
+                )
+                trace_event(
+                    "clarification",
+                    "question_grounding_rejected",
+                    requirement_id=plan.requirement_id,
+                    attempt=attempt,
+                    max_attempts=self._max_attempts,
+                    reason=grounding_failure,
+                )
+                continue
+
+            try:
+                alignment = self._semantic_scorer.score(draft.question_text, intent)
+            except Exception as exc:
+                logger.warning(
+                    "Clarification semantic validation failed (attempt %s/%s): %s",
+                    attempt,
+                    self._max_attempts,
+                    type(exc).__name__,
+                )
+                trace_event(
+                    "clarification",
+                    "question_semantic_failed",
+                    requirement_id=plan.requirement_id,
+                    attempt=attempt,
+                    max_attempts=self._max_attempts,
+                    error_type=type(exc).__name__,
+                )
+                continue
+            if not 0.0 <= alignment <= 1.0 or alignment < self._semantic_threshold:
+                logger.warning(
+                    "Clarification question rejected by semantic threshold (attempt %s/%s, score=%s, threshold=%s)",
+                    attempt,
+                    self._max_attempts,
+                    alignment,
+                    self._semantic_threshold,
+                )
+                trace_event(
+                    "clarification",
+                    "question_semantic_rejected",
+                    requirement_id=plan.requirement_id,
+                    attempt=attempt,
+                    max_attempts=self._max_attempts,
+                    semantic_score=alignment,
+                    semantic_threshold=self._semantic_threshold,
+                )
+                continue
+
+            question = ClarificationQuestion(
+                requirementId=plan.requirement_id,
+                missingDimension=plan.missing_dimension,
+                confidence=plan.confidence,
+                evidenceRefs=draft.evidence_refs,
+                questionText=draft.question_text,
+                semanticAlignmentScore=round(alignment, 4),
+            )
+            trace_event(
+                "clarification",
+                "question_generation_succeeded",
+                requirement_id=plan.requirement_id,
+                attempt=attempt,
+                semantic_score=round(alignment, 4),
+            )
+            return question
+        trace_event(
+            "clarification",
+            "question_generation_exhausted",
+            requirement_id=plan.requirement_id,
+            attempts=self._max_attempts,
+            semantic_threshold=self._semantic_threshold,
+        )
+        return None
 
     @staticmethod
     def _is_structurally_grounded(draft: GeneratedQuestion, plan: ClarificationPlan) -> bool:
+        return ClarificationQuestionService._grounding_failure_reason(draft, plan) is None
+
+    @staticmethod
+    def _grounding_failure_reason(draft: GeneratedQuestion, plan: ClarificationPlan) -> str | None:
         question = draft.question_text.strip()
         marks = sum(question.count(mark) for mark in _QUESTION_MARKS)
         if marks != 1 or not question.endswith(_QUESTION_MARKS):
-            return False
+            return "question_mark_or_single_question_format"
         if "\n" in question or "\r" in question:
-            return False
+            return "line_break"
         if not set(draft.evidence_refs).issubset(set(plan.evidence_refs)):
-            return False
+            return "unsupported_evidence_ref"
 
         # A JD threshold is not candidate evidence. Only numbers already present
         # in CV evidence may be repeated in a clarification question.
         candidate_evidence = " ".join(plan.evidence_texts)
         allowed_numbers = set(_NUMBER_RE.findall(candidate_evidence))
         if not set(_NUMBER_RE.findall(question)).issubset(allowed_numbers):
-            return False
+            return "unsupported_number"
 
         # Catch newly introduced named tools/acronyms (for example, adding AWS
         # to a React-only CV). Common Vietnamese question openers are allowed.
@@ -248,10 +358,10 @@ class ClarificationQuestionService:
         question_terms = {term.casefold() for term in _PROPER_TERM_RE.findall(question)}
         unsupported_terms = question_terms - source_terms - _VIETNAMESE_QUESTION_STARTERS
         if unsupported_terms:
-            return False
+            return "unsupported_named_term"
         if any(term.casefold() not in question.casefold() for term in plan.subject_terms if term.strip()):
-            return False
-        return True
+            return "missing_subject_term"
+        return None
 
 
 def build_clarification_question_service_from_env() -> ClarificationQuestionService | None:
@@ -260,6 +370,11 @@ def build_clarification_question_service_from_env() -> ClarificationQuestionServ
 
     settings = Settings()
     if not settings.matching_clarification_questions_enabled:
+        trace_event(
+            "clarification",
+            "question_service_unavailable",
+            reason="disabled",
+        )
         return None
 
     api_key = (settings.openai_api_key or "").strip()
@@ -268,6 +383,11 @@ def build_clarification_question_service_from_env() -> ClarificationQuestionServ
         logger.warning(
             "Clarification question generation disabled: OPENAI_API_KEY and a calibrated "
             "MATCHING_CLARIFICATION_SEMANTIC_THRESHOLD are required"
+        )
+        trace_event(
+            "clarification",
+            "question_service_unavailable",
+            reason="missing_api_key_or_semantic_threshold",
         )
         return None
     try:
@@ -286,5 +406,11 @@ def build_clarification_question_service_from_env() -> ClarificationQuestionServ
         logger.warning(
             "Clarification question generation disabled: provider setup failed (%s)",
             type(exc).__name__,
+        )
+        trace_event(
+            "clarification",
+            "question_service_unavailable",
+            reason="provider_setup_failed",
+            error_type=type(exc).__name__,
         )
         return None

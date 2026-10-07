@@ -13,6 +13,7 @@ from typing import Literal, Protocol, runtime_checkable
 
 import httpx
 
+from src.core.trace_logging import trace_event
 from src.modules.matching.clarifications.question_generation import (
     ClarificationPlan,
     ClarificationQuestion,
@@ -113,7 +114,15 @@ class JevAmbiguityAnalyzer:
         resume: CanonicalResume,
     ) -> ClarificationPlan | None:
         requirement_text = self._requirement_text(requirement)
-        evidence = self._select_evidence(requirement_text, resume)
+        evidence = self._select_evidence(requirement_text, resume, self._max_evidence_items)
+        trace_event(
+            "clarification",
+            "jev_analysis_started",
+            requirement_id=requirement.requirement_id,
+            model=self._model,
+            confidence_threshold=self._confidence_threshold,
+            evidence_count=len(evidence),
+        )
         payload = {
             "model": self._model,
             "state": {
@@ -179,6 +188,12 @@ class JevAmbiguityAnalyzer:
             answers = response.json().get("answers", {})
             if not isinstance(answers, dict):
                 logger.warning("Jev clarification response returned invalid answers payload")
+                trace_event(
+                    "clarification",
+                    "jev_analysis_rejected",
+                    requirement_id=requirement.requirement_id,
+                    reason="invalid_answers_payload",
+                )
                 return None
             next_action = answers.get("next_action", {})
             missing_dimension = answers.get("missing_dimension", {})
@@ -190,14 +205,38 @@ class JevAmbiguityAnalyzer:
                 or missing_dimension.get("type") != "choice"
             ):
                 logger.warning("Jev clarification response returned unexpected answer types")
+                trace_event(
+                    "clarification",
+                    "jev_analysis_rejected",
+                    requirement_id=requirement.requirement_id,
+                    reason="unexpected_answer_types",
+                )
                 return None
             if next_action.get("choice") != "ask_candidate":
+                trace_event(
+                    "clarification",
+                    "jev_analysis_rejected",
+                    requirement_id=requirement.requirement_id,
+                    reason="next_action_not_ask_candidate",
+                    next_action=next_action.get("choice"),
+                    confidence=next_action.get("confidence"),
+                )
                 return None
 
             action_confidence = float(next_action.get("confidence", 0.0))
             dimension_confidence = float(missing_dimension.get("confidence", 0.0))
             confidence = min(action_confidence, dimension_confidence)
             if confidence < self._confidence_threshold:
+                trace_event(
+                    "clarification",
+                    "jev_analysis_rejected",
+                    requirement_id=requirement.requirement_id,
+                    reason="confidence_below_threshold",
+                    action_confidence=action_confidence,
+                    dimension_confidence=dimension_confidence,
+                    confidence=confidence,
+                    confidence_threshold=self._confidence_threshold,
+                )
                 return None
 
             dimension = str(missing_dimension.get("choice", "other"))
@@ -215,7 +254,7 @@ class JevAmbiguityAnalyzer:
             if dimension not in allowed_dimensions:
                 dimension = "other"
 
-            return ClarificationPlan(
+            plan = ClarificationPlan(
                 requirementId=requirement.requirement_id,
                 missingDimension=dimension,
                 confidence=round(confidence, 4),
@@ -224,11 +263,31 @@ class JevAmbiguityAnalyzer:
                 subjectTerms=self._subject_terms(requirement),
                 evidenceTexts=[item.text for item in evidence],
             )
+            trace_event(
+                "clarification",
+                "jev_analysis_approved",
+                requirement_id=requirement.requirement_id,
+                missing_dimension=plan.missing_dimension,
+                confidence=plan.confidence,
+                evidence_count=len(plan.evidence_refs),
+            )
+            return plan
         except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError) as exc:
             logger.warning("Jev clarification analysis failed: %s", exc)
+            trace_event(
+                "clarification",
+                "jev_analysis_failed",
+                requirement_id=requirement.requirement_id,
+                reason=type(exc).__name__,
+            )
             return None
 
-    def _select_evidence(self, requirement_text: str, resume: CanonicalResume):
+    @staticmethod
+    def _select_evidence(
+        requirement_text: str,
+        resume: CanonicalResume,
+        max_evidence_items: int = 5,
+    ):
         candidates = [
             item
             for item in resume.evidence
@@ -242,7 +301,7 @@ class JevAmbiguityAnalyzer:
             key=lambda pair: pair[0],
             reverse=True,
         )
-        return [item for score, item in ranked if score > 0][: self._max_evidence_items]
+        return [item for score, item in ranked if score > 0][:max(1, max_evidence_items)]
 
     @staticmethod
     def _requirement_text(requirement: Requirement) -> str:
@@ -273,32 +332,70 @@ class JevAmbiguityAnalyzer:
         return []
 
 
+def build_clarification_plans(
+    payload: MatchRequest,
+    result: MatchResult,
+    analyzer: AmbiguityAnalyzer,
+    requirement_ids: set[str] | None = None,
+) -> list[ClarificationPlan]:
+    """Run the Jev eligibility gate for requirements already marked unknown.
+
+    This is intentionally a post-processing step. ``result`` is read-only here;
+    no scores, statuses, eligibility, or fit-band values are changed.
+    """
+
+    results_by_id = {item.requirement_id: item for item in result.requirement_results}
+    plans: list[ClarificationPlan] = []
+    for requirement in payload.job.requirements:
+        if requirement_ids is not None and requirement.requirement_id not in requirement_ids:
+            continue
+        requirement_result = results_by_id.get(requirement.requirement_id)
+        if requirement_result is None or requirement_result.status != "unknown":
+            continue
+        plan = analyzer.analyze(requirement, payload.resume)
+        if plan is not None:
+            plans.append(plan)
+        else:
+            trace_event(
+                "clarification",
+                "jev_plan_unavailable",
+                requirement_id=requirement.requirement_id,
+                reason="no_approved_plan",
+            )
+    return plans
+
+
+def build_clarification_requests_from_plans(
+    plans: list[ClarificationPlan],
+    question_service: ClarificationQuestionService | None,
+) -> list[ClarificationQuestion]:
+    """Generate questions after Jev has explicitly approved candidate clarification."""
+
+    if question_service is None:
+        trace_event(
+            "clarification",
+            "question_service_unavailable",
+            reason="provider_not_configured_or_initialization_failed",
+        )
+        return []
+    requests: list[ClarificationQuestion] = []
+    for plan in plans:
+        question = question_service.create(plan)
+        if question is not None:
+            requests.append(question)
+    return requests
+
+
 def build_clarification_requests(
     payload: MatchRequest,
     result: MatchResult,
     analyzer: AmbiguityAnalyzer,
     question_service: ClarificationQuestionService | None,
 ) -> list[ClarificationQuestion]:
-    """Build clarification requests only for requirements already marked unknown.
+    """Backward-compatible one-shot Jev analysis plus question generation."""
 
-    This is intentionally a post-processing step. ``result`` is read-only here;
-    no scores, statuses, eligibility, or fit-band values are changed.
-    """
-
-    if question_service is None:
-        return []
-    results_by_id = {item.requirement_id: item for item in result.requirement_results}
-    requests: list[ClarificationQuestion] = []
-    for requirement in payload.job.requirements:
-        requirement_result = results_by_id.get(requirement.requirement_id)
-        if requirement_result is None or requirement_result.status != "unknown":
-            continue
-        plan = analyzer.analyze(requirement, payload.resume)
-        if plan is not None:
-            question = question_service.create(plan)
-            if question is not None:
-                requests.append(question)
-    return requests
+    plans = build_clarification_plans(payload, result, analyzer)
+    return build_clarification_requests_from_plans(plans, question_service)
 
 
 def build_ambiguity_analyzer_from_env() -> AmbiguityAnalyzer:
@@ -310,6 +407,11 @@ def build_ambiguity_analyzer_from_env() -> AmbiguityAnalyzer:
     enabled = settings.jev_clarification_enabled
     api_key = (settings.typesafe_api_key or "").strip()
     if not enabled or not api_key:
+        trace_event(
+            "clarification",
+            "jev_service_unavailable",
+            reason="disabled" if not enabled else "missing_api_key",
+        )
         return NoopAmbiguityAnalyzer()
 
     return JevAmbiguityAnalyzer(

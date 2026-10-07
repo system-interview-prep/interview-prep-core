@@ -24,6 +24,7 @@ from src.modules.matching.clarifications.question_generation import (
 from src.modules.matching.clarifications import rescore as clarification_rescore_module
 from src.modules.matching.clarifications import router as clarification_router_module
 from src.modules.matching.clarifications import service as clarification_module
+from src.modules.matching.clarifications.service import _encode_clarification_plans
 from src.modules.matching.clarifications.models import (
     MatchClarificationIdsRequest,
     MatchClarificationRescoreIdsRequest,
@@ -392,6 +393,38 @@ async def test_clarification_endpoint_service_returns_question_without_changing_
     assert len(response.clarification_requests) == 1
     assert response.clarification_requests[0].question_text.startswith("Bạn có thể mô tả")
     assert response.match_result.suitability_score is None
+
+
+@pytest.mark.asyncio
+async def test_question_phase_uses_preparation_token_without_calling_jev_again(monkeypatch) -> None:
+    request = MatchRequest.model_validate(_unknown_payload())
+    plan = CapturingAnalyzer().analyze(request.job.requirements[0], request.resume)
+    assert plan is not None
+
+    monkeypatch.setattr(
+        clarification_module,
+        "get_matching_facade",
+        lambda: MatchingFacade(StubEmbedder()),
+    )
+    monkeypatch.setattr(
+        clarification_module,
+        "get_clarification_question_service",
+        _question_service,
+    )
+
+    def jev_must_not_run():
+        raise AssertionError("Jev must not be called during question generation")
+
+    monkeypatch.setattr(clarification_module, "get_ambiguity_analyzer", jev_must_not_run)
+
+    response = await clarification_module.generate_match_clarifications(
+        request,
+        {plan.requirement_id},
+        _encode_clarification_plans([plan]),
+    )
+
+    assert len(response.clarification_requests) == 1
+    assert response.clarification_requests[0].requirement_id == plan.requirement_id
 
 
 @pytest.mark.asyncio

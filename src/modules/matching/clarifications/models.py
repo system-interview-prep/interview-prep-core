@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field, model_validator
 
 from src.modules.matching.clarifications.question_generation import ClarificationQuestion
@@ -19,6 +21,17 @@ class MatchClarificationAnalysis(CanonicalModel):
 
     match_result: MatchResult
     clarification_requests: list[ClarificationQuestion] = Field(default_factory=list)
+    clarification_status: Literal["not_needed", "ready", "unavailable"] = "not_needed"
+    clarification_candidates: list["ClarificationCandidate"] = Field(default_factory=list)
+    clarification_token: str | None = None
+
+
+class ClarificationCandidate(CanonicalModel):
+    """An unknown requirement that passed Jev's ask-candidate gate."""
+
+    requirement_id: str = Field(min_length=1)
+    missing_dimension: str = Field(min_length=1)
+    confidence: float = Field(ge=0.75, le=1.0)
 
 
 class CandidateClarificationAnswer(CanonicalModel):
@@ -70,6 +83,13 @@ class MatchClarificationIdsRequest(CanonicalModel):
     job_id: str = Field(min_length=1)
     matching_policy: MatchingPolicy = Field(default_factory=MatchingPolicy)
     candidate_preferences: CandidatePreferences = Field(default_factory=CandidatePreferences)
+
+
+class MatchClarificationQuestionsIdsRequest(MatchClarificationIdsRequest):
+    """Generate questions only after the Jev eligibility phase succeeds."""
+
+    requirement_ids: list[str] = Field(min_length=1, max_length=30)
+    clarification_token: str | None = Field(default=None, min_length=1)
 
 
 class MatchClarificationRescoreIdsRequest(MatchClarificationIdsRequest):
