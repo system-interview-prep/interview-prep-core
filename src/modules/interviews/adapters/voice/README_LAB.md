@@ -31,7 +31,7 @@ VOICE_RUNTIME_API_BASE_URL=http://127.0.0.1:5000
 
 When the LiveKit worker runs in a separate container or service, set `VOICE_RUNTIME_API_BASE_URL` to an address it can use, such as `http://backend:5000`. The interview voice path does not require an OpenAI LLM in the LiveKit worker. `OPENAI_API_KEY` is still used by the separate `/transcribe`, `/speak`, and Realtime configuration endpoints.
 
-Install the optional LiveKit dependencies with `python -m pip install -e ".[voice-realtime]"`. The API starts the worker when `LIVEKIT_AGENT_AUTOSTART=true`; to run it separately, use `python src/modules/voice/livekit_agent.py dev`.
+Install the optional LiveKit dependencies with `python -m pip install -e ".[voice-realtime]"`. The API starts the worker when `LIVEKIT_AGENT_AUTOSTART=true`; to run it separately, use `python src/modules/interviews/adapters/voice/livekit_agent.py dev`.
 
 ## Start a voice interview
 

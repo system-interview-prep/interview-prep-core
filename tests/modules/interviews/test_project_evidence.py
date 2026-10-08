@@ -12,7 +12,7 @@ Covers:
 """
 
 import pytest
-from src.modules.interviews.project_evidence import (
+from src.modules.interviews.planning.project_evidence import (
     StructuredProjectEvidence,
     build_project_validation_question,
     extract_project_evidences,
@@ -217,7 +217,7 @@ def test_missing_cv_fields_prompts_verification_not_assertion():
 @pytest.mark.asyncio
 async def test_no_repeated_project_validation_in_runtime():
     """Requirement 6: Once Turn 1 (project validation) is completed, it is never asked again."""
-    from src.modules.interviews.chat_runtime import process_candidate_message, start_chat_session
+    from src.modules.interviews.application.chat_runtime import process_candidate_message, start_chat_session
     from tests.modules.interviews.test_chat_runtime import MockChatSession
 
     session_row = {

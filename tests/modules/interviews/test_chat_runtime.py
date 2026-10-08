@@ -4,7 +4,7 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 import pytest
 
-from src.modules.interviews.chat_runtime import (
+from src.modules.interviews.application.chat_runtime import (
     SAFE_FALLBACK_PROBE_VI,
     ChatRuntimeError,
     _validate_probe_text,
@@ -256,7 +256,7 @@ async def test_inv2_idempotency_duplicate_client_message(mock_session_data):
     db = MockChatSession(session_row, turns)
     await start_chat_session(db, session_row)
 
-    with patch("src.modules.interviews.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+    with patch("src.modules.interviews.application.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
         mock_llm.return_value = '{"decision": "PROBE", "reply_text": "Bạn tối ưu latency như thế nào?"}'
 
         res1 = await process_candidate_message(
@@ -289,7 +289,7 @@ async def test_inv3_probe_budget_cap(mock_session_data):
     await start_chat_session(db, session_row)
 
     # 1. Answer 1 -> PROBE
-    with patch("src.modules.interviews.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+    with patch("src.modules.interviews.application.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
         mock_llm.return_value = '{"decision": "PROBE", "reply_text": "Follow-up question 1"}'
         await process_candidate_message(
             db,
@@ -331,7 +331,7 @@ async def test_probe_post_validator_safe_fallback(mock_session_data):
     await start_chat_session(db, session_row)
 
     # LLM returns a response that leaks score
-    with patch("src.modules.interviews.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+    with patch("src.modules.interviews.application.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
         mock_llm.return_value = '{"decision": "PROBE", "reply_text": "Bạn được 7/10 điểm câu này, bạn muốn nói gì thêm không?"}'
 
         res = await process_candidate_message(
@@ -864,7 +864,7 @@ async def test_rt10_duplicate_client_message_id(mock_session_data):
     db = MockChatSession(session_row, turns)
     await start_chat_session(db, session_row)
 
-    with patch("src.modules.interviews.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+    with patch("src.modules.interviews.application.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
         mock_llm.return_value = '{"decision": "PROBE", "reply_text": "Bạn tối ưu latency như thế nào?"}'
 
         res1 = await process_candidate_message(
@@ -1268,7 +1268,7 @@ async def test_fast_fail_tech_end_reason_contract(mock_session_data):
     """Confirm FAST_FAIL_TECH is emitted upon 2 explicit Give Ups in Technical stage,
     persisted as FAST_FAIL_TECH (not COMPLETED), retained on reload, and preserved
     against subsequent complete calls."""
-    from src.modules.interviews.router import CompleteChatSession
+    from src.modules.interviews.api.router import CompleteChatSession
 
     session_row, turns = mock_session_data
     db = MockChatSession(session_row, turns)
@@ -1421,7 +1421,7 @@ async def test_regression_multi_target_queue_drains_deep_dive_after_challenge():
     await start_chat_session(db, session_row)
     assert db.turns["t0"]["status"] == "ASKED"
 
-    with patch("src.modules.interviews.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+    with patch("src.modules.interviews.application.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
         mock_llm.return_value = '{"intent": "ANSWER", "sufficiency_status": "SUFFICIENT", "acknowledgement": "OK"}'
 
         # Answer T0 -> advances to T1 (VALIDATE)
@@ -1516,7 +1516,7 @@ async def test_regression_candidate_reply_binds_to_active_asked_turn_not_planned
         "created_at": datetime.now(UTC),
     })
 
-    with patch("src.modules.interviews.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+    with patch("src.modules.interviews.application.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
         mock_llm.return_value = '{"intent": "ANSWER", "sufficiency_status": "SUFFICIENT"}'
         res = await process_candidate_message(
             db,
@@ -1628,7 +1628,7 @@ async def test_regression_behavioral_answered_transitions_to_closing():
     await start_chat_session(db, session_row)
     assert db.turns["t-beh"]["status"] == "ASKED"
 
-    with patch("src.modules.interviews.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+    with patch("src.modules.interviews.application.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
         mock_llm.return_value = '{"intent": "ANSWER", "sufficiency_status": "SUFFICIENT"}'
         # Answer Behavioral -> transitions to CLOSING
         res_beh = await process_candidate_message(

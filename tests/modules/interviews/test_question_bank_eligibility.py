@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.modules.interviews.question_selector import (
+from src.modules.interviews.planning.question_selector import (
     _allowed_purposes,
     _Candidate,
     _candidate_rank,
@@ -291,7 +291,7 @@ class TestSelectorEligibilityRules:
 
     async def test_empty_bank_uses_deterministic_fallbacks(self) -> None:
         """An empty bank still produces a usable, explicitly unreviewed interview."""
-        from src.modules.interviews.question_selector import select_and_freeze_questions
+        from src.modules.interviews.planning.question_selector import select_and_freeze_questions
 
         db = AsyncMock()
         db.execute = AsyncMock()
@@ -360,7 +360,7 @@ class TestSelectorEligibilityRules:
 
     async def test_sufficient_candidates_do_not_raise(self) -> None:
         """3+ eligible questions → no error raised from the selector."""
-        from src.modules.interviews.question_selector import _load_candidates
+        from src.modules.interviews.planning.question_selector import _load_candidates
 
         db = AsyncMock()
 
@@ -425,7 +425,7 @@ class TestSelectorEligibilityRules:
 
     async def test_unapproved_question_is_excluded(self) -> None:
         """Questions with status != APPROVED|CALIBRATED are filtered out."""
-        from src.modules.interviews.question_selector import _load_candidates
+        from src.modules.interviews.planning.question_selector import _load_candidates
 
         db = AsyncMock()
 
@@ -467,7 +467,7 @@ class TestSelectorEligibilityRules:
 
     async def test_wrong_locale_candidate_excluded(self) -> None:
         """Candidates with a completely mismatched locale are excluded."""
-        from src.modules.interviews.question_selector import _load_candidates
+        from src.modules.interviews.planning.question_selector import _load_candidates
 
         db = AsyncMock()
 
@@ -507,7 +507,7 @@ class TestSelectorEligibilityRules:
 
     async def test_fewer_candidates_are_filled_with_fallbacks(self) -> None:
         """Available curated questions are retained and only the shortfall falls back."""
-        from src.modules.interviews.question_selector import select_and_freeze_questions
+        from src.modules.interviews.planning.question_selector import select_and_freeze_questions
 
         db = AsyncMock()
 

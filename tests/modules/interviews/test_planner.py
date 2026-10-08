@@ -1,4 +1,4 @@
-from src.modules.interviews.planner import (
+from src.modules.interviews.planning.planner import (
     PLANNER_POLICY_VERSION,
     derive_competency_plan,
 )

@@ -16,13 +16,13 @@ Covers:
 from typing import Any
 import pytest
 
-from src.modules.interviews import planner
-from src.modules.interviews.planner import (
+from src.modules.interviews.planning import planner
+from src.modules.interviews.planning.planner import (
     PLANNER_POLICY_VERSION,
     PLANNER_POLICY_VERSION_DYNAMIC,
     derive_competency_plan,
 )
-from src.modules.interviews.planner_config import (
+from src.modules.interviews.planning.planner_config import (
     PlannerPolicyConfig,
 )
 from src.modules.matching.domain.schemas import (

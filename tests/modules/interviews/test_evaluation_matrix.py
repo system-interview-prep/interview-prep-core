@@ -35,7 +35,7 @@ from src.modules.interviews.evaluation.evaluation_types import (
     TurnEvaluationInput,
     TurnEvaluationResult,
 )
-from src.modules.interviews.project_evidence import (
+from src.modules.interviews.planning.project_evidence import (
     StructuredProjectEvidence,
     build_project_validation_question,
     extract_project_evidences,

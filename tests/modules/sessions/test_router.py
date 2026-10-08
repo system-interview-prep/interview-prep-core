@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from src.modules.sessions.router import CreateSession, _session
+from src.modules.interviews.api.session_router import CreateSession, _session
 
 
 def test_session_contract() -> None:

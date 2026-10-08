@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.config import get_settings
 from src.core.security import bearer_scheme, current_user
 from src.infrastructure.database import get_db
-from src.modules.interviews.facade import (
+from src.modules.interviews.application.facade import (
     ChatRuntimeError,
     start_voice_interview,
     submit_voice_answer,

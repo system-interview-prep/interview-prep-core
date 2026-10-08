@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from typing import Any
 import pytest
 
-from src.modules.interviews.text_runtime import (
+from src.modules.interviews.application.text_runtime import (
     TurnStateError,
     _turn_payload,
     ask_turn,

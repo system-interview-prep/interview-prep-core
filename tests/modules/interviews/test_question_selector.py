@@ -1,4 +1,4 @@
-from src.modules.interviews.question_selector import (
+from src.modules.interviews.planning.question_selector import (
     _allowed_purposes,
     _Candidate,
     _candidate_rank,
@@ -100,7 +100,7 @@ def test_rank_salt_creates_session_level_diversity():
 import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from src.modules.interviews.question_selector import (
+from src.modules.interviews.planning.question_selector import (
     QuestionUnavailableError,
     _estimated_cost,
     _matches_archetype,
@@ -618,7 +618,7 @@ async def test_tc_pack_08_legacy_branch_invariance(monkeypatch):
 
     session_row = {"id": "sess-tc-08", "plan_id": "plan-tc-08", "locale": "en-US"}
 
-    from src.modules.interviews import question_selector
+    from src.modules.interviews.planning import question_selector
 
     fallback_spy = MagicMock(wraps=question_selector._fallback_snapshot)
     monkeypatch.setattr(question_selector, "_fallback_snapshot", fallback_spy)
@@ -653,7 +653,7 @@ async def test_tc_pack_08_legacy_branch_invariance(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_legacy_plan_with_enough_candidates_freezes_without_fallback(monkeypatch):
-    from src.modules.interviews import question_selector
+    from src.modules.interviews.planning import question_selector
 
     plan_result = MagicMock()
     plan_result.mappings.return_value.one_or_none.return_value = {
@@ -712,7 +712,7 @@ async def test_legacy_plan_with_enough_candidates_freezes_without_fallback(monke
 
 @pytest.mark.asyncio
 async def test_legacy_missing_later_target_writes_no_partial_turns(monkeypatch):
-    from src.modules.interviews import question_selector
+    from src.modules.interviews.planning import question_selector
 
     plan_result = MagicMock()
     plan_result.mappings.return_value.one_or_none.return_value = {
@@ -815,7 +815,7 @@ async def test_question_selection_api_maps_insufficiency_to_safe_409(monkeypatch
     import importlib
     from fastapi import HTTPException
 
-    router_module = importlib.import_module("src.modules.interviews.router")
+    router_module = importlib.import_module("src.modules.interviews.api.router")
 
     async def owned_session(*args, **kwargs):
         return {"id": "safe-session"}

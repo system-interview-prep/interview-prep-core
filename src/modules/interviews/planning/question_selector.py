@@ -19,7 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.trace_logging import trace_event
-from src.modules.interviews.project_evidence import (
+from src.modules.interviews.planning.project_evidence import (
     build_project_validation_question,
     extract_project_evidences,
     select_best_project,

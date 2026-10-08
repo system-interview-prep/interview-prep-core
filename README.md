@@ -29,12 +29,8 @@ src/
     user_cvs/
     job_descriptions/
     matching/            # algorithms + semantic matching facade
-    sessions/
+    interviews/            # session lifecycle + chat/voice/video adapters
     scoring/
-    chat/
-    voice/
-    video_calls/
-    signaling/
   workers/               # process entrypoints và Celery tasks
 tests/
 ```

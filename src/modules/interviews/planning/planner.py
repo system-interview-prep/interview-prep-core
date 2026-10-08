@@ -17,14 +17,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.trace_logging import trace_event
 
-from src.modules.interviews.plan_structure import (
+from src.modules.interviews.planning.plan_structure import (
     build_evaluation_targets,
     build_sections,
     derive_difficulty,
     validate_must_have_coverage,
 )
-from src.modules.interviews.project_evidence import extract_project_evidences
-from src.modules.interviews.planner_config import (
+from src.modules.interviews.planning.project_evidence import extract_project_evidences
+from src.modules.interviews.planning.planner_config import (
     PlannerPolicyConfig,
     resolve_strict_hands_on_precedence,
 )

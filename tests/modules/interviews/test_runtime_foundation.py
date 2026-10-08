@@ -1,6 +1,6 @@
 from pydantic import ValidationError
 
-from src.modules.interviews.router import CreateInterviewSession
+from src.modules.interviews.api.router import CreateInterviewSession
 
 
 def test_create_interview_session_contract_accepts_camel_case() -> None:

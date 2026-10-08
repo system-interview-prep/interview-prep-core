@@ -8,8 +8,8 @@ from fastapi import HTTPException
 from sqlalchemy import text
 
 from src.infrastructure.database import SessionFactory, engine
-from src.modules.interviews import planner as planner_module
-from src.modules.interviews.router import (
+from src.modules.interviews.planning import planner as planner_module
+from src.modules.interviews.api.router import (
     CreateInterviewSession,
     build_interview_plan,
     create_interview_session,

@@ -17,30 +17,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.security import current_user
 from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
-from src.modules.interviews.chat_runtime import (
+from src.modules.interviews.application.agent_runtime import database_operations, run_interview_command
+from src.modules.interviews.application.chat_runtime import (
     ChatRuntimeError,
-    complete_chat_session,
     get_chat_runtime,
-    process_candidate_message,
-    start_chat_session,
 )
-from src.modules.interviews.evaluation.evaluation_service import (
-    EvaluationServiceError,
-    evaluate_closed_session,
-    get_session_evaluation,
-)
-from src.modules.interviews.planner import build_and_persist_session_plan, read_session_plan
-from src.modules.interviews.question_selector import (
-    QuestionUnavailableError,
-    read_frozen_turns,
-    select_and_freeze_questions,
-)
-from src.modules.interviews.text_runtime import (
+from src.modules.interviews.application.text_runtime import (
     TurnStateError,
     answer_turn,
     ask_turn,
     complete_text_runtime,
     read_text_runtime,
+)
+from src.modules.interviews.evaluation.evaluation_service import (
+    EvaluationServiceError,
+    get_session_evaluation,
+)
+from src.modules.interviews.planning.planner import read_session_plan
+from src.modules.interviews.planning.question_selector import (
+    QuestionUnavailableError,
+    read_frozen_turns,
 )
 
 router = APIRouter(prefix="/api/v1/interviews", tags=["interviews"])
@@ -73,7 +69,7 @@ ClientEndReason = Literal[
 
 
 class SendChatMessage(BaseModel):
-    client_message_id: str | None = Field(default=None, alias="clientMessageId")
+    client_message_id: str | None = Field(default=None, alias="clientMessageId", min_length=1, max_length=64)
     content: str = Field(min_length=1, max_length=10000)
     telemetry: dict[str, Any] = Field(default_factory=dict)
 
@@ -82,6 +78,14 @@ class SendChatMessage(BaseModel):
 
 class CompleteChatSession(BaseModel):
     reason: ClientEndReason = Field(default="USER_ENDED")
+
+    model_config = {"populate_by_name": True}
+
+
+class SendVideoTranscript(BaseModel):
+    client_message_id: str = Field(alias="clientMessageId", min_length=1, max_length=64)
+    final_transcript: str = Field(alias="finalTranscript", min_length=1, max_length=10000)
+    duration_seconds: float = Field(default=0.0, alias="durationSeconds", ge=0.0, le=3600)
 
     model_config = {"populate_by_name": True}
 
@@ -302,10 +306,9 @@ async def build_interview_plan(
     trace_event("interviewer", "plan_started", session_id=session_id, user_id=user["sub"])
     session = await _owned_session(db, user["sub"], session_id)
     try:
-        result = await build_and_persist_session_plan(
-            db=db,
-            user=user,
-            session_row=session,
+        result = await run_interview_command(
+            session_id=session_id, command="prepare",
+            operations=database_operations(db=db, user=user, session_row=session),
         )
         trace_event(
             "interviewer",
@@ -377,7 +380,10 @@ async def select_interview_questions(
     trace_event("interviewer", "question_selection_started", session_id=session_id)
     session = await _owned_session(db, user["sub"], session_id)
     try:
-        result = await select_and_freeze_questions(db=db, session_row=session)
+        result = await run_interview_command(
+            session_id=session_id, command="freeze",
+            operations=database_operations(db=db, user=user, session_row=session),
+        )
         trace_event(
             "interviewer",
             "question_selection_completed",
@@ -623,7 +629,10 @@ async def start_chat(
     trace_event("interviewer", "chat_start_requested", session_id=session_id)
     session = await _owned_session(db, user["sub"], session_id)
     try:
-        result = await start_chat_session(db=db, session_row=session)
+        result = await run_interview_command(
+            session_id=session_id, command="open",
+            operations=database_operations(db=db, user=user, session_row=session),
+        )
         trace_event(
             "interviewer",
             "chat_start_completed",
@@ -681,12 +690,13 @@ async def send_chat(
     )
     session = await _owned_session(db, user["sub"], session_id)
     try:
-        result = await process_candidate_message(
-            db=db,
-            session_row=session,
-            client_message_id=payload.client_message_id,
-            content=payload.content,
-            telemetry=payload.telemetry,
+        message_id = payload.client_message_id or str(uuid4())
+        result = await run_interview_command(
+            session_id=session_id, command="respond",
+            operations=database_operations(db=db, user=user, session_row=session),
+            event_id=message_id,
+            payload={"client_message_id": message_id,
+                     "content": payload.content, "telemetry": payload.telemetry, "modality": "CHAT"},
         )
         asst_type = (result.get("assistantResponse") or {}).get("messageType")
         trace_event(
@@ -736,6 +746,34 @@ async def send_chat(
         raise
 
 
+@router.post("/sessions/{session_id}/video/message")
+async def send_video_transcript(
+    session_id: str,
+    payload: SendVideoTranscript,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Submit a final video-call transcript to the same interview graph.
+
+    Visual behaviour analysis is deliberately not part of competency scoring.
+    """
+    session = await _owned_session(db, user["sub"], session_id)
+    try:
+        return await run_interview_command(
+            session_id=session_id, command="respond", event_id=payload.client_message_id,
+            operations=database_operations(db=db, user=user, session_row=session),
+            payload={"client_message_id": payload.client_message_id,
+                     "content": payload.final_transcript, "modality": "VIDEO",
+                     "duration_seconds": payload.duration_seconds},
+        )
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ChatRuntimeError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.post("/sessions/{session_id}/chat/complete")
 async def complete_chat(
     session_id: str,
@@ -747,10 +785,10 @@ async def complete_chat(
     trace_event("interviewer", "chat_complete_requested", session_id=session_id, reason=payload.reason)
     session = await _owned_session(db, user["sub"], session_id)
     try:
-        result = await complete_chat_session(
-            db=db,
-            session_row=session,
-            reason=payload.reason,
+        result = await run_interview_command(
+            session_id=session_id, command="finish",
+            operations=database_operations(db=db, user=user, session_row=session),
+            payload={"reason": payload.reason}, event_id=payload.reason,
         )
         trace_event(
             "interviewer",
@@ -795,8 +833,10 @@ async def evaluate_session_endpoint(
     trace_event("interviewer", "evaluation_endpoint_requested", session_id=session_id)
     session = await _owned_session(db, user["sub"], session_id)
     try:
-        await evaluate_closed_session(db=db, session_id=session["id"])
-        eval_data = await get_session_evaluation(db=db, session_id=session["id"])
+        eval_data = await run_interview_command(
+            session_id=session_id, command="score",
+            operations=database_operations(db=db, user=user, session_row=session),
+        )
         if not eval_data:
             trace_event(
                 "interviewer",

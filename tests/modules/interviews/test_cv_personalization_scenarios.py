@@ -14,8 +14,8 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-from src.modules.interviews.planner import derive_competency_plan
-from src.modules.interviews.question_selector import select_and_freeze_questions
+from src.modules.interviews.planning.planner import derive_competency_plan
+from src.modules.interviews.planning.question_selector import select_and_freeze_questions
 from src.modules.matching.domain.schemas import (
     CanonicalJob,
     ConceptResult,

@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from src.modules.voice.router import VoiceChatRequest
+from src.modules.interviews.adapters.voice.router import VoiceChatRequest
 
 
 def test_voice_request_validation() -> None:

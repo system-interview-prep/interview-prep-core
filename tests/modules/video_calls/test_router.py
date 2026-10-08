@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from src.modules.video_calls.router import StartCall
+from src.modules.interviews.adapters.video_calls.router import StartCall
 
 
 def test_video_call_model_validates_room() -> None:

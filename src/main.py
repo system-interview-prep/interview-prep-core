@@ -19,23 +19,17 @@ from src.infrastructure.socketio import sio
 from src.modules.admin import build_module as build_admin_module
 from src.modules.admin_users import build_module as build_admin_users_module
 from src.modules.auth import build_module as build_auth_module
-from src.modules.chat import build_module as build_chat_module
 from src.modules.health import build_module as build_health_module
 from src.modules.interviews import build_module as build_interviews_module
+from src.modules.interviews.agent.checkpoints import interview_checkpoint_lifespan
 from src.modules.job_descriptions import build_module as build_job_descriptions_module
 from src.modules.matching import build_module as build_matching_module
 from src.modules.notifications import build_module as build_notifications_module
 from src.modules.question_bank import build_module as build_question_bank_module
-from src.modules.sessions import build_module as build_sessions_module
-from src.modules.signaling import _events as _signaling_events
 from src.modules.taxonomy import build_module as build_taxonomy_module
 from src.modules.user_cvs import build_module as build_user_cvs_module
 from src.modules.users import build_module as build_users_module
-from src.modules.video_calls import build_module as build_video_calls_module
-from src.modules.voice import build_module as build_voice_module
 from src.seeds import run_all_seeds
-
-del _signaling_events
 
 MODULES = [
     build_health_module(),
@@ -49,10 +43,6 @@ MODULES = [
     build_matching_module(),
     build_question_bank_module(),
     build_interviews_module(),
-    build_sessions_module(),
-    build_chat_module(),
-    build_voice_module(),
-    build_video_calls_module(),
     build_notifications_module(),
 ]
 
@@ -78,7 +68,14 @@ async def _start_livekit_agent(settings: object) -> asyncio.subprocess.Process |
     if run_mode not in {"dev", "start"}:
         raise RuntimeError("LIVEKIT_AGENT_RUN_MODE must be 'dev' or 'start'")
 
-    agent_script = Path(__file__).resolve().parent / "modules" / "voice" / "livekit_agent.py"
+    agent_script = (
+        Path(__file__).resolve().parent
+        / "modules"
+        / "interviews"
+        / "adapters"
+        / "voice"
+        / "livekit_agent.py"
+    )
     try:
         process = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -130,7 +127,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
         await bootstrap_question_bank_schema(engine)
         await run_all_seeds(SessionFactory)
-        async with rabbitmq_lifespan():
+        async with interview_checkpoint_lifespan(), rabbitmq_lifespan():
             livekit_agent = await _start_livekit_agent(get_settings())
             try:
                 yield
