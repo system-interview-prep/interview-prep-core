@@ -782,6 +782,33 @@ _CONCEPT_FIXTURES: list[dict[str, Any]] = [
         ],
     },
     {
+        "concept_id": "skill-xml",
+        "role_concepts": ("technology.software-engineering.backend",),
+        "questions": [
+            {
+                "stable_key": "xml-namespaces-and-xsd-validation",
+                "text": "A partner sends you XML (for example a SOAP message or an invoice feed). How do you handle namespaces and validate the payload against an XSD before processing it?",
+                "objective": "Assess practical XML integration: namespaces and schema validation at the boundary.",
+                "difficulty": "intermediate",
+                "type": "technical",
+            },
+            {
+                "stable_key": "xml-vs-json-mapping",
+                "text": "When would you still choose XML over JSON for data exchange, and what information (attributes, ordering, mixed content, types) can be lost when converting between them?",
+                "objective": "Assess format trade-offs and lossy-conversion awareness.",
+                "difficulty": "intermediate",
+                "type": "technical",
+            },
+            {
+                "stable_key": "xml-xxe-and-parser-hardening",
+                "text": "Explain how an XML External Entity (XXE) or entity-expansion attack works against an endpoint that accepts XML, and how you configure the parser to prevent it.",
+                "objective": "Assess XML parser security on untrusted input.",
+                "difficulty": "advanced",
+                "type": "technical",
+            },
+        ],
+    },
+    {
         "concept_id": "skill-machine-learning",
         "role_concepts": ("technology.artificial-intelligence",),
         "questions": [
