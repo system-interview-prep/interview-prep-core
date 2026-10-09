@@ -33,6 +33,9 @@ class TurnEvaluationInput(BaseModel):
     rubric_criteria: Any = Field(default="")
     candidate_answer: str
     weight: float = Field(default=1.0)
+    # WARM_UP | VALIDATE | DEEP_DIVE | CHALLENGE | BEHAVIORAL; STAR is only
+    # expected of experience questions (VALIDATE, BEHAVIORAL).
+    stage: str = Field(default="")
 
 
 class TurnEvaluationResult(BaseModel):
