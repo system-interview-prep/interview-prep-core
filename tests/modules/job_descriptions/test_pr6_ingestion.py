@@ -351,6 +351,23 @@ def test_d_source_key_identity_format(config: IngestionConfig) -> None:
     assert cand.external_job_id == "404"
 
 
+# [Test D2] Greenhouse trả content đã escape entity -> adapter phải unescape
+def test_d2_entity_escaped_content_is_unescaped(config: IngestionConfig) -> None:
+    adapter = GreenhouseJobBoardAdapter()
+    item = {
+        "id": 405,
+        "title": "Backend Engineer",
+        "content": (
+            "&lt;h2&gt;Requirements&lt;/h2&gt;"
+            "&lt;ul&gt;&lt;li&gt;3+ years of Python&lt;/li&gt;&lt;/ul&gt;"
+        ),
+    }
+    cand = adapter.parse_job_item(item, config)
+    assert cand is not None
+    assert cand.raw_html == "<h2>Requirements</h2><ul><li>3+ years of Python</li></ul>"
+    assert HtmlSanitizer.to_plain_text(cand.raw_html) == "Requirements\n\n- 3+ years of Python"
+
+
 # [Test E] HTML sanitized
 def test_e_html_sanitization() -> None:
     dirty_html = """
