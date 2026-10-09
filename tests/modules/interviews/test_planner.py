@@ -70,7 +70,7 @@ def _result(requirement_id: str, status: str) -> RequirementResult:
         status=status,
         score=1.0 if status == "met" else None,
         confidence=1.0 if status == "met" else 0.0,
-        evidenceRefs=[],
+        evidenceRefs=[f"cv-{requirement_id}"] if status in {"met", "unknown"} else [],
         reasonCode=f"test_{status}",
     )
 
@@ -129,7 +129,7 @@ def test_planner_preserves_atomic_concepts_and_allocates_bounded_budget() -> Non
         status="unknown",
         score=None,
         confidence=0.4,
-        evidenceRefs=[],
+        evidenceRefs=["cv-nlp", "cv-genai", "cv-llm"],
         reasonCode="atomic_group_incomplete",
         groupOperator="all_of",
         conceptResults=[
@@ -138,7 +138,7 @@ def test_planner_preserves_atomic_concepts_and_allocates_bounded_budget() -> Non
                 label="NLP",
                 status="met",
                 confidence=1.0,
-                evidenceRefs=[],
+                evidenceRefs=["cv-nlp"],
                 reasonCode="concept_evidenced",
             ),
             ConceptResult(
@@ -146,7 +146,7 @@ def test_planner_preserves_atomic_concepts_and_allocates_bounded_budget() -> Non
                 label="GenAI",
                 status="met",
                 confidence=1.0,
-                evidenceRefs=[],
+                evidenceRefs=["cv-genai"],
                 reasonCode="concept_evidenced",
             ),
             ConceptResult(
@@ -154,7 +154,7 @@ def test_planner_preserves_atomic_concepts_and_allocates_bounded_budget() -> Non
                 label="LLM",
                 status="unknown",
                 confidence=0.0,
-                evidenceRefs=[],
+                evidenceRefs=["cv-llm"],
                 reasonCode="concept_evidence_missing",
             ),
         ],
@@ -342,7 +342,23 @@ def test_planner_keeps_must_have_concepts_ahead_of_repeated_nice_to_have() -> No
         duration_minutes=12,
     )
 
-    assert plan["questionBudget"] == 2
+    # 12 minutes leave room for a single technical question after the presets;
+    # it must go to the must-have concept.
+    assert plan["questionBudget"] == 1
     assert "skill.core" in {item["conceptId"] for item in plan["targets"]}
     assert plan["targets"][0]["conceptId"] == "skill.core"
     assert plan["targets"][0]["selectionRank"] == 0
+
+
+def test_question_budget_fits_the_session_time() -> None:
+    """M10: the agenda's expected time (presets + questions with one probe) fits the session."""
+    from src.modules.interviews.planning.planner import (
+        _PRESET_EXPECTED_SECONDS,
+        _TECHNICAL_EXPECTED_SECONDS,
+        _question_budget,
+    )
+
+    assert {d: _question_budget(d) for d in (15, 25, 45)} == {15: 1, 25: 4, 45: 8}
+    for minutes in (20, 25, 30, 45, 60):
+        expected = _PRESET_EXPECTED_SECONDS + _question_budget(minutes) * _TECHNICAL_EXPECTED_SECONDS
+        assert expected <= minutes * 60
