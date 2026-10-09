@@ -19,10 +19,8 @@ def _no_live_question_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     # The quality gate's judge is a second LLM call: approve everything by
     # default; tests of the gate patch `judge_question_payloads` themselves.
     async def _approve_all(*, questions: list[dict], **_: object) -> list[dict]:
-        return [
-            {"index": index, "on_skill": True, "difficulty_ok": True, "verbal": True, "sound": True, "concise": True}
-            for index in range(len(questions))
-        ]
+        checks = ("on_skill", "difficulty_ok", "verbal", "sound", "concise")
+        return [{"index": index, **dict.fromkeys(checks, True)} for index in range(len(questions))]
 
     monkeypatch.setattr(question_generation, "judge_question_payloads", _approve_all)
 
