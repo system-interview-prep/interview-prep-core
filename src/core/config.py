@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # question), ask the LLM for one, use it in that interview, and file it as
     # an IN_REVIEW draft. Off -> the skill is dropped and reported uncovered.
     question_generation_enabled: bool = True
+    # When a job is published, a background task generates gated drafts so each
+    # must-have skill has enough questions to rotate (question_coverage).
+    question_pregeneration_enabled: bool = True
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     jwt_secret: str = "development-only-secret-change-me"
