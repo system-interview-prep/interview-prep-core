@@ -53,6 +53,19 @@ class JobIngestionService:
         self._adapter = adapter or GreenhouseJobBoardAdapter()
         self._parser = parser or DeterministicJobDescriptionParser()
 
+    def _parse(self, cand: ExternalJobCandidate, content_hash: str, plain_text: str):
+        source = _build_source_doc(cand.external_job_id, content_hash, plain_text)
+        parsed = self._parser.parse(source, extraction_version="1.0")
+        # The board body never repeats the posting title, so the parser guesses
+        # one from lines like "Reports to: Engineering Manager" and derives a
+        # "manager" seniority from it. The listing title is authoritative.
+        return parsed.model_copy(
+            update={
+                "job_title": cand.title,
+                "seniority": DeterministicJobDescriptionParser._seniority(cand.title, plain_text),
+            }
+        )
+
     async def ingest_candidates(
         self,
         config: IngestionConfig,
@@ -84,8 +97,7 @@ class JobIngestionService:
                     # New Job: Parse plain text with deterministic parser
                     parsed = None
                     try:
-                        source = _build_source_doc(cand.external_job_id, content_hash, plain_text)
-                        parsed = self._parser.parse(source, extraction_version="1.0")
+                        parsed = self._parse(cand, content_hash, plain_text)
                     except Exception as p_err:
                         logger.warning(
                             "Parser failed for job '%s' (%s): %s", cand.external_job_id, cand.title, p_err
@@ -150,8 +162,7 @@ class JobIngestionService:
 
                         if not is_human_reviewed:
                             try:
-                                source = _build_source_doc(cand.external_job_id, content_hash, plain_text)
-                                parsed = self._parser.parse(source, extraction_version="1.0")
+                                parsed = self._parse(cand, content_hash, plain_text)
                             except Exception as p_err:
                                 logger.warning(
                                     "Parser failed on update for '%s': %s", cand.external_job_id, p_err
