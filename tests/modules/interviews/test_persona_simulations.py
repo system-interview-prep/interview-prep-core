@@ -9,22 +9,19 @@ Kiểm chứng toàn diện 5 nhóm ứng viên điển hình:
 5. The Code-Switcher: Dùng tiếng Việt xen kẽ thuật ngữ IT -> P4 đánh giá công bằng, không trừ điểm từ mượn.
 """
 
-from datetime import datetime, timezone
 import unittest
+from datetime import datetime, timezone
 from uuid import uuid4
 
+from src.modules.interviews.core.interview_engine import InterviewCoreEngine
 from src.modules.interviews.core.interview_types import (
     CandidateTurnInput,
     InterviewStage,
     SessionExitReason,
     TurnAction,
 )
-from src.modules.interviews.core.interview_engine import InterviewCoreEngine
 from src.modules.interviews.evaluation.evaluation_engine import InterviewEvaluationEngine
-from src.modules.interviews.evaluation.evaluation_types import (
-    DecisionRecommendation,
-    TurnEvaluationInput,
-)
+from src.modules.interviews.evaluation.evaluation_types import TurnEvaluationInput
 
 
 class MockLLM:
@@ -407,7 +404,8 @@ class TestPersonaBasedSimulations(unittest.IsolatedAsyncioTestCase):
             "target_duration_minutes": 25,
             "started_at": datetime.now(timezone.utc),
             "questions_pool": self.sample_pool,
-            "asked_question_ids": ["q-chal-1"],
+            "asked_question_ids": ["q-val-1", "q-deep-1", "q-chal-1"],
+            "answered_question_ids": ["q-val-1", "q-deep-1", "q-chal-1"],
             "current_question_context": self.sample_pool["CHALLENGE"][0],
         }
 
