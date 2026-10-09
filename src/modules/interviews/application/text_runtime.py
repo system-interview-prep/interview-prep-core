@@ -57,6 +57,19 @@ async def _turn(
     return dict(row)
 
 
+def _require_practice_session(session_row: dict[str, Any]) -> None:
+    """Only question-practice sessions may be driven turn by turn.
+
+    Chat interviews are also `mode='text'`, but their turns are owned by the
+    chat runtime. Answering or completing them here bypassed the interviewer
+    (no assistant message, no follow-ups) and could close a chat session as
+    COMPLETED with fabricated answers.
+    """
+    experience = session_row.get("experience_type") or "interview_chat"
+    if experience != "question_practice":
+        raise TurnStateError("Turn-by-turn runtime is only available for question practice sessions")
+
+
 async def read_text_runtime(
     *,
     db: AsyncSession,
@@ -108,6 +121,7 @@ async def ask_turn(
     session_row: dict[str, Any],
     turn_id: str,
 ) -> dict[str, Any]:
+    _require_practice_session(session_row)
     if session_row["status"] == "CLOSED":
         raise TurnStateError("Interview session is closed")
     runtime = await read_text_runtime(db=db, session_row=session_row)
@@ -146,6 +160,7 @@ async def answer_turn(
     turn_id: str,
     answer_text: str,
 ) -> dict[str, Any]:
+    _require_practice_session(session_row)
     if session_row["status"] == "CLOSED":
         raise TurnStateError("Interview session is closed")
     cleaned = answer_text.strip()
@@ -186,6 +201,7 @@ async def complete_text_runtime(
     db: AsyncSession,
     session_row: dict[str, Any],
 ) -> dict[str, Any]:
+    _require_practice_session(session_row)
     runtime = await read_text_runtime(db=db, session_row=session_row)
     unfinished = [
         turn for turn in runtime["turns"]
@@ -194,11 +210,18 @@ async def complete_text_runtime(
     if unfinished:
         raise TurnStateError("Interview cannot complete while turns remain unanswered")
 
+    # Every turn is answered, so COMPLETED is the truthful reason. Writing it
+    # here keeps the field consistent with the chat runtime: previously a text
+    # session closed with end_reason NULL and the report could not tell a
+    # finished interview from an abandoned one.
     await db.execute(
         text(
             """
             UPDATE interview_sessions
-            SET status = 'CLOSED', ended_at = COALESCE(ended_at, now()), updated_at = now()
+            SET status = 'CLOSED',
+                end_reason = COALESCE(end_reason, 'COMPLETED'),
+                ended_at = COALESCE(ended_at, now()),
+                updated_at = now()
             WHERE id = :session_id AND status <> 'CLOSED'
             """
         ),
