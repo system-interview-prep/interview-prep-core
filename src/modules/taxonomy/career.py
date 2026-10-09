@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from src.modules.taxonomy.skill_catalog import AI, BACKEND, DEVOPS, FRONTEND, GAME, MOBILE, role_skill_ids
+
 TAXONOMY_VERSION = "internal-career-2026.1"
 
 
@@ -56,6 +58,12 @@ _NODES = (
         "specialization",
         "technology.software-engineering",
     ),
+    CareerTaxonomyNode(
+        "technology.software-engineering.mobile",
+        "Mobile Engineering",
+        "specialization",
+        "technology.software-engineering",
+    ),
     CareerTaxonomyNode("technology.cloud-devops", "Cloud & DevOps", "specialization", "technology"),
     CareerTaxonomyNode(
         "technology.artificial-intelligence", "Artificial Intelligence", "specialization", "technology"
@@ -68,43 +76,42 @@ _RULES = (
         "technology.game-development",
         "Game Development",
         ("game developer", "unity developer"),
-        frozenset({"skill-unity"}),
+        role_skill_ids(GAME),
         "technology",
     ),
     CareerRule(
         "technology.artificial-intelligence",
         "Artificial Intelligence",
         ("ai engineer", "machine learning", "data scientist"),
-        frozenset(
-            {
-                "skill-artificial-intelligence",
-                "skill-machine-learning",
-                "skill-natural-language-processing",
-                "skill-generative-ai",
-                "skill-large-language-models",
-            }
-        ),
+        role_skill_ids(AI),
         "technology",
     ),
     CareerRule(
         "technology.software-engineering.backend",
         "Backend Engineering",
         ("backend", "back-end", "server-side"),
-        frozenset({"skill-java", "skill-spring-boot", "skill-fastapi", "skill-postgresql"}),
+        role_skill_ids(BACKEND),
         "technology.software-engineering",
     ),
     CareerRule(
         "technology.software-engineering.frontend",
         "Frontend Engineering",
         ("frontend", "front-end", "ui developer"),
-        frozenset({"skill-javascript", "skill-typescript", "skill-react"}),
+        role_skill_ids(FRONTEND),
+        "technology.software-engineering",
+    ),
+    CareerRule(
+        "technology.software-engineering.mobile",
+        "Mobile Engineering",
+        ("mobile developer", "mobile engineer", "android", "ios"),
+        role_skill_ids(MOBILE),
         "technology.software-engineering",
     ),
     CareerRule(
         "technology.cloud-devops",
         "Cloud & DevOps",
         ("devops", "cloud engineer", "site reliability", "sre"),
-        frozenset({"skill-docker", "skill-kubernetes", "skill-aws"}),
+        role_skill_ids(DEVOPS),
         "technology",
     ),
 )
@@ -123,7 +130,11 @@ def _specializations(skill_refs, title_refs, *, minimum_skill_signals: int):
             for title, refs in title_refs
             if any(word in title.casefold() for word in rule.keywords)
         ]
-        if not matching_titles and len(supporting_ids) < minimum_skill_signals:
+        # A rule with neither a title match nor a supporting skill has no
+        # evidence at all; with minimum_skill_signals=0 it used to pass with the
+        # base confidence, so the first declared rule (game development) won
+        # every title the keywords did not recognise.
+        if not matching_titles and (not supporting_ids or len(supporting_ids) < minimum_skill_signals):
             continue
         refs = list(
             dict.fromkeys(
