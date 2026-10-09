@@ -18,7 +18,8 @@ def valid_row() -> str:
         "thinking_seconds": "0", "soft_answer_seconds": "60", "hard_answer_seconds": "120",
         "primary_competency_id": "comp", "target_role_ids": "[]",
         "supporting_competency_ids": "[]", "skill_ids": "[]", "expected_points": "[]",
-        "source_refs": "[]",
+        "source_refs": "[]", "question_type": "technical", "difficulty_band": "intermediate",
+        "stable_key": "python.gil",
     })
     return ",".join(f'"{values[key]}"' for key in IMPORT_COLUMNS)
 
@@ -44,11 +45,24 @@ def test_xlsx_template_and_parser_round_trip() -> None:
     assert workbook.sheetnames == ["Questions", "Instructions"]
     worksheet = workbook["Questions"]
     worksheet.append([
-        "key", "1", "vi-VN", "Question", "Objective", "CONCEPTUAL", "MEDIUM", 0, 60,
+        "Key", "1", "vi-VN", "Question", "Objective", "CONCEPTUAL", "Intermediate", 0, 60,
         120, "v1", "[]", "comp", "[]", "[]", "[]", "[]", "rubric", "",
     ])
     stream = io.BytesIO()
     workbook.save(stream)
     parsed = parse_xlsx(stream.getvalue())
     assert parsed[0].payload["stable_key"] == "key"
+    assert parsed[0].payload["question_type"] == "conceptual"
+    assert parsed[0].payload["difficulty_band"] == "intermediate"
     assert parsed[0].errors == []
+
+
+def test_csv_parser_rejects_vocabulary_the_selector_cannot_match() -> None:
+    """P2 filters out any difficulty outside foundational/intermediate/advanced."""
+    invalid = valid_row().replace('"intermediate"', '"MEDIUM"').replace('"technical"', '"QUIZ"')
+    content = (",".join(IMPORT_COLUMNS) + "\n" + invalid).encode()
+    errors = parse_csv(content)[0].errors
+    assert {(error["field"], error["code"]) for error in errors} == {
+        ("difficulty_band", "INVALID_VALUE"),
+        ("question_type", "INVALID_VALUE"),
+    }
