@@ -72,7 +72,8 @@ class SqlAlchemyCvRepository:
         result = await self._session.execute(
             text(
                 "UPDATE user_cvs SET status = 'PENDING', error = NULL, updated_at = now() "
-                "WHERE id = :id AND user_id = :user_id AND status IN ('DONE', 'FAILED')"
+                "WHERE id = :id AND user_id = :user_id AND (status IN ('DONE', 'FAILED') "
+                "OR (status = 'PARSING' AND updated_at < now() - interval '15 minutes'))"
             ),
             {"id": cv_id, "user_id": user_id},
         )
