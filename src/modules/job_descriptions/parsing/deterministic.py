@@ -397,7 +397,22 @@ def _heading(line: str) -> str | None:
 # qualifications" is preferred, not requirements.
 _HEADING_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("preferred", ("nice to have", "preferred", "bonus", "great if", "good to have", "uu tien")),
-    ("benefits", ("benefit", "perk", "we offer", "compensation", "why join", "quyen loi", "phuc loi", "dai ngo")),
+    (
+        "benefits",
+        (
+            "benefit",
+            "perk",
+            "we offer",
+            "compensation",
+            "pay transparency",
+            "salary",
+            "why join",
+            "quyen loi",
+            "phuc loi",
+            "dai ngo",
+            "muc luong",
+        ),
+    ),
     (
         "responsibilities",
         (
