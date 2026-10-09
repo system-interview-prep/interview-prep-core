@@ -11,10 +11,14 @@ from src.core.config import get_settings
 def _client():
     from openai import OpenAI
 
-    api_key = get_settings().openai_api_key
+    settings = get_settings()
+    api_key = settings.openai_api_key
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured")
-    return OpenAI(api_key=api_key)
+    # The SDK default is a 600s read timeout with 2 retries, so a stalled
+    # provider could hold an interview turn for half an hour. Callers already
+    # fall back on provider errors; fail fast enough for them to do so.
+    return OpenAI(api_key=api_key, timeout=settings.ai_request_timeout_seconds, max_retries=1)
 
 
 async def generate_text(
