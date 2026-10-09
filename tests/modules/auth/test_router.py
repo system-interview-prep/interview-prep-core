@@ -91,7 +91,11 @@ def test_register_conflict_uses_frontend_error_contract(client, monkeypatch) -> 
         json={"name": "User", "email": "user@example.com", "password": "Strong123"},
     )
     assert response.status_code == 409
-    assert response.json() == {"message": "Email đã được đăng ký.", "statusCode": 409}
+    assert response.json() == {
+        "message": "Email đã được đăng ký.",
+        "statusCode": 409,
+        "detail": "Email đã được đăng ký.",
+    }
 
 
 def test_login_rate_limit_blocks_sixth_failed_attempt(client, monkeypatch) -> None:
