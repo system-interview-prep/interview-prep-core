@@ -68,14 +68,18 @@ async def test_greenhouse_job_round_trips_through_the_real_repository() -> None:
             assert created.metrics["created_count"] == 2
 
             row = (
-                await db.execute(
-                    text(
-                        "SELECT description, requirements, keywords, structured_data, seniority "
-                        "FROM job_descriptions WHERE source_key = :key AND external_job_id = '1'"
-                    ),
-                    {"key": f"tenant:{board}"},
+                (
+                    await db.execute(
+                        text(
+                            "SELECT description, requirements, keywords, structured_data, seniority "
+                            "FROM job_descriptions WHERE source_key = :key AND external_job_id = '1'"
+                        ),
+                        {"key": f"tenant:{board}"},
+                    )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
             assert "- 3+ years of Python and Docker" in row["description"]
             assert "&lt;" not in row["description"] and "<li>" not in row["description"]
             assert "- 3+ years of Python and Docker" in row["requirements"]
@@ -93,5 +97,48 @@ async def test_greenhouse_job_round_trips_through_the_real_repository() -> None:
             closed = await service.ingest_candidates(config, candidates[:1])
             assert closed.status == "COMPLETED", closed.errors
             assert closed.metrics["closed_count"] == 1
+        finally:
+            await transaction.rollback()
+
+
+class _BrokenParser:
+    def parse(self, *args, **kwargs):
+        raise ValueError("boom")
+
+
+@pytest.mark.asyncio
+async def test_parse_failure_is_kept_as_failed_draft_not_listed() -> None:
+    board = f"it-{uuid4().hex[:8]}"
+    config = IngestionConfig(board_token=board, company_name="Acme")
+    adapter = GreenhouseJobBoardAdapter()
+    candidates = adapter.parse_board_payload(
+        {"jobs": [{"id": 9, "title": "Backend Engineer", "content": _CONTENT}]}, config
+    )
+
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+        try:
+            db = AsyncSession(bind=connection, expire_on_commit=False)
+            service = JobIngestionService(JobIngestionRepository(db), adapter, _BrokenParser())
+            summary = await service.ingest_candidates(config, candidates)
+            assert summary.metrics["created_count"] == 1
+            row = (
+                (
+                    await db.execute(
+                        text(
+                            "SELECT processing_status, listing_status, error, structured_data "
+                            "FROM job_descriptions WHERE source_key = :key"
+                        ),
+                        {"key": f"tenant:{board}"},
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            # Hidden from candidates and visible to admins, instead of an ACTIVE
+            # listing that fails only when someone starts an interview on it.
+            assert (row["processing_status"], row["listing_status"]) == ("FAILED", "DRAFT")
+            assert row["error"] == "Parse error: boom"
+            assert row["structured_data"] is None
         finally:
             await transaction.rollback()
