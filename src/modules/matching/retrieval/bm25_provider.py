@@ -135,7 +135,17 @@ class ParadeDbBm25Provider:
 
             if loop is not None and loop.is_running():
                 raise RuntimeError("score() cannot be used inside a running event loop; await score_async()")
-            return asyncio.run(self.score_async(query_text, doc_text, doc_id))
+            provider = self
+            if self.session_factory is None:
+                # asyncio.run creates a new loop: never touch the server's pool from it.
+                from src.infrastructure.database import StandaloneSessionFactory
+
+                provider = ParadeDbBm25Provider(
+                    session_factory=StandaloneSessionFactory,
+                    saturation_k=self.saturation_k,
+                    fallback=self.fallback,
+                )
+            return asyncio.run(provider.score_async(query_text, doc_text, doc_id))
         except Exception as exc:
             logger.warning("ParadeDB runner failed; falling back to in-memory: %s", exc)
             return self.fallback.score(query_text, doc_text, doc_id)
