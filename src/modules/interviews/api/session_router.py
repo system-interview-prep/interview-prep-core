@@ -75,15 +75,34 @@ async def close_session(
     session_id: str, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
 ) -> dict:
     await _owned(db, user["sub"], session_id)
+    # Structured (CV + JD) sessions must end through the interview runtime,
+    # which records an end_reason and enforces agenda coverage. Closing them
+    # here left end_reason NULL and bypassed every completion guard.
     result = await db.execute(
         text(
             "UPDATE interview_sessions "
             "SET status = 'CLOSED', "
             "ended_at = COALESCE(ended_at, now()), "
             "updated_at = CASE WHEN ended_at IS NULL THEN now() ELSE updated_at END "
-            "WHERE id = :id AND user_id = :uid RETURNING ended_at"
+            "WHERE id = :id AND user_id = :uid AND resume_id IS NULL AND job_id IS NULL "
+            "RETURNING ended_at"
         ),
         {"id": session_id, "uid": user["sub"]},
     )
+    ended_at = result.scalar_one_or_none()
+    if ended_at is None:
+        await db.rollback()
+        existing = await db.execute(
+            text("SELECT status, ended_at FROM interview_sessions WHERE id = :id AND user_id = :uid"),
+            {"id": session_id, "uid": user["sub"]},
+        )
+        row = existing.mappings().one()
+        if row["status"] == "CLOSED" and row["ended_at"] is not None:
+            # Already ended through the runtime: report it, change nothing.
+            return {"sessionId": session_id, "status": "CLOSED", "endedAt": row["ended_at"].isoformat()}
+        raise HTTPException(
+            status_code=409,
+            detail="Structured interview sessions must be ended through /api/v1/interviews.",
+        )
     await db.commit()
-    return {"sessionId": session_id, "status": "CLOSED", "endedAt": result.scalar_one().isoformat()}
+    return {"sessionId": session_id, "status": "CLOSED", "endedAt": ended_at.isoformat()}
