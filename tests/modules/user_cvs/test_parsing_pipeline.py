@@ -16,6 +16,7 @@ class RecordingRepository:
         self.document = document
         self.completed = None
         self.failure = None
+        self.released = None
 
     async def claim(self, cv_id: str) -> CvDocument | None:
         return self.document if self.document and self.document.cv_id == cv_id else None
@@ -25,6 +26,9 @@ class RecordingRepository:
 
     async def fail(self, cv_id: str, error: str) -> None:
         self.failure = (cv_id, error)
+
+    async def release(self, cv_id: str) -> None:
+        self.released = cv_id
 
 
 class MemoryStorage:
@@ -164,3 +168,22 @@ async def test_pipeline_awaits_async_parser_and_persists_its_version() -> None:
 
     assert repository.completed is not None
     assert repository.completed[1]["parse_source"] == "mineru+deterministic-resume-v6"
+
+
+async def test_timeout_with_a_retry_left_releases_instead_of_failing() -> None:
+    """The UI polls the status; a FAILED here ended its polling although the
+    Celery retry then succeeded, leaving a stale error on screen."""
+    document = CvDocument("cv-1", "resume.pdf", "cvs/cv-1.pdf", SHA256)
+    repository = RecordingRepository(document)
+    pipeline = CvParsingPipeline(
+        repository=repository,
+        storage=MemoryStorage(b"pdf"),
+        extractor=FailingExtractor(),
+        parser=DeterministicResumeParser(),
+        source_builder=build_source_document,
+    )
+
+    with pytest.raises(TimeoutError):
+        await pipeline.run("cv-1", final_attempt=False)
+    assert repository.failure is None
+    assert repository.released == "cv-1"
