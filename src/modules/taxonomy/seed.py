@@ -62,6 +62,25 @@ async def seed_default_taxonomy(session_factory: Callable[[], AsyncSession]) -> 
                 },
             )
             entry = SKILL_CATALOG.get(concept_id)
+            if entry is not None:
+                # The old seed named rule skills by title-casing the id ("Aws",
+                # "Fastapi"). Replace only that exact generated label, so a label
+                # an admin edited is never touched.
+                generated = concept_id.removeprefix("skill-").replace("-", " ").title()
+                if generated != label:
+                    await session.execute(
+                        text(
+                            "UPDATE taxonomy_concepts SET label = :label "
+                            "WHERE taxonomy_version = :version AND concept_id = :concept_id "
+                            "AND label = :generated"
+                        ),
+                        {
+                            "version": TAXONOMY_VERSION,
+                            "concept_id": concept_id,
+                            "label": label,
+                            "generated": generated,
+                        },
+                    )
             for alias in (label, *(entry.aliases if entry else ())):
                 await session.execute(
                     text(
