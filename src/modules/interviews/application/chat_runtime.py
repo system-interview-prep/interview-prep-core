@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
+from src.modules.interviews.core.demo_mode import is_demo_duration
 from src.modules.interviews.core.interview_engine import (
     SAFE_FALLBACK_PROBE_EN,
     SAFE_FALLBACK_PROBE_VI,
@@ -661,6 +662,8 @@ def build_session_state_from_db(
         ),
         "current_turn_in_question": 1 if has_probed else 0,
         "target_duration_minutes": target_duration_minutes,
+        # Demo sessions are turn-driven (see core.demo_mode).
+        "is_demo": is_demo_duration(target_duration_minutes),
         "started_at": session_row.get("started_at"),
         # The session clock, surfaced at the top level because that is where the
         # core engine reads it. Previously only `working_memory` carried it, so
