@@ -1,6 +1,7 @@
 """Greenhouse Job Board API adapter."""
 
 import asyncio
+import html
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -88,7 +89,8 @@ class GreenhouseJobBoardAdapter:
             company_name=config.company_name,
             company_logo_url=config.company_logo_url,
             location=location_name,
-            raw_html=str(item.get("content") or ""),
+            # The Job Board API returns `content` entity-escaped (`&lt;p&gt;`).
+            raw_html=html.unescape(str(item.get("content") or "")),
             source_type="greenhouse",
             source_key=f"tenant:{config.board_token}",
             source_name=config.company_name,
