@@ -108,6 +108,8 @@ class CvParseRepository(Protocol):
 
     async def fail(self, cv_id: str, error: str) -> None: ...
 
+    async def release(self, cv_id: str) -> None: ...
+
 
 class ObjectStorage(Protocol):
     def read(self, key: str) -> bytes: ...
@@ -160,7 +162,7 @@ class CvParsingPipeline:
         self._parser = parser
         self._source_builder = source_builder
 
-    async def run(self, cv_id: str) -> PipelineResult:
+    async def run(self, cv_id: str, *, final_attempt: bool = True) -> PipelineResult:
         started_at = time.monotonic()
         if not cv_id:
             trace_event("cv_parser", "ignored")
@@ -272,6 +274,10 @@ class CvParsingPipeline:
                 canonical_status=canonical_status,
             )
         except Exception as exc:
+            if isinstance(exc, TimeoutError) and not final_attempt:
+                await self._repository.release(document.cv_id)
+                trace_event("cv_parser", "retry_scheduled", cv_id=document.cv_id, error=str(exc)[:300])
+                raise
             await self._repository.fail(document.cv_id, str(exc)[:1000])
             trace_event(
                 "cv_parser",
