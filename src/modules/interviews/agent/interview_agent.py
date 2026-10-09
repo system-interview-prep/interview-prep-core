@@ -50,12 +50,16 @@ class InterviewAgent:
                 if previous.values.get("payload") != normalized_payload:
                     raise ValueError("EVENT_ID_PAYLOAD_MISMATCH")
                 return previous.values["result"]
-        state = await graph.ainvoke(
-            {"session_id": session_id, "command": command, "event_id": event_id,
-             "payload": normalized_payload, "completed": False},
-            config=config,
-            durability="sync",
-        )
+        invocation = {"session_id": session_id, "command": command, "event_id": event_id,
+                      "payload": normalized_payload, "completed": False}
+        # `durability` only has meaning when there is something to persist to.
+        # Passing it without a checkpointer is rejected by LangGraph, which would
+        # turn every checkpointer-less call (tests, scripts, a worker started
+        # outside the app lifespan) into an AttributeError deep inside Pregel.
+        if checkpointer is None:
+            state = await graph.ainvoke(invocation, config=config)
+        else:
+            state = await graph.ainvoke(invocation, config=config, durability="sync")
         return state["result"]
 
     async def handle_turn(
