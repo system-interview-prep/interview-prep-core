@@ -81,10 +81,13 @@ class JobIngestionRepository:
         keywords: list[str] = []
         if parsed and parsed.requirements:
             for req in parsed.requirements:
-                if req.skill_id and req.skill_id.startswith("skill-"):
-                    clean_kw = req.skill_id.replace("skill-", "")
-                    if clean_kw not in keywords:
-                        keywords.append(clean_kw)
+                if req.kind == "skill" and req.concept and req.concept.label not in keywords:
+                    keywords.append(req.concept.label)
+        # The closing Q&A reads this column, so a 20K-char posting whose first
+        # 1500 chars are company boilerplate still exposes what the job asks for.
+        requirements_text = (
+            "\n".join(f"- {req.raw_label}" for req in parsed.requirements) if parsed else None
+        ) or ""
 
         extracted_metadata = {
             "ingestion": {
@@ -98,7 +101,7 @@ class JobIngestionRepository:
             "is_human_reviewed": False,
         }
 
-        structured_data = parsed.model_dump(by_alias=True) if parsed else None
+        structured_data = parsed.model_dump(mode="json", by_alias=True) if parsed else None
 
         search_text = f"{candidate.title} {candidate.company_name} {candidate.location or ''} {plain_text[:2000]}".strip()
 
@@ -113,7 +116,7 @@ class JobIngestionRepository:
                 source_type, source_key, source_name, source_url, apply_url,
                 external_job_id, posted_at, first_seen_at, last_seen_at, fetched_at,
                 processing_status, listing_status, status,
-                keywords, description, search_text, raw_text,
+                keywords, description, requirements, search_text, raw_text,
                 structured_data, extracted_metadata, parse_source, extraction_version,
                 extracted_at, created_at, updated_at
             ) VALUES (
@@ -125,7 +128,7 @@ class JobIngestionRepository:
                 :source_type, :source_key, :source_name, :source_url, :apply_url,
                 :external_job_id, :posted_at, :first_seen_at, :last_seen_at, :fetched_at,
                 'DONE', 'ACTIVE', 'ACTIVE',
-                :keywords, :description, :search_text, :raw_text,
+                :keywords, :description, :requirements, :search_text, :raw_text,
                 CAST(:structured_data AS jsonb), CAST(:extracted_metadata AS jsonb),
                 'greenhouse_adapter+deterministic_v4', '1.0',
                 now(), :first_seen_at, :first_seen_at
@@ -164,7 +167,8 @@ class JobIngestionRepository:
                 "last_seen_at": now_dt,
                 "fetched_at": now_dt,
                 "keywords": keywords,
-                "description": sanitized_html,
+                "requirements": requirements_text,
+                "description": plain_text,
                 "search_text": search_text,
                 "raw_text": plain_text,
                 "structured_data": json.dumps(structured_data) if structured_data else None,
@@ -235,10 +239,13 @@ class JobIngestionRepository:
         keywords: list[str] = []
         if parsed and parsed.requirements:
             for req in parsed.requirements:
-                if req.skill_id and req.skill_id.startswith("skill-"):
-                    clean_kw = req.skill_id.replace("skill-", "")
-                    if clean_kw not in keywords:
-                        keywords.append(clean_kw)
+                if req.kind == "skill" and req.concept and req.concept.label not in keywords:
+                    keywords.append(req.concept.label)
+        # The closing Q&A reads this column, so a 20K-char posting whose first
+        # 1500 chars are company boilerplate still exposes what the job asks for.
+        requirements_text = (
+            "\n".join(f"- {req.raw_label}" for req in parsed.requirements) if parsed else None
+        ) or ""
 
         extracted_metadata = {
             "ingestion": {
@@ -252,7 +259,7 @@ class JobIngestionRepository:
             "is_human_reviewed": False,
         }
 
-        structured_data = parsed.model_dump(by_alias=True) if parsed else None
+        structured_data = parsed.model_dump(mode="json", by_alias=True) if parsed else None
         search_text = f"{candidate.title} {candidate.company_name} {candidate.location or ''} {plain_text[:2000]}".strip()
 
         stmt = text(
@@ -282,6 +289,7 @@ class JobIngestionRepository:
                 listing_status = 'ACTIVE',
                 status = 'ACTIVE',
                 keywords = :keywords,
+                requirements = :requirements,
                 description = :description,
                 search_text = :search_text,
                 raw_text = :raw_text,
@@ -318,7 +326,8 @@ class JobIngestionRepository:
                 "last_seen_at": now_dt,
                 "fetched_at": now_dt,
                 "keywords": keywords,
-                "description": sanitized_html,
+                "requirements": requirements_text,
+                "description": plain_text,
                 "search_text": search_text,
                 "raw_text": plain_text,
                 "structured_data": json.dumps(structured_data) if structured_data else None,
@@ -364,7 +373,7 @@ class JobIngestionRepository:
             WHERE source_type = :source_type
               AND source_key = :source_key
               AND listing_status = 'ACTIVE'
-              AND external_job_id NOT IN :seen_ids
+              AND external_job_id <> ALL(CAST(:seen_ids AS text[]))
               AND last_seen_at < :threshold;
             """
         )
@@ -373,7 +382,7 @@ class JobIngestionRepository:
             {
                 "source_type": source_type,
                 "source_key": source_key,
-                "seen_ids": tuple(seen_external_ids),
+                "seen_ids": list(seen_external_ids),
                 "threshold": threshold_dt,
             },
         )
