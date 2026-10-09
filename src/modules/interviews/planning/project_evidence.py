@@ -321,91 +321,42 @@ def build_project_validation_question(
     job_title: str = "ứng viên",
     locale: str = "vi",
 ) -> str:
-    """Construct a 4-axis grounded project validation question.
+    """One short, grounded question about the candidate's CV project.
 
-    Axes:
-    1. Role & direct contributions (clarify if present, prompt to verify if missing).
-    2. Specific problem & constraints.
-    3. Technical decisions & trade-offs (technologies grounded from CV if present).
-    4. Outcomes, measurement & baseline (grounded metrics if present, asks metric if missing).
+    A real interviewer asks one thing at a time: what the candidate did and the
+    hardest decision. The CV's own facts (project, role, technologies, stated
+    outcome) are quoted, never invented; a missing role is asked, not asserted.
+    Measurement and baselines are left to the follow-up probe instead of being
+    packed into the opening question.
     """
     is_vi = (locale or "vi").lower().startswith("vi")
+    techs = ", ".join(project.technologies[:3]) if project.technologies_status == "present" else ""
+    has_role = project.role_status == "present" and bool(project.role)
+    outcome = project.outcomes[0] if project.outcomes_status == "present" and project.outcomes else ""
 
     if is_vi:
-        # Opening
-        intro = (
-            f"Cảm ơn phần giới thiệu của bạn. Đối chiếu với yêu cầu vị trí {job_title}, "
-            f"trong CV mình rất chú ý đến dự án '{project.name}'."
-        )
-
-        # Axis 1: Role
-        if project.role_status == "present" and project.role:
-            role_part = f" Với vai trò {project.role}, bạn hãy làm rõ những phần công việc mà bạn trực tiếp thực hiện."
+        if has_role:
+            opening = f"Trong dự án '{project.name}' (vai trò {project.role}), bạn trực tiếp làm phần nào"
         else:
-            role_part = (
-                " Do hồ sơ chưa nêu rõ vai trò cụ thể, bạn hãy xác minh chính xác vai trò "
-                "và phần việc bạn trực tiếp đảm nhận trong dự án này."
+            opening = (
+                f"CV chưa ghi rõ vai trò của bạn trong dự án '{project.name}'. "
+                "Bạn xác minh chính xác vai trò và phần việc bạn trực tiếp làm"
             )
+        decision = f"quyết định kỹ thuật khó nhất với {techs}" if techs else "quyết định kỹ thuật khó nhất"
+        question = f"{opening}, và {decision} là gì?"
+        if outcome:
+            question += f" Kết quả “{outcome}” được đo thế nào?"
+        return question
 
-        # Axis 2 & 3: Problem, Constraints & Technical Decisions
-        if project.technologies_status == "present" and project.technologies:
-            tech_mention = f" khi áp dụng các công nghệ như {', '.join(project.technologies[:3])}"
-        else:
-            tech_mention = ""
-
-        tech_part = (
-            f" Đồng thời, bài toán kỹ thuật hoặc constraint khó nhất bạn đã giải quyết là gì: "
-            f"bạn đã đưa ra quyết định kỹ thuật hay trade-off quan trọng nào{tech_mention}?"
-        )
-
-        # Axis 4: Outcomes & Baseline
-        if project.outcomes_status == "present" and project.outcomes:
-            outcome_part = (
-                f" Cuối cùng, kết quả ({', '.join(project.outcomes[:2])}) được đo lường "
-                f"và đối chiếu với baseline ban đầu như thế nào?"
-            )
-        else:
-            outcome_part = (
-                " Cuối cùng, kết quả dự án được đo lường bằng những chỉ số (metrics) nào so với baseline ban đầu?"
-            )
-
-        return f"{intro}{role_part} {tech_part} {outcome_part}"
-
+    if has_role:
+        opening = f"In the '{project.name}' project (as {project.role}), which parts did you build yourself"
     else:
-        # English
-        intro = (
-            f"Thank you for your introduction. In alignment with the {job_title} requirements, "
-            f"I noticed your '{project.name}' project."
+        opening = (
+            f"Your CV does not state your role in the '{project.name}' project. "
+            "Please verify your direct contribution"
         )
-
-        # Axis 1: Role
-        if project.role_status == "present" and project.role:
-            role_part = f" In your role as {project.role}, please clarify the core components you directly built."
-        else:
-            role_part = (
-                " As your CV does not specify your exact role, please verify your direct contribution "
-                "and responsibilities in this project."
-            )
-
-        # Axis 2 & 3: Problem, Constraints & Technical Decisions
-        if project.technologies_status == "present" and project.technologies:
-            tech_mention = f" when applying technologies such as {', '.join(project.technologies[:3])}"
-        else:
-            tech_mention = ""
-
-        tech_part = (
-            f" What was the most challenging technical constraint you solved: "
-            f"what key architectural decisions or trade-offs did you make{tech_mention}?"
-        )
-
-        # Axis 4: Outcomes & Baseline
-        if project.outcomes_status == "present" and project.outcomes:
-            outcome_part = (
-                f" Finally, how were the outcomes ({', '.join(project.outcomes[:2])}) measured against your initial baseline?"
-            )
-        else:
-            outcome_part = (
-                " Finally, what specific metrics were used to measure the outcome against your initial baseline?"
-            )
-
-        return f"{intro}{role_part} {tech_part} {outcome_part}"
+    decision = f"the hardest technical decision with {techs}" if techs else "the hardest technical decision"
+    question = f"{opening}, and what was {decision}?"
+    if outcome:
+        question += f" How was “{outcome}” measured?"
+    return question
