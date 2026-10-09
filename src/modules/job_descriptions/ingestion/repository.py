@@ -62,8 +62,14 @@ class JobIngestionRepository:
         taxonomy_concept_id: str | None = None,
         taxonomy_version: str | None = "v1",
         now: datetime | None = None,
+        parse_error: str | None = None,
     ) -> str:
-        """Inserts a newly discovered external job into job_descriptions."""
+        """Inserts a newly discovered external job into job_descriptions.
+
+        A job whose parse failed is kept for admin review as FAILED/DRAFT with
+        the error: listed ACTIVE it would only fail later, when a candidate
+        tries to start an interview on it.
+        """
         now_dt = now or datetime.now(UTC)
         job_id = str(uuid.uuid4())
 
@@ -115,7 +121,7 @@ class JobIngestionRepository:
                 primary_taxonomy_concept_id, primary_taxonomy_version,
                 source_type, source_key, source_name, source_url, apply_url,
                 external_job_id, posted_at, first_seen_at, last_seen_at, fetched_at,
-                processing_status, listing_status, status,
+                processing_status, listing_status, status, error,
                 keywords, description, requirements, search_text, raw_text,
                 structured_data, extracted_metadata, parse_source, extraction_version,
                 extracted_at, created_at, updated_at
@@ -127,7 +133,7 @@ class JobIngestionRepository:
                 :primary_taxonomy_concept_id, :primary_taxonomy_version,
                 :source_type, :source_key, :source_name, :source_url, :apply_url,
                 :external_job_id, :posted_at, :first_seen_at, :last_seen_at, :fetched_at,
-                'DONE', 'ACTIVE', 'ACTIVE',
+                :processing_status, :listing_status, 'ACTIVE', :error,
                 :keywords, :description, :requirements, :search_text, :raw_text,
                 CAST(:structured_data AS jsonb), CAST(:extracted_metadata AS jsonb),
                 'greenhouse_adapter+deterministic_v4', '1.0',
@@ -168,6 +174,9 @@ class JobIngestionRepository:
                 "fetched_at": now_dt,
                 "keywords": keywords,
                 "requirements": requirements_text,
+                "processing_status": "DONE" if parsed else "FAILED",
+                "listing_status": "ACTIVE" if parsed else "DRAFT",
+                "error": None if parsed else (parse_error or "Parser produced no structured data")[:1000],
                 "description": plain_text,
                 "search_text": search_text,
                 "raw_text": plain_text,
