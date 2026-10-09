@@ -24,13 +24,14 @@ async def submit_voice_answer(
     content: str,
     telemetry: dict[str, Any] | None = None,
     duration_seconds: float = 0.0,
+    modality: str = "VOICE",
 ) -> dict[str, Any]:
-    """Submit an STT transcript to Interview Core as a voice turn."""
+    """Submit a final media transcript to the modality-neutral Interview Core."""
     return await run_interview_command(
         session_id=str(session_row["id"]), command="respond", event_id=client_message_id,
         operations=database_operations(db=db, user={}, session_row=session_row),
         payload={"client_message_id": client_message_id, "content": content,
-                 "telemetry": telemetry or {}, "modality": "VOICE",
+                 "telemetry": telemetry or {}, "modality": modality,
                  "duration_seconds": duration_seconds},
     )
 
