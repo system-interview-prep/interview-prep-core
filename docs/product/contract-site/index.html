@@ -221,6 +221,25 @@ pre { margin: 0; font: 12.5px/1.55 var(--f-mono); white-space: pre; overflow-x: 
 
 footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font: 12px var(--f-mono); color: var(--ink-3); }
 
+.barnote.rev { border-left-color: var(--blue); }
+/* progress figure */
+.pg-tabs { display: flex; flex-wrap: wrap; }
+.pchart { padding: 14px 18px 4px; overflow-x: auto; }
+.pchart svg { display: block; width: 100%; min-width: 560px; height: auto; }
+.pchart text { font-family: var(--f-mono); }
+.pverdicts { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0; border-top: 1px solid var(--rule); }
+.pverdicts > div { padding: 10px 14px; font-size: 14px; border-right: 1px solid var(--rule); min-width: 0; }
+.pverdicts small { display: block; font: 600 10px var(--f-mono); letter-spacing: .1em; color: var(--ink-3); margin-bottom: 4px; }
+.vtag { display: inline-block; font: 600 10.5px var(--f-mono); padding: 2px 6px; letter-spacing: .04em; }
+.vtag.up { background: var(--ok-wash); color: var(--ok); }
+.vtag.noise { background: var(--paper-3); color: var(--ink-2); }
+.vtag.down { background: var(--red-wash); color: var(--red); }
+.vtag.brk { background: var(--amber-wash); color: var(--amber); }
+.cmp { margin: 20px 0 0 var(--cnum); max-width: calc(100% - var(--cnum)); overflow-x: auto; }
+.cmp table td:nth-child(2) { color: var(--ink-2); }
+.cmp td.yes { color: var(--ok); font-weight: 600; }
+.cmp td.no { color: var(--red); }
+
 /* ---------- responsive ---------- */
 @media (max-width: 1100px) {
   :root { --side: 0px; }
@@ -250,7 +269,7 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
   h3 { grid-template-columns: 52px 1fr; }
   .cl { grid-template-columns: 1fr; gap: 2px; }
   .cl.frozen::before { left: -10px; }
-  .tw, .listing { max-width: 100%; }
+  .tw, .listing, .cmp { max-width: 100%; }
   .fbody { grid-template-columns: 1fr; }
   .convo { border-right: 0; border-bottom: 1px solid var(--rule); min-height: 0; }
   .line { grid-template-columns: 1fr; gap: 0; }
@@ -265,7 +284,7 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
 </style>
 
 <nav class="side" aria-label="Mục lục">
-  <div class="brand"><b>INTERVIA — Product Contract</b><span>INTV-PC-001 · Rev 1.0</span></div>
+  <div class="brand"><b>INTERVIA — Product Contract</b><span>INTV-PC-001 · Rev 1.1</span></div>
   <h6>Điều khoản</h6>
   <ol id="toc">
     <li><a href="#s1"><span>1</span>Phạm vi</a></li>
@@ -293,11 +312,11 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
   <div class="meta">
     <div><small>Chương trình</small><b>KLTN · INTERVIA</b></div>
     <div><small>Tài liệu</small><b class="m">INTV-PC-001</b></div>
-    <div><small>Phiên bản</small><b class="m">1.0</b></div>
+    <div><small>Phiên bản</small><b class="m">1.1</b></div>
     <div><small>Tờ</small><b class="m">1 / 10</b></div>
     <div><small>Ban hành</small><b>09/10/2026</b></div>
     <div><small>Chủ sở hữu</small><b>PO nhóm INTERVIA</b></div>
-    <div><small>Trạng thái</small><b class="frozen">§1–§4 đóng băng từ Rev 1.0</b></div>
+    <div><small>Trạng thái</small><b class="frozen">§1–§4 đóng băng từ Rev 1.1</b></div>
     <div><small>PRD đi kèm</small><b class="m">INTV-PRD-001</b></div>
   </div>
 
@@ -313,7 +332,8 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
         <div><dt class="kw should">SHOULD</dt><dd>Khuyến nghị mạnh. Chỉ làm khác khi có lý do bảo vệ được trước hội đồng.</dd></div>
         <div><dt class="kw may">MAY</dt><dd>Hoàn toàn tùy nhóm. Hợp đồng không ưu tiên lựa chọn nào.</dd></div>
       </dl>
-      <p class="barnote">Vạch đỏ ở lề đánh dấu điều khoản đã đóng băng: §1 đến §4 không được mở rộng sau Rev 1.0. Nhãn <span class="done">CÓ TRONG CODE</span> và <span class="gap">CHƯA CÓ</span> cho biết điều khoản đã được mã nguồn nhánh <code>feat/interview-langgraph</code> thực thi hay chưa.</p>
+      <p class="barnote">Vạch đỏ ở lề đánh dấu điều khoản đã đóng băng: §1 đến §4 không được mở rộng sau Rev 1.1. Nhãn <span class="done">CÓ TRONG CODE</span> và <span class="gap">CHƯA CÓ</span> cho biết điều khoản đã được mã nguồn nhánh <code>feat/interview-langgraph</code> thực thi hay chưa.</p>
+      <p class="barnote rev"><b>Rev 1.1 · 09/10/2026.</b> Rev 1.0 chưa được nhóm ký chốt, nên mốc đóng băng dời sang Rev 1.1 thay vì phá §8.2. Sau khi rà toàn bộ backend và frontend, Rev 1.0 đã ghi nhãn quá tay ở bốn chỗ: §1.1.5 và §1.1.10 đổi thành <span class="gap">MỘT PHẦN</span>, SF-03 đổi thành <span class="gap">ĐANG VI PHẠM</span>, và phụ lục B bỏ pgvector khỏi đường chạy. Thêm §1.4 Hồ sơ tiến bộ, SF-07, §7.1 so với ChatGPT, F-08.</p>
     </div>
   </div>
 
@@ -348,7 +368,7 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
   <!-- §1 -->
   <section class="s" id="s1">
     <div class="sh"><span class="n">1</span><h2>Phạm vi</h2><span class="chip">ĐÓNG BĂNG</span></div>
-    <p class="intro">Bảy tình huống, từ lúc ứng viên tải CV đến lúc đọc báo cáo. Mọi thứ hệ thống gặp mà không thuộc bảy tình huống này thì được làm rõ (CLARIFY) hoặc bỏ qua, không được ứng biến thành nội dung mới.</p>
+    <p class="intro">Tám tình huống, từ lúc ứng viên tải CV đến lúc xem mình tiến bộ qua nhiều buổi. Mọi thứ hệ thống gặp mà không thuộc bảy tình huống này thì được làm rõ (CLARIFY) hoặc bỏ qua, không được ứng biến thành nội dung mới.</p>
 
     <h3><span>1.1</span>Các tình huống bắt buộc</h3>
     <div class="tw">
@@ -363,6 +383,7 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
           <tr><td>Phỏng vấn (P3)</td><td>Chat, giọng nói hoặc video, từng lượt</td><td><span class="done">CÓ TRONG CODE</span></td></tr>
           <tr><td>Dừng sớm</td><td>Ứng viên muốn dừng, hết giờ, hoặc trượt câu tiên quyết</td><td><span class="done">CÓ TRONG CODE</span></td></tr>
           <tr><td>Chấm và báo cáo (P4)</td><td><code>POST /sessions/{id}/evaluate</code></td><td><span class="done">CÓ TRONG CODE</span> <span class="gap">SF-01, SF-04</span></td></tr>
+          <tr><td>Theo dõi tiến bộ</td><td>Ứng viên có từ hai quan sát trở lên trên cùng một kỹ năng</td><td><span class="gap">CHƯA CÓ</span></td></tr>
         </tbody>
       </table>
     </div>
@@ -371,12 +392,14 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
     <div class="cl frozen"><span class="id">1.1.2</span><p>Đối chiếu CV–JD <em class="k k-must">MUST</em> trả kết quả theo từng yêu cầu của JD, mỗi kết luận kèm bằng chứng trích từ CV. Điểm đối chiếu <em class="k k-not">MUST NOT</em> được dùng để kết luận đạt hay trượt.<span class="src">matching/</span></p></div>
     <div class="cl frozen"><span class="id">1.1.3</span><p>Kế hoạch phỏng vấn <em class="k k-must">MUST</em> được lập từ CV, JD và kết quả đối chiếu đã chuẩn hóa. Mỗi mục trong kế hoạch <em class="k k-must">MUST</em> gắn với một năng lực và, khi CV có, một dự án cụ thể của ứng viên.<span class="src">planner.py</span></p></div>
     <div class="cl frozen"><span class="id">1.1.4</span><p>Bộ câu hỏi <em class="k k-must">MUST</em> được chốt trước khi phiên mở và <em class="k k-not">MUST NOT</em> thay đổi sau đó. Câu đào sâu (PROBE) là câu hỏi phụ của một câu đã chốt, không phải câu mới.<span class="src">question_selector.py</span></p></div>
-    <div class="cl frozen"><span class="id">1.1.5</span><p>Câu hỏi <em class="k k-must">MUST</em> đến từ ngân hàng đã duyệt. Câu do AI sinh để lấp chỗ thiếu <em class="k k-must">MUST</em> mang trạng thái <code>IN_REVIEW</code>, và người duyệt <em class="k k-must">MUST</em> khác người soạn. Không mục nào trong kế hoạch có câu hỏi thì hệ thống <em class="k k-must">MUST</em> trả 409 <code>question_bank_insufficient</code> và <em class="k k-not">MUST NOT</em> mở phiên.<span class="src">question_generation.py</span></p></div>
+    <div class="cl frozen"><span class="id">1.1.5</span><p>Câu hỏi <em class="k k-must">MUST</em> đến từ ngân hàng đã duyệt. Câu do AI sinh để lấp chỗ thiếu <em class="k k-must">MUST</em> mang trạng thái <code>IN_REVIEW</code>, và người duyệt <em class="k k-must">MUST</em> khác người soạn. Không mục nào trong kế hoạch có câu hỏi thì hệ thống <em class="k k-must">MUST</em> trả 409 <code>question_bank_insufficient</code> và <em class="k k-not">MUST NOT</em> mở phiên.<span class="src">question_generation.py</span><span class="gap">MỘT PHẦN</span></p></div>
+    <p class="callout">130 câu seed được chèn thẳng ở trạng thái APPROVED, bỏ qua quy trình duyệt, và dùng chung một rubric Relevance / Depth / Clarity.</p>
     <div class="cl frozen"><span class="id">1.1.6</span><p>Phiên <em class="k k-must">MUST</em> chạy theo máy trạng thái <code>WARM_UP → VALIDATE → DEEP_DIVE → CHALLENGE → BEHAVIORAL → CLOSING → CLOSED</code>. Mô hình ngôn ngữ <em class="k k-not">MUST NOT</em> tự chuyển giai đoạn; nó chỉ sinh câu chữ và phân loại ý định trong phạm vi hẹp.<span class="src">interview_engine.py</span></p></div>
     <div class="cl frozen"><span class="id">1.1.7</span><p>Mỗi câu hỏi <em class="k k-must">MUST</em> được đào sâu tối đa một lần. Khi ứng viên hỏi lại hoặc trả lời mơ hồ, hệ thống <em class="k k-must">MUST</em> làm rõ (CLARIFY) và <em class="k k-not">MUST NOT</em> chấm câu đó như một câu trả lời.</p></div>
     <div class="cl frozen"><span class="id">1.1.8</span><p>Khi ứng viên nói muốn dừng, hệ thống <em class="k k-must">MUST</em> hỏi xác nhận (CONFIRM_ABORT) và chỉ đóng phiên sau khi ứng viên xác nhận.</p></div>
     <div class="cl frozen"><span class="id">1.1.9</span><p>Ứng viên <em class="k k-must">MUST</em> chọn được thời lượng phiên trong khoảng 2–120 phút. Số câu hỏi <em class="k k-should">SHOULD</em> co giãn theo ngân sách thời gian thay vì cắt ngang câu đang hỏi.</p></div>
-    <div class="cl frozen"><span class="id">1.1.10</span><p>Mỗi lượt trả lời <em class="k k-must">MUST</em> được chấm trên thang 0–10 kèm phân tích STAR, điểm mạnh, điểm yếu và câu trả lời mẫu. Lượt mô hình không trả điểm hợp lệ <em class="k k-must">MUST</em> mang <code>graded: false</code> và <em class="k k-not">MUST NOT</em> được tính vào điểm tổng.<span class="src">evaluation_types.py</span></p></div>
+    <div class="cl frozen"><span class="id">1.1.10</span><p>Mỗi lượt trả lời <em class="k k-must">MUST</em> được chấm trên thang 0–10 kèm phân tích STAR, điểm mạnh, điểm yếu và câu trả lời mẫu. Lượt mô hình không trả điểm hợp lệ <em class="k k-must">MUST</em> mang <code>graded: false</code> và <em class="k k-not">MUST NOT</em> được tính vào điểm tổng. Điểm lượt <em class="k k-must">MUST</em> được tính bằng code từ mức 0–3 của từng tiêu chí rubric nhân trọng số.<span class="src">evaluation_types.py</span><span class="gap">MỘT PHẦN</span></p></div>
+    <p class="callout">Hiện mô hình chấm chỉ nhận "tên: mô tả" của tiêu chí và tự cho một số 0–10; mốc, trọng số và ý bắt buộc bị bỏ qua (<code>evaluation_service.py:199-213</code>).</p>
     <div class="cl frozen"><span class="id">1.1.11</span><p>Mọi trích dẫn bằng chứng <em class="k k-must">MUST</em> là trích nguyên văn từ câu trả lời của ứng viên trong chính lượt đó.<span class="gap">CHƯA CÓ</span></p></div>
 
     <h3><span>1.2</span>Ngoài phạm vi</h3>
@@ -389,6 +412,30 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
     <p class="callout">Việc chấm không bao giờ đi qua micro hay camera. Bộ kiểm thử gọi lõi qua HTTP, từng lượt, ở mọi kênh. Giọng nói và video chỉ chuyển lời nói thành văn bản cuối rồi gọi cùng một lõi.</p>
     <div class="cl frozen"><span class="id">1.3.1</span><p>Trong buổi bảo vệ, nhóm <em class="k k-must">MUST</em> chạy trọn một buổi phỏng vấn giọng nói thật với một người tình nguyện. Đây là cổng đạt hoặc không đạt, không phải chỉ số có điểm.</p></div>
     <div class="cl frozen"><span class="id">1.3.2</span><p>Kênh giọng nói và video <em class="k k-must">MUST</em> là lớp adapter mỏng trên cùng lõi mà endpoint chat gọi vào. Để logic kênh lớn dần vào logic phỏng vấn là cách nhanh nhất để làm hỏng đường chấm điểm của chính mình.<span class="src">agent/graph.py</span><span class="gap">MỘT PHẦN</span></p></div>
+
+    <h3><span>1.4</span>Hồ sơ tiến bộ</h3>
+    <p class="callout">Một biểu đồ điểm đi lên không chứng minh được gì nếu chính bộ chấm dao động. Các điều khoản dưới đây buộc hồ sơ tiến bộ đo cùng một thứ, bằng cùng một thước, và chỉ nói "tiến bộ" khi thay đổi lớn hơn sai số của thước.</p>
+    <div class="cl frozen"><span class="id">1.4.1</span><p>Mỗi lượt đã chấm hợp lệ <em class="k k-must">MUST</em> sinh một quan sát gắn <code>concept_id</code> của taxonomy, phiên bản câu hỏi, phiên bản rubric và <code>scorer_version</code>. Điểm năng lực <em class="k k-not">MUST NOT</em> được tổng hợp theo nhãn chữ tự do. Lượt <code>graded: false</code>, lượt khởi động, phiên <code>TECHNICAL_FAILURE</code> <em class="k k-not">MUST NOT</em> sinh quan sát.<span class="gap">CHƯA CÓ</span></p></div>
+    <div class="cl frozen"><span class="id">1.4.2</span><p>Với mỗi <code>scorer_version</code>, hệ thống <em class="k k-must">MUST</em> đo sai số chấm trên một bộ câu trả lời cố định, chấm lại nhiều lần, và lưu ngưỡng thay đổi tối thiểu <code>MDC95 = 1,96 × √2 × SEM</code> theo khái niệm. SEM đo theo cách này chỉ là cận dưới của sai số giữa hai buổi. Chuỗi điểm <em class="k k-must">MUST</em> bị ngắt và đánh dấu tại chỗ đổi <code>scorer_version</code>.<span class="gap">CHƯA CÓ</span></p></div>
+    <div class="cl frozen"><span class="id">1.4.3</span><p>Chỉ báo của mỗi khái niệm <em class="k k-must">MUST</em> là một trong ba mức <span class="vtag up">TIẾN BỘ THẬT</span> · <span class="vtag noise">TRONG BIÊN NHIỄU</span> · <span class="vtag down">GIẢM</span>, và <em class="k k-must">MUST</em> chỉ được kết luận trên (a) hai lần trả lời cùng một câu neo, ngưỡng MDC95, hoặc (b) trung bình k quan sát gần nhất so với k quan sát trước, ngưỡng MDC95 / √k. Hai lượt đơn lẻ trên hai câu khác nhau <em class="k k-not">MUST NOT</em> được gắn TIẾN BỘ THẬT hay GIẢM.<span class="gap">CHƯA CÓ</span></p></div>
+    <div class="cl frozen"><span class="id">1.4.4</span><p>Mỗi khái niệm đang dùng <em class="k k-should">SHOULD</em> có ít nhất một câu neo đã duyệt, được hỏi lại sau tối thiểu 7 ngày, để hai lần đo cùng đề. Bộ chọn câu <em class="k k-not">MUST NOT</em> dùng câu neo cho mục đích khác.<span class="gap">MỘT PHẦN</span></p></div>
+    <div class="cl frozen"><span class="id">1.4.5</span><p>Mỗi tuyên bố trong CV có thể bị hỏi (dự án, vai trò, con số, công nghệ) <em class="k k-should">SHOULD</em> được theo dõi với trạng thái CHƯA HỎI, VỮNG hoặc LUNG LAY, kèm đoạn bằng chứng trong CV.<span class="gap">CHƯA CÓ</span></p></div>
+    <div class="cl frozen"><span class="id">1.4.6</span><p>Xóa CV <em class="k k-not">MUST NOT</em> ẩn hay xóa phiên và báo cáo cũ. Lịch sử luyện tập là của ứng viên, không phải của tệp CV.<span class="gap">ĐANG VI PHẠM</span></p></div>
+    <p class="callout">1.4.6 hiện vi phạm: khóa ngoại <code>resume_id</code> là <code>ON DELETE SET NULL</code>, trong khi danh sách phiên và kiểm quyền sở hữu đều lọc <code>resume_id IS NOT NULL</code>.</p>
+
+    <figure id="fig3">
+      <div class="fh">
+        <div><b>HÌNH 3</b> <span>Một kỹ năng qua năm buổi luyện · dữ liệu minh họa</span></div>
+        <div class="tabs pg-tabs" role="tablist" aria-label="Kỹ năng">
+          <button type="button" role="tab" id="pg-caching" aria-selected="true">CACHING</button>
+          <button type="button" role="tab" id="pg-sql" aria-selected="false">SQL INDEX</button>
+          <button type="button" role="tab" id="pg-star" aria-selected="false">TEAMWORK (STAR)</button>
+        </div>
+      </div>
+      <div class="pchart"><svg id="pgsvg" viewBox="0 0 720 260" role="img" aria-label="Điểm theo buổi với dải nhiễu"></svg></div>
+      <div class="pverdicts" id="pgverd"></div>
+      <figcaption>Dải xám quanh mỗi điểm là khoảng tin cậy 95% của một lần chấm, ±1,96·SEM = ±MDC95/√2. Kết luận chỉ rút ra từ cặp câu neo (ngưỡng MDC95) hoặc trung bình cửa sổ 2 lần đo (ngưỡng MDC95/√2), không từ hai lượt liền nhau trên hai câu khác nhau. Vạch vàng đánh dấu chỗ đổi phiên bản bộ chấm: điểm hai bên không được nối. Số liệu là minh họa, chưa đo trên hệ thống thật.</figcaption>
+    </figure>
 
     <figure>
       <div class="fh"><div><b>HÌNH 1</b> <span>Ba kênh, một lõi</span></div></div>
@@ -473,9 +520,9 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
       <p class="harm">Câu hỏi không có rubric thì câu trả lời không có căn cứ chấm. Code chốt được turn_id, nhưng nội dung câu PROBE do mô hình sinh vẫn chưa bị kiểm.</p>
       <div class="vs"><div><small>TRANSCRIPT NÓI</small>"Thêm một câu nữa: em giải thích CAP theorem?"</div><div><small>BẢN GHI NÓI</small><code>turn_id không có trong frozen turns</code></div></div></div>
 
-    <div class="sf"><div class="top"><span class="code">SF-03 · 3.3</span><p>Hệ thống <em class="k k-not">MUST NOT</em> để một ứng viên đọc hay ghi phiên, CV hoặc báo cáo của ứng viên khác.</p><span class="done">CÓ TRONG CODE</span></div>
-      <p class="harm">CV chứa họ tên, số điện thoại, nơi làm việc. Lộ ra là vi phạm luật dữ liệu cá nhân.</p>
-      <div class="vs"><div><small>YÊU CẦU</small><code>GET /sessions/ses_B</code> bằng token của A</div><div><small>BẢN GHI NÓI</small><code>200 OK · resumeId của B</code></div></div></div>
+    <div class="sf"><div class="top"><span class="code">SF-03 · 3.3</span><p>Hệ thống <em class="k k-not">MUST NOT</em> để một ứng viên đọc hay ghi phiên, CV hoặc báo cáo của ứng viên khác.</p><span class="gap">ĐANG VI PHẠM</span></div>
+      <p class="harm">CV chứa họ tên, số điện thoại, nơi làm việc. Endpoint phỏng vấn đã kiểm quyền sở hữu; endpoint đối chiếu thì không xác thực và đọc CV theo id không lọc người dùng.</p>
+      <div class="vs"><div><small>YÊU CẦU</small><code>POST /api/v1/matching/match-ids</code> không token, với id CV của B</div><div><small>HIỆN TRẢ VỀ</small><code>200 OK · kết quả đối chiếu trên CV của B</code></div></div></div>
 
     <div class="sf"><div class="top"><span class="code">SF-04 · 3.4</span><p>Báo cáo cho ứng viên <em class="k k-not">MUST NOT</em> chứa nhãn tuyển hay loại: <code>STRONG_PASS</code>, <code>PASS</code>, <code>CONSIDER</code>, <code>REJECT</code>.</p><span class="gap">ĐANG VI PHẠM</span></div>
       <p class="harm">Một nhãn "REJECT" từ công cụ luyện tập đọc như một bản án, và vượt khỏi điều §1.2.1 cho phép.</p>
@@ -488,6 +535,9 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
     <div class="sf"><div class="top"><span class="code">SF-06 · 3.6</span><p>Hệ thống <em class="k k-not">MUST NOT</em> đóng phiên với <code>COMPLETED</code> khi chưa phủ đủ agenda.</p><span class="done">CÓ TRONG CODE</span></div>
       <p class="harm">Một buổi dang dở được ghi là hoàn thành, điểm tổng tính trên một phần nhỏ câu hỏi.</p>
       <div class="vs"><div><small>TRANSCRIPT NÓI</small>"Mình kết thúc ở đây nhé."</div><div><small>BẢN GHI NÓI</small><code>endReason: COMPLETED · 1/5 lượt</code></div></div></div>
+    <div class="sf"><div class="top"><span class="code">SF-07 · 3.7</span><p>Hệ thống <em class="k k-not">MUST NOT</em> báo "tiến bộ" hay "thụt lùi" cho một thay đổi nằm trong ngưỡng nhiễu đã đo, hoặc nối điểm qua chỗ đổi phiên bản bộ chấm.</p><span class="gap">CHƯA CÓ</span></div>
+      <p class="harm">Ứng viên vui vì một mũi tên xanh do mô hình chấm dễ hơn hôm qua, rồi mất niềm tin vào toàn bộ hệ thống khi nhận ra.</p>
+      <div class="vs"><div><small>GIAO DIỆN NÓI</small>"Caching ↑ +0,4 — bạn đã tiến bộ!"</div><div><small>BẢN GHI NÓI</small><code>delta 0.4 &lt; mdc95 0.9 · trong biên nhiễu</code></div></div></div>
   </section>
 
   <!-- §4 -->
@@ -510,6 +560,10 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
           <tr><td><code>POST /sessions/{id}/close</code></td><td>Bỏ dở — chỉ <code>USER_ENDED</code> hoặc <code>TECHNICAL_FAILURE</code></td></tr>
           <tr><td><code>POST /sessions/{id}/evaluate</code></td><td>P4 — chấm từng lượt và tổng hợp</td></tr>
           <tr><td><code>GET /sessions/{id}/evaluation</code> · <code>/report</code></td><td>Đọc kết quả đánh giá và báo cáo</td></tr>
+          <tr><td><code>GET /progress/skills</code> <span class="gap">ĐỀ XUẤT</span></td><td>Sổ kỹ năng: ước lượng, khoảng tin cậy, chỉ báo ba mức theo <code>concept_id</code></td></tr>
+          <tr><td><code>GET /progress/skills/{conceptId}</code> <span class="gap">ĐỀ XUẤT</span></td><td>Chuỗi quan sát theo thời gian, có chỗ ngắt <code>scorer_version</code></td></tr>
+          <tr><td><code>GET /progress/readiness?jobId=</code> <span class="gap">ĐỀ XUẤT</span></td><td>Số khái niệm bắt buộc của JD đã đạt / tổng</td></tr>
+          <tr><td><code>GET /progress/cv-defense?resumeId=</code> <span class="gap">ĐỀ XUẤT</span></td><td>Từng tuyên bố trong CV: CHƯA HỎI · VỮNG · LUNG LAY</td></tr>
         </tbody>
       </table>
     </div>
@@ -589,7 +643,7 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
         <li><b>3</b><span>POST /chat/start → POST /chat/message × N</span></li>
         <li><b>4</b><span>POST /chat/complete hoặc /close</span></li>
         <li><b>5</b><span>POST /evaluate → GET /evaluation</span></li>
-        <li><b>6</b><span>so khớp trạng thái cuối + kiểm SF-01 … SF-06</span></li>
+        <li><b>6</b><span>so khớp trạng thái cuối + kiểm SF-01 … SF-07</span></li>
       </ol>
       <div class="stepnote" id="stepnote"></div>
     </figure>
@@ -625,7 +679,25 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
     <div class="sh"><span class="n">7</span><h2>Đề xuất mở rộng</h2><span class="chip blue">MỞ</span></div>
     <p class="intro">Nơi đo khả năng phán đoán sản phẩm. Mỗi đề xuất nêu điểm đau và nguồn, "đúng" nghĩa là gì theo dạng §1.1, và nhóm cắt gì để có chỗ. Đề xuất không có đánh đổi <em class="k k-not">MUST NOT</em> được duyệt.</p>
 
-    <h3><span>7.1</span>Điểm đau từ khảo sát</h3>
+    <h3><span>7.1</span>Vì sao không chỉ dùng ChatGPT</h3>
+    <p class="intro" style="margin-top:4px">ChatGPT đọc CV và JD được dán vào, hỏi từng câu, hỏi đào sâu, chạy bằng giọng nói và chấm khi được yêu cầu. Những thứ đó không phải khác biệt. Bảng điều khiển tiến bộ nói chung cũng không: Exponent, Yoodli và Interview Prep Academy đã có. Khác biệt chỉ đứng được ở chỗ một cuộc chat không trạng thái về cấu trúc không làm được.</p>
+    <div class="cmp">
+      <div class="tcap">BẢNG 6</div>
+      <table>
+        <thead><tr><th>Năng lực</th><th>Dán CV + JD vào chat</th><th>INTERVIA phải đạt</th><th>Hiện tại</th></tr></thead>
+        <tbody>
+          <tr><td>Câu hỏi theo CV và JD, giọng nói, đặt thời lượng</td><td class="yes">Làm được</td><td>Không phải khác biệt</td><td><span class="done">CÓ</span></td></tr>
+          <tr><td>Điểm có sai số được công bố</td><td class="no">Mỗi cuộc chat một tiêu chuẩn ngầm</td><td>MDC95 theo khái niệm, đo lại mỗi lần đổi bộ chấm — §1.4.2</td><td><span class="gap">CHƯA</span></td></tr>
+          <tr><td>Tiến bộ đo được qua nhiều JD</td><td class="no">Trí nhớ là văn bản tự do</td><td>Sổ kỹ năng theo <code>concept_id</code>, chỉ báo ba mức — §1.4.1, §1.4.3</td><td><span class="gap">CHƯA</span></td></tr>
+          <tr><td>Hai lần đo cùng đề</td><td class="no">Câu mới mỗi lần</td><td>Câu neo đã duyệt — §1.4.4</td><td><span class="gap">MỘT PHẦN</span></td></tr>
+          <tr><td>Phòng thủ CV qua nhiều buổi</td><td class="no">Không giữ trạng thái từng tuyên bố</td><td>CHƯA HỎI · VỮNG · LUNG LAY — §1.4.5</td><td><span class="gap">CHƯA</span></td></tr>
+          <tr><td>Bảo đảm cứng</td><td class="no">Chỉ là lời dặn trong prompt</td><td>Kiểm bằng code: SF-01, SF-05, SF-06, SF-07</td><td><span class="gap">MỘT PHẦN</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="callout"><b>Luận điểm:</b> tiến bộ đo được, không phải cảm giác. INTERVIA đo sai số chấm của chính mình và chỉ nói "bạn đã tiến bộ" khi thay đổi lớn hơn sai số đó. Trong phạm vi khảo sát ngày 09/10/2026, chưa thấy sản phẩm luyện phỏng vấn nào công bố sai số chấm cho người dùng.</p>
+
+    <h3><span>7.2</span>Điểm đau từ khảo sát</h3>
     <div class="pain">
       <div><div class="big">87,8%</div><p>sinh viên mới tốt nghiệp nêu "chưa có kinh nghiệm phỏng vấn" là khó khăn khi xin việc.</p><small>HCMUE · mẫu ≈ 90 người</small></div>
       <div><div class="big">5h / 3h</div><p>thời gian lo lắng so với thời gian chuẩn bị cho một buổi phỏng vấn.</p><small>Adobe · 756 người tìm việc</small></div>
@@ -633,7 +705,7 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
     </div>
     <p class="callout">Các bài so sánh công cụ năm 2026 nhận xét phản hồi của nhóm sản phẩm này mạnh ở cách nói và yếu ở nội dung; lỗi được nhắc nhiều nhất là buổi luyện không chạy được. Phần lớn nguồn là bài của nhà cung cấp, nên chỉ coi là tín hiệu.</p>
 
-    <h3><span>7.2</span>Bảy đề xuất</h3>
+    <h3><span>7.3</span>Tám đề xuất</h3>
     <div class="fx">
       <div class="f"><div class="ft"><code>F-01</code><h4>Viết lại câu trả lời từ chính CV của bạn</h4></div>
         <p>Lượt dưới 7 điểm được viết lại theo STAR, chỉ dùng dữ kiện có trong CV và câu trả lời gốc, đánh dấu nguồn từng dữ kiện.</p>
@@ -653,6 +725,9 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
       <div class="f"><div class="ft"><code>F-06</code><h4>Kiểm tra trước khi vào phòng</h4></div>
         <p>Chạy thử lập kế hoạch và chốt câu hỏi trước khi ứng viên bấm bắt đầu; báo trước nếu JD thiếu câu hỏi.</p>
         <dl><div><dt>ĐIỂM ĐAU</dt><dd>Người dùng báo công cụ cùng loại "không hỏi câu nào" sau khi nạp JD.</dd></div><div><dt>"ĐÚNG" LÀ</dt><dd>Không phiên nào mở khi chưa chốt xong câu hỏi; lỗi máy chủ đóng với <code>TECHNICAL_FAILURE</code>.</dd></div><div><dt>CẮT ĐỂ CÓ CHỖ</dt><dd>Dùng lại báo cáo độ phủ ngân hàng; thêm 1–2 giây trước khi vào phòng.</dd></div></dl></div>
+      <div class="f"><div class="ft"><code>F-08</code><h4>Dán JD của bạn</h4></div>
+        <p>Dán hoặc tải JD của công ty sắp phỏng vấn; hệ thống bóc tách, gắn taxonomy và chọn câu đã duyệt theo khái niệm.</p>
+        <dl><div><dt>ĐIỂM ĐAU</dt><dd>ChatGPT nhận mọi JD; INTERVIA hiện chỉ cho chọn JD do quản trị viên đăng.</dd></div><div><dt>"ĐÚNG" LÀ</dt><dd>JD riêng tư; câu hỏi vẫn chỉ từ ngân hàng đã duyệt; khái niệm thiếu câu thì báo trước.</dd></div><div><dt>CẮT ĐỂ CÓ CHỖ</dt><dd>Bộ phân tích JD thật ≈ 0,53 nên phải có bước cho ứng viên sửa; hoãn F-05.</dd></div></dl></div>
       <div class="f"><div class="ft"><code>F-07</code><h4>Khởi động 3 phút</h4></div>
         <p>Phiên 2–3 câu, không chấm điểm số, chỉ một nhận xét ngắn, để giảm lo âu trước buổi thật.</p>
         <dl><div><dt>ĐIỂM ĐAU</dt><dd>Người tìm việc lo gần 5 giờ, chuẩn bị 3 giờ.</dd></div><div><dt>"ĐÚNG" LÀ</dt><dd>Không ghi điểm vào lịch sử tiến bộ, không sinh báo cáo đầy đủ.</dd></div><div><dt>CẮT ĐỂ CÓ CHỖ</dt><dd>Dùng lại chế độ demo 2–3 phút; chưa làm bản giọng nói.</dd></div></dl></div>
@@ -699,9 +774,9 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
         <thead><tr><th>Lớp</th><th>Đang dùng</th><th>Cần biết</th></tr></thead>
         <tbody>
           <tr><td>Dịch vụ</td><td>FastAPI, SQLAlchemy async, Alembic</td><td>Modular monolith, gộp từ backend NestJS cũ</td></tr>
-          <tr><td>Dữ liệu</td><td>PostgreSQL (ParadeDB): BM25 <code>pg_search</code> + pgvector</td><td>Không có vector DB riêng</td></tr>
+          <tr><td>Dữ liệu</td><td>PostgreSQL (ParadeDB): BM25 <code>pg_search</code>; cosine embedding tính trong Python</td><td>Cột pgvector có trong migration nhưng không nằm trên đường chạy</td></tr>
           <tr><td>Hàng đợi</td><td>Celery trên RabbitMQ</td><td>Ba hàng đợi: CV, JD, đối chiếu</td></tr>
-          <tr><td>Điều phối hội thoại</td><td>LangGraph, checkpoint Postgres</td><td><code>text_runtime.py</code> chưa đi qua graph</td></tr>
+          <tr><td>Điều phối hội thoại</td><td>LangGraph, checkpoint Postgres</td><td>Mỗi lệnh một node; checkpoint hiện chủ yếu đóng vai trò chống gửi trùng. <code>text_runtime.py</code> chưa đi qua graph</td></tr>
           <tr><td>Mô hình</td><td>OpenAI: LLM, embedding 1024 chiều, transcribe, TTS, realtime</td><td>Một nhà cung cấp duy nhất — chưa có LLM port</td></tr>
           <tr><td>Giọng nói, video</td><td>LiveKit Agents, Socket.IO</td><td>Voice Lab tắt mặc định</td></tr>
           <tr><td>Trích xuất CV</td><td>MinerU → PaddleOCR-VL → text layer PDF / DOCX</td><td>Chuỗi dự phòng nhiều tầng</td></tr>
@@ -710,7 +785,7 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
     </div>
   </section>
 
-  <footer><span>INTV-PC-001 · Rev 1.0 · INTERVIA</span><span>PRD đi kèm: INTV-PRD-001 v1.0</span></footer>
+  <footer><span>INTV-PC-001 · Rev 1.1 · INTERVIA</span><span>PRD đi kèm: INTV-PRD-001 v1.1</span></footer>
 </div>
 </main>
 
@@ -820,7 +895,7 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
     'Chạy hội thoại. Mỗi lượt là một POST với clientMessageId; bộ kiểm thử có thể gửi lại cùng id để kiểm tính idempotent.',
     'Đóng phiên. COMPLETED chỉ đi qua /chat/complete, nơi kiểm độ phủ agenda; /close từ chối COMPLETED.',
     'Chấm điểm. P4 chấm từng lượt đã trả lời và tổng hợp theo năng lực.',
-    'So khớp. Bộ kiểm thử đọc bản ghi phiên và đánh giá, so với kỳ vọng, rồi kiểm từng điều kiện SF-01 đến SF-06. Transcript không được chấm.'
+    'So khớp. Bộ kiểm thử đọc bản ghi phiên và đánh giá, so với kỳ vọng, rồi kiểm từng điều kiện SF-01 đến SF-07. Transcript không được chấm.'
   ];
   var steps = document.querySelectorAll('#steps li'), note = document.getElementById('stepnote'), stepn = document.getElementById('stepn'), si = 0, ptimer = null;
   function step(n) { si = (n + steps.length) % steps.length; steps.forEach(function (s, k) { s.classList.toggle('on', k === si); }); note.textContent = notes[si]; stepn.textContent = 'Bước ' + (si + 1) + ' / 6'; }
@@ -831,6 +906,74 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
     ptimer = setInterval(function () { if (si >= steps.length - 1) return clearInterval(ptimer); step(si + 1); }, 1800);
   });
   step(0);
+
+  // Figure 3 — progress with noise floor (illustrative data)
+  var PG = {
+    caching: { mdc: 0.9, label: 'Caching', pts: [
+      { d: '02/09', v: 4.8, a: true }, { d: '09/09', v: 5.2 }, { d: '16/09', v: 6.6, a: true }, { d: '23/09', v: 6.9, brk: true }, { d: '30/09', v: 7.0, a: true }] },
+    sql: { mdc: 1.1, label: 'SQL index', pts: [
+      { d: '02/09', v: 6.0, a: true }, { d: '09/09', v: 6.7 }, { d: '16/09', v: 6.2 }, { d: '23/09', v: 6.5, a: true }, { d: '30/09', v: 6.9 }] },
+    star: { mdc: 0.8, label: 'Teamwork (STAR)', pts: [
+      { d: '02/09', v: 7.4, a: true }, { d: '09/09', v: 7.6 }, { d: '16/09', v: 6.3 }, { d: '23/09', v: 6.4, a: true }, { d: '30/09', v: 7.5 }] }
+  };
+  var svgNS = 'http://www.w3.org/2000/svg', pgsvg = document.getElementById('pgsvg'), pgverd = document.getElementById('pgverd');
+  var pgtabs = document.querySelectorAll('#fig3 [role=tab]');
+  function el(n, at, txt) { var e = document.createElementNS(svgNS, n); for (var k in at) e.setAttribute(k, at[k]); if (txt != null) e.textContent = txt; return e; }
+  function verdict(prev, cur, th, win) {
+    var d = cur.v - prev.v, lab = (win ? 'ngưỡng ' : 'MDC95 ') + (+th.toFixed(2));
+    if (d > th) return ['up', 'TIẾN BỘ THẬT', '+' + d.toFixed(2) + ' > ' + lab];
+    if (d < -th) return ['down', 'GIẢM', d.toFixed(2) + ' vượt ' + lab];
+    return ['noise', 'TRONG BIÊN NHIỄU', (d >= 0 ? '+' : '') + d.toFixed(2) + ' ≤ ' + lab];
+  }
+  function drawPG(key) {
+    var c = PG[key], L = 56, Rr = 700, T = 20, B = 220, n = c.pts.length;
+    pgtabs.forEach(function (t) { t.setAttribute('aria-selected', String(t.id === 'pg-' + key)); });
+    while (pgsvg.firstChild) pgsvg.removeChild(pgsvg.firstChild);
+    var y = function (v) { return B - (v - 3) / 6 * (B - T); }, x = function (i) { return L + i * (Rr - L) / (n - 1); };
+    [3, 4, 5, 6, 7, 8, 9].forEach(function (g) {
+      pgsvg.appendChild(el('line', { x1: L, x2: Rr, y1: y(g), y2: y(g), stroke: 'var(--rule)', 'stroke-width': 1 }));
+      pgsvg.appendChild(el('text', { x: L - 10, y: y(g) + 4, 'text-anchor': 'end', 'font-size': 11, fill: 'var(--ink-3)' }, g));
+    });
+    c.pts.forEach(function (p, i) {
+      var hb = c.mdc / Math.SQRT2; pgsvg.appendChild(el('rect', { x: x(i) - 14, y: y(p.v + hb), width: 28, height: y(p.v - hb) - y(p.v + hb), fill: 'var(--paper-3)' }));
+      pgsvg.appendChild(el('text', { x: x(i), y: B + 22, 'text-anchor': 'middle', 'font-size': 11, fill: 'var(--ink-3)' }, p.d));
+      if (p.brk) pgsvg.appendChild(el('line', { x1: x(i) - (x(1) - x(0)) / 2, x2: x(i) - (x(1) - x(0)) / 2, y1: T - 6, y2: B, stroke: 'var(--amber)', 'stroke-width': 2, 'stroke-dasharray': '5 4' }));
+    });
+    for (var i = 1; i < n; i++) {
+      if (c.pts[i].brk) continue;
+      pgsvg.appendChild(el('line', { x1: x(i - 1), y1: y(c.pts[i - 1].v), x2: x(i), y2: y(c.pts[i].v), stroke: 'var(--blue)', 'stroke-width': 2 }));
+    }
+    c.pts.forEach(function (p, i) {
+      pgsvg.appendChild(el('circle', { cx: x(i), cy: y(p.v), r: p.a ? 6 : 4.5, fill: p.a ? 'var(--card)' : 'var(--blue)', stroke: 'var(--blue)', 'stroke-width': 2 }));
+      pgsvg.appendChild(el('text', { x: x(i), y: y(p.v) - 12, 'text-anchor': 'middle', 'font-size': 11.5, 'font-weight': 600, fill: 'var(--ink)' }, p.v.toFixed(1)));
+    });
+    pgsvg.appendChild(el('text', { x: L, y: 12, 'font-size': 11, fill: 'var(--ink-3)' }, c.label + ' · điểm 0–10 · ○ câu neo · MDC95 = ' + c.mdc));
+    // split into scorer-version segments
+    var segs = [[]];
+    c.pts.forEach(function (p) { if (p.brk) segs.push([]); segs[segs.length - 1].push(p); });
+    var rows = [];
+    segs.forEach(function (sg, si) {
+      var an = sg.filter(function (p) { return p.a; });
+      for (var j = 1; j < an.length; j++) {
+        var v = verdict(an[j - 1], an[j], c.mdc, false);
+        rows.push(['Câu neo · ' + an[j - 1].d + ' → ' + an[j].d, v]);
+      }
+      if (sg.length >= 4) {
+        var m = function (a) { return (a[0].v + a[1].v) / 2; };
+        var prev = sg.slice(-4, -2), last = sg.slice(-2), th = c.mdc / Math.SQRT2;
+        var v2 = verdict({ v: m(prev) }, { v: m(last) }, th, true);
+        rows.push(['Cửa sổ 2 lần đo · ' + prev[0].d + '–' + prev[1].d + ' → ' + last[0].d + '–' + last[1].d, v2]);
+      }
+      if (si > 0) rows.push(['Trước ' + sg[0].d, ['brk', 'ĐỔI BỘ CHẤM', 'Không so sánh qua chỗ ngắt']]);
+    });
+    if (!rows.length) rows.push(['Chưa đủ dữ liệu', ['noise', 'CẦN THÊM LẦN ĐO', '']]);
+    pgverd.innerHTML = rows.map(function (r) {
+      return '<div><small>' + r[0] + '</small><span class="vtag ' + r[1][0] + '">' + r[1][1] + '</span><div style="margin-top:4px;color:var(--ink-3);font-size:12.5px">' + r[1][2] + '</div></div>';
+    }).join('');
+  }
+  pgtabs.forEach(function (t) { t.addEventListener('click', function () { drawPG(t.id.slice(3)); }); });
+  drawPG('caching');
+
 
   // copy buttons
   document.querySelectorAll('.copy').forEach(function (b) {
