@@ -241,8 +241,12 @@ async def get_chat_runtime(
     )
     turns = [dict(r) for r in turns_res.mappings().all()]
 
-    current_turn = next(
-        (t for t in turns if t["status"] in {"PLANNED", "ASKED"}),
+    # Turns are not asked in index order: the engine drains DEEP_DIVE before a
+    # lower-index CHALLENGE turn and jumps to BEHAVIORAL on the time reserve.
+    # The turn being answered is the ASKED one; only fall back to the next
+    # PLANNED turn when nothing is asked yet.
+    current_turn = next((t for t in turns if t["status"] == "ASKED"), None) or next(
+        (t for t in turns if t["status"] == "PLANNED"),
         None,
     )
     current_turn_index = current_turn["turn_index"] if current_turn else len(turns)
