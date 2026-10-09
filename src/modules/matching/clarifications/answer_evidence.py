@@ -10,7 +10,7 @@ from src.modules.matching.domain.schemas import (
     RequirementResult,
     SkillRequirement,
 )
-from src.modules.user_cvs.domain.schemas import EvidenceSpan, LanguageClaim, SkillClaim
+from src.modules.user_cvs.schemas import EvidenceSpan, LanguageClaim, SkillClaim
 
 _ANSWER_DURATION_RE = re.compile(
     r"(?<!\w)(?P<value>\d+(?:[.,]\d+)?)\s*(?P<unit>years?|yrs?|months?|mos?|năm|tháng)\b",
