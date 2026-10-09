@@ -13,7 +13,7 @@ from src.modules.matching.domain.schemas import (
     MatchRequest,
     MatchResult,
 )
-from src.modules.user_cvs.domain.schemas import CanonicalModel
+from src.modules.user_cvs.schemas import CanonicalModel
 
 
 class MatchClarificationAnalysis(CanonicalModel):
