@@ -49,13 +49,40 @@ async def test_create_import_reads_only_size_limit_plus_one_byte() -> None:
     assert upload.read_size == MAX_IMPORT_FILE_SIZE + 1
 
 
-@pytest.mark.asyncio
-async def test_import_primary_competency_uses_active_competency_validation() -> None:
-    service = QuestionImportService(TaxonomyDb([{"concept_id": "comp", "kind": "competency"}]))
-    await service._validate_primary_competency({"taxonomy_version": "v1", "primary_competency_id": "comp"})
+def test_import_maps_skill_and_role_columns_for_the_selector() -> None:
+    """P2 matches skill targets on TARGET_SKILL and career fallback on TARGET_ROLE."""
+    mappings = QuestionImportService._taxonomy_mappings({
+        "primary_competency_id": "backend-developer",
+        "skill_ids": ["skill-python", "skill-python"],
+        "target_role_ids": ["backend-developer"],
+        "supporting_competency_ids": [],
+    })
+    assert [(m.concept_id, m.purpose) for m in mappings] == [
+        ("backend-developer", "PRIMARY_COMPETENCY"),
+        ("skill-python", "TARGET_SKILL"),
+        ("backend-developer", "TARGET_ROLE"),
+    ]
 
-    invalid = QuestionImportService(TaxonomyDb([{"concept_id": "comp", "kind": "skill"}]))
+
+@pytest.mark.asyncio
+async def test_import_mappings_use_active_taxonomy_kind_validation() -> None:
+    from src.modules.question_bank.service import QuestionBankService
+
+    payload = {
+        "primary_competency_id": "comp",
+        "skill_ids": ["skill-python"],
+        "target_role_ids": ["comp"],
+    }
+    mappings = QuestionImportService._taxonomy_mappings(payload)
+    valid = TaxonomyDb([
+        {"concept_id": "comp", "kind": "competency"},
+        {"concept_id": "skill-python", "kind": "skill"},
+    ])
+    await QuestionBankService(valid)._validate_taxonomy_mappings("v1", mappings)
+
+    invalid = TaxonomyDb([
+        {"concept_id": "comp", "kind": "skill"},
+        {"concept_id": "skill-python", "kind": "skill"},
+    ])
     with pytest.raises(HTTPException, match="invalid or inactive concept kind"):
-        await invalid._validate_primary_competency(
-            {"taxonomy_version": "v1", "primary_competency_id": "comp"}
-        )
+        await QuestionBankService(invalid)._validate_taxonomy_mappings("v1", mappings)
