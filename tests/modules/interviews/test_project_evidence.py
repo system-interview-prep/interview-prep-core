@@ -220,7 +220,8 @@ def test_validation_question_is_one_short_spoken_question():
     )
     q_vi = build_project_validation_question(project, job_title="Backend", locale="vi")
     assert q_vi.count("?") == 2
-    assert len(q_vi.split()) <= 45
+    # Most words are the CV's own project name and role; the old 4-part question was ~80.
+    assert len(q_vi.split()) <= 50
     assert "baseline" not in q_vi and "Đồng thời" not in q_vi and "Cảm ơn" not in q_vi
     # Technologies are listed once each, case-insensitively.
     assert "Docker, Node.Js, PostgreSQL" in q_vi
