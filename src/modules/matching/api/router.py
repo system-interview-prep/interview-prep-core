@@ -4,9 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.security import current_user
 from src.infrastructure.database import get_db
 from src.modules.matching.application.input_resolver import resolve_job as _resolve_job
 from src.modules.matching.application.input_resolver import resolve_resume as _resolve_resume
+from src.modules.matching.application.input_resolver import resume_owner_scope
 from src.modules.matching.application.service import run_match
 from src.modules.matching.domain.schemas import (
     CandidatePreferences,
@@ -120,8 +122,12 @@ def _sample_match_result(cv_id: str, job_id: str) -> MatchResult:
     )
 
 
-api_router = APIRouter(prefix="/api/v1/matching", tags=["matching"])
-legacy_router = APIRouter(prefix="/ai", tags=["matching-legacy"])
+# Every matching call spends embedding/LLM budget and may read a stored CV:
+# none of it is anonymous.
+api_router = APIRouter(
+    prefix="/api/v1/matching", tags=["matching"], dependencies=[Depends(current_user)]
+)
+legacy_router = APIRouter(prefix="/ai", tags=["matching-legacy"], dependencies=[Depends(current_user)])
 
 
 @api_router.post(
@@ -150,6 +156,7 @@ async def _handle_match_ids(
     payload: MatchIdsRequest,
     response: Response,
     db: AsyncSession,
+    user: dict,
 ) -> MatchAccepted | MatchResult:
     cv_id = payload.resolved_cv_id
     job_id = payload.resolved_job_id
@@ -161,7 +168,7 @@ async def _handle_match_ids(
         response.status_code = status.HTTP_200_OK
         return _sample_match_result(cv_id, job_id)
 
-    resume = await _resolve_resume(db, cv_id)
+    resume = await _resolve_resume(db, cv_id, owner_id=resume_owner_scope(user))
     job = await _resolve_job(db, job_id)
 
     match_req = MatchRequest(
@@ -199,8 +206,9 @@ async def match_by_ids(
     payload: MatchIdsRequest,
     response: Response,
     db: AsyncSession = Depends(get_db),
+    user: dict = Depends(current_user),
 ) -> MatchAccepted | MatchResult:
-    return await _handle_match_ids(payload, response, db)
+    return await _handle_match_ids(payload, response, db, user)
 
 
 @legacy_router.post("/score-cv-jp", response_model=MatchAccepted | MatchResult)
@@ -208,8 +216,9 @@ async def legacy_score_cv_jp(
     payload: MatchIdsRequest,
     response: Response,
     db: AsyncSession = Depends(get_db),
+    user: dict = Depends(current_user),
 ) -> MatchAccepted | MatchResult:
-    return await _handle_match_ids(payload, response, db)
+    return await _handle_match_ids(payload, response, db, user)
 
 
 router = APIRouter()
