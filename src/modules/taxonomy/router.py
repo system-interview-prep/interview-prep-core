@@ -2,15 +2,18 @@
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.core.security import require_admin
 from src.infrastructure.database import get_db
 from src.modules.taxonomy.admin_service import TaxonomyAdminService
 from src.modules.taxonomy.schemas import TaxonomyConceptUpsert, TaxonomyRelationUpsert, TaxonomyVersionUpsert
+
 router=APIRouter(prefix="/admin/taxonomy",tags=["taxonomy"])
 @router.get("/template")
 async def taxonomy_template(_:dict=Depends(require_admin))->Response:
-    from openpyxl import Workbook
     import io
+
+    from openpyxl import Workbook
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Taxonomy"
