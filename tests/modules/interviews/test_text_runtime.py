@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import AsyncMock
 import pytest
 
 from src.modules.interviews.application.text_runtime import (
@@ -141,7 +142,10 @@ async def test_read_text_runtime_rejects_empty_turns():
 
 @pytest.mark.asyncio
 async def test_ask_turn_state_machine_and_idempotency():
-    session_row = {"id": "s-1", "mode": "text", "plan_status": "LOCKED", "status": "OPEN"}
+    session_row = {
+        "id": "s-1", "mode": "text", "plan_status": "LOCKED", "status": "OPEN",
+        "experience_type": "question_practice",
+    }
     t1 = {
         "id": "t-1",
         "session_id": "s-1",
@@ -189,7 +193,10 @@ async def test_ask_turn_state_machine_and_idempotency():
 
 @pytest.mark.asyncio
 async def test_answer_turn_validation_and_immutability():
-    session_row = {"id": "s-1", "mode": "text", "plan_status": "LOCKED", "status": "OPEN"}
+    session_row = {
+        "id": "s-1", "mode": "text", "plan_status": "LOCKED", "status": "OPEN",
+        "experience_type": "question_practice",
+    }
     t1 = {
         "id": "t-1",
         "session_id": "s-1",
@@ -226,7 +233,10 @@ async def test_answer_turn_validation_and_immutability():
 
 @pytest.mark.asyncio
 async def test_complete_interview_lifecycle():
-    session_row = {"id": "s-1", "mode": "text", "plan_status": "LOCKED", "status": "OPEN"}
+    session_row = {
+        "id": "s-1", "mode": "text", "plan_status": "LOCKED", "status": "OPEN",
+        "experience_type": "question_practice",
+    }
     t1 = {
         "id": "t-1",
         "session_id": "s-1",
@@ -256,3 +266,21 @@ async def test_complete_interview_lifecycle():
     assert completed["completed"] is True
     assert completed["sessionStatus"] == "CLOSED"
     assert "s-1" in db.session_updates
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("experience_type", ["interview_chat", None])
+async def test_turn_runtime_refuses_chat_interview_sessions(experience_type) -> None:
+    """H3: chat sessions are mode='text' too, but their turns belong to the chat runtime."""
+    session_row = {
+        "id": "s-1", "mode": "text", "plan_status": "LOCKED", "status": "OPEN",
+        "experience_type": experience_type,
+    }
+    db = AsyncMock()
+    with pytest.raises(TurnStateError, match="question practice"):
+        await ask_turn(db=db, session_row=session_row, turn_id="t-1")
+    with pytest.raises(TurnStateError, match="question practice"):
+        await answer_turn(db=db, session_row=session_row, turn_id="t-1", answer_text="fabricated")
+    with pytest.raises(TurnStateError, match="question practice"):
+        await complete_text_runtime(db=db, session_row=session_row)
+    db.execute.assert_not_called()
