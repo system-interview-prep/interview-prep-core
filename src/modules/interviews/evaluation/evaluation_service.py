@@ -224,6 +224,7 @@ async def evaluate_closed_session(
                 rubric_criteria=criteria,
                 candidate_answer=ans,
                 weight=weight,
+                stage=str(stage or ""),
             )
         )
 
