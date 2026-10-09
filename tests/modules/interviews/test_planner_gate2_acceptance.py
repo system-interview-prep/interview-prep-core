@@ -14,6 +14,7 @@ Covers:
 """
 
 from typing import Any
+
 import pytest
 
 from src.modules.interviews.planning import planner
@@ -22,16 +23,12 @@ from src.modules.interviews.planning.planner import (
     PLANNER_POLICY_VERSION_DYNAMIC,
     derive_competency_plan,
 )
-from src.modules.interviews.planning.planner_config import (
-    PlannerPolicyConfig,
-)
 from src.modules.matching.domain.schemas import (
     CanonicalJob,
     ConceptResult,
     MatchResult,
     RequirementResult,
     SkillRequirement,
-    UnresolvedRequirement,
 )
 from src.modules.user_cvs.schemas import EvidenceSpan, TaxonomyRef
 from tests.modules.interviews.test_planner_policy_config import create_test_policy_config
@@ -92,12 +89,17 @@ def _match(results) -> MatchResult:
 
 
 def _result(requirement_id: str, status: str, concept_results: list[ConceptResult] | None = None) -> RequirementResult:
+    cited = list(dict.fromkeys(
+        ref for concept in (concept_results or []) for ref in concept.evidence_refs
+    ))
+    if not cited and status in {"met", "unknown"}:
+        cited = [f"cv-{requirement_id}"]
     return RequirementResult(
         requirementId=requirement_id,
         status=status,
         score=1.0 if status == "met" else None,
         confidence=1.0 if status == "met" else 0.0,
-        evidenceRefs=[],
+        evidenceRefs=cited,
         reasonCode=f"test_{status}",
         conceptResults=concept_results or [],
     )
