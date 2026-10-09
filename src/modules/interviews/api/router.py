@@ -166,6 +166,13 @@ _SESSION_SELECT = """
 """
 
 
+# A structured session is created together with its plan row in one
+# transaction, so the plan marks it apart from legacy /ai sessions. Do not key
+# this on resume_id/job_id: both are ON DELETE SET NULL, and deleting a CV or
+# JD must not hide the candidate's past sessions and reports.
+_STRUCTURED_SESSION = "p.id IS NOT NULL"
+
+
 _EXPERIENCE_MODES: dict[str, str] = {
     "question_practice": "text",
     "interview_chat": "text",
@@ -178,8 +185,7 @@ async def _owned_session(db: AsyncSession, user_id: str, session_id: str) -> dic
     result = await db.execute(
         text(
             _SESSION_SELECT
-            + " WHERE s.id = :sid AND s.user_id = :uid "
-            "AND s.resume_id IS NOT NULL AND s.job_id IS NOT NULL"
+            + " WHERE s.id = :sid AND s.user_id = :uid AND " + _STRUCTURED_SESSION
         ),
         {"sid": session_id, "uid": user_id},
     )
@@ -328,9 +334,8 @@ async def list_interview_sessions(
     result = await db.execute(
         text(
             _SESSION_SELECT
-            + " WHERE s.user_id = :uid "
-            "AND s.resume_id IS NOT NULL AND s.job_id IS NOT NULL "
-            "ORDER BY s.started_at DESC LIMIT 100"
+            + " WHERE s.user_id = :uid AND " + _STRUCTURED_SESSION
+            + " ORDER BY s.started_at DESC LIMIT 100"
         ),
         {"uid": user["sub"]},
     )
@@ -894,6 +899,16 @@ async def complete_chat(
         raise
 
 
+# INTERVIA is a practice tool: a hire/reject label must never reach the
+# candidate (contract §1.2.1, SF-04). The decision stays stored for internal
+# analysis but is stripped at the candidate-facing boundary.
+_HIRING_VERDICT_KEYS = frozenset({"decision_recommendation", "decisionRecommendation", "recommendation"})
+
+
+def _candidate_evaluation_view(eval_data: dict) -> dict:
+    return {key: value for key, value in eval_data.items() if key not in _HIRING_VERDICT_KEYS}
+
+
 @router.post("/sessions/{session_id}/evaluate")
 async def evaluate_session_endpoint(
     session_id: str,
@@ -926,7 +941,7 @@ async def evaluate_session_endpoint(
             decision=eval_data.get("decision_recommendation") or eval_data.get("recommendation"),
             duration_ms=round((time.monotonic() - started_at) * 1000),
         )
-        return eval_data
+        return _candidate_evaluation_view(eval_data)
     except EvaluationServiceError as exc:
         trace_event(
             "interviewer",
@@ -971,7 +986,7 @@ async def get_session_evaluation_endpoint(
     eval_data = await get_session_evaluation(db=db, session_id=session["id"])
     if not eval_data:
         raise HTTPException(status_code=404, detail="Phiên phỏng vấn chưa có kết quả đánh giá.")
-    return eval_data
+    return _candidate_evaluation_view(eval_data)
 
 
 @router.get("/sessions/{session_id}/report")
