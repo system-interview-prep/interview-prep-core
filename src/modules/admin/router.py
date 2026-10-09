@@ -61,21 +61,17 @@ async def get_admin_overview(
     voice_count = s_row.get("voice_count") or 0
     video_count = s_row.get("video_count") or 0
     raw_avg_turnaround = s_row.get("avg_duration")
-    avg_turnaround = round(float(raw_avg_turnaround), 1) if raw_avg_turnaround else 14.5
+    avg_turnaround = round(float(raw_avg_turnaround), 1) if raw_avg_turnaround else None
 
-    # 3. Average AI Score
-    score_res = await db.execute(text("SELECT AVG(score) FROM scoring_history"))
+    # 3. Average AI Score: real interview evaluations only (0-10, shown on a
+    # 0-100 scale). No evaluations means no average, never an invented one.
+    score_res = await db.execute(text("SELECT AVG(overall_score) FROM interview_evaluations"))
     raw_score = score_res.scalar()
-    if raw_score is None:
-        # Fallback to CV score if any
-        cv_score_res = await db.execute(text("SELECT AVG(score) FROM user_cvs WHERE score IS NOT NULL"))
-        raw_score = cv_score_res.scalar()
-    avg_score = round(float(raw_score), 1) if raw_score else 86.8
+    avg_score = round(float(raw_score) * 10, 1) if raw_score is not None else None
 
-    # 4. Sentiment (positive interaction ratio)
-    sentiment_ratio = 92
-    if total_sessions > 0:
-        sentiment_ratio = min(98, max(75, int(avg_score * 1.05)))
+    # 4. Sentiment: there is no sentiment signal in the data model. The old value
+    # was a constant (92) or derived from the score; report it as unavailable.
+    sentiment_ratio = None
 
     # 5. Monthly Trend (last 6 months distribution)
     trend_res = await db.execute(
@@ -97,51 +93,10 @@ async def get_admin_overview(
         {"month": r["mon"], "count": r["count"]}
         for r in trend_rows
     ]
-    if not monthly_trend:
-        # Default distribution based on total sessions
-        monthly_trend = [
-            {"month": "T5", "count": 12},
-            {"month": "T6", "count": 19},
-            {"month": "T7", "count": 25},
-            {"month": "T8", "count": 32},
-            {"month": "T9", "count": total_sessions},
-        ]
 
-    # 6. Top Cohorts / Tracks
-    cohorts = [
-        {
-            "id": "engineering",
-            "name": "Kỹ sư Phần mềm (Backend & Frontend)",
-            "engagement": "Cường độ cao (+14%)",
-            "avgScore": "8.8",
-            "growth": "+5.4%",
-            "status": "optimized",
-        },
-        {
-            "id": "applied-ai",
-            "name": "Nghiên cứu & Kỹ sư AI / ML",
-            "engagement": "Tiềm năng đỉnh cao",
-            "avgScore": "9.2",
-            "growth": "+7.1%",
-            "status": "optimized",
-        },
-        {
-            "id": "devops-infra",
-            "name": "DevOps & Điện toán đám mây",
-            "engagement": "Tăng trưởng đều",
-            "avgScore": "8.4",
-            "growth": "+3.2%",
-            "status": "monitored",
-        },
-        {
-            "id": "product-design",
-            "name": "Thiết kế Sản phẩm (UI/UX)",
-            "engagement": "Ổn định",
-            "avgScore": "8.1",
-            "growth": "+2.0%",
-            "status": "monitored",
-        },
-    ]
+    # 6. Top Cohorts / Tracks: no per-track analytics exist yet. Return none
+    # rather than a hardcoded showcase that reads as real data.
+    cohorts: list[dict] = []
 
     return {
         "success": True,
@@ -187,12 +142,10 @@ async def list_admin_sessions(
             s.ended_at,
             COALESCE(u.name, 'Ứng viên chưa đặt tên') AS candidate_name,
             COALESCE(u.email, 'unknown@intervia.io') AS candidate_email,
-            sc.score AS ai_score
+            ev.overall_score AS ai_score
         FROM interview_sessions s
         LEFT JOIN users u ON s.user_id = u.id
-        LEFT JOIN LATERAL (
-            SELECT score FROM scoring_history WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1
-        ) sc ON true
+        LEFT JOIN interview_evaluations ev ON ev.session_id = s.id
         WHERE 1=1
         """
     ]
@@ -248,12 +201,10 @@ async def list_admin_sessions(
         date_label = started_dt.strftime("%d/%m/%Y") if started_dt else "Gần đây"
         time_label = started_dt.strftime("%H:%M") if started_dt else ""
 
-        # Simulated or real AI score
+        # Evaluation score is 0-10; the admin UI shows a percentage. A session
+        # that was never evaluated has no score.
         score_val = r["ai_score"]
-        if score_val is not None:
-            final_score = round(float(score_val), 0)
-        else:
-            final_score = 85 if is_closed else None
+        final_score = round(float(score_val) * 10) if score_val is not None else None
 
         sessions.append(
             {
