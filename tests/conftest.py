@@ -16,6 +16,16 @@ def _no_live_question_generation(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(question_generation, "generate_question_payloads", _no_payloads)
 
+    # The quality gate's judge is a second LLM call: approve everything by
+    # default; tests of the gate patch `judge_question_payloads` themselves.
+    async def _approve_all(*, questions: list[dict], **_: object) -> list[dict]:
+        return [
+            {"index": index, "on_skill": True, "difficulty_ok": True, "verbal": True, "sound": True, "concise": True}
+            for index in range(len(questions))
+        ]
+
+    monkeypatch.setattr(question_generation, "judge_question_payloads", _approve_all)
+
     # Same for matching's LLM evidence search: with a real key it made
     # test_targeted_reparse pass or fail depending on the model's answer.
     from src.modules.matching.application import targeted_reparse
