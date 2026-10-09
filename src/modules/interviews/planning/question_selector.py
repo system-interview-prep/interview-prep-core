@@ -1,17 +1,21 @@
 """Deterministic P2 question selector for the structured interview runtime.
 
 P2 consumes a READY P1 plan and freezes qualifying Question Bank versions into
-interview_turns. If any target lacks enough eligible questions, selection fails
-closed with ``question_bank_insufficient`` before writing any turns. Existing
-frozen fallback turns remain readable, but this selector does not create new
-fallback turns for a queue.
+interview_turns. A target without enough approved questions walks a fallback
+ladder: an approved question on a broader skill, then a role question whose own
+skill the JD also requires, then a generated draft (filed IN_REVIEW by an
+unlocked preflight, see ``question_generation``). A target that is still short
+is interviewed with what was found, or dropped, and reported in
+``questionSelection.uncoveredTargets``. Selection fails closed with
+``question_bank_insufficient`` only when no target can be covered at all.
+Every turn snapshot records its ``questionSource``.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from uuid import uuid4
 
@@ -24,9 +28,12 @@ from src.modules.interviews.planning.project_evidence import (
     extract_project_evidences,
     select_best_project,
 )
+from src.modules.question_bank.facade import GENERATED_QUESTION_AUTHOR
 
 SELECTOR_POLICY_VERSION = "interview-question-selector-v2"
 _ELIGIBLE_STATUSES = {"APPROVED", "CALIBRATED"}
+# Best-ranked candidates considered per target when enumerating subsets.
+_SUBSET_CANDIDATE_POOL = 12
 _DIFFICULTY_ORDER = {
     "foundational": 0,
     "intermediate": 1,
@@ -75,6 +82,8 @@ class _Candidate:
     rubric: dict[str, Any]
     thinking_seconds: int = 0
     canonical_snapshot: dict[str, Any] = field(default_factory=dict)
+    # question_bank | broader_skill | role | generated_unreviewed
+    source: str = "question_bank"
 
 
 def _allowed_purposes(target: dict[str, Any]) -> tuple[str, ...]:
@@ -146,11 +155,20 @@ async def _load_candidates(
     locale: str,
     difficulty: str,
     salt: str = "",
+    generated: bool = False,
 ) -> list[_Candidate]:
+    """Approved questions mapped to the target, or (``generated``) the
+    machine-generated drafts still waiting for review."""
     purposes = _allowed_purposes(target)
+    version_join = "qv.question_id = q.id" if generated else "qv.id = q.current_approved_version_id"
+    status_filter = (
+        "qv.status IN ('DRAFT', 'IN_REVIEW') AND qv.created_by = :generator"
+        if generated
+        else "qv.status IN ('APPROVED', 'CALIBRATED')"
+    )
     result = await db.execute(
         text(
-            """
+            f"""
             SELECT q.stable_key, qv.id AS question_version_id, qv.version,
                    qv.status, qv.question_type, qv.difficulty_band,
                    qv.canonical_locale, qv.canonical_text, qv.objective,
@@ -160,39 +178,57 @@ async def _load_candidates(
                    qvr.rubric_version_id
             FROM interview_questions q
             JOIN interview_question_versions qv
-              ON qv.id = q.current_approved_version_id
+              ON {version_join}
             JOIN question_version_taxonomy_concepts map
               ON map.question_version_id = qv.id
             JOIN question_version_rubrics qvr
               ON qvr.question_version_id = qv.id
             WHERE q.retired_at IS NULL
-              AND qv.status IN ('APPROVED', 'CALIBRATED')
+              AND {status_filter}
+              -- Concept ids are stable across taxonomy versions (parsers stamp
+              -- `internal-2026.1`, the bank is authored against the version
+              -- that holds the concepts, admins can clone new versions), so
+              -- match on the id and only prefer an exact version match.
               AND map.concept_id = :concept_id
-              AND (
-                  map.taxonomy_version = :taxonomy_version
-                  OR (
-                      :taxonomy_version IN ('internal-2026.1', 'internal-career-2026.1')
-                      AND map.taxonomy_version IN ('internal-2026.1', 'internal-career-2026.1')
-                  )
-              )
               AND map.purpose = ANY(:purposes)
+            ORDER BY qv.id,
+                     CASE WHEN map.taxonomy_version = :taxonomy_version THEN 0 ELSE 1 END,
+                     CASE map.purpose
+                         WHEN 'PRIMARY_COMPETENCY' THEN 0
+                         WHEN 'TARGET_SKILL' THEN 1
+                         WHEN 'TARGET_ROLE' THEN 2
+                         ELSE 9
+                     END,
+                     map.relevance DESC
             """
         ),
         {
             "taxonomy_version": target["taxonomyVersion"],
             "concept_id": target["conceptId"],
             "purposes": list(purposes),
+            "generator": GENERATED_QUESTION_AUTHOR,
         },
     )
 
     candidates: list[_Candidate] = []
+    seen_version_ids: set[str] = set()
     for row in result.mappings().all():
-        if row["status"] not in _ELIGIBLE_STATUSES:
+        # One question version may carry several taxonomy mappings for the same
+        # concept (for example PRIMARY_COMPETENCY and TARGET_SKILL), which the
+        # JOIN returns as separate rows. The query groups rows per version and
+        # orders purposes exactly as `_candidate_rank` does, so keeping the first
+        # row picks the strongest mapping and a single question can never be
+        # frozen twice into the same interview.
+        version_id = str(row["question_version_id"])
+        if version_id in seen_version_ids:
+            continue
+        if not generated and row["status"] not in _ELIGIBLE_STATUSES:
             continue
         if _locale_rank(row["canonical_locale"], locale) >= 99:
             continue
         if difficulty != "unspecified" and _difficulty_distance(row["difficulty_band"], difficulty) >= 99:
             continue
+        seen_version_ids.add(version_id)
 
         expected_result = await db.execute(
             text(
@@ -276,6 +312,7 @@ async def _load_candidates(
                 expected_points=expected_points,
                 thinking_seconds=int(row.get("thinking_seconds") or 0),
                 canonical_snapshot=dict(row.get("canonical_snapshot") or {}),
+                source="generated_unreviewed" if generated else "question_bank",
                 rubric={
                     "rubricVersionId": str(rubric_row["id"]),
                     "version": rubric_row["version"],
@@ -292,6 +329,195 @@ async def _load_candidates(
         candidates,
         key=lambda item: _candidate_rank(item, difficulty=difficulty, locale=locale, salt=salt),
     )
+
+
+async def _broader_concepts(db: AsyncSession, concept_id: str) -> list[str]:
+    """More general skills, nearest first (MySQL -> SQL; LLM -> GenAI -> AI)."""
+    result = await db.execute(
+        text(
+            """
+            WITH RECURSIVE up(concept_id, depth) AS (
+                SELECT CAST(:concept_id AS text), 0
+                UNION
+                SELECT r.target_concept_id, up.depth + 1
+                FROM taxonomy_relations r JOIN up ON r.source_concept_id = up.concept_id
+                WHERE r.relation_type = 'SPECIALIZES' AND up.depth < 3
+            )
+            SELECT concept_id, MIN(depth) AS depth FROM up
+            WHERE depth > 0 GROUP BY concept_id ORDER BY depth, concept_id
+            """
+        ),
+        {"concept_id": concept_id},
+    )
+    return [str(row["concept_id"]) for row in result.mappings().all()]
+
+
+async def _role_concepts(db: AsyncSession, concept_id: str, job_role: str | None) -> list[str]:
+    """Specialisations that require the skill, the job's own role first."""
+    result = await db.execute(
+        text(
+            "SELECT DISTINCT source_concept_id FROM taxonomy_relations "
+            "WHERE relation_type = 'REQUIRES_SKILL' AND target_concept_id = :concept_id"
+        ),
+        {"concept_id": concept_id},
+    )
+    roles = sorted(str(row["source_concept_id"]) for row in result.mappings().all())
+    if job_role in roles:
+        roles.remove(job_role)
+        roles.insert(0, job_role)
+    return roles
+
+
+async def _question_skill_concepts(db: AsyncSession, question_version_id: str) -> set[str]:
+    result = await db.execute(
+        text(
+            "SELECT concept_id FROM question_version_taxonomy_concepts "
+            "WHERE question_version_id = :id AND purpose IN ('PRIMARY_COMPETENCY', 'TARGET_SKILL')"
+        ),
+        {"id": question_version_id},
+    )
+    return {str(row["concept_id"]) for row in result.mappings().all()}
+
+
+async def _job_taxonomy(db: AsyncSession, job_id: str | None) -> tuple[set[str], str | None]:
+    """Concepts the JD requires and its primary specialisation."""
+    if not job_id:
+        return set(), None
+    result = await db.execute(
+        text("SELECT structured_data, primary_taxonomy_concept_id FROM job_descriptions WHERE id = :id"),
+        {"id": job_id},
+    )
+    row = result.mappings().one_or_none()
+    if not row:
+        return set(), None
+    data = row.get("structured_data") or {}
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except ValueError:
+            data = {}
+    concepts: set[str] = set()
+    for requirement in (data.get("requirements") if isinstance(data, dict) else None) or []:
+        if not isinstance(requirement, dict):
+            continue
+        refs = [requirement.get("concept"), *(requirement.get("atomicConcepts") or [])]
+        concepts.update(str(ref["conceptId"]) for ref in refs if isinstance(ref, dict) and ref.get("conceptId"))
+    role = row.get("primary_taxonomy_concept_id")
+    return concepts, (str(role) if role else None)
+
+
+async def _fallback_candidates(
+    db: AsyncSession,
+    *,
+    target: dict[str, Any],
+    locale: str,
+    difficulty: str,
+    salt: str,
+    job_concepts: set[str],
+    job_role: str | None,
+) -> list[_Candidate]:
+    """Questions for a target the bank does not cover, in ladder order.
+
+    1. an approved question on a broader skill (Node.js -> JavaScript);
+    2. an approved question for a specialisation that requires the skill, but
+       only one whose own skill this JD also asks for -- a backend question
+       about Java collections is no substitute for Node.js in a Python JD;
+    3. a generated draft for exactly this skill, still waiting for review.
+    """
+    found: list[_Candidate] = []
+    skill_target = {**target, "rationale": {}}
+    for concept in await _broader_concepts(db, target["conceptId"]):
+        for candidate in await _load_candidates(
+            db, target={**skill_target, "conceptId": concept}, locale=locale, difficulty=difficulty, salt=salt
+        ):
+            found.append(replace(candidate, source="broader_skill"))
+    role_target = {**target, "rationale": {"source": "career_classification_fallback"}}
+    for role in await _role_concepts(db, target["conceptId"], job_role):
+        for candidate in await _load_candidates(
+            db, target={**role_target, "conceptId": role}, locale=locale, difficulty=difficulty, salt=salt
+        ):
+            if await _question_skill_concepts(db, candidate.question_version_id) & job_concepts:
+                found.append(replace(candidate, source="role"))
+    found += await _load_candidates(
+        db, target=skill_target, locale=locale, difficulty=difficulty, salt=salt, generated=True
+    )
+    unique: dict[str, _Candidate] = {}
+    for candidate in found:
+        unique.setdefault(candidate.question_version_id, candidate)
+    return list(unique.values())
+
+
+async def _plan_targets_for_preflight(db: AsyncSession, plan_id: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_targets = payload.get("targets") if isinstance(payload.get("targets"), list) else None
+    if not raw_targets:
+        result = await db.execute(
+            text(
+                "SELECT taxonomy_version, concept_id, label, target_question_count, rationale "
+                "FROM session_competency_targets WHERE plan_id = :plan_id"
+            ),
+            {"plan_id": plan_id},
+        )
+        raw_targets = [dict(row) for row in result.mappings().all()]
+    targets = []
+    for item in raw_targets:
+        concept_id = item.get("conceptId") or item.get("concept_id")
+        if not concept_id:
+            continue
+        targets.append(
+            {
+                "taxonomyVersion": item.get("taxonomyVersion") or item.get("taxonomy_version") or "internal-2026.1",
+                "conceptId": concept_id,
+                "label": item.get("label") or concept_id,
+                "needed": max(1, int(item.get("targetQuestionCount") or item.get("target_question_count") or 1)),
+                "rationale": item.get("rationale") or {},
+            }
+        )
+    return targets
+
+
+async def _generate_missing_questions(
+    db: AsyncSession, *, session_row: dict[str, Any], plan_id: str, payload: dict[str, Any]
+) -> None:
+    """Preflight: file generated drafts for targets nothing else can cover.
+
+    Runs before the plan row is locked: an LLM call can take tens of seconds
+    and must not hold the lock. The selection that follows reads the drafts
+    through the generated step of the fallback ladder.
+    """
+    from src.modules.interviews.planning.question_generation import generate_and_file
+
+    difficulty = (payload.get("difficulty") or {}).get("level", "unspecified")
+    locale = session_row.get("locale") or "en-US"
+    salt = str(session_row.get("id") or "")
+    job_concepts, job_role = await _job_taxonomy(db, session_row.get("job_id"))
+    for target in await _plan_targets_for_preflight(db, plan_id, payload):
+        if (target["rationale"] or {}).get("source") == "career_classification_fallback":
+            continue
+        available = len(await _load_candidates(db, target=target, locale=locale, difficulty=difficulty, salt=salt))
+        if available >= target["needed"]:
+            continue
+        available += len(
+            await _fallback_candidates(
+                db,
+                target=target,
+                locale=locale,
+                difficulty=difficulty,
+                salt=salt,
+                job_concepts=job_concepts,
+                job_role=job_role,
+            )
+        )
+        if available >= target["needed"]:
+            continue
+        await generate_and_file(
+            db,
+            concept_id=target["conceptId"],
+            skill_label=target["label"],
+            job_role=job_role,
+            difficulty=difficulty,
+            locale=locale,
+            count=target["needed"] - available,
+        )
 
 
 def _snapshot(
@@ -327,6 +553,7 @@ def _snapshot(
             "relevance": candidate.relevance,
         },
         "selectionRank": selection_rank,
+        "questionSource": candidate.source,
         "expectedPoints": candidate.expected_points,
         "rubric": candidate.rubric,
         "canonicalSnapshot": c_snap,
@@ -334,65 +561,6 @@ def _snapshot(
         "testCasesCode": c_snap.get("test_cases_code"),
         "solutionCode": c_snap.get("solution_code"),
         "language": c_snap.get("language", "python"),
-    }
-
-
-def _fallback_snapshot(
-    target: dict[str, Any],
-    *,
-    locale: str,
-    target_question_index: int,
-) -> dict[str, Any]:
-    """Build a stable, competency-specific prompt when the bank has no match.
-
-    This is a continuity path, not a substitute for reviewed question-bank
-    content. The explicit source marker lets the evaluator and UI distinguish
-    these prompts from calibrated questions.
-    """
-    label = str(target.get("label") or target.get("conceptId") or "the target competency").strip()
-    is_vi = (locale or "vi").lower().startswith("vi")
-    prompts_vi = (
-        f"Hãy kể về một tình huống thực tế bạn đã vận dụng {label}. Bối cảnh là gì, "
-        "bạn trực tiếp chịu trách nhiệm phần nào và kết quả ra sao?",
-        f"Khi xử lý một vấn đề liên quan đến {label}, bạn thường phân tích và chọn hướng giải quyết như thế nào? "
-        "Hãy nêu một ví dụ cụ thể và giải thích các bước của bạn.",
-        f"Hãy mô tả một quyết định khó liên quan đến {label}. Bạn đã cân nhắc những phương án và đánh đổi nào, "
-        "và nhìn lại bạn sẽ làm gì khác?",
-    )
-    prompts_en = (
-        f"Tell me about a real situation where you applied {label}. What was the context, "
-        "what were you personally responsible for, and what was the outcome?",
-        f"How do you analyze and solve a problem involving {label}? Give a specific example and walk me through your steps.",
-        f"Describe a difficult decision involving {label}. What options and trade-offs did you consider, "
-        "and what would you do differently in retrospect?",
-    )
-    prompt_index = min(max(target_question_index, 0), 2)
-    return {
-        "schemaVersion": "1.0",
-        "selectorPolicyVersion": SELECTOR_POLICY_VERSION,
-        "questionVersionId": None,
-        "stableKey": f"fallback-{target['taxonomyVersion']}-{target['conceptId']}-{prompt_index + 1}",
-        "version": "1.0.0",
-        "questionType": "COMPETENCY_FALLBACK",
-        "stage": "DEEP_DIVE",
-        "difficulty": "intermediate",
-        "locale": locale,
-        "canonicalLocale": locale,
-        "questionText": (prompts_vi if is_vi else prompts_en)[prompt_index],
-        "objective": f"Elicit concrete evidence of the candidate's {label} competency.",
-        "softAnswerSeconds": 180,
-        "hardAnswerSeconds": 300,
-        "taxonomyTarget": {
-            "taxonomyVersion": target["taxonomyVersion"],
-            "conceptId": target["conceptId"],
-            "label": label,
-            "mappingPurpose": "DETERMINISTIC_FALLBACK",
-            "relevance": 1.0,
-        },
-        "selectionRank": None,
-        "expectedPoints": [],
-        "rubric": None,
-        "questionSource": "deterministic_fallback_unreviewed",
     }
 
 
@@ -495,9 +663,14 @@ def _find_feasible_subsets(
     *,
     floor_seconds: int,
     time_envelope_seconds: int,
+    max_size: int | None = None,
     metrics: dict[str, Any] | None = None,
 ) -> list[list[_Candidate]]:
-    """Legacy helper: enumerates all feasible subsets satisfying floor and envelope."""
+    """Enumerate subsets that fit the envelope and reach the time floor.
+
+    The floor is a hard rule (ADR TC-PACK-02: fail closed when unreachable).
+    `max_size` bounds the subset size.
+    """
     valid_candidates = [c for c in candidates if _estimated_cost(c) <= time_envelope_seconds]
     n = len(valid_candidates)
     if n == 0:
@@ -525,6 +698,8 @@ def _find_feasible_subsets(
 
         if current_subset and current_cost >= floor_seconds:
             feasible_subsets.append(list(current_subset))
+        if max_size is not None and len(current_subset) >= max_size:
+            return
 
         for i in range(idx, n):
             c_cost = costs[i]
@@ -552,9 +727,15 @@ def _generate_target_feasible_subsets(
     difficulty: str,
     locale: str,
     session_id: str,
+    max_questions: int | None = None,
     metrics: dict[str, Any] | None = None,
 ) -> list[tuple[tuple[int, float, float, float, int, str], list[_Candidate]]]:
     """Layer A: Generates and ranks all feasible subsets for a single target under R(S).
+
+    `max_questions` caps the subset size at P1's `estimatedQuestionsRange`
+    upper bound, and only the best-ranked candidates are enumerated: the
+    objective favours larger subsets, so without a cap the queue overshot P1's
+    estimate and enumeration grew combinatorially while holding the plan lock.
 
     Returns list of (subset_objective, ordered_subset_candidates) sorted by R(S) ascending.
     """
@@ -567,12 +748,13 @@ def _generate_target_feasible_subsets(
     eligible = sorted(
         eligible,
         key=lambda c: _candidate_rank(c, difficulty=difficulty, locale=locale, salt=session_id),
-    )
+    )[:_SUBSET_CANDIDATE_POOL]
 
     feasible_subsets = _find_feasible_subsets(
         eligible,
         floor_seconds=floor_seconds,
         time_envelope_seconds=time_envelope_seconds,
+        max_size=max_questions,
         metrics=metrics,
     )
     if not feasible_subsets:
@@ -764,6 +946,18 @@ async def select_and_freeze_questions(
     if not plan_id:
         raise ValueError("Interview session has no plan container")
 
+    # Unlocked read: generating drafts for uncovered skills calls the LLM and
+    # must finish before the plan row is locked below.
+    preflight = await db.execute(
+        text("SELECT status, plan_payload FROM interview_session_plans WHERE id = :plan_id AND session_id = :session_id"),
+        {"plan_id": plan_id, "session_id": session_row["id"]},
+    )
+    preflight_plan = preflight.mappings().one_or_none()
+    if preflight_plan and preflight_plan["status"] == "READY":
+        await _generate_missing_questions(
+            db, session_row=session_row, plan_id=plan_id, payload=preflight_plan["plan_payload"] or {}
+        )
+
     plan_result = await db.execute(
         text(
             """
@@ -780,6 +974,10 @@ async def select_and_freeze_questions(
         raise ValueError("Interview plan not found")
     if plan["status"] == "LOCKED":
         turns = await read_frozen_turns(db=db, session_id=session_row["id"])
+        # Selection is fail-closed on both branches, so no new turn can carry an
+        # unreviewed fallback prompt. This still counts them because sessions
+        # frozen before that policy may hold such turns, and a report must not
+        # silently present them as reviewed question-bank content.
         fallback_count = sum(
             turn["question"].get("questionSource") == "deterministic_fallback_unreviewed"
             for turn in turns
@@ -800,6 +998,11 @@ async def select_and_freeze_questions(
     locale = session_row.get("locale") or "en-US"
     policy_version = payload.get("policyVersion")
     is_dynamic = (policy_version == "interview-planner-v2-dynamic")
+    salt = str(session_row.get("id") or "")
+    job_concepts, job_role = await _job_taxonomy(db, session_row.get("job_id"))
+    # Targets the ladder could not cover at all, and targets served with fewer
+    # questions than planned. Both reach the report as uncovered competencies.
+    uncovered_targets: list[dict[str, Any]] = []
 
     if is_dynamic:
         # -------------------------------------------------------------------
@@ -823,11 +1026,11 @@ async def select_and_freeze_questions(
             )
             raw_targets = [dict(row) for row in targets_result.mappings().all()]
 
-        if not raw_targets:
-            raise QuestionUnavailableError(
-                "question_unavailable: interview plan has no competency targets",
-                error_code="question_bank_insufficient",
-            )
+        # P1 deliberately emits a READY plan with no targets when every
+        # requirement is not_applicable (or all were omitted). That plan is an
+        # onboarding + behavioral interview: freeze only the preset turns
+        # instead of failing a plan P1 already accepted.
+        raw_targets = raw_targets or []
 
         targets: list[dict[str, Any]] = []
         for t in raw_targets:
@@ -873,15 +1076,31 @@ async def select_and_freeze_questions(
                 difficulty=difficulty,
                 salt=str(session_row.get("id") or ""),
             )
-            feasible_subsets = _generate_target_feasible_subsets(
-                candidates,
-                target_archetype=target["targetArchetype"],
-                floor_seconds=target["floorSeconds"],
-                time_envelope_seconds=target["timeEnvelopeSeconds"],
-                difficulty=difficulty,
-                locale=locale,
-                session_id=str(session_row.get("id") or ""),
-            )
+            def _subsets(pool: list[_Candidate], target=target) -> list:
+                return _generate_target_feasible_subsets(
+                    pool,
+                    target_archetype=target["targetArchetype"],
+                    floor_seconds=target["floorSeconds"],
+                    time_envelope_seconds=target["timeEnvelopeSeconds"],
+                    difficulty=difficulty,
+                    locale=locale,
+                    session_id=salt,
+                    max_questions=max(1, int(target["estimatedQuestionsRange"][-1])),
+                )
+
+            feasible_subsets = _subsets(candidates)
+            if not feasible_subsets:
+                seen = {item.question_version_id for item in candidates}
+                extra = await _fallback_candidates(
+                    db,
+                    target=target,
+                    locale=locale,
+                    difficulty=difficulty,
+                    salt=salt,
+                    job_concepts=job_concepts,
+                    job_role=job_role,
+                )
+                feasible_subsets = _subsets(candidates + [c for c in extra if c.question_version_id not in seen])
             if not feasible_subsets:
                 missing_targets.append(
                     {
@@ -896,13 +1115,16 @@ async def select_and_freeze_questions(
             else:
                 target_domains[t_key] = feasible_subsets
 
-        if missing_targets:
-            # Atomic Fail-Closed: 0 turns written, plan not locked
+        if missing_targets and len(missing_targets) == len(targets):
+            # Nothing technical can be asked: 0 turns written, plan not locked.
             raise QuestionUnavailableError(
-                "question_bank_insufficient: Question bank cannot satisfy interview plan requirements under fail-closed policy",
+                "question_bank_insufficient: no interview target could be covered by the question bank",
                 error_code="question_bank_insufficient",
                 details={"missingTargets": missing_targets},
             )
+        # Drop what even the fallback ladder could not cover; the report lists it.
+        uncovered_targets.extend(missing_targets)
+        targets = [t for t in targets if f"{t['taxonomyVersion']}:{t['conceptId']}" in target_domains]
 
         # Layer B: Global Allocation Search (Policy 2 — Global Constraint Satisfaction / Backtracking)
         global_assignment = _solve_global_question_assignment(
@@ -911,7 +1133,7 @@ async def select_and_freeze_questions(
             session_id=str(session_row.get("id") or ""),
         )
 
-        if not global_assignment:
+        if global_assignment is None:
             raise QuestionUnavailableError(
                 "question_bank_insufficient: Question bank cannot satisfy conflict-free global target allocation under fail-closed policy",
                 error_code="question_bank_insufficient",
@@ -971,37 +1193,59 @@ async def select_and_freeze_questions(
                 salt=str(session_row.get("id") or ""),
             )
             available = [item for item in candidates if item.question_version_id not in used_versions]
-            needed = max(target["targetQuestionCount"], 2)
+            # Honour the planner's per-target count exactly. P1 already guarantees
+            # a floor of one question per competency and caps the sum at
+            # questionBudget, so the old `max(count, 2)` floor silently doubled
+            # the technical queue: four targets at one question each became eight
+            # frozen turns, which cannot fit in a 25-minute session and broke the
+            # documented `targetQuestionCount <= questionBudget` invariant.
+            #
+            # The coding-question swap is gone for the same reason. Replacing a
+            # ranked pick with an arbitrary coding question changed the agenda and
+            # the answer-time envelope behind the planner's back; question type is
+            # a planner/Question-Bank concern, not something P2 may re-decide.
+            needed = max(1, int(target["targetQuestionCount"]))
             selected = available[:needed]
-            # Guarantee technical diversity: if eligible coding questions exist in available,
-            # ensure at least one coding question is represented in the selected batch.
-            if needed >= 2 and not any(c.question_type == "coding" for c in selected):
-                coding_cand = next((c for c in available if c.question_type == "coding"), None)
-                if coding_cand:
-                    selected = selected[:needed - 1] + [coding_cand]
 
             if len(selected) < needed:
-                # Preserve the v1 target-count rule (including its existing floor of 2),
-                # but never turn a new session into an unreviewed fallback interview.
-                # No turn/plan writes occur until every target has passed this preflight.
-                raise QuestionUnavailableError(
-                    "Question bank cannot satisfy interview plan requirements",
-                    error_code="question_bank_insufficient",
-                    details={
-                        "missingTargets": [
-                            {
-                                "taxonomyVersion": target["taxonomyVersion"],
-                                "conceptId": target["conceptId"],
-                                "needed": needed,
-                                "available": len(selected),
-                            }
-                        ]
-                    },
+                # Fallback ladder: broader skill -> role question -> generated draft.
+                taken = used_versions | {item.question_version_id for item in selected}
+                extra = await _fallback_candidates(
+                    db,
+                    target=target,
+                    locale=locale,
+                    difficulty=difficulty,
+                    salt=salt,
+                    job_concepts=job_concepts,
+                    job_role=job_role,
+                )
+                selected += [c for c in extra if c.question_version_id not in taken][: needed - len(selected)]
+
+            if len(selected) < needed:
+                # Covered partially or not at all: interview what we can and
+                # report the rest instead of refusing the whole session.
+                uncovered_targets.append(
+                    {
+                        "taxonomyVersion": target["taxonomyVersion"],
+                        "conceptId": target["conceptId"],
+                        "label": target["label"],
+                        "needed": needed,
+                        "available": len(selected),
+                        "reason": "no_question_after_fallback",
+                    }
                 )
 
             for candidate in selected:
                 frozen.append((candidate, target, len(frozen), None))
                 used_versions.add(candidate.question_version_id)
+
+        if not frozen:
+            # No target could be served at all: 0 turns written, plan not locked.
+            raise QuestionUnavailableError(
+                "Question bank cannot satisfy interview plan requirements",
+                error_code="question_bank_insufficient",
+                details={"missingTargets": uncovered_targets},
+            )
 
     # Do not partially write turns before every target is satisfiable.
     await db.execute(
@@ -1327,7 +1571,7 @@ async def select_and_freeze_questions(
             "turnIndex": idx + 2,
             "questionVersionId": candidate.question_version_id if candidate else None,
             "rubricVersionId": candidate.rubric_version_id if candidate else None,
-            "questionSource": "question_bank" if candidate else "deterministic_fallback_unreviewed",
+            "questionSource": candidate.source if candidate else "deterministic_fallback_unreviewed",
             "fallbackKey": fallback["stableKey"] if fallback else None,
             "target": f"{target['taxonomyVersion']}:{target['conceptId']}",
         }
@@ -1339,6 +1583,10 @@ async def select_and_freeze_questions(
             "questionSource": "behavioral_star_preset",
         }
     ]
+    source_counts: dict[str, int] = {}
+    for candidate, _, _, _ in frozen:
+        if candidate is not None:
+            source_counts[candidate.source] = source_counts.get(candidate.source, 0) + 1
     fingerprint = hashlib.sha256(
         json.dumps(selection_contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -1362,6 +1610,9 @@ async def select_and_freeze_questions(
                         "turnCount": len(selection_contract),
                         "technicalQuestionCount": len(frozen),
                         "fallbackQuestionCount": sum(candidate is None for candidate, _, _, _ in frozen),
+                        "questionSources": source_counts,
+                        "generatedQuestionCount": source_counts.get("generated_unreviewed", 0),
+                        "uncoveredTargets": uncovered_targets,
                     }
                 }
             ),
@@ -1376,6 +1627,8 @@ async def select_and_freeze_questions(
         "turnCount": len(selection_contract),
         "technicalQuestionCount": len(frozen),
         "fallbackQuestionCount": sum(candidate is None for candidate, _, _, _ in frozen),
+        "generatedQuestionCount": source_counts.get("generated_unreviewed", 0),
+        "uncoveredTargets": uncovered_targets,
         "fingerprint": fingerprint,
         "turns": await read_frozen_turns(db=db, session_id=session_row["id"]),
     }
