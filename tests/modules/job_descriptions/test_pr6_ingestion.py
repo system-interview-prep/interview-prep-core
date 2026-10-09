@@ -71,6 +71,7 @@ class InMemoryJobIngestionRepository:
         taxonomy_concept_id: str | None = None,
         taxonomy_version: str | None = "v1",
         now: datetime | None = None,
+        parse_error: str | None = None,
     ) -> str:
         job_id = f"job-{candidate.external_job_id}"
         now_dt = now or datetime.now(UTC)
