@@ -72,6 +72,8 @@ ParadeDB cung cấp BM25 cho lexical ranking, còn pgvector lưu embedding từ 
 | `QUESTION_BANK_SEED_ENABLED=true` | Mọi môi trường demo khi `APP_ENV` không phải dev/test | Question Bank rỗng → mọi phiên trả 409 `question_bank_insufficient` |
 | `OPENAI_API_KEY` | Luôn luôn (người phỏng vấn + chấm điểm) | Không có câu hỏi follow-up, không chấm được báo cáo |
 | `AI_REQUEST_TIMEOUT_SECONDS` | Tuỳ chọn (mặc định 90) | — |
+| `QUESTION_GENERATION_ENABLED` | Tuỳ chọn (mặc định `true`) | Khi `false`: skill JD không có câu hỏi (kể cả fallback skill rộng hơn / theo vai trò) bị bỏ và báo "chưa phủ", thay vì để LLM sinh câu `IN_REVIEW` |
+| `JD_PARSER_MODE` | `deterministic` hoặc `hybrid` (LLM bổ sung, có grounding) | Áp dụng cho JD upload và cho `scripts/ingest_greenhouse_jobs.py`, `scripts/demo_jobs/` |
 | `VOICE_LAB_ENABLED=true` + `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | Chế độ voice/video | Phòng voice/video báo "chưa được bật trên máy chủ"; chế độ chat vẫn chạy |
 
 Voice/video còn cần LiveKit agent worker đang chạy; xem `docs/OPENAI-VOICE-LAB.md`.
