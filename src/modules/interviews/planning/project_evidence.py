@@ -330,13 +330,18 @@ def build_project_validation_question(
     packed into the opening question.
     """
     is_vi = (locale or "vi").lower().startswith("vi")
-    techs = ", ".join(project.technologies[:3]) if project.technologies_status == "present" else ""
+    unique_techs: list[str] = []
+    if project.technologies_status == "present":
+        for tech in project.technologies:
+            if tech.casefold() not in {item.casefold() for item in unique_techs}:
+                unique_techs.append(tech)
+    techs = ", ".join(unique_techs[:3])
     has_role = project.role_status == "present" and bool(project.role)
     outcome = project.outcomes[0] if project.outcomes_status == "present" and project.outcomes else ""
 
     if is_vi:
         if has_role:
-            opening = f"Trong dự án '{project.name}' (vai trò {project.role}), bạn trực tiếp làm phần nào"
+            opening = f"Ở dự án '{project.name}', với vai trò {project.role}, bạn trực tiếp làm phần nào"
         else:
             opening = (
                 f"CV chưa ghi rõ vai trò của bạn trong dự án '{project.name}'. "
@@ -349,7 +354,7 @@ def build_project_validation_question(
         return question
 
     if has_role:
-        opening = f"In the '{project.name}' project (as {project.role}), which parts did you build yourself"
+        opening = f"In the '{project.name}' project, as {project.role}, which parts did you build yourself"
     else:
         opening = (
             f"Your CV does not state your role in the '{project.name}' project. "
