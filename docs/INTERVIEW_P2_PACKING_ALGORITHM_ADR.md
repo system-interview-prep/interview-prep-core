@@ -49,7 +49,10 @@ Các nguyên tắc sau đã được Product Owner phê duyệt chính thức (2
    - Nếu bất kỳ target bắt buộc nào không có tập câu thỏa mãn đồng thời mức sàn (`floorSeconds`), đúng archetype (`targetArchetype`) và trần (`timeEnvelopeSeconds`), hệ thống **tuyệt đối không tạo queue một phần và không mở phiên**.
    - Trả lỗi HTTP **409 Conflict** kèm error code ổn định `question_bank_insufficient`. Payload chỉ chứa thông tin target/concept bị thiếu ở dạng an toàn, không rò rỉ barem chấm điểm hay câu hỏi nội bộ.
    - Nhánh dynamic không tự ý loại bỏ target, không tái phân bổ ngân sách, không kích hoạt `_fallback_snapshot`, không gọi LLM sinh câu tự động, và không chỉnh sửa CSDL Question Bank.
-   - Nhánh legacy (`interview-planner-v1`) tiếp tục giữ nguyên `_fallback_snapshot`.
+   - **Nhánh legacy (`interview-planner-v1`) cũng fail-closed.** Quyết định bổ sung, Product Owner duyệt khi rà soát lại toàn bộ luồng interview: fail-closed áp dụng cho **cả hai** nhánh. `_fallback_snapshot` đã bị **xoá khỏi mã nguồn**, không còn đường sinh câu hỏi tạm ở bất kỳ nhánh nào.
+     - *Lý do*: snapshot fallback sinh turn có `questionVersionId = None` **và `rubric = None`. Evaluation lấy barem từ `question_snapshot.rubric.criteria`, nên turn fallback bị chấm hoàn toàn không có barem — đúng rủi ro "điểm số không tin cậy" mà phương án 2B đã bị loại vì nó. Turn fallback cũng phá hợp đồng "freeze exact `questionVersionId`", khiến phiên không replay/audit được.
+     - *Bù lại rủi ro từ chối phục vụ*: seed Question Bank đã mở rộng lên 25 concept / 93 câu và bổ sung mapping `TARGET_ROLE` cho toàn bộ career code; đo trên 103 file JD golden hiện **không còn concept nào bị hở**. Một test dev-gate chặn hồi quy độ phủ này.
+     - *Dữ liệu lịch sử*: phiên đã freeze trước quyết định này vẫn có thể chứa turn `deterministic_fallback_unreviewed`; đường đọc lại plan `LOCKED` vẫn đếm và báo cáo chúng.
 2. **Quyết định 4 (Time Envelope Ceiling) — Lựa chọn A: Hard Ceiling**:
    - Với mọi competency target, tổng `estimated_cost` của các câu được chọn bắt buộc:
      $$\sum_{q \in \text{selected}} \text{estimated\_cost}(q) \le \text{timeEnvelopeSeconds}$$
@@ -266,7 +269,7 @@ Ma trận kiểm thử bắt buộc phải được triển khai trong `tests/mo
 | **TC-PACK-05** | Atomic Preflight (No Partial Queue) | Plan có 2 targets: Target 1 có đủ câu đạt sàn; Target 2 hoàn toàn thiếu câu. | Ném HTTP 409. Rollback toàn bộ: DB không có bất kỳ dòng `interview_turns` nào của Target 1. |
 | **TC-PACK-06** | Deterministic Selection vs. SQL Shuffle | Cùng plan, cùng session salt, nhưng nạp danh sách candidate với thứ tự đảo ngược hoặc xáo trộn ngẫu nhiên. | Kết quả tập câu hỏi đóng băng cuối cùng và **thứ tự `turn_index` của từng câu hỏi bên trong tập đóng băng** phải **giống nhau 100%** (khớp chính xác với thứ tự sắp xếp theo `_candidate_rank` của Phương án 1 đã chốt tại Mục 5.4). |
 | **TC-PACK-07** | Single Question Validity | Envelope = 200s, Floor = 180s. Có 1 câu duy nhất 190s thỏa mãn. | Chọn đúng 1 câu duy nhất (190s). Không báo lỗi, không ép nâng lên 2 câu. |
-| **TC-PACK-08** | Legacy Branch Invariance | Plan có `policyVersion = 'interview-planner-v1'`. Kho câu hỏi thiếu câu. | Chạy luồng legacy, kích hoạt `_fallback_snapshot`, không ném 409, giữ nguyên tương thích ngược 100%. |
+| **TC-PACK-08** | Legacy Branch Invariance | Plan có `policyVersion = 'interview-planner-v1'`. Kho câu hỏi thiếu câu. | Chạy luồng legacy, **fail-closed** với `question_bank_insufficient`, không gọi `_fallback_snapshot`, không ghi partial turns. (Đã cập nhật theo mã nguồn; xem ghi chú lệch ở mục 1.) |
 
 ---
 
