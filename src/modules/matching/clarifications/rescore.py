@@ -20,7 +20,7 @@ from src.modules.matching.domain.schemas import (
     RequirementResult,
     SkillRequirement,
 )
-from src.modules.user_cvs.domain.schemas import EvidenceSpan, LanguageClaim, SkillClaim
+from src.modules.user_cvs.schemas import EvidenceSpan, LanguageClaim, SkillClaim
 
 
 async def rescore_match_with_clarification_answers(
