@@ -469,3 +469,24 @@ async def list_active_questions(
         {"limit": min(max(limit, 1), 200)},
     )
     return {"items": [dict(row) for row in result.mappings().all()]}
+
+
+@router.get("/coverage")
+async def question_coverage(
+    _: dict = Depends(require_roles(QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """How well the bank covers locked sessions and the ACTIVE jobs' must-have skills."""
+    from src.modules.interviews.planning.question_coverage import question_coverage_report
+
+    return await question_coverage_report(db)
+
+
+@router.post("/coverage/prepare", status_code=status.HTTP_202_ACCEPTED)
+async def prepare_question_coverage(
+    _: dict = Depends(require_roles(QUESTION_BANK_ADMIN)),
+) -> dict:
+    """Backfill: queue gated pre-generation for every ACTIVE job (idempotent)."""
+    from src.modules.interviews.planning.question_coverage import enqueue_question_coverage
+
+    return {"queued": enqueue_question_coverage()}
