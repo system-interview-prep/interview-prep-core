@@ -149,7 +149,6 @@ async def generate_and_file(
     db: AsyncSession,
     *,
     concept_id: str,
-    skill_label: str,
     job_role: str | None,
     difficulty: str,
     locale: str,
@@ -172,7 +171,9 @@ async def generate_and_file(
     )
     try:
         payloads = await generate_question_payloads(
-            skill_label=skill_label,
+            # The taxonomy label, never the plan's: nothing that came from a JD
+            # reaches a prompt whose output other candidates will see.
+            skill_label=taxonomy.skills[concept_id][0],
             competency_label=str(competency_label or competency),
             difficulty=difficulty,
             locale=locale,
