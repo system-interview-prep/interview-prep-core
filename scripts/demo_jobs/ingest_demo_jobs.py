@@ -20,6 +20,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent.parent))
 
+from src.modules.interviews.planning.question_coverage import enqueue_question_coverage  # noqa: E402
 from src.modules.job_descriptions.ingestion.adapters.greenhouse import (  # noqa: E402
     GreenhouseJobBoardAdapter,
 )
@@ -89,6 +90,9 @@ async def main(live: bool) -> int:
         async with SessionFactory() as session, session.begin():
             service = JobIngestionService(JobIngestionRepository(session), adapter, parser)
             summary = await service.ingest_candidates(config, picked)
+        # After commit: pre-generate questions for the published jobs' must-have skills.
+        if summary.metrics.get("created_count") or summary.metrics.get("updated_count"):
+            enqueue_question_coverage()
         print(config.company_name, summary.status, summary.metrics, summary.errors or "")
         status |= summary.status != "COMPLETED"
     return status
