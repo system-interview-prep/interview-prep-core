@@ -9,6 +9,12 @@ one user's uploaded JD (or an injection in it) must not reach other candidates.
 Drafts are committed in their own short transaction, outside the plan-row lock
 the selector holds, and filed IN_REVIEW so reviewers can approve them into the
 bank. The selector then picks them up through its generated-draft step.
+
+Every draft passes an automatic quality gate before it is filed: rubric
+structure, language, no near-duplicate of a question the skill already has,
+and a second LLM call that judges skill fit, difficulty and soundness. The gate
+fails closed -- if the judge is unavailable nothing is filed -- because drafts
+are asked and scored before a human reviews them.
 """
 
 from __future__ import annotations
@@ -35,7 +41,14 @@ logger = logging.getLogger(__name__)
 
 # Same TEXT timing as the seeded bank: thinking + soft meets the 180s floor.
 GENERATED_TIMING = (30, 150, 180)
+# Session-time generation stays small (the candidate is waiting); background
+# pre-generation asks for enough variants to rotate (question_coverage).
 MAX_GENERATED_PER_TARGET = 2
+MAX_PREGENERATED_PER_TARGET = 3
+# One regeneration round for questions the gate rejected.
+_GATE_ATTEMPTS = 2
+# Token-set Jaccard similarity at or above this is a near-duplicate.
+DUPLICATE_SIMILARITY = 0.6
 
 _INSTRUCTIONS = """You write technical interview questions for a structured interview platform.
 Return ONLY JSON: {"questions": [{"text": str, "objective": str, "criteria": [
@@ -45,10 +58,32 @@ Return ONLY JSON: {"questions": [{"text": str, "objective": str, "criteria": [
 Rules:
 - Each question tests practical understanding of the given skill at the given difficulty,
   answerable in about 3 minutes of speech, no code writing.
+- Phrase it the way an interviewer says it out loud: one question, at most 25 words,
+  no preamble, no multi-part lists of sub-questions.
 - 2 or 3 criteria per question; weights are positive and sum to 1.
 - Anchors describe answers scoring 0 (missing/wrong) to 3 (complete, with trade-offs).
 - Write text, objective, names, descriptions and anchors in the requested language.
 - Questions in one response must not overlap."""
+
+_JUDGE_INSTRUCTIONS = """You review machine-written technical interview questions before candidates see them.
+For each question decide:
+- on_skill: it tests the given skill itself, within the given specialisation;
+- difficulty_ok: it fits the given difficulty;
+- verbal: it can be answered by speaking for about 3 minutes, without writing code;
+- sound: the question, objective and rubric are technically correct and unambiguous;
+- concise: it is one spoken question of at most about 25 words, not a list of sub-questions.
+Return ONLY JSON: {"verdicts": [{"index": int, "on_skill": bool, "difficulty_ok": bool,
+"verbal": bool, "sound": bool, "concise": bool, "reason": str}]} with one verdict per question, same order."""
+
+_VI_CHARS = re.compile(
+    r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", re.IGNORECASE
+)
+_WORD = re.compile(r"[^\W\d_]{3,}", re.UNICODE)
+
+
+def _json_object(raw: str) -> Any:
+    match = re.search(r"\{.*\}", raw, re.S)
+    return json.loads(match.group(0) if match else raw)
 
 
 async def generate_question_payloads(
@@ -71,10 +106,44 @@ async def generate_question_payloads(
         max_output_tokens=2500,
         temperature=0.4,
     )
-    match = re.search(r"\{.*\}", raw, re.S)
-    data = json.loads(match.group(0) if match else raw)
+    data = _json_object(raw)
     questions = data.get("questions") if isinstance(data, dict) else None
     return [item for item in questions or [] if isinstance(item, dict)]
+
+
+async def judge_question_payloads(
+    *, skill_label: str, competency_label: str, difficulty: str, locale: str, questions: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """One LLM call that judges a batch of normalized questions. Tests replace this function.
+
+    Like generation, it sees taxonomy labels only -- never JD text.
+    """
+    raw = await generate_text(
+        instructions=_JUDGE_INSTRUCTIONS,
+        input_text=json.dumps(
+            {
+                "skill": skill_label,
+                "specialisation": competency_label,
+                "difficulty": difficulty,
+                "language": "Vietnamese" if locale.lower().startswith("vi") else "English",
+                "questions": [
+                    {
+                        "index": index,
+                        "text": item["text"],
+                        "objective": item["objective"],
+                        "criteria": [criterion.get("name") for criterion in item["criteria"]],
+                    }
+                    for index, item in enumerate(questions)
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        max_output_tokens=1200,
+        temperature=0,
+    )
+    data = _json_object(raw)
+    verdicts = data.get("verdicts") if isinstance(data, dict) else None
+    return [item for item in verdicts or [] if isinstance(item, dict)]
 
 
 def normalize_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -111,6 +180,93 @@ def normalize_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     if len({item["stableKey"] for item in criteria}) != len(criteria):
         return None
     return {"text": question, "objective": objective, "criteria": criteria}
+
+
+def language_matches(question: dict[str, Any], locale: str) -> bool:
+    """Vietnamese drafts must read as Vietnamese; English drafts must not."""
+    vi_marks = len(_VI_CHARS.findall(f"{question['text']} {question['objective']}"))
+    return vi_marks >= 3 if locale.lower().startswith("vi") else vi_marks == 0
+
+
+def _tokens(value: str) -> set[str]:
+    return {word.casefold() for word in _WORD.findall(value)}
+
+
+def is_near_duplicate(text_value: str, existing: list[str]) -> bool:
+    """Token-set Jaccard check; deterministic and needs no embedding provider."""
+    words = _tokens(text_value)
+    if not words:
+        return True
+    for other in existing:
+        other_words = _tokens(other)
+        if other_words and len(words & other_words) / len(words | other_words) >= DUPLICATE_SIMILARITY:
+            return True
+    return False
+
+
+def _verdict_passes(verdict: dict[str, Any] | None) -> bool:
+    return bool(verdict) and all(
+        verdict.get(key) is True for key in ("on_skill", "difficulty_ok", "verbal", "sound", "concise")
+    )
+
+
+async def gate_questions(
+    *,
+    payloads: list[dict[str, Any]],
+    existing_texts: list[str],
+    skill_label: str,
+    competency_label: str,
+    difficulty: str,
+    locale: str,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Run the quality gate; returns the accepted questions and per-reason rejection counts.
+
+    Raises when the judge call fails, so the caller files nothing (fail closed).
+    """
+    stats = {"structure": 0, "language": 0, "duplicate": 0, "judge": 0}
+    candidates: list[dict[str, Any]] = []
+    seen = list(existing_texts)
+    for payload in payloads:
+        normalized = normalize_payload(payload)
+        if normalized is None:
+            stats["structure"] += 1
+        elif not language_matches(normalized, locale):
+            stats["language"] += 1
+        elif is_near_duplicate(normalized["text"], seen):
+            stats["duplicate"] += 1
+        else:
+            candidates.append(normalized)
+            seen.append(normalized["text"])
+    if not candidates:
+        return [], stats
+    verdicts = await judge_question_payloads(
+        skill_label=skill_label,
+        competency_label=competency_label,
+        difficulty=difficulty,
+        locale=locale,
+        questions=candidates,
+    )
+    by_index = {verdict["index"]: verdict for verdict in verdicts if isinstance(verdict.get("index"), int)}
+    accepted = []
+    for index, question in enumerate(candidates):
+        if _verdict_passes(by_index.get(index)):
+            accepted.append(question)
+        else:
+            stats["judge"] += 1
+    return accepted, stats
+
+
+async def _existing_question_texts(db: AsyncSession, concept_id: str) -> list[str]:
+    rows = await db.execute(
+        text(
+            "SELECT DISTINCT qv.canonical_text FROM interview_question_versions qv "
+            "JOIN interview_questions q ON q.id = qv.question_id AND q.retired_at IS NULL "
+            "JOIN question_version_taxonomy_concepts m ON m.question_version_id = qv.id "
+            "WHERE m.concept_id = :concept_id"
+        ),
+        {"concept_id": concept_id},
+    )
+    return [str(row[0]) for row in rows.all() if row[0]]
 
 
 async def _competency_for(
@@ -153,11 +309,12 @@ async def generate_and_file(
     difficulty: str,
     locale: str,
     count: int,
+    max_count: int = MAX_GENERATED_PER_TARGET,
 ) -> int:
-    """Generate up to ``count`` drafts for one skill and commit them. Returns how many were filed."""
+    """Generate up to ``count`` gated drafts for one skill and commit them. Returns how many were filed."""
     if not get_settings().question_generation_enabled or count <= 0:
         return 0
-    count = min(count, MAX_GENERATED_PER_TARGET)
+    count = min(count, max_count)
     difficulty = difficulty if difficulty in {"foundational", "intermediate", "advanced"} else "intermediate"
     taxonomy = await load_active_skill_taxonomy(db)
     if concept_id not in taxonomy.skills:
@@ -165,30 +322,50 @@ async def generate_and_file(
     competency = await _competency_for(db, taxonomy.version, concept_id, job_role)
     if competency is None:
         return 0
-    competency_label = await db.scalar(
-        text("SELECT label FROM taxonomy_concepts WHERE taxonomy_version = :v AND concept_id = :c"),
-        {"v": taxonomy.version, "c": competency},
-    )
-    try:
-        payloads = await generate_question_payloads(
-            # The taxonomy label, never the plan's: nothing that came from a JD
-            # reaches a prompt whose output other candidates will see.
-            skill_label=taxonomy.skills[concept_id][0],
-            competency_label=str(competency_label or competency),
-            difficulty=difficulty,
-            locale=locale,
-            count=count,
+    competency_label = str(
+        await db.scalar(
+            text("SELECT label FROM taxonomy_concepts WHERE taxonomy_version = :v AND concept_id = :c"),
+            {"v": taxonomy.version, "c": competency},
         )
-    except Exception as exc:  # provider down, bad JSON: the target is dropped instead
-        logger.warning("Question generation failed for %s: %s", concept_id, exc)
-        return 0
+        or competency
+    )
+    # The taxonomy label, never the plan's: nothing that came from a JD
+    # reaches a prompt whose output other candidates will see.
+    skill_label = taxonomy.skills[concept_id][0]
+    existing_texts = await _existing_question_texts(db, concept_id)
+
+    accepted: list[dict[str, Any]] = []
+    rejected = {"structure": 0, "language": 0, "duplicate": 0, "judge": 0}
+    for _attempt in range(_GATE_ATTEMPTS):
+        missing = count - len(accepted)
+        if missing <= 0:
+            break
+        try:
+            payloads = await generate_question_payloads(
+                skill_label=skill_label,
+                competency_label=competency_label,
+                difficulty=difficulty,
+                locale=locale,
+                count=missing,
+            )
+            batch, stats = await gate_questions(
+                payloads=payloads[:missing],
+                existing_texts=existing_texts + [item["text"] for item in accepted],
+                skill_label=skill_label,
+                competency_label=competency_label,
+                difficulty=difficulty,
+                locale=locale,
+            )
+        except Exception as exc:  # provider down, bad JSON: fail closed, file nothing more
+            logger.warning("Question generation or gate failed for %s: %s", concept_id, exc)
+            break
+        accepted += batch
+        for reason, value in stats.items():
+            rejected[reason] += value
 
     filed = 0
     slug = concept_id.removeprefix("skill-")
-    for payload in payloads[:count]:
-        normalized = normalize_payload(payload)
-        if normalized is None:
-            continue
+    for normalized in accepted[:count]:
         try:
             await file_generated_question(
                 db,
@@ -209,5 +386,66 @@ async def generate_and_file(
         filed += 1
     if filed:
         await db.commit()
-    trace_event("interviewer", "question_generated", concept_id=concept_id, requested=count, filed=filed)
+    trace_event(
+        "interviewer",
+        "question_generated",
+        concept_id=concept_id,
+        requested=count,
+        filed=filed,
+        rejected=rejected,
+    )
+    return filed
+
+
+async def ensure_generated_questions(
+    db: AsyncSession,
+    *,
+    target: dict[str, Any],
+    job_concepts: set[str],
+    job_role: str | None,
+    difficulty: str,
+    locale: str,
+    desired: int,
+    max_count: int = MAX_GENERATED_PER_TARGET,
+) -> int:
+    """Generate drafts until selection can reach ``desired`` questions for ``target``.
+
+    Count and generate run under a transaction-scoped advisory lock per
+    (skill, difficulty, locale): ingestion, publishing and a live session can
+    reach the same skill at once, and without the lock each would generate its
+    own batch. The transaction ends (commit) before returning, releasing it.
+    """
+    from src.modules.interviews.planning.question_selector import reachable_candidates
+
+    if not get_settings().question_generation_enabled or desired <= 0:
+        return 0
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"question-generation:{target['conceptId']}:{difficulty}:{locale.lower()}"},
+    )
+    try:
+        available = len(
+            await reachable_candidates(
+                db,
+                target=target,
+                locale=locale,
+                difficulty=difficulty,
+                job_concepts=job_concepts,
+                job_role=job_role,
+                needed=desired,
+            )
+        )
+        filed = 0
+        if available < desired:
+            filed = await generate_and_file(
+                db,
+                concept_id=target["conceptId"],
+                job_role=job_role,
+                difficulty=difficulty,
+                locale=locale,
+                count=desired - available,
+                max_count=max_count,
+            )
+    finally:
+        await db.commit()
     return filed
