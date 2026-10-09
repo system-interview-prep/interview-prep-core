@@ -2275,3 +2275,25 @@ async def test_closing_qna_answers_only_from_the_job_posting():
     assert "Python, PostgreSQL." in instructions
     assert "không bịa" in instructions.lower()
     assert "INTERVIA" not in instructions
+
+
+@pytest.mark.asyncio
+async def test_runtime_current_turn_is_the_asked_turn_not_lowest_planned(mock_session_data):
+    """DEEP_DIVE turns are drained before a lower-index CHALLENGE turn, so the
+    turn being answered can sit after a PLANNED one; the runtime must report it."""
+    session_row, _ = mock_session_data
+    turns = [
+        {"id": "t-dd", "session_id": "sess-123", "turn_index": 3, "status": "ANSWERED",
+         "question_version_id": "q3", "question_snapshot": {"stage": "DEEP_DIVE"}, "answer_text": "ok"},
+        {"id": "t-ch", "session_id": "sess-123", "turn_index": 4, "status": "PLANNED",
+         "question_version_id": "q4", "question_snapshot": {"stage": "CHALLENGE"}, "answer_text": None},
+        {"id": "t-json", "session_id": "sess-123", "turn_index": 5, "status": "ASKED",
+         "question_version_id": "q5", "question_snapshot": {"stage": "DEEP_DIVE"}, "answer_text": None},
+    ]
+    db = MockChatSession(session_row, turns)
+
+    runtime = await get_chat_runtime(db, session_row)
+
+    assert runtime["currentTurn"]["turnId"] == "t-json"
+    assert runtime["currentTurn"]["stage"] == "DEEP_DIVE"
+    assert runtime["currentTurnIndex"] == 5
