@@ -12,27 +12,21 @@ Covers:
 """
 
 import pytest
+
+from src.modules.interviews.core.interview_engine import InterviewCoreEngine
 from src.modules.interviews.planning.project_evidence import (
     StructuredProjectEvidence,
     build_project_validation_question,
     extract_project_evidences,
     select_best_project,
 )
-from src.modules.user_cvs.parsing.domain.source import SourceBlock, SourceDocument
-from src.modules.user_cvs.parsing.domain.structured import ProjectExtractor
+from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
 from src.modules.user_cvs.parsing.domain.deterministic import ResumeDraft
-
-
-
-
-
+from src.modules.user_cvs.parsing.domain.source import EvidenceMapper, build_source_document
+from src.modules.user_cvs.parsing.domain.structured import ProjectExtractor
 # ============================================================================
 # 1. Multiple projects extraction & retention
 # ============================================================================
-
-from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
-from src.modules.user_cvs.parsing.domain.source import EvidenceMapper, build_source_document
-
 
 def test_cv_with_multiple_projects_retains_all():
     """Requirement 1: CV with at least two projects retains all without dropped items or date artifacts."""
@@ -267,12 +261,18 @@ async def test_no_repeated_project_validation_in_runtime():
     db = MockChatSession(session_row, turns)
     await start_chat_session(db, session_row)
 
+    async def sufficient_answer(**_kwargs):
+        return '{"intent":"ANSWER","sufficiency_status":"SUFFICIENT","acknowledgement":"Cảm ơn câu trả lời của bạn."}'
+
+    core_engine = InterviewCoreEngine(ai_generator=sufficient_answer)
+
     # Candidate introduces themselves (Turn 0 answer)
     res1 = await process_candidate_message(
         db,
         session_row,
         client_message_id="msg-1",
         content="Em là Nguyễn Văn A, em chuyên về AI và Backend.",
+        core_engine=core_engine,
     )
     # Next question must be Turn 1 (Project Validation)
     assert res1["turnStatus"]["turnIndex"] == 1
@@ -284,6 +284,7 @@ async def test_no_repeated_project_validation_in_runtime():
         session_row,
         client_message_id="msg-2",
         content="Trong Career Assistant X em là Core Developer phụ trách phần backend FastAPI và tích hợp Gemini.",
+        core_engine=core_engine,
     )
     # Next question must advance to Turn 2 (RAG)
     assert res2["turnStatus"]["turnIndex"] == 2
