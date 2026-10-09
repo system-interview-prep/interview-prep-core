@@ -10,6 +10,7 @@ from uuid import UUID
 
 from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
+from src.modules.interviews.core.demo_mode import DEMO_OVERTIME_GRACE_SECONDS
 from src.modules.interviews.core.interview_types import (
     CandidateTurnInput,
     InterviewerTurnOutput,
@@ -373,10 +374,16 @@ class InterviewCoreEngine:
 
         # Kiểm tra Hard Timeout toàn phiên (<= 30 giây và chưa ở stage CLOSING)
         current_stage = InterviewStage(session_state.get("current_stage", InterviewStage.WARM_UP))
-        if (
-            time_remaining_seconds <= pacing_seconds(30, target_duration_seconds)
-            and current_stage != InterviewStage.CLOSING
-        ):
+        # A demo follows its turns, not the clock: it only times out once it is
+        # past its nominal duration by the overtime grace.
+        if session_state.get("is_demo"):
+            is_hard_timeout = elapsed_seconds > target_duration_seconds + DEMO_OVERTIME_GRACE_SECONDS
+        else:
+            is_hard_timeout = (
+                time_remaining_seconds <= pacing_seconds(30, target_duration_seconds)
+                and current_stage != InterviewStage.CLOSING
+            )
+        if is_hard_timeout:
             trace_event(
                 "interviewer",
                 "hard_timeout_triggered",
@@ -615,7 +622,9 @@ class InterviewCoreEngine:
         ]
 
         should_probe = (
-            not is_sufficient
+            # A demo asks each frozen question once so every stage fits.
+            not session_state.get("is_demo")
+            and not is_sufficient
             and not is_give_up
             and current_turn_in_question == 0
             and not is_behind_schedule
@@ -740,11 +749,11 @@ class InterviewCoreEngine:
         # The Q&A used to run until the candidate stopped asking or the session
         # was 90s from its end, so it could take most of a session that
         # finished its assessment early. This is the last question we answer.
-        is_last_question = (
-            questions_asked >= MAX_QNA_QUESTIONS
-            or qna_elapsed >= pacing_seconds(QNA_BUDGET_SECONDS, session_seconds)
+        is_demo = bool(session_state.get("is_demo"))
+        is_last_question = questions_asked >= MAX_QNA_QUESTIONS or (
+            not is_demo and qna_elapsed >= pacing_seconds(QNA_BUDGET_SECONDS, session_seconds)
         )
-        if has_no_more_q or time_remaining_seconds <= pacing_seconds(90, session_seconds):
+        if has_no_more_q or (not is_demo and time_remaining_seconds <= pacing_seconds(90, session_seconds)):
             farewell = (
                 "Rất cảm ơn bạn đã tham gia buổi phỏng vấn hôm nay cùng INTERVIA! "
                 "Chúc mừng bạn đã hoàn thành trọn vẹn tất cả các phần thi. "
@@ -936,12 +945,14 @@ class InterviewCoreEngine:
   "intent": "ANSWER" | "CANDIDATE_ABORT" | "SKIP_QUESTION" | "GIVE_UP",
   "sufficiency_status": "SUFFICIENT" | "INSUFFICIENT" | "AMBIGUOUS",
   "missing_aspect": "<mô tả ngắn gọn 1-2 khía cạnh cốt lõi mà ứng viên chưa làm rõ hoặc nêu sai, để trống nếu SUFFICIENT>",
-  "acknowledgement": "<1 câu xác nhận lịch sự, tự nhiên bằng tiếng Việt khoảng 5-10 từ, tuyệt đối không khen ngợi quá mức, không lộ điểm số hay tiêu chí>",
+  "acknowledgement": "<1 câu xác nhận ngắn, tự nhiên bằng tiếng Việt khoảng 3-8 từ (ví dụ 'Ok, mình hiểu rồi.'), tuyệt đối không khen ngợi quá mức, không lộ điểm số hay tiêu chí>",
   "score": <điểm từ 1.0 đến 10.0 (telemetry-only; zero control authority)>
 }
 Lưu ý quan trọng:
 - Đánh giá khách quan, không thiên vị, không nịnh bợ (Anti-Sycophancy).
 - Chấp nhận hiện tượng Code-Switching (chêm từ tiếng Anh chuyên ngành như API, Microservices, Cache, Scale, Deploy). Tuyệt đối không trừ điểm vì lý do này.
+- Phỏng vấn thật nói ngắn: câu trả lời dạng liệt kê ý, gạch đầu dòng, câu cụt hay từ khóa kỹ thuật là BÌNH THƯỜNG. Đánh giá theo nội dung (đúng và đủ các ý cốt lõi của câu hỏi), KHÔNG theo văn phong hay độ dài. Không đặt INSUFFICIENT chỉ vì câu trả lời ngắn hoặc không thành đoạn văn.
+- Chỉ đặt INSUFFICIENT khi thiếu hoặc sai ý cốt lõi, hoặc câu trả lời quá chung chung không cho thấy hiểu biết thực tế.
 - Nếu ứng viên bày tỏ mong muốn dừng/nghỉ phỏng vấn, bận việc riêng/gia đình: đặt "intent": "CANDIDATE_ABORT".
 - Nếu ứng viên xin đổi câu hỏi khác: đặt "intent": "SKIP_QUESTION".
 - Nếu ứng viên bỏ cuộc hoặc không biết: đặt "intent": "GIVE_UP", sufficiency_status: "INSUFFICIENT".
@@ -1059,7 +1070,7 @@ Hãy đưa ra nhận xét ngắn và 1 câu hỏi phản biện sâu:"""
                 f"Bạn là một Tech Lead {'người Việt Nam' if is_vi else ''} phỏng vấn ứng viên kỹ sư phần mềm.\n"
                 "Nhiệm vụ: Đặt ĐÚNG 1 CÂU HỎI ĐÀO SÂU (Follow-up / Probe) dựa trên câu trả lời của ứng viên và khía cạnh còn thiếu.\n"
                 "CÁC NGUYÊN TẮC BẤT DI BẤT DỊCH:\n"
-                "1. Độ dài: Đúng 1 câu duy nhất (dưới 35 từ), trực diện vào giải pháp hoặc đánh đổi kỹ thuật (trade-offs, concurrency, failure handling).\n"
+                "1. Độ dài: Đúng 1 câu hỏi ngắn (dưới 20 từ), hỏi đúng 1 ý, như người phỏng vấn nói miệng; trực diện vào giải pháp hoặc đánh đổi kỹ thuật (trade-offs, concurrency, failure handling).\n"
                 "2. Ngôn ngữ: Tiếng Việt tự nhiên của dân công nghệ, giữ nguyên các thuật ngữ tiếng Anh gốc (ví dụ: Deadlock, Cache invalidation, Index, Latency). Không dùng tiếng Việt dịch thô.\n"
                 "3. Nghiêm cấm rò rỉ barem: Tuyệt đối không chứa các từ ngữ liên quan đến 'điểm', 'thang điểm', 'rubric', 'tiêu chí', 'bạn chưa đạt điểm này'.\n"
                 "4. Không bao bọc bằng lời chào hỏi rườm rà (ví dụ không thêm 'Chào bạn', 'Tôi muốn hỏi...'). Chỉ xuất trực tiếp nội dung câu hỏi."
@@ -1117,10 +1128,11 @@ Hãy đưa ra câu hỏi probe:"""
         is_stage_transition: bool,
         is_vi: bool = True,
     ) -> str:
-        """Ghép câu chuyển ý và câu hỏi tiếp theo một cách tự nhiên."""
-        if is_stage_transition:
-            transition = "Bây giờ, chúng ta sẽ chuyển sang phần tiếp theo nhé." if is_vi else "Now, let's move on to the next section."
-            return f"{acknowledgement} {transition}\n\n{next_question_prompt}"
+        """Ghép câu ghi nhận ngắn với câu hỏi tiếp theo.
+
+        No "now let's move on to the next section" filler: the stage stepper
+        already shows the stage, and a real interviewer just asks the next thing.
+        """
         return f"{acknowledgement}\n\n{next_question_prompt}"
 
     async def _generate_clarify_text(
@@ -1257,9 +1269,13 @@ Hãy đưa ra câu hỏi probe:"""
                 or pop_from_stage(InterviewStage.CHALLENGE) is not None
             )
 
+        # A demo is turn-driven: no time cutoff, reserve jump or closing minimum,
+        # so it walks every frozen stage (its hard timeout is the overtime grace).
+        is_demo = bool(session_state.get("is_demo"))
+
         # 2. Emergency turn cutoff: do not issue a new turn with <= 90 seconds
         # left (scaled down for sessions shorter than 25 minutes).
-        if time_remaining_seconds <= emergency_cutoff_seconds:
+        if not is_demo and time_remaining_seconds <= emergency_cutoff_seconds:
             trace_event(
                 "interviewer",
                 "closing_pacing_triggered",
@@ -1280,7 +1296,8 @@ Hãy đưa ra câu hỏi probe:"""
 
         # 2b. Behavioral reserve may advance only to a valid frozen Behavioral turn.
         if (
-            time_remaining_seconds <= (closing_reserve_seconds + behavioral_reserve_seconds)
+            not is_demo
+            and time_remaining_seconds <= (closing_reserve_seconds + behavioral_reserve_seconds)
             and current_stage in [InterviewStage.VALIDATE, InterviewStage.DEEP_DIVE, InterviewStage.CHALLENGE]
         ):
             trace_event(
@@ -1383,18 +1400,16 @@ Hãy đưa ra câu hỏi probe:"""
 
             # Behavioral is complete. Closing still requires at least 180 seconds
             # (scaled down for sessions shorter than 25 minutes).
-            if time_remaining_seconds >= closing_min_seconds:
+            if is_demo or time_remaining_seconds >= closing_min_seconds:
                 frozen_closing = pop_from_stage(InterviewStage.CLOSING)
                 if frozen_closing:
                     return InterviewStage.CLOSING, frozen_closing
                 prompt = (
-                    "Chúng ta đã hoàn thành toàn bộ các câu hỏi chuyên môn và tình huống. "
-                    f"Bạn có thể đặt tối đa {MAX_QNA_QUESTIONS} câu hỏi về công việc, đội ngũ hoặc công ty "
-                    "trước khi kết thúc. Bạn có câu hỏi nào không?"
+                    f"Mình hỏi xong rồi. Bạn có câu hỏi nào về công việc, team hay công ty không? "
+                    f"(tối đa {MAX_QNA_QUESTIONS} câu)"
                     if is_vi
-                    else "We have completed all technical and behavioral questions. "
-                         f"You may ask up to {MAX_QNA_QUESTIONS} questions about the role, the team or the company "
-                         "before we wrap up. Do you have any questions?"
+                    else "That's all from me. Any questions about the role, the team or the company? "
+                         f"(up to {MAX_QNA_QUESTIONS})"
                 )
                 return InterviewStage.CLOSING, QuestionItem(
                     question_id="closing-candidate-qna",
