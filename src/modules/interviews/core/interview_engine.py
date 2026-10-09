@@ -57,6 +57,78 @@ def validate_probe_text(probe_text: str) -> bool:
             return False
     return True
 
+ACKNOWLEDGEMENT_MAX_CHARS = 120
+
+# Closing Q&A budget: at most this many candidate questions, and at most
+# QNA_BUDGET_SECONDS (scaled like the other pacing thresholds) in total.
+MAX_QNA_QUESTIONS = 2
+QNA_BUDGET_SECONDS = 180
+_JOB_TEXT_LIMIT = 1500
+
+
+def format_job_context(job: dict[str, Any] | None, is_vi: bool) -> str:
+    """Render the posting facts the closing Q&A may rely on, and nothing else."""
+    job = job or {}
+    lines: list[str] = []
+
+    def add(label_vi: str, label_en: str, value: Any) -> None:
+        if value not in (None, "", [], {}):
+            lines.append(f"- {label_vi if is_vi else label_en}: {value}")
+
+    add("Công ty", "Company", job.get("company_name"))
+    add("Vị trí", "Position", job.get("title"))
+    add("Địa điểm", "Location", job.get("location"))
+    add("Hình thức làm việc", "Work mode", job.get("work_mode"))
+    add("Loại hợp đồng", "Employment type", job.get("employment_type"))
+    add("Cấp bậc", "Seniority", job.get("seniority"))
+    if job.get("salary_min") or job.get("salary_max"):
+        low, high = job.get("salary_min") or "?", job.get("salary_max") or "?"
+        salary = f"{low} - {high} {job.get('salary_currency') or ''}".strip()
+        add("Mức lương", "Salary", salary)
+    elif job.get("salary_negotiable"):
+        add("Mức lương", "Salary", "thoả thuận" if is_vi else "negotiable")
+    add("Mô tả công việc", "Job description", str(job.get("description") or "")[:_JOB_TEXT_LIMIT])
+    add("Yêu cầu", "Requirements", str(job.get("requirements") or "")[:_JOB_TEXT_LIMIT])
+    return "\n".join(lines) or ("(Không có thông tin tuyển dụng)" if is_vi else "(No posting information)")
+
+
+# Pacing thresholds below are tuned for a 25-minute session.
+_PACING_REFERENCE_SECONDS = 25 * 60
+
+
+def pacing_seconds(default_seconds: int, target_duration_seconds: int) -> int:
+    """Scale a pacing threshold down for sessions shorter than 25 minutes.
+
+    The fixed values (30s hard timeout, 90s cutoff, 60s closing + 180s
+    behavioral reserve) consume a short session whole: a 3-minute demo jumped
+    to BEHAVIORAL after ~1 minute and never asked a technical question. Sessions
+    of 25 minutes or more keep the original values unchanged.
+    """
+    scaled = round(default_seconds * target_duration_seconds / _PACING_REFERENCE_SECONDS)
+    return max(1, min(default_seconds, scaled))
+
+
+def safe_acknowledgement(raw: Any, is_vi: bool) -> str:
+    """Return the evaluator's acknowledgement only if it is a short, neutral line.
+
+    The acknowledgement is LLM output shaped by the candidate's own answer and
+    is shown/spoken verbatim, so an injected answer could make the interviewer
+    announce a score or say anything else. Anything long, multi-line, asking a
+    question or matching the rubric-leak patterns falls back to a fixed line.
+    """
+    default = "Cảm ơn chia sẻ của bạn." if is_vi else "Thank you for sharing."
+    text_value = str(raw or "").strip()
+    if (
+        not text_value
+        or len(text_value) > ACKNOWLEDGEMENT_MAX_CHARS
+        or "\n" in text_value
+        or "?" in text_value
+        or any(re.search(pattern, text_value, re.IGNORECASE) for pattern in PROHIBITED_LEAK_PATTERNS)
+    ):
+        return default
+    return text_value
+
+
 # Tập từ khóa CHẮC CHẮN LÀ BỎ CUỘC (Không bao giờ nhầm với Yes/No)
 DEFINITE_GIVE_UP_KEYWORDS = {
     "ko biết", "không biết", "chịu", "em chịu", "mình chịu", "bỏ qua", "pass",
@@ -87,19 +159,30 @@ def is_yes_no_question(question_prompt: str) -> bool:
     return any(re.search(p, q) for p in yes_no_patterns)
 
 
-ABORT_PATTERNS = [
-    # Mẫu 1: Xin dừng / xin nghỉ / xin out / xin rút / xin thôi
-    r"(xin|cho|cho phép|muốn|phải|em|mình)\s*(phép\s*)?(dừng|nghỉ|out|thôi|rút|hủy|kết thúc)\b",
-    # Mẫu 2: Có việc bận / việc gia đình / việc riêng đi kèm dừng/nghỉ
-    r"(việc\s*(bận|gấp|đột xuất|gia đình|riêng)|bận\s*(rồi|quá|việc|gia đình))\b.*?\b(dừng|nghỉ|thôi|out|về|đi|kết thúc)",
-    r"\b(dừng|nghỉ|thôi|out)\b.*?\b(việc\s*(bận|gấp|gia đình|riêng)|bận)",
-    # Mẫu 3: Dừng lại đây / không phỏng vấn nữa
-    r"(dừng\s*(lại\s*)?(đây|ở đây|tại đây|nhé|nha|ạ|thôi)|không\s*(phỏng vấn|tiếp tục|thi|làm)\s*nữa)",
-    # Mẫu 4: Tiếng Anh
-    r"\b(stop|end|abort|quit|cancel)\s+(the\s+)?(interview|session|meeting)\b",
-    r"\b(want to|have to|need to|must|please)\s+(stop|quit|leave|exit|abort)\b",
-    r"\b(cannot continue|can't continue|family emergency|stop here)\b",
+# Abort phrases that name the interview itself: unambiguous at any length.
+EXPLICIT_ABORT_PATTERNS = [
+    r"(dừng|ngừng|kết thúc|hủy|thôi|rút khỏi)\s*(lại\s*)?(buổi\s*|cuộc\s*)?phỏng vấn",
+    r"không\s*(muốn\s*)?(phỏng vấn|tiếp tục phỏng vấn|thi)\s*nữa",
+    r"\b(stop|end|abort|quit|cancel|leave|finish)\s+(the\s+|this\s+|our\s+)?interview\b",
+    r"\b(cannot|can't|can not)\s+continue\s+(the\s+|this\s+)?interview\b",
+    r"\bfamily emergency\b",
 ]
+
+# Generic "stop" phrasing. Technical answers say the same words ("service phải
+# dừng lại", "we need to stop the consumer"), so these only count for a short
+# message that is plausibly a request on its own.
+SOFT_ABORT_PATTERNS = [
+    # Xin dừng / xin nghỉ / em muốn dừng ... (first-person request)
+    r"(xin|cho\s*(em|mình|tôi)|cho phép|(em|mình|tôi)\s*(muốn|xin|phải|cần|đành))\s*(phép\s*)?(dừng|nghỉ|out|thôi|rút|kết thúc)\b",
+    # Có việc bận / việc gia đình / việc riêng đi kèm dừng/nghỉ
+    r"(việc\s*(bận|gấp|đột xuất|gia đình|riêng)|bận\s*(rồi|quá|việc|gia đình))\b.*?\b(dừng|nghỉ|thôi|out|về|kết thúc)",
+    r"\b(dừng|nghỉ|thôi|out)\b.*?\b(việc\s*(bận|gấp|gia đình|riêng)|bận)",
+    # Dừng lại đây / không làm nữa
+    r"(dừng\s*(lại\s*)?(đây|ở đây|tại đây|nhé|nha|ạ|thôi)|không\s*(tiếp tục|làm)\s*nữa)",
+    r"\b(i|we)\s+(want to|have to|need to|must)\s+(stop|quit|leave|exit|abort)\s*(now|here|early|today)?\s*[.!]*$",
+    r"\b(cannot continue|can't continue|stop here)\b",
+]
+SOFT_ABORT_MAX_CHARS = 100
 
 SKIP_QUESTION_PATTERNS = [
     r"(cho\s*(em|mình)\s*)?(xin\s*)?(đổi|qua|bỏ qua|chuyển|skip)\s*(sang\s+)?(câu|câu hỏi|chủ đề|phần)",
@@ -125,9 +208,18 @@ def is_clarify_request(text: str) -> bool:
 
 
 def is_abort_request(text: str) -> bool:
-    """Nhận diện mọi biến thể xin dừng phỏng vấn của ứng viên bằng Fuzzy Semantic Regex."""
+    """Nhận diện ứng viên xin dừng phỏng vấn.
+
+    Cụm có nhắc tới buổi phỏng vấn luôn được tính; cụm chung chung chỉ được
+    tính khi tin nhắn ngắn, để câu trả lời kỹ thuật như "service phải dừng lại
+    và rollback" không bị hiểu nhầm là xin dừng.
+    """
     cleaned = text.strip().lower()
-    return any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in ABORT_PATTERNS)
+    if any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in EXPLICIT_ABORT_PATTERNS):
+        return True
+    return len(cleaned) <= SOFT_ABORT_MAX_CHARS and any(
+        re.search(pattern, cleaned, re.IGNORECASE) for pattern in SOFT_ABORT_PATTERNS
+    )
 
 
 def is_skip_request(text: str) -> bool:
@@ -230,7 +322,10 @@ class InterviewCoreEngine:
         # Bất kể đang ở Warm-up, Validate hay bất kỳ stage nào:
         # Nếu ứng viên có dấu hiệu xin dừng -> Kích hoạt Modal xác nhận cho ứng viên tự quyết
         # =========================================================================
-        if is_abort_request(candidate_text):
+        # In CLOSING the candidate wrapping up ("em hết câu hỏi rồi, mình kết
+        # thúc tại đây nhé") is the normal ending, not an abort: let the closing
+        # handler complete the session instead of recording USER_ENDED.
+        if current_stage != InterviewStage.CLOSING and is_abort_request(candidate_text):
             confirm_msg = (
                 "Mình đã mở hộp thoại xác nhận kết thúc buổi phỏng vấn ngay bên dưới khung chat. Bạn có thể bấm xác nhận để hoàn tất phiên nhé."
                 if is_vi
@@ -254,6 +349,11 @@ class InterviewCoreEngine:
         now = datetime.now(timezone.utc)
 
         # 1. TÍNH TOÁN THỜI LƯỢNG & PACING
+        # Session elapsed time comes from `session_state`, never from
+        # `turn_input.duration_seconds` -- that field is the length of THIS
+        # answer and is used below only for the per-question hard-answer
+        # timeout. Treating it as session elapsed restarted the session clock on
+        # every turn for any caller that supplied it.
         started_at = session_state.get("started_at") or now
         if isinstance(started_at, str):
             try:
@@ -262,9 +362,7 @@ class InterviewCoreEngine:
                 started_at = now
         if started_at is None:
             started_at = now
-        if turn_input.duration_seconds and turn_input.duration_seconds > 0:
-            elapsed_seconds = int(turn_input.duration_seconds)
-        elif session_state.get("elapsed_time") is not None and session_state.get("elapsed_time") > 0:
+        if session_state.get("elapsed_time") is not None and session_state.get("elapsed_time") > 0:
             elapsed_seconds = int(session_state["elapsed_time"])
         else:
             elapsed_seconds = max(0, int((now - started_at).total_seconds()))
@@ -275,7 +373,10 @@ class InterviewCoreEngine:
 
         # Kiểm tra Hard Timeout toàn phiên (<= 30 giây và chưa ở stage CLOSING)
         current_stage = InterviewStage(session_state.get("current_stage", InterviewStage.WARM_UP))
-        if time_remaining_seconds <= 30 and current_stage != InterviewStage.CLOSING:
+        if (
+            time_remaining_seconds <= pacing_seconds(30, target_duration_seconds)
+            and current_stage != InterviewStage.CLOSING
+        ):
             trace_event(
                 "interviewer",
                 "hard_timeout_triggered",
@@ -482,8 +583,12 @@ class InterviewCoreEngine:
 
         # 4. ĐIỀU HÒA NHỊP ĐỘ (PACING OFFSET) & QUYẾT ĐỊNH PROBE
         # Probe Budget Guardrails
-        closing_reserve_seconds = session_state.get("closing_reserve_seconds", 60)
-        behavioral_reserve_seconds = session_state.get("behavioral_reserve_seconds", 180)
+        closing_reserve_seconds = session_state.get(
+            "closing_reserve_seconds", pacing_seconds(60, target_duration_seconds)
+        )
+        behavioral_reserve_seconds = session_state.get(
+            "behavioral_reserve_seconds", pacing_seconds(180, target_duration_seconds)
+        )
         hard_answer_seconds = current_question.get("hard_answer_seconds", 180)
 
         is_hard_answer_timeout = (
@@ -617,11 +722,29 @@ class InterviewCoreEngine:
             r"\b(cảm ơn|thank you|thanks)\b.*?\b(nhiều|bạn|anh|chị)?\b",
             r"\b(nắm rõ|hiểu rõ|đầy đủ|rõ rồi|oke|ok|dạ rồi)\b",
             r"\b(kết thúc|dừng|kết thúc tại đây)\b",
+            r"\b(no|none|nothing)\b.*?\b(more\s+)?(questions?|else)\b",
+            r"\b(end|finish|wrap up|stop)\b.*?\b(interview|here|now)\b",
             r"^(không|không ạ|dạ không|k ạ|hết rồi|dạ rõ rồi|ok|oke)$",
         ]
-        has_no_more_q = any(re.search(pat, candidate_text, re.IGNORECASE) for pat in no_questions_patterns)
+        # A message that asks something ("No worries, one question: ...?",
+        # "Công ty có OT không? Cảm ơn ạ") is a question, even if it also
+        # contains a polite closing phrase.
+        has_no_more_q = "?" not in candidate_text and any(
+            re.search(pat, candidate_text, re.IGNORECASE) for pat in no_questions_patterns
+        )
 
-        if has_no_more_q or time_remaining_seconds <= 90:
+        session_seconds = int(session_state.get("target_duration_minutes", 25) * 60)
+        qna = session_state.get("closing_qna") or {}
+        questions_asked = int(qna.get("questions_asked") or 1)
+        qna_elapsed = int(qna.get("elapsed_seconds") or 0)
+        # The Q&A used to run until the candidate stopped asking or the session
+        # was 90s from its end, so it could take most of a session that
+        # finished its assessment early. This is the last question we answer.
+        is_last_question = (
+            questions_asked >= MAX_QNA_QUESTIONS
+            or qna_elapsed >= pacing_seconds(QNA_BUDGET_SECONDS, session_seconds)
+        )
+        if has_no_more_q or time_remaining_seconds <= pacing_seconds(90, session_seconds):
             farewell = (
                 "Rất cảm ơn bạn đã tham gia buổi phỏng vấn hôm nay cùng INTERVIA! "
                 "Chúc mừng bạn đã hoàn thành trọn vẹn tất cả các phần thi. "
@@ -640,16 +763,27 @@ class InterviewCoreEngine:
                 message=farewell,
             )
 
+        job_context = format_job_context(session_state.get("job_context"), is_vi)
+        company = (session_state.get("job_context") or {}).get("company_name") or (
+            "nhà tuyển dụng" if is_vi else "the employer"
+        )
+        remaining_minutes = max(1, time_remaining_seconds // 60)
+        language = "tiếng Việt" if is_vi else "English"
+        follow_up = (
+            "Không hỏi thêm câu nào; chỉ trả lời câu hỏi, hệ thống sẽ tự chào kết thúc."
+            if is_last_question
+            else "Sau khi trả lời, hỏi ngắn gọn ứng viên còn câu hỏi nào khác không."
+        )
         system_prompt = (
-            f"Bạn là Tech Lead kiêm Phỏng vấn viên kỹ thuật tại công ty công nghệ INTERVIA.\n"
-            f"Vị trí ứng viên đang phỏng vấn: {job_title}.\n"
-            "Giai đoạn phỏng vấn: 5-10 phút cuối, dành cho ứng viên đặt câu hỏi về công ty, văn hóa, dự án hoặc công nghệ.\n"
-            "Nhiệm vụ: Trả lời câu hỏi của ứng viên một cách chân thực, cởi mở, chuyên nghiệp và truyền cảm hứng.\n"
-            "Văn hóa & Môi trường INTERVIA: Đề cao tính tự chủ (ownership), văn hóa data-driven và thực nghiệm nhanh, "
-            "áp dụng các công nghệ hiện đại (Microservices, Python/FastAPI, Next.js, Kubernetes, AI/LLM pipelines, MLOps).\n"
-            "Sau khi trả lời câu hỏi của ứng viên, hãy hỏi thêm 1 câu lịch sự:\n"
-            "- 'Bạn có còn thắc mắc nào khác nữa không, hoặc chúng ta có thể khép lại buổi phỏng vấn tại đây nhé?'\n"
-            "Tuyệt đối không chấm điểm hay nhận xét điểm số."
+            f"Bạn là người phỏng vấn đại diện cho {company}, vị trí {job_title}.\n"
+            f"Đây là phần ứng viên hỏi ngược; buổi phỏng vấn còn khoảng {remaining_minutes} phút.\n"
+            "CHỈ được dùng thông tin trong phần THÔNG TIN TUYỂN DỤNG dưới đây. Nếu câu hỏi nằm ngoài "
+            "các thông tin này (ví dụ OT, quy trình nội bộ, stack chưa nêu, phúc lợi chưa nêu), nói rõ "
+            "rằng mô tả công việc chưa đề cập và bộ phận tuyển dụng sẽ trao đổi thêm. Tuyệt đối không bịa "
+            "thông tin về công ty.\n"
+            f"Trả lời bằng {language}, tối đa 4 câu. {follow_up}\n"
+            "Tuyệt đối không chấm điểm hay nhận xét điểm số.\n\n"
+            f"THÔNG TIN TUYỂN DỤNG:\n{job_context}"
         )
         user_content = f"Câu hỏi của ứng viên: {candidate_text}"
 
@@ -667,12 +801,30 @@ class InterviewCoreEngine:
         except Exception as e:
             logger.warning(f"Error generating Q&A response in CLOSING stage: {e}")
             answer_text = (
-                "Tại INTERVIA, đội ngũ kỹ thuật luôn đề cao văn hóa chia sẻ, tự chủ và thử nghiệm các công nghệ mới nhất. "
-                "Chúng mình rất chú trọng đào tạo nội bộ và xây dựng quy trình CI/CD/MLOps bài bản.\n\n"
-                "Bạn có còn thắc mắc nào khác muốn tìm hiểu thêm không, hoặc chúng ta có thể kết thúc buổi phỏng vấn tại đây nhé?"
+                "Cảm ơn câu hỏi của bạn. Hiện mình chưa thể trả lời chi tiết nội dung này; "
+                "bộ phận tuyển dụng sẽ trao đổi thêm với bạn."
                 if is_vi
-                else "At INTERVIA, our engineering team values ownership, continuous learning, and state-of-the-art tech. "
-                     "Do you have any further questions, or shall we conclude our interview here?"
+                else "Thank you for the question. I can't answer that in detail right now; "
+                     "the recruiting team will follow up with you."
+            )
+            if not is_last_question:
+                answer_text += (
+                    "\n\nBạn còn câu hỏi nào khác không?" if is_vi else "\n\nDo you have any other questions?"
+                )
+
+        if is_last_question:
+            closing_line = (
+                "Cảm ơn bạn đã dành thời gian cho buổi phỏng vấn hôm nay. "
+                "Hệ thống đang tổng hợp báo cáo đánh giá năng lực của bạn. Chúc bạn một ngày tốt lành!"
+                if is_vi
+                else "Thank you for your time today. The system is now compiling your evaluation report. "
+                     "Have a great day!"
+            )
+            return self._terminate_session(
+                session_id=session_id,
+                turn_index=turn_input.turn_index + 1,
+                reason=SessionExitReason.NORMAL_COMPLETION,
+                message=f"{answer_text}\n\n{closing_line}",
             )
 
         return InterviewerTurnOutput(
@@ -845,7 +997,7 @@ Câu trả lời của ứng viên:
                 "sufficiency_status": sufficiency_status,
                 "is_sufficient": is_sufficient,
                 "missing_aspect": str(data.get("missing_aspect", "")),
-                "acknowledgement": str(data.get("acknowledgement", "Cảm ơn bạn.")),
+                "acknowledgement": safe_acknowledgement(data.get("acknowledgement"), is_vi),
                 # score is telemetry/evaluation-only; it has zero control-flow authority in Gate 4.
                 "score": float(data.get("score", 6.0)),
             }
@@ -1060,8 +1212,14 @@ Hãy đưa ra câu hỏi probe:"""
             time_remaining_seconds = max(0, target_duration_seconds - elapsed_seconds)
         elapsed_ratio = min(1.0, elapsed_seconds / target_duration_seconds)
 
-        closing_reserve_seconds = session_state.get("closing_reserve_seconds", 60)
-        behavioral_reserve_seconds = session_state.get("behavioral_reserve_seconds", 180)
+        closing_reserve_seconds = session_state.get(
+            "closing_reserve_seconds", pacing_seconds(60, target_duration_seconds)
+        )
+        behavioral_reserve_seconds = session_state.get(
+            "behavioral_reserve_seconds", pacing_seconds(180, target_duration_seconds)
+        )
+        emergency_cutoff_seconds = pacing_seconds(90, target_duration_seconds)
+        closing_min_seconds = pacing_seconds(180, target_duration_seconds)
 
         def as_valid_frozen_question(st: InterviewStage, q: Dict[str, Any]) -> Optional[QuestionItem]:
             """Return a well-formed frozen turn only when it belongs to the requested stage."""
@@ -1099,14 +1257,25 @@ Hãy đưa ra câu hỏi probe:"""
                 or pop_from_stage(InterviewStage.CHALLENGE) is not None
             )
 
-        # 2. Emergency turn cutoff: do not issue a new turn with <= 90 seconds left.
-        if time_remaining_seconds <= 90:
+        # 2. Emergency turn cutoff: do not issue a new turn with <= 90 seconds
+        # left (scaled down for sessions shorter than 25 minutes).
+        if time_remaining_seconds <= emergency_cutoff_seconds:
             trace_event(
                 "interviewer",
                 "closing_pacing_triggered",
                 time_remaining_seconds=time_remaining_seconds,
                 current_stage=current_stage.value,
             )
+            # The behavioral (STAR) question is a required part of every
+            # interview. A long technical answer used to land inside the cutoff
+            # and close the session without ever asking it; ask it now while the
+            # session is still above its hard timeout.
+            if current_stage not in (InterviewStage.BEHAVIORAL, InterviewStage.CLOSING) and (
+                time_remaining_seconds > pacing_seconds(30, target_duration_seconds)
+            ):
+                q_beh = pop_from_stage(InterviewStage.BEHAVIORAL)
+                if q_beh:
+                    return InterviewStage.BEHAVIORAL, q_beh
             return InterviewStage.CLOSED, None
 
         # 2b. Behavioral reserve may advance only to a valid frozen Behavioral turn.
@@ -1212,20 +1381,20 @@ Hãy đưa ra câu hỏi probe:"""
             if not has_completed_behavioral:
                 return InterviewStage.CLOSED, None
 
-            # Behavioral is complete. Closing still requires at least 180 seconds.
-            if time_remaining_seconds >= 180:
+            # Behavioral is complete. Closing still requires at least 180 seconds
+            # (scaled down for sessions shorter than 25 minutes).
+            if time_remaining_seconds >= closing_min_seconds:
                 frozen_closing = pop_from_stage(InterviewStage.CLOSING)
                 if frozen_closing:
                     return InterviewStage.CLOSING, frozen_closing
                 prompt = (
                     "Chúng ta đã hoàn thành toàn bộ các câu hỏi chuyên môn và tình huống. "
-                    f"Hiện tại buổi phỏng vấn vẫn còn khoảng {max(1, time_remaining_seconds // 60)} phút, "
-                    "bạn có câu hỏi hoặc thắc mắc nào muốn đặt cho mình về văn hóa công ty, dự án sắp tới, "
-                    "hoặc stack công nghệ tại INTERVIA không?"
+                    f"Bạn có thể đặt tối đa {MAX_QNA_QUESTIONS} câu hỏi về công việc, đội ngũ hoặc công ty "
+                    "trước khi kết thúc. Bạn có câu hỏi nào không?"
                     if is_vi
                     else "We have completed all technical and behavioral questions. "
-                         f"We still have about {max(1, time_remaining_seconds // 60)} minutes remaining. "
-                         "Do you have any questions for me regarding our company culture, upcoming projects, or tech stack at INTERVIA?"
+                         f"You may ask up to {MAX_QNA_QUESTIONS} questions about the role, the team or the company "
+                         "before we wrap up. Do you have any questions?"
                 )
                 return InterviewStage.CLOSING, QuestionItem(
                     question_id="closing-candidate-qna",
