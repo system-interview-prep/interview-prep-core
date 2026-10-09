@@ -27,6 +27,7 @@ from src.modules.documents.facade import (
     InvalidDocumentFile,
     status_event_stream,
 )
+from src.modules.interviews.planning.question_coverage import enqueue_question_coverage
 from src.modules.job_descriptions.domain.schemas import CanonicalJobDescription
 
 _inner_router = APIRouter(tags=["job-descriptions"])
@@ -802,6 +803,8 @@ async def finalize_upload(
         await db.rollback()
         raise
 
+    if listing_status == "ACTIVE":
+        enqueue_question_coverage([upload_id])
     return await _get(db, upload_id)
 
 
@@ -1048,6 +1051,7 @@ async def publish_job_description_version(
     except Exception:
         await db.rollback()
         raise
+    enqueue_question_coverage([job_description_id])
     return await _get(db, job_description_id)
 
 
@@ -1108,6 +1112,8 @@ async def update_job_description(
         await db.commit()
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Job description not found")
+        if values.get("listing_status") == "ACTIVE":
+            enqueue_question_coverage([job_description_id])
     return await _get(db, job_description_id)
 
 
