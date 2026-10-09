@@ -71,7 +71,15 @@ async def main(live: bool) -> int:
     # Parse with the same database taxonomy the upload worker uses.
     async with SessionFactory() as session:
         taxonomy = await load_active_skill_taxonomy(session)
-    parser = DeterministicJobDescriptionParser(taxonomy.skills, taxonomy.version)
+    from src.core.config import get_settings
+    from src.modules.job_descriptions.parsing.hybrid import HybridJobDescriptionParser
+
+    parser_cls = (
+        HybridJobDescriptionParser
+        if get_settings().jd_parser_mode.casefold().strip() == "hybrid"
+        else DeterministicJobDescriptionParser
+    )
+    parser = parser_cls(taxonomy.skills, taxonomy.version)
 
     status = 0
     for config, picked in batches:
