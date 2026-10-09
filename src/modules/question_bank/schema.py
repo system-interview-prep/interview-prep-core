@@ -11,6 +11,13 @@ async def create_question_bank_schema(engine: AsyncEngine) -> None:
 
     The project is intentionally rebuilding from an empty database, so this is
     bootstrap code rather than an Alembic compatibility migration.
+
+    Consequence: `create_all` only creates missing tables; it never alters an
+    existing one. Any column added to a question-bank model must ship with an
+    explicit `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` here, or databases that
+    already exist will not get it (the selector then fails with UndefinedColumn).
+    `interview_turns` deliberately stores question/rubric version ids without
+    foreign keys (see migration 0013); P2 validates them before freezing.
     """
     async with engine.begin() as connection:
         await connection.run_sync(QuestionBankBase.metadata.create_all)
