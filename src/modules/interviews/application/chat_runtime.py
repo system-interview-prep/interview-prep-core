@@ -27,6 +27,7 @@ from src.modules.interviews.core.interview_engine import (
     SAFE_FALLBACK_PROBE_EN,
     SAFE_FALLBACK_PROBE_VI,
     InterviewCoreEngine,
+    pacing_seconds,
     validate_probe_text,
 )
 from src.modules.interviews.core.interview_types import (
@@ -71,6 +72,87 @@ class ChatRuntimeError(RuntimeError):
     pass
 
 
+# A turn that reached any of these never needs to be asked again.
+_SETTLED_TURN_STATUSES = frozenset({"ANSWERED", "COMPLETED", "EVALUATED", "SKIPPED"})
+_TECHNICAL_STAGES = frozenset({"VALIDATE", "DEEP_DIVE", "CHALLENGE"})
+# A candidate message with no reply after it means another request is still
+# generating that reply. Past this age the request is assumed dead (worker
+# crash) so the session cannot wedge forever.
+_IN_FLIGHT_STALE_SECONDS = 300
+# An OPEN session this far past its time budget was abandoned (tab closed,
+# network lost). It is closed as HARD_TIMEOUT when the candidate comes back,
+# instead of staying OPEN forever.
+_ABANDONED_GRACE_SECONDS = 600
+
+
+def _unfinished_agenda_turns(
+    turns: list[dict[str, Any]],
+    *,
+    current_turn_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return frozen turns that never reached a settled state.
+
+    `current_turn_id` is excluded because the caller is answering that turn right
+    now and the in-memory snapshot still carries its pre-answer status.
+    """
+    return [
+        turn
+        for turn in turns
+        if (current_turn_id is None or str(turn["id"]) != str(current_turn_id))
+        and turn.get("status") not in _SETTLED_TURN_STATUSES
+    ]
+
+
+def _turn_stage(turn: dict[str, Any]) -> str:
+    return str((turn.get("question_snapshot") or {}).get("stage") or "UNKNOWN")
+
+
+def _session_overrun_seconds(session_row: dict[str, Any]) -> int:
+    """Budget minus elapsed time; negative once the session is past its budget."""
+    started_at = session_row.get("started_at")
+    if isinstance(started_at, str):
+        try:
+            started_at = datetime.fromisoformat(started_at)
+        except ValueError:
+            return 0
+    if not isinstance(started_at, datetime):
+        return 0
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=UTC)
+    target_seconds = int(session_row.get("duration_minutes") or 25) * 60
+    return target_seconds - int((datetime.now(UTC) - started_at).total_seconds())
+
+
+def _session_remaining_seconds(
+    session_row: dict[str, Any],
+    *,
+    elapsed_override_seconds: float | None = None,
+) -> int:
+    """Seconds left in the session budget.
+
+    The clock runs from `started_at`, never from how long a single answer took.
+    The replay branches used to subtract a per-answer duration from a hardcoded
+    900s budget that no session row ever carried, so a 25-minute session
+    reported 900 seconds left on its first reply.
+    """
+    target_seconds = int(session_row.get("duration_minutes") or 25) * 60
+    if elapsed_override_seconds is not None and elapsed_override_seconds > 0:
+        return max(0, target_seconds - int(elapsed_override_seconds))
+
+    started_at = session_row.get("started_at")
+    if isinstance(started_at, str):
+        try:
+            started_at = datetime.fromisoformat(started_at)
+        except ValueError:
+            started_at = None
+    if not isinstance(started_at, datetime):
+        return target_seconds
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=UTC)
+    elapsed = max(0, int((datetime.now(UTC) - started_at).total_seconds()))
+    return max(0, target_seconds - elapsed)
+
+
 def _message_payload(row: dict[str, Any]) -> dict[str, Any]:
     created_at = row.get("created_at")
     if isinstance(created_at, datetime):
@@ -102,6 +184,25 @@ async def _get_job_title(db: AsyncSession, job_id: str | None) -> str:
         {"job_id": job_id},
     )
     return str(title or "Vị trí ứng tuyển")
+
+
+async def _get_job_context(db: AsyncSession, job_id: str | None) -> dict[str, Any]:
+    """Posting facts the closing Q&A may quote; empty when the job is unknown."""
+    if not job_id:
+        return {}
+    result = await db.execute(
+        text(
+            """
+            SELECT title, company_name, location, work_mode, employment_type, seniority,
+                   salary_min, salary_max, salary_currency, salary_negotiable,
+                   description, requirements
+            FROM job_descriptions WHERE id = :job_id
+            """
+        ),
+        {"job_id": job_id},
+    )
+    row = result.mappings().one_or_none()
+    return dict(row) if row else {}
 
 
 async def get_chat_runtime(
@@ -291,8 +392,11 @@ async def start_chat_session(
     session_row: dict[str, Any],
 ) -> dict[str, Any]:
     session_id = session_row["id"]
+    # Starting is also the resume/read endpoint used by clients. A closed
+    # session must remain readable so refresh/back-navigation can show its
+    # persisted transcript instead of turning a successful interview into 409.
     if session_row["status"] == "CLOSED":
-        raise ChatRuntimeError("ILLEGAL_SESSION_STATE: Phiên phỏng vấn đã kết thúc.")
+        return await get_chat_runtime(db, session_row)
     if session_row.get("plan_status") != "LOCKED":
         raise ChatRuntimeError(
             "P2_NOT_LOCKED: Phiên phỏng vấn phải được chuẩn bị câu hỏi (LOCKED) trước khi bắt đầu chat."
@@ -304,7 +408,19 @@ async def start_chat_session(
         {"sid": session_id},
     )
     if existing_count and existing_count > 0:
+        overdue = -_session_overrun_seconds(session_row)
+        if overdue >= _ABANDONED_GRACE_SECONDS:
+            await complete_chat_session(db, session_row, reason="HARD_TIMEOUT")
         return await get_chat_runtime(db, session_row)
+
+    # The interview clock starts now, not when the session row was created:
+    # planning and question selection (LLM calls) used to eat into the
+    # candidate's time budget before the first question was even shown.
+    started_at = await db.scalar(
+        text("UPDATE interview_sessions SET started_at = now() WHERE id = :sid RETURNING started_at"),
+        {"sid": session_id},
+    )
+    session_row["started_at"] = started_at or datetime.now(UTC)
 
     # Fetch turns
     turns_res = await db.execute(
@@ -420,7 +536,7 @@ def build_session_state_from_db(
     session_probe_count: int = 0,
     cv_followup_used: int = 0,
     clarify_count: int = 0,
-    duration_seconds: float = 0.0,
+    elapsed_override_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Trích xuất và ánh xạ dữ liệu session/turns sang session_state cho InterviewCoreEngine."""
     session_id = session_row["id"]
@@ -479,8 +595,13 @@ def build_session_state_from_db(
             metadata_json = {}
 
     target_duration_minutes = session_row.get("duration_minutes") or 25
-    closing_reserve_seconds = int(metadata_json.get("closing_reserve_seconds") or 60)
-    behavioral_reserve_seconds = int(metadata_json.get("behavioral_reserve_seconds") or 180)
+    session_seconds = int(target_duration_minutes) * 60
+    closing_reserve_seconds = int(
+        metadata_json.get("closing_reserve_seconds") or pacing_seconds(60, session_seconds)
+    )
+    behavioral_reserve_seconds = int(
+        metadata_json.get("behavioral_reserve_seconds") or pacing_seconds(180, session_seconds)
+    )
 
     now = datetime.now(UTC)
     started_at_val = session_row.get("started_at")
@@ -497,8 +618,12 @@ def build_session_state_from_db(
         started_dt = started_dt.replace(tzinfo=UTC)
 
     target_sec = int(target_duration_minutes) * 60
-    if duration_seconds > 0:
-        elapsed_sec = int(duration_seconds)
+    # `elapsed_override_seconds` is how much of the SESSION has elapsed, not how
+    # long the current answer took. Those were conflated before, so any client
+    # sending a per-utterance duration reset the session clock on every turn and
+    # the interview never reached its closing reserve or hard timeout.
+    if elapsed_override_seconds is not None and elapsed_override_seconds > 0:
+        elapsed_sec = int(elapsed_override_seconds)
     else:
         elapsed_sec = max(0, int((now - started_dt).total_seconds()))
     remaining_sec = max(0, target_sec - elapsed_sec)
@@ -533,6 +658,12 @@ def build_session_state_from_db(
         "current_turn_in_question": 1 if has_probed else 0,
         "target_duration_minutes": target_duration_minutes,
         "started_at": session_row.get("started_at"),
+        # The session clock, surfaced at the top level because that is where the
+        # core engine reads it. Previously only `working_memory` carried it, so
+        # the engine silently recomputed elapsed time from `turn_input`, which is
+        # per-answer, not per-session.
+        "elapsed_time": elapsed_sec,
+        "remaining_time": remaining_sec,
         "locale": session_row.get("locale") or "vi-VN",
         "allow_early_exit": metadata_json.get("allow_early_exit", True),
         "asked_question_ids": asked_question_ids,
@@ -562,9 +693,18 @@ async def process_candidate_message(
     telemetry: dict[str, Any] | None = None,
     modality: str = "CHAT",
     duration_seconds: float = 0.0,
+    elapsed_override_seconds: float | None = None,
     core_engine: InterviewCoreEngine | None = None,
 ) -> dict[str, Any]:
+    """Process one final candidate turn.
+
+    `duration_seconds` is how long THIS answer took and only drives the
+    per-question hard-answer timeout. `elapsed_override_seconds` is how much of
+    the whole session has elapsed and is for callers that track it out of band;
+    when omitted the session clock comes from `started_at`.
+    """
     session_id = session_row["id"]
+
     if session_row["status"] == "CLOSED":
         raise ChatRuntimeError("ILLEGAL_SESSION_STATE: Phiên phỏng vấn đã kết thúc.")
 
@@ -590,7 +730,7 @@ async def process_candidate_message(
     turns_res = await db.execute(
         text(
             """
-            SELECT id, turn_index, status, question_version_id, question_snapshot, answer_text
+            SELECT id, turn_index, status, question_version_id, question_snapshot, answer_text, started_at
             FROM interview_turns
             WHERE session_id = :session_id
             ORDER BY turn_index ASC
@@ -639,7 +779,7 @@ async def process_candidate_message(
     if curr_snap.get("stage") == "BEHAVIORAL":
         has_pending_tech = any(
             t.get("status") == "PLANNED"
-            and (t.get("question_snapshot") or {}).get("stage") in {"VALIDATE", "DEEP_DIVE", "CHALLENGE"}
+            and (t.get("question_snapshot") or {}).get("stage") in _TECHNICAL_STAGES
             for t in turns
         )
         if has_pending_tech:
@@ -652,6 +792,40 @@ async def process_candidate_message(
 
     current_turn_id = current_turn["id"]
     current_turn_index = current_turn["turn_index"]
+
+    # Serialize messages per session. Phase 1 commits before the LLM call, so a
+    # second message arriving meanwhile used to take the sequence reserved for
+    # the first reply (IntegrityError on its Phase 3, and a retry could return
+    # the *candidate's* next message as the assistant reply). The row lock makes
+    # the in-flight check and the Phase 1 insert atomic.
+    await db.execute(
+        text("SELECT id FROM interview_sessions WHERE id = :sid FOR UPDATE"),
+        {"sid": session_id},
+    )
+    last_msg = (
+        await db.execute(
+            text(
+                """
+                SELECT role, EXTRACT(EPOCH FROM (now() - created_at)) AS age_seconds
+                FROM interview_chat_messages
+                WHERE session_id = :sid
+                ORDER BY sequence DESC LIMIT 1
+                """
+            ),
+            {"sid": session_id},
+        )
+    ).mappings().one_or_none()
+    # Age is computed by the database clock, so app/DB timezone skew cannot
+    # make every message look in flight.
+    reply_in_flight = bool(
+        last_msg
+        and last_msg.get("role") == "user"
+        and float(last_msg.get("age_seconds") or 0) < _IN_FLIGHT_STALE_SECONDS
+    )
+    if reply_in_flight:
+        raise ChatRuntimeError(
+            "IN_PROGRESS: Câu trả lời trước vẫn đang được xử lý. Vui lòng chờ phản hồi của người phỏng vấn."
+        )
 
     # Idempotency check: if client_message_id already exists, return existing reply immediately
     if client_message_id:
@@ -681,8 +855,17 @@ async def process_candidate_message(
                 {"sid": session_id, "seq": user_seq + 1},
             )
             asst_msg = asst_res.mappings().one_or_none()
-            remaining_time = max(0, int(session_row.get("time_budget_seconds", 900) - duration_seconds))
-            action_name = asst_msg.get("message_type") if asst_msg else "NONE"
+            if asst_msg is None or asst_msg.get("role") != "assistant":
+                # The original request died before replying (an in-flight one
+                # was rejected above). Never hand back an empty reply or the
+                # candidate's next message as if it were the interviewer's.
+                raise ChatRuntimeError(
+                    "STALE_MESSAGE: Tin nhắn này không được xử lý. Vui lòng gửi lại câu trả lời."
+                )
+            remaining_time = _session_remaining_seconds(
+                session_row, elapsed_override_seconds=elapsed_override_seconds
+            )
+            action_name = asst_msg.get("message_type")
             return {
                 "sessionId": session_id,
                 "currentStage": (current_turn.get("question_snapshot") or {}).get("stage", "INTRO"),
@@ -759,7 +942,9 @@ async def process_candidate_message(
                     {"sid": session_id, "seq": existing_user_seq + 1},
                 )
                 asst_msg = asst_res.mappings().one_or_none()
-                remaining_time = max(0, int(session_row.get("time_budget_seconds", 900) - duration_seconds))
+                remaining_time = _session_remaining_seconds(
+                    session_row, elapsed_override_seconds=elapsed_override_seconds
+                )
                 action_name = asst_msg.get("message_type") if asst_msg else "NONE"
                 return {
                     "sessionId": session_id,
@@ -835,9 +1020,29 @@ async def process_candidate_message(
         session_probe_count=session_probe_count,
         cv_followup_used=cv_followup_used,
         clarify_count=curr_turn_clarifies,
-        duration_seconds=duration_seconds,
+        elapsed_override_seconds=elapsed_override_seconds,
     )
     session_state["job_title"] = job_title
+    if _turn_stage(current_turn) == "CLOSING":
+        session_state["job_context"] = await _get_job_context(db, session_row.get("job_id"))
+        # Questions the candidate has sent on this closing turn, including this one.
+        questions_asked = await db.scalar(
+            text(
+                "SELECT COUNT(*) FROM interview_chat_messages "
+                "WHERE session_id = :sid AND turn_id = :turn_id AND role = 'user'"
+            ),
+            {"sid": session_id, "turn_id": current_turn_id},
+        )
+        closing_started = current_turn.get("started_at")
+        qna_elapsed = 0
+        if isinstance(closing_started, datetime):
+            if closing_started.tzinfo is None:
+                closing_started = closing_started.replace(tzinfo=UTC)
+            qna_elapsed = max(0, int((datetime.now(UTC) - closing_started).total_seconds()))
+        session_state["closing_qna"] = {
+            "questions_asked": int(questions_asked or 1),
+            "elapsed_seconds": qna_elapsed,
+        }
 
     turn_input = CandidateTurnInput(
         session_id=session_id,
@@ -894,6 +1099,16 @@ async def process_candidate_message(
     # =========================================================================
     # PHASE 3: Commit Assistant Response & Advance Turn
     # =========================================================================
+    # Re-take the session lock released by the Phase 1 commit. If the candidate
+    # ended the session while the reply was being generated, do not append a
+    # question to a CLOSED session or overwrite its end reason.
+    status_after_llm = await db.scalar(
+        text("SELECT status FROM interview_sessions WHERE id = :sid FOR UPDATE"),
+        {"sid": session_id},
+    )
+    if status_after_llm == "CLOSED":
+        await db.rollback()
+        raise ChatRuntimeError("SESSION_CLOSED: Phiên phỏng vấn đã kết thúc trong lúc xử lý câu trả lời.")
     if core_output.action == TurnAction.CONFIRM_ABORT:
         await db.execute(
             text(
@@ -1165,7 +1380,10 @@ async def process_candidate_message(
     # ĐẶC BIỆT: NẾU BƯỚC VÀO GIAI ĐOẠN CLOSING MÀ CHƯA CÓ TURN TRONG DB
     if not next_turn and core_output.current_stage == InterviewStage.CLOSING and not core_output.is_session_finished:
         closing_turn_id = str(uuid4())
-        closing_turn_index = current_turn_index + 1
+        # Turn order is not monotonic (the reserve jump asks BEHAVIORAL, the
+        # highest index, before lower-index turns), so current+1 can collide
+        # with uq_interview_turn_order.
+        closing_turn_index = max(t["turn_index"] for t in turns) + 1
         closing_snap = {
             "stage": "CLOSING",
             "questionText": core_output.message_text,
@@ -1197,6 +1415,30 @@ async def process_candidate_message(
             "question_version_id": None,
         }
         turns.append(next_turn)
+
+    next_stage = (next_turn.get("question_snapshot") or {}).get("stage") if next_turn else None
+    if next_stage == "BEHAVIORAL" and not core_output.is_session_finished:
+        # The engine jumps to BEHAVIORAL early when the behavioral time reserve
+        # is reached. Technical turns left PLANNED at that point will never be
+        # asked; settle them as SKIPPED so the BEHAVIORAL invariant holds on the
+        # next message and evaluation reports them as uncovered.
+        for t in turns:
+            if (
+                t["id"] != current_turn_id
+                and t.get("status") == "PLANNED"
+                and (t.get("question_snapshot") or {}).get("stage") in _TECHNICAL_STAGES
+            ):
+                await db.execute(
+                    text(
+                        """
+                        UPDATE interview_turns
+                        SET status = 'SKIPPED', updated_at = now()
+                        WHERE id = :turn_id AND status = 'PLANNED'
+                        """
+                    ),
+                    {"turn_id": t["id"]},
+                )
+                t["status"] = "SKIPPED"
 
     if next_turn and not core_output.is_session_finished:
         # Start next turn
@@ -1311,29 +1553,68 @@ async def process_candidate_message(
     elif not next_turn:
         end_reason = "COMPLETED"
 
+    downgraded_from_completed = False
     if end_reason == "COMPLETED":
-        remaining_asked = [t for t in turns if t["id"] != current_turn_id and t.get("status") == "ASKED"]
-        if remaining_asked:
-            raise ChatRuntimeError(
-                f"INVALID_SESSION_COMPLETION: Không thể đóng phiên COMPLETED khi còn {len(remaining_asked)} lượt câu hỏi ở trạng thái ASKED chưa được trả lời."
+        # The engine owns the decision to stop; only the label can be wrong here.
+        # The <= 90s pacing cutoff ends a session while frozen turns are still
+        # PLANNED, so calling that "COMPLETED" would misreport coverage.
+        #
+        # Downgrade the reason instead of raising. Phase 1 has already committed
+        # the candidate message, so aborting at this point used to leave the turn
+        # ASKED with no assistant reply, and every retry failed the same way with
+        # no way out of the room except the manual end button.
+        unfinished = _unfinished_agenda_turns(turns, current_turn_id=current_turn_id)
+        if unfinished:
+            downgraded_from_completed = True
+            ran_out_of_time = False
+            # Only call it a timeout when time is actually what ran out. The
+            # engine can also stop early on a malformed frozen turn or an
+            # exhausted stage order, and labelling that HARD_TIMEOUT would hide a
+            # real defect behind a pacing explanation.
+            reserve_seconds = int(session_state.get("closing_reserve_seconds", 60)) + int(
+                session_state.get("behavioral_reserve_seconds", 180)
             )
-        behavioral_turns = [
-            t for t in turns
-            if (t.get("question_snapshot") or {}).get("stage") == "BEHAVIORAL"
-        ]
-        if behavioral_turns:
-            unanswered_beh = [
-                t for t in behavioral_turns
-                if t["id"] != current_turn_id and t.get("status") not in {"ANSWERED", "COMPLETED", "EVALUATED"}
-            ]
-            if unanswered_beh and (current_turn.get("question_snapshot") or {}).get("stage") != "BEHAVIORAL":
-                raise ChatRuntimeError(
-                    "INVALID_SESSION_COMPLETION: Không thể đóng phiên COMPLETED khi phần phỏng vấn Behavioral chưa hoàn tất."
-                )
+            ran_out_of_time = int(remaining_time or 0) <= reserve_seconds
+            end_reason = "HARD_TIMEOUT" if ran_out_of_time else "TECHNICAL_FAILURE"
+            trace_event(
+                "interviewer",
+                "session_completion_downgraded",
+                session_id=session_id,
+                turn_id=current_turn_id,
+                downgraded_to=end_reason,
+                remaining_time_seconds=remaining_time,
+                reserve_seconds=reserve_seconds,
+                unfinished_turn_count=len(unfinished),
+                unfinished_stages=sorted({_turn_stage(turn) for turn in unfinished}),
+            )
 
-    wrap_text = core_output.message_text if core_output.is_session_finished else ""
+    wrap_text = "" if downgraded_from_completed else (
+        core_output.message_text if core_output.is_session_finished else ""
+    )
     if not wrap_text:
-        if is_vi:
+        if downgraded_from_completed and ran_out_of_time:
+            # Never claim full coverage for a session that stopped early.
+            wrap_text = (
+                "Cảm ơn bạn đã tham gia buổi phỏng vấn hôm nay! Thời lượng của phiên đã hết "
+                "nên chúng ta chưa kịp đi qua toàn bộ chủ đề theo kế hoạch. Những phần đã trao đổi "
+                "đều được ghi nhận đầy đủ trong báo cáo đánh giá."
+                if is_vi
+                else "Thank you for joining today's interview! The session ran out of time before we "
+                     "could cover every planned topic. Everything we did discuss has been recorded "
+                     "in full for the evaluation report."
+            )
+        elif downgraded_from_completed:
+            # Stopped early for a reason other than time; do not blame the clock.
+            wrap_text = (
+                "Cảm ơn bạn đã tham gia buổi phỏng vấn hôm nay! Phiên phải kết thúc sớm nên chúng ta "
+                "chưa đi qua hết các chủ đề theo kế hoạch. Những phần đã trao đổi đều được ghi nhận "
+                "đầy đủ trong báo cáo đánh giá."
+                if is_vi
+                else "Thank you for joining today's interview! The session had to end before we could "
+                     "cover every planned topic. Everything we did discuss has been recorded in full "
+                     "for the evaluation report."
+            )
+        elif is_vi:
             wrap_text = (
                 "Cảm ơn bạn đã tham gia buổi phỏng vấn hôm nay! Chúng ta đã hoàn thành tất cả các chủ đề "
                 "chuyên môn theo kế hoạch. Bạn có thể xem lại toàn bộ nội dung trò chuyện tại đây. "
@@ -1436,9 +1717,10 @@ async def complete_chat_session(
             ),
         }
 
-    # Verify directly from DB to prevent race condition / multiple complete calls
+    # Verify directly from DB to prevent race condition / multiple complete calls.
+    # The row lock serializes this with a concurrent candidate message.
     cur_session = await db.execute(
-        text("SELECT status, end_reason FROM interview_sessions WHERE id = :sid"),
+        text("SELECT status, end_reason FROM interview_sessions WHERE id = :sid FOR UPDATE"),
         {"sid": session_id},
     )
     row = cur_session.mappings().one_or_none()
@@ -1458,7 +1740,9 @@ async def complete_chat_session(
             ),
         }
 
-    # Check if closing with COMPLETED is valid (no ASKED turns and behavioral answered)
+    # A client may only assert COMPLETED when the frozen agenda really is done.
+    # Unlike the runtime auto-close path, nothing has been written yet here, so
+    # refusing is safe and keeps a false "COMPLETED" out of the record.
     if reason == "COMPLETED":
         turns_res = await db.execute(
             text(
@@ -1472,24 +1756,13 @@ async def complete_chat_session(
             {"session_id": session_id},
         )
         turns = [dict(r) for r in turns_res.mappings().all()]
-        asked_turns = [t for t in turns if t.get("status") == "ASKED"]
-        if asked_turns:
+        unfinished = _unfinished_agenda_turns(turns)
+        if unfinished:
             raise ChatRuntimeError(
-                f"INVALID_SESSION_COMPLETION: Không thể đóng phiên COMPLETED khi còn {len(asked_turns)} lượt câu hỏi ở trạng thái ASKED chưa được trả lời."
+                "INVALID_SESSION_COMPLETION: Không thể đóng phiên COMPLETED khi còn "
+                f"{len(unfinished)} lượt câu hỏi chưa được trả lời "
+                f"({', '.join(sorted({_turn_stage(t) for t in unfinished}))})."
             )
-        behavioral_turns = [
-            t for t in turns
-            if (t.get("question_snapshot") or {}).get("stage") == "BEHAVIORAL"
-        ]
-        if behavioral_turns:
-            unanswered_beh = [
-                t for t in behavioral_turns
-                if t.get("status") not in {"ANSWERED", "COMPLETED", "EVALUATED"}
-            ]
-            if unanswered_beh:
-                raise ChatRuntimeError(
-                    "INVALID_SESSION_COMPLETION: Không thể đóng phiên COMPLETED khi phần phỏng vấn Behavioral chưa hoàn tất."
-                )
 
     # Check if last message was already WRAP_UP
     last_msg = await db.execute(
