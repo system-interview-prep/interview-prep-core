@@ -180,17 +180,18 @@ async def test_generated_question_is_filed_for_review_and_reused(rollback_db, mo
         count=5,
     )
 
+    # The fake returns the same question every time: the gate's regeneration
+    # round sees it as a duplicate, so only one is filed.
     assert filed == 1
     # Only the concept reaches the model, never JD text; the count is capped.
-    assert calls == [
-        {
-            "skill_label": "PHP",
-            "competency_label": "Backend Engineering",
-            "difficulty": "intermediate",
-            "locale": "en-US",
-            "count": question_generation.MAX_GENERATED_PER_TARGET,
-        }
-    ]
+    assert calls[0] == {
+        "skill_label": "PHP",
+        "competency_label": "Backend Engineering",
+        "difficulty": "intermediate",
+        "locale": "en-US",
+        "count": question_generation.MAX_GENERATED_PER_TARGET,
+    }
+    assert [call["count"] for call in calls[1:]] == [1]
     status = await rollback_db.scalar(
         text(
             "SELECT v.status FROM interview_question_versions v "
