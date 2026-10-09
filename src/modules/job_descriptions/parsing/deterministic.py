@@ -11,7 +11,7 @@ from src.modules.job_descriptions.domain.schemas import (
     GroundedJobText,
     JobRequirement,
 )
-from src.modules.taxonomy.facade import TAXONOMY_VERSION, classify_career
+from src.modules.taxonomy.facade import TAXONOMY_VERSION, alias_pattern, classify_career, skill_aliases
 from src.modules.user_cvs.facade import EvidenceMapper, SourceDocument
 from src.modules.user_cvs.schemas import CareerClassification, ParsingMetadata, TaxonomyRef
 
@@ -182,52 +182,8 @@ def _detect_priority(value: str, section_priority: str = "must_have") -> str:
 
     return section_priority
 
-_SKILLS = {
-    "skill-unity": ("Unity", ("unity", "unity engine")),
-    "skill-java": ("Java", ("java",)),
-    "skill-spring-boot": ("Spring Boot", ("spring boot",)),
-    "skill-python": ("Python", ("python",)),
-    "skill-fastapi": ("FastAPI", ("fastapi",)),
-    "skill-react": ("React", ("react", "reactjs")),
-    "skill-javascript": ("JavaScript", ("javascript",)),
-    "skill-typescript": ("TypeScript", ("typescript",)),
-    "skill-docker": ("Docker", ("docker",)),
-    "skill-kubernetes": ("Kubernetes", ("kubernetes", "k8s")),
-    "skill-container-orchestrator": (
-        "Kubernetes or Docker Swarm",
-        ("container orchestration",),
-    ),
-    "skill-aws": ("AWS", ("aws",)),
-    "skill-monitoring": ("Monitoring", ("monitoring", "observability", "telemetry")),
-    "skill-cicd": ("CI/CD", ("ci/cd", "continuous integration", "continuous delivery", "continuous deployment")),
-    # Common backend requirements must be represented as separate atoms so an
-    # AND-list (for example Kafka, Redis, and MySQL) cannot pass on one hit.
-    "skill-csharp": ("C#", ("c#", "csharp")),
-    "skill-dotnet": (".NET", (".net", "dotnet", "asp.net", "aspnet")),
-    "skill-kafka": ("Kafka", ("kafka",)),
-    "skill-redis": ("Redis", ("redis",)),
-    "skill-mysql": ("MySQL", ("mysql",)),
-    "skill-linux": ("Linux", ("linux",)),
-    "skill-git": ("Git", ("git",)),
-    "skill-json": ("JSON", ("json",)),
-    "skill-sql": ("SQL", ("sql",)),
-    "skill-http": ("HTTP", ("http",)),
-    "skill-android": ("Android", ("android",)),
-    "skill-ios": ("iOS", ("ios",)),
-    "skill-artificial-intelligence": ("Artificial Intelligence", ("artificial intelligence", "ai")),
-    "skill-machine-learning": ("Machine Learning", ("machine learning", "ml")),
-    "skill-natural-language-processing": (
-        "Natural Language Processing",
-        ("natural language processing", "nlp"),
-    ),
-    "skill-generative-ai": ("Generative AI", ("generative ai", "genai")),
-    "skill-large-language-models": (
-        "Large Language Models",
-        ("large language model", "large language models", "llm"),
-    ),
-    "skill-kotlin": ("Kotlin", ("kotlin",)),
-    "skill-cplusplus": ("C++", ("c++", "cpp")),
-}
+# Shared with the CV parser and the seeded taxonomy; see taxonomy.skill_catalog.
+_SKILLS = skill_aliases()
 
 
 def resolve_known_skill_concepts(
@@ -246,7 +202,7 @@ def resolve_known_skill_concepts(
     matches: list[tuple[int, int, TaxonomyRef]] = []
     for concept_id, (label, aliases) in source.items():
         for alias in aliases:
-            match = re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", text, re.I)
+            match = alias_pattern(alias).search(text)
             if match:
                 matches.append(
                     (
@@ -327,6 +283,14 @@ _HEADERS = {
         "profile",
         "what you need",
         "what you will bring",
+        "what you ll bring",
+        "what you ll need",
+        "minimum requirements",
+        "job qualifications",
+        "technical skills",
+        "what we look for",
+        "your expertise",
+        "about you",
         "who you are",
         "ideal candidate",
         "yeu cau",
@@ -338,7 +302,15 @@ _HEADERS = {
         "tieu chuan",
         "ky nang can co",
     },
-    "preferred": {"preferred", "nice to have", "plus", "bonus", "uu tien"},
+    "preferred": {
+        "preferred",
+        "nice to have",
+        "nice to haves",
+        "it s great if you have",
+        "plus",
+        "bonus",
+        "uu tien",
+    },
     "responsibilities": {
         "responsibilities",
         "key responsibilities",
@@ -347,6 +319,9 @@ _HEADERS = {
         "what you will do",
         "what youll do",
         "what you ll do",
+        "what you ll be doing",
+        "job responsibilities",
+        "a typical day",
         "the role",
         "your role",
         "about the role",
@@ -416,10 +391,124 @@ def _heading(line: str) -> str | None:
     )
 
 
+# Section words for headings the fixed vocabulary does not list ("What We Look
+# For In You", "Technical Skills", "Your Expertise"). Matched as word prefixes
+# of the normalized heading; the first group that matches wins, so "Preferred
+# qualifications" is preferred, not requirements.
+_HEADING_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("preferred", ("nice to have", "preferred", "bonus", "great if", "good to have", "uu tien")),
+    ("benefits", ("benefit", "perk", "we offer", "compensation", "why join", "quyen loi", "phuc loi", "dai ngo")),
+    (
+        "responsibilities",
+        (
+            "responsibilit",
+            "you will do",
+            "you ll do",
+            "you ll be doing",
+            "day to day",
+            "duties",
+            "your impact",
+            "a typical day",
+            "trach nhiem",
+            "nhiem vu",
+        ),
+    ),
+    (
+        "requirements",
+        (
+            "requirement",
+            "qualification",
+            "must have",
+            "you ll need",
+            "you will need",
+            "you need",
+            "you bring",
+            "you ll bring",
+            "look for",
+            "looking for",
+            "about you",
+            "who you are",
+            "expertise",
+            "skills",
+            "yeu cau",
+            "ky nang",
+            "tieu chuan",
+        ),
+    ),
+)
+
+# Hashtag rows and bare links trailing a posting ("#Bangkok #IT", "LinkedIn https://...").
+_NON_REQUIREMENT_LINE = re.compile(r"\s*(?:#\S+\s*)+|\s*(?:\w+\s+)?https?://\S+\s*")
+
+# Closing blocks after the job content (company boilerplate, legal notices).
+# They only end the previous section; a heading must start with one of these.
+_BOUNDARY_HEADINGS = (
+    "about",
+    "other things",
+    "equal opportunity",
+    "equal employment",
+    "disclaimer",
+    "our commitment",
+    "who we are",
+    "our purpose",
+    "learning development",
+    "life at",
+    "your location",
+    "discover more",
+    "gioi thieu cong ty",
+    "ve chung toi",
+)
+
+
+def _keyword_heading(lines: list[tuple[int, str]], index: int) -> str | None:
+    """Classify a heading-shaped line the vocabulary misses, by section words.
+
+    Only a line that looks like a heading qualifies: not a bullet, at most
+    eight words, no sentence punctuation or digits, and either ending in ":"
+    or directly followed by a bullet list. A plain requirement sentence such
+    as "Strong communication skills" therefore stays a requirement.
+    """
+    line = lines[index][1].strip()
+    if not line or _bullet(line):
+        return None
+    body = line.rstrip(":?").strip()
+    tokens = _key(body).split()
+    if not tokens or len(tokens) > 8 or re.search(r"[.!;,]|\d", body):
+        return None
+    key = _key(body)
+    following = _nearest_nonempty(lines, index, 1)
+    if line.endswith(":") or (following and _bullet(following)):
+        for kind, words in _HEADING_KEYWORDS:
+            if any(re.search(rf"\b{re.escape(word)}", key) for word in words):
+                return kind
+    if not key.startswith("about you") and any(
+        key == word or key.startswith(f"{word} ") for word in _BOUNDARY_HEADINGS
+    ):
+        return "other"
+    return None
+
+
+def _section_headings(text: str) -> dict[int, tuple[str, bool]]:
+    """Line offset -> (section kind, found by keywords rather than vocabulary)."""
+    lines = _lines(text)
+    found: dict[int, tuple[str, bool]] = {}
+    for index, (offset, line) in enumerate(lines):
+        if kind := _heading(line):
+            found[offset] = (kind, False)
+        elif kind := _keyword_heading(lines, index):
+            found[offset] = (kind, True)
+    return found
+
+
 def _ranges(text: str) -> dict[str, tuple[int, int]]:
-    headings = [
-        (offset, kind) for offset, line in _lines(text) if (kind := _heading(line)) and kind != "preferred"
-    ]
+    headings: list[tuple[int, str]] = []
+    for offset, (kind, by_keyword) in _section_headings(text).items():
+        # "Job qualifications" -> "Technical Skills" -> "Professional Skills" is
+        # one requirements section with keyword sub-headings. A repeated
+        # vocabulary heading still starts a new section (the last one wins).
+        if kind == "preferred" or (by_keyword and headings and headings[-1][1] == kind):
+            continue
+        headings.append((offset, kind))
     result: dict[str, tuple[int, int]] = {}
     for index, (start, kind) in enumerate(headings):
         # A company introduction can reuse "Mô tả công việc" before the actual
@@ -629,11 +718,26 @@ class DeterministicJobDescriptionParser:
             return []
         start, end, priority, result = *section, "must_have", []
         doc_negated_topics = _extract_negated_topics(source.text)
+        section_headings = _section_headings(source.text)
 
         lines = _lines(source.text[start:end])
         for line_index, (offset, line) in enumerate(lines):
-            if _heading(line) == "preferred":
+            heading_kind, by_keyword = section_headings.get(start + offset, (_heading(line), False))
+            forced_preferred = False
+            if heading_kind == "preferred" and _bullet(line) and len(_key(line).split()) > 6:
+                # "- Bonus points if you have AWS, Azure, Kubernetes" is a
+                # preferred requirement, not a heading that swallows the line
+                # and demotes everything after it.
+                heading_kind, forced_preferred = None, True
+            if heading_kind == "preferred":
                 priority = "preferred"
+                continue
+            if heading_kind == "requirements" and by_keyword:
+                # Keyword sub-heading ("Professional Skills"): a boundary that
+                # ends any preferred block before it, not a requirement.
+                priority = "must_have"
+                continue
+            if _NON_REQUIREMENT_LINE.fullmatch(_bullet(line)[1] if _bullet(line) else line):
                 continue
             section_key = _key(re.sub(r"^(?:[-â€¢o#*]+\s*)+", "", line).rstrip(": ").strip())
             if section_key in {"experience", "work experience", "minimum qualifications"}:
@@ -681,7 +785,7 @@ class DeterministicJobDescriptionParser:
                 continue
 
             # Priority detection
-            line_priority = _detect_priority(value, priority)
+            line_priority = "preferred" if forced_preferred else _detect_priority(value, priority)
             is_preferred_line = line_priority == "preferred"
 
             absolute_start = start + offset + relative_start
@@ -857,7 +961,7 @@ class DeterministicJobDescriptionParser:
             prog_match = _PROGRAMMING_FOUNDATION_RE.search(value)
             if prog_match:
                 has_known_tech = any(
-                    any(re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", value, re.I) for alias in aliases)
+                    any(alias_pattern(alias).search(value) for alias in aliases)
                     for aliases in (t[1] for t in self._taxonomy.values())
                 )
                 if not has_known_tech:
@@ -940,7 +1044,7 @@ class DeterministicJobDescriptionParser:
                 )
             for concept_id, (label, aliases) in self._taxonomy.items():
                 for alias in aliases:
-                    for match in re.finditer(rf"(?<!\w){re.escape(alias)}(?!\w)", value, re.I):
+                    for match in alias_pattern(alias).finditer(value):
                         if any(
                             match.start() < alternative.end()
                             and alternative.start() < match.end()
@@ -955,7 +1059,8 @@ class DeterministicJobDescriptionParser:
                 unique_skills = []
                 last_end = -1
                 for c_id, lbl, s_start, s_end in found_skills:
-                    if s_start >= last_end:
+                    # Two aliases of one concept can match at different offsets.
+                    if s_start >= last_end and all(c_id != kept[0] for kept in unique_skills):
                         unique_skills.append((c_id, lbl, s_start, s_end))
                         last_end = s_end
 
@@ -1432,7 +1537,14 @@ class DeterministicJobDescriptionParser:
     def _classifications(requirements, job_title: str | None = None):
         del job_title  # Canonical JD v1 has no evidenceRefs for its title.
         skill_evidence: dict[str, list[str]] = {}
-        for item in requirements:
+        # The role is what the job requires; a "nice to have Android plugin"
+        # must not turn a Unity game role into a mobile one.
+        must_have = [
+            item
+            for item in requirements
+            if item.priority == "must_have" and (item.concept is not None or item.atomic_concepts)
+        ]
+        for item in must_have or requirements:
             concepts = [item.concept] if item.concept is not None else item.atomic_concepts
             for concept in concepts:
                 existing = skill_evidence.setdefault(concept.concept_id, [])
