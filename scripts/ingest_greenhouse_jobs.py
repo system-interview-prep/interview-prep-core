@@ -37,6 +37,7 @@ try:
 except Exception:  # pragma: no cover
     SessionFactory = None
 
+from src.modules.interviews.planning.question_coverage import enqueue_question_coverage  # noqa: E402
 from src.modules.job_descriptions.ingestion.adapters.greenhouse import GreenhouseJobBoardAdapter
 from src.modules.job_descriptions.ingestion.models import IngestionConfig
 from src.modules.job_descriptions.ingestion.repository import JobIngestionRepository
@@ -159,6 +160,9 @@ async def run_ingestion(args: argparse.Namespace) -> int:
     print("INGESTION SUMMARY")
     print("=" * 70)
     print(json.dumps(summary.model_dump(), indent=2, default=str))
+    # After commit: pre-generate questions for the published jobs' must-have skills.
+    if summary.metrics.get("created_count") or summary.metrics.get("updated_count"):
+        enqueue_question_coverage()
 
     if summary.status == "FAILED":
         return 1
