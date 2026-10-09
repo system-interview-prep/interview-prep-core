@@ -12,6 +12,7 @@ celery_app = Celery(
         "src.workers.tasks.matching",
         "src.workers.tasks.cv",
         "src.workers.tasks.job_description",
+        "src.workers.tasks.question_bank",
     ],
 )
 celery_app.conf.update(
@@ -23,6 +24,8 @@ celery_app.conf.update(
         "matching.*": {"queue": settings.rabbitmq_matching_queue},
         "cv.*": {"queue": settings.rabbitmq_cv_queue},
         "job_description.*": {"queue": settings.rabbitmq_jd_queue},
+        # Question pre-generation follows JD publishing; reuse its queue.
+        "question_bank.*": {"queue": settings.rabbitmq_jd_queue},
     },
 )
 
