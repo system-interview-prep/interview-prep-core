@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
 from src.core.trace_logging import trace_event
+from src.modules.interviews.core.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
 from src.modules.interviews.planning.plan_structure import (
     build_evaluation_targets,
     build_sections,
@@ -109,10 +110,35 @@ def _question_budget(duration_minutes: int) -> int:
     25-minute session's hard limits summed to exactly 1500s with no room for a
     single follow-up, and a 15-minute session needed ~1080s for 900s, so
     HARD_TIMEOUT was routine. Now: 15m -> 1, 25m -> 4 (with probe room),
-    45m and longer -> 8.
+    45m and longer -> 8. The demo package is turn-driven, not time-driven, and
+    always freezes one DEEP_DIVE plus one CHALLENGE question.
     """
+    if is_demo_duration(duration_minutes):
+        return DEMO_TECHNICAL_QUESTIONS
     available = duration_minutes * 60 - _PRESET_EXPECTED_SECONDS
     return max(1, min(_MAX_TECHNICAL_QUESTIONS, available // _TECHNICAL_EXPECTED_SECONDS))
+
+
+def _is_gap_target(item: "_CandidateTarget") -> bool:
+    return any(status in ("not_met", "unknown") for status in item.match_statuses)
+
+
+def _demo_targets(
+    ranked: list["_CandidateTarget"], selected: list["_CandidateTarget"]
+) -> list["_CandidateTarget"]:
+    """Put a CV gap in the demo's last (CHALLENGE) slot when the job has one.
+
+    The selector labels the last demo question CHALLENGE, and a challenge on a
+    skill the CV lacks is what the stage is meant to show. Without a gap in the
+    top slots, the best-ranked gap replaces the last one; the gap goes last.
+    """
+    if len(selected) < 2:
+        return selected
+    if not any(_is_gap_target(item) for item in selected):
+        best_gap = next((item for item in ranked[len(selected):] if _is_gap_target(item)), None)
+        if best_gap is not None:
+            selected = [*selected[:-1], best_gap]
+    return sorted(selected, key=_is_gap_target)
 
 
 def _requirement_concepts(requirement: Any) -> list[TaxonomyRef]:
@@ -250,6 +276,8 @@ def _derive_competency_plan_legacy(
         ),
     )
     selected = ranked[: min(len(ranked), budget)]
+    if is_demo_duration(duration_minutes):
+        selected = _demo_targets(ranked, selected)
     raw_weights = [max(item.raw_weight, 0.0001) for item in selected]
     total_weight = sum(raw_weights)
     normalized_weights = [weight / total_weight for weight in raw_weights]
