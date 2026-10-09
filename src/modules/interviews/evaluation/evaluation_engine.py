@@ -1,6 +1,7 @@
 # src/modules/interviews/evaluation/evaluation_engine.py
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -20,6 +21,10 @@ from src.modules.interviews.evaluation.evaluation_types import (
 logger = logging.getLogger("InterviewEvaluationEngine")
 
 
+class EvaluationGradingError(RuntimeError):
+    """The grader could not score one or more assessed turns; no report is produced."""
+
+
 class InterviewEvaluationEngine:
     """
     P4 Evaluation Engine:
@@ -30,6 +35,11 @@ class InterviewEvaluationEngine:
     - Tổng hợp điểm theo competency và phân ngưỡng quyết định (STRONG_PASS, PASS, CONSIDER, REJECT).
     - Sinh báo cáo 2 chiều: Recruiter View và Candidate Coaching Feedback.
     """
+
+    GRADING_ATTEMPTS = 2
+    # Turns graded in parallel. Sequential grading of a 10-13 turn session took
+    # over a minute inside one HTTP request.
+    GRADING_CONCURRENCY = 4
 
     def __init__(self, llm_client=None, ai_generator=None):
         self.llm = llm_client
@@ -119,66 +129,68 @@ class InterviewEvaluationEngine:
         return {}
 
     async def evaluate_turn(self, turn_input: TurnEvaluationInput, is_vi: bool = True) -> TurnEvaluationResult:
-        """Đánh giá chi tiết một lượt trả lời của ứng viên."""
+        """Đánh giá chi tiết một lượt trả lời của ứng viên.
+
+        Thử lại một lần khi LLM lỗi hoặc không trả về điểm. Nếu vẫn thất bại,
+        trả về kết quả `graded=False` thay vì một điểm giả.
+        """
+        last_error: Exception | None = None
+        for _attempt in range(self.GRADING_ATTEMPTS):
+            try:
+                return await self._grade_turn(turn_input, is_vi=is_vi)
+            except Exception as exc:
+                last_error = exc
+        logger.warning(f"Turn {turn_input.turn_id} could not be graded: {last_error}")
+        return TurnEvaluationResult(
+            turn_id=turn_input.turn_id,
+            score=0.0,
+            feedback="Không thể chấm lượt này do lỗi hệ thống chấm điểm.",
+            graded=False,
+        )
+
+    async def _grade_turn(self, turn_input: TurnEvaluationInput, is_vi: bool = True) -> TurnEvaluationResult:
         instructions, user_content = self.get_turn_evaluation_prompt(turn_input, is_vi=is_vi)
 
-        try:
-            if hasattr(self.llm, "generate_json"):
-                data = await self.llm.generate_json(system_prompt=instructions, user_content=user_content)
-                if not isinstance(data, dict):
-                    data = self._clean_and_parse_json(str(data))
-            elif hasattr(self.llm, "generate_text"):
-                raw = await self.llm.generate_text(system_prompt=instructions, user_content=user_content)
-                data = self._clean_and_parse_json(raw)
-            else:
-                raw = await self._generate_fn(
-                    instructions=instructions,
-                    input_text=user_content,
-                    max_output_tokens=2500,
-                    temperature=0.1,
-                )
-                data = self._clean_and_parse_json(raw)
-
-            star_data = data.get("star_analysis") or {}
-            star_analysis = StarAnalysis(
-                situation=str(star_data.get("situation", "")),
-                task=str(star_data.get("task", "")),
-                action=str(star_data.get("action", "")),
-                result=str(star_data.get("result", "")),
-                is_star_complete=bool(star_data.get("is_star_complete", False)),
+        if hasattr(self.llm, "generate_json"):
+            data = await self.llm.generate_json(system_prompt=instructions, user_content=user_content)
+            if not isinstance(data, dict):
+                data = self._clean_and_parse_json(str(data))
+        elif hasattr(self.llm, "generate_text"):
+            raw = await self.llm.generate_text(system_prompt=instructions, user_content=user_content)
+            data = self._clean_and_parse_json(raw)
+        else:
+            raw = await self._generate_fn(
+                instructions=instructions,
+                input_text=user_content,
+                max_output_tokens=2500,
+                temperature=0.1,
             )
+            data = self._clean_and_parse_json(raw)
 
-            score = float(data.get("score", 5.0))
-            score = max(0.0, min(10.0, score))
+        star_data = data.get("star_analysis") or {}
+        star_analysis = StarAnalysis(
+            situation=str(star_data.get("situation", "")),
+            task=str(star_data.get("task", "")),
+            action=str(star_data.get("action", "")),
+            result=str(star_data.get("result", "")),
+            is_star_complete=bool(star_data.get("is_star_complete", False)),
+        )
 
-            return TurnEvaluationResult(
-                turn_id=turn_input.turn_id,
-                score=score,
-                star_analysis=star_analysis,
-                evidence_quotes=[str(q) for q in data.get("evidence_quotes", [])],
-                feedback=str(data.get("feedback", "Câu trả lời đã được ghi nhận.")),
-                strengths=[str(s) for s in data.get("strengths", [])],
-                weaknesses=[str(w) for w in data.get("weaknesses", [])],
-                what_good_looks_like=str(data.get("what_good_looks_like", "")),
-            )
-        except Exception as exc:
-            logger.warning(f"Fallback turn evaluation used due to: {exc}")
-            return TurnEvaluationResult(
-                turn_id=turn_input.turn_id,
-                score=5.0,
-                star_analysis=StarAnalysis(
-                    situation="",
-                    task="",
-                    action="",
-                    result="",
-                    is_star_complete=False,
-                ),
-                evidence_quotes=[],
-                feedback="Không thể phân tích dữ liệu đánh giá chi tiết cho lượt này.",
-                strengths=[],
-                weaknesses=["Câu trả lời chưa đủ rõ ràng để trích xuất cấu trúc STAR."],
-                what_good_looks_like="",
-            )
+        # No usable score means the grader failed; never invent a midpoint.
+        if "score" not in data:
+            raise ValueError("Grader response has no score")
+        score = max(0.0, min(10.0, float(data["score"])))
+
+        return TurnEvaluationResult(
+            turn_id=turn_input.turn_id,
+            score=score,
+            star_analysis=star_analysis,
+            evidence_quotes=[str(q) for q in data.get("evidence_quotes", [])],
+            feedback=str(data.get("feedback", "Câu trả lời đã được ghi nhận.")),
+            strengths=[str(s) for s in data.get("strengths", [])],
+            weaknesses=[str(w) for w in data.get("weaknesses", [])],
+            what_good_looks_like=str(data.get("what_good_looks_like", "")),
+        )
 
     def calculate_decision_recommendation(self, score: float) -> DecisionRecommendation:
         """Phân loại quyết định tuyển dụng dựa trên ngưỡng điểm chuẩn."""
@@ -342,10 +354,34 @@ class InterviewEvaluationEngine:
         is_vi: bool = True,
     ) -> SessionEvaluationResult:
         """Đánh giá toàn diện toàn bộ phiên phỏng vấn từ danh sách các lượt hỏi đáp."""
-        turn_evaluations: List[TurnEvaluationResult] = []
-        for ti in turns_input:
-            te = await self.evaluate_turn(ti, is_vi=is_vi)
-            turn_evaluations.append(te)
+        semaphore = asyncio.Semaphore(self.GRADING_CONCURRENCY)
+
+        async def _grade(ti: TurnEvaluationInput) -> tuple[TurnEvaluationInput, TurnEvaluationResult]:
+            async with semaphore:
+                return ti, await self.evaluate_turn(ti, is_vi=is_vi)
+
+        tasks = [asyncio.create_task(_grade(ti)) for ti in turns_input]
+        results: Dict[str, TurnEvaluationResult] = {}
+        try:
+            for finished in asyncio.as_completed(tasks):
+                ti, te = await finished
+                # A report built on ungraded turns would present invented
+                # numbers as a real assessment, and it would be persisted. Stop
+                # at the first assessed turn that cannot be graded so the
+                # caller can retry once the grader is healthy.
+                if not te.graded and ti.weight > 0:
+                    raise EvaluationGradingError(
+                        f"Không chấm được lượt {ti.turn_index + 1} ({ti.competency}). Vui lòng thử lại sau."
+                    )
+                results[ti.turn_id] = te
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        turn_evaluations = [
+            results[ti.turn_id] for ti in turns_input if results[ti.turn_id].graded
+        ]
 
         return await self.aggregate_session_evaluation(
             session_id=session_id,
