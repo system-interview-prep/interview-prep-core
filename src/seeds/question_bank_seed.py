@@ -32,6 +32,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.seeds.question_bank_seed_vi import QUESTION_TEXT_VI
+
 # The taxonomy_version used by the JD/CV parsers and stored in
 # session_competency_targets.  This MUST match what the selector query uses.
 _QUESTION_TAXONOMY_VERSION = "internal-2026.1"
@@ -1381,12 +1383,36 @@ async def seed_question_bank(session_factory: Callable[[], AsyncSession]) -> dic
                 )
                 if created:
                     seeded += 1
+                if q.get("locale", "en-US") != "vi-VN" and stable_key in QUESTION_TEXT_VI:
+                    await _upsert_vi_localization(db, stable_key, QUESTION_TEXT_VI[stable_key])
 
             summary[concept_id] = seeded
 
         await db.commit()
 
     return summary
+
+
+async def _upsert_vi_localization(db: AsyncSession, stable_key: str, question_text: str) -> None:
+    """Approved Vietnamese wording of an English seed question (see question_bank_seed_vi)."""
+    await db.execute(
+        text(
+            "INSERT INTO question_localizations "
+            "(id, question_version_id, locale, question_text, status, reviewed_by, reviewed_at) "
+            "SELECT CAST(:id AS uuid), q.current_approved_version_id, 'vi-VN', :question_text, "
+            "'APPROVED', :reviewer, now() "
+            "FROM interview_questions q "
+            "WHERE q.stable_key = :stable_key AND q.current_approved_version_id IS NOT NULL "
+            "ON CONFLICT (question_version_id, locale) DO UPDATE SET "
+            "question_text = EXCLUDED.question_text, status = 'APPROVED'"
+        ),
+        {
+            "id": str(_det_uuid("question-localization-vi", stable_key)),
+            "question_text": question_text,
+            "reviewer": _SEED_APPROVER,
+            "stable_key": stable_key,
+        },
+    )
 
 
 async def _seed_one_question(
