@@ -20,11 +20,31 @@ from src.modules.user_cvs.schemas import CanonicalResume
 logger = logging.getLogger(__name__)
 
 
-async def resolve_resume(db: AsyncSession, cv_id: str) -> CanonicalResume:
-    res = await db.execute(
-        text("SELECT id, parsed_data, raw_text, status FROM user_cvs WHERE id = :id"),
-        {"id": cv_id},
-    )
+def resume_owner_scope(user: dict) -> str | None:
+    """Admins may match any CV; everyone else only their own."""
+    return None if "ADMIN" in (user.get("roles") or []) else str(user["sub"])
+
+
+async def resolve_resume(db: AsyncSession, cv_id: str, *, owner_id: str | None) -> CanonicalResume:
+    """Load a parsed CV for matching.
+
+    ``owner_id`` scopes the lookup to that user's CVs; another user's CV is
+    reported as not found so its existence is not leaked. Pass ``None`` only
+    for trusted callers (admins) that may read any CV.
+    """
+    if owner_id is None:
+        res = await db.execute(
+            text("SELECT id, parsed_data, raw_text, status FROM user_cvs WHERE id = :id"),
+            {"id": cv_id},
+        )
+    else:
+        res = await db.execute(
+            text(
+                "SELECT id, parsed_data, raw_text, status FROM user_cvs "
+                "WHERE id = :id AND user_id = :owner_id"
+            ),
+            {"id": cv_id, "owner_id": owner_id},
+        )
     row = res.mappings().one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy hồ sơ CV với mã {cv_id}")
