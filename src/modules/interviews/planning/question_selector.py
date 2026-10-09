@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 from uuid import uuid4
@@ -23,6 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.trace_logging import trace_event
+from src.modules.interviews.core.demo_mode import is_demo_duration
 from src.modules.interviews.planning.project_evidence import (
     build_project_validation_question,
     extract_project_evidences,
@@ -124,6 +126,7 @@ def _candidate_rank(
     difficulty: str,
     locale: str,
     salt: str = "",
+    exposure: Mapping[str, str] | None = None,
 ) -> tuple[Any, ...]:
     purpose_rank = {
         "PRIMARY_COMPETENCY": 0,
@@ -137,10 +140,16 @@ def _candidate_rank(
         if salt
         else candidate.stable_key
     )
+    # Rotation: among equally suitable questions (same locale, difficulty and
+    # purpose) the candidate has not been asked before goes first, then the one
+    # asked longest ago. Relevance only orders questions within that.
+    last_seen = (exposure or {}).get(candidate.question_version_id)
+    exposure_rank = (0, "") if last_seen is None else (1, last_seen)
     return (
         _locale_rank(candidate.canonical_locale, locale),
         _difficulty_distance(candidate.difficulty_band, difficulty),
         purpose_rank,
+        exposure_rank,
         -candidate.relevance,
         tiebreaker,
         candidate.version,
@@ -156,6 +165,7 @@ async def _load_candidates(
     difficulty: str,
     salt: str = "",
     generated: bool = False,
+    exposure: Mapping[str, str] | None = None,
 ) -> list[_Candidate]:
     """Approved questions mapped to the target, or (``generated``) the
     machine-generated drafts still waiting for review."""
@@ -327,8 +337,46 @@ async def _load_candidates(
         )
     return sorted(
         candidates,
-        key=lambda item: _candidate_rank(item, difficulty=difficulty, locale=locale, salt=salt),
+        key=lambda item: _candidate_rank(
+            item, difficulty=difficulty, locale=locale, salt=salt, exposure=exposure
+        ),
     )
+
+
+async def _question_exposure(db: AsyncSession, session_row: dict[str, Any]) -> dict[str, str]:
+    """When the candidate was last asked each question, across their other sessions.
+
+    A new session for the same CV and JD keeps the same competencies (the
+    planner is deterministic) but rotates the concrete questions, so practice
+    does not turn into memorising answers. Resuming a session never reselects:
+    its turns are already frozen. Demo sessions keep fixed questions so the
+    scripted demo answers stay valid.
+    """
+    if is_demo_duration(session_row.get("duration_minutes")):
+        return {}
+    result = await db.execute(
+        text(
+            """
+            SELECT t.question_version_id::text AS question_version_id,
+                   MAX(COALESCE(t.started_at, t.updated_at)) AS last_seen
+            FROM interview_turns t
+            JOIN interview_sessions s ON s.id = t.session_id
+            WHERE s.user_id = (SELECT user_id FROM interview_sessions WHERE id = :session_id)
+              AND s.id <> :session_id
+              AND t.question_version_id IS NOT NULL
+              AND t.status <> 'PLANNED'
+            GROUP BY t.question_version_id
+            """
+        ),
+        {"session_id": session_row["id"]},
+    )
+    exposure: dict[str, str] = {}
+    for row in result.mappings().all():
+        last_seen = row["last_seen"]
+        exposure[str(row["question_version_id"])] = (
+            last_seen.isoformat() if hasattr(last_seen, "isoformat") else str(last_seen or "")
+        )
+    return exposure
 
 
 async def _broader_concepts(db: AsyncSession, concept_id: str) -> list[str]:
@@ -415,6 +463,7 @@ async def _fallback_candidates(
     salt: str,
     job_concepts: set[str],
     job_role: str | None,
+    exposure: Mapping[str, str] | None = None,
 ) -> list[_Candidate]:
     """Questions for a target the bank does not cover, in ladder order.
 
@@ -428,18 +477,25 @@ async def _fallback_candidates(
     skill_target = {**target, "rationale": {}}
     for concept in await _broader_concepts(db, target["conceptId"]):
         for candidate in await _load_candidates(
-            db, target={**skill_target, "conceptId": concept}, locale=locale, difficulty=difficulty, salt=salt
+            db,
+            target={**skill_target, "conceptId": concept},
+            locale=locale,
+            difficulty=difficulty,
+            salt=salt,
+            exposure=exposure,
         ):
             found.append(replace(candidate, source="broader_skill"))
     role_target = {**target, "rationale": {"source": "career_classification_fallback"}}
     for role in await _role_concepts(db, target["conceptId"], job_role):
         for candidate in await _load_candidates(
-            db, target={**role_target, "conceptId": role}, locale=locale, difficulty=difficulty, salt=salt
+            db, target={**role_target, "conceptId": role}, locale=locale, difficulty=difficulty, salt=salt,
+            exposure=exposure,
         ):
             if await _question_skill_concepts(db, candidate.question_version_id) & job_concepts:
                 found.append(replace(candidate, source="role"))
     found += await _load_candidates(
-        db, target=skill_target, locale=locale, difficulty=difficulty, salt=salt, generated=True
+        db, target=skill_target, locale=locale, difficulty=difficulty, salt=salt, generated=True,
+        exposure=exposure,
     )
     unique: dict[str, _Candidate] = {}
     for candidate in found:
@@ -475,6 +531,40 @@ async def _plan_targets_for_preflight(db: AsyncSession, plan_id: str, payload: d
     return targets
 
 
+async def reachable_candidates(
+    db: AsyncSession,
+    *,
+    target: dict[str, Any],
+    locale: str,
+    difficulty: str,
+    job_concepts: set[str],
+    job_role: str | None,
+    needed: int,
+) -> list[_Candidate]:
+    """Questions selection can reach for a target, in ladder order.
+
+    Exact approved questions first, then the fallback ladder (broader skill,
+    role, generated draft) only when those fall short of ``needed`` -- the
+    same reach the selector has. The session preflight and the background
+    pre-generation both count with this, so neither generates a question the
+    selector would never pick.
+    """
+    found = await _load_candidates(db, target=target, locale=locale, difficulty=difficulty)
+    if len(found) >= needed:
+        return found
+    seen = {item.question_version_id for item in found}
+    extra = await _fallback_candidates(
+        db,
+        target=target,
+        locale=locale,
+        difficulty=difficulty,
+        salt="",
+        job_concepts=job_concepts,
+        job_role=job_role,
+    )
+    return found + [item for item in extra if item.question_version_id not in seen]
+
+
 async def _generate_missing_questions(
     db: AsyncSession, *, session_row: dict[str, Any], plan_id: str, payload: dict[str, Any]
 ) -> None:
@@ -482,40 +572,26 @@ async def _generate_missing_questions(
 
     Runs before the plan row is locked: an LLM call can take tens of seconds
     and must not hold the lock. The selection that follows reads the drafts
-    through the generated step of the fallback ladder.
+    through the generated step of the fallback ladder. Skills of published
+    JDs are usually covered already by the background pre-generation
+    (question_coverage); this is the fallback for the rest.
     """
-    from src.modules.interviews.planning.question_generation import generate_and_file
+    from src.modules.interviews.planning.question_generation import ensure_generated_questions
 
     difficulty = (payload.get("difficulty") or {}).get("level", "unspecified")
     locale = session_row.get("locale") or "en-US"
-    salt = str(session_row.get("id") or "")
     job_concepts, job_role = await _job_taxonomy(db, session_row.get("job_id"))
     for target in await _plan_targets_for_preflight(db, plan_id, payload):
         if (target["rationale"] or {}).get("source") == "career_classification_fallback":
             continue
-        available = len(await _load_candidates(db, target=target, locale=locale, difficulty=difficulty, salt=salt))
-        if available >= target["needed"]:
-            continue
-        available += len(
-            await _fallback_candidates(
-                db,
-                target=target,
-                locale=locale,
-                difficulty=difficulty,
-                salt=salt,
-                job_concepts=job_concepts,
-                job_role=job_role,
-            )
-        )
-        if available >= target["needed"]:
-            continue
-        await generate_and_file(
+        await ensure_generated_questions(
             db,
-            concept_id=target["conceptId"],
+            target=target,
+            job_concepts=job_concepts,
             job_role=job_role,
             difficulty=difficulty,
             locale=locale,
-            count=target["needed"] - available,
+            desired=target["needed"],
         )
 
 
@@ -563,15 +639,29 @@ def _snapshot(
     }
 
 
+def _technical_stage(idx: int, *, total: int, is_coding: bool, is_gap: bool, is_demo: bool) -> str:
+    """Stage of the idx-th frozen technical question.
+
+    Coding questions and CV gaps after the first question are CHALLENGE. A demo
+    shows every stage, so its last technical question is always CHALLENGE (the
+    planner puts the CV gap, if any, in that slot).
+    """
+    if is_coding or (is_gap and idx >= 1):
+        return "CHALLENGE"
+    if is_demo and idx >= 1 and idx == total - 1:
+        return "CHALLENGE"
+    return "DEEP_DIVE"
+
+
 def _behavioral_snapshot(locale: str) -> dict[str, Any]:
     is_vi = (locale or "vi").lower().startswith("vi")
     prompts_vi = (
-        "Hãy kể về một tình huống thực tế khi bạn phải đối mặt với một vấn đề kỹ thuật khó "
-        "hoặc bất đồng ý kiến trong đội ngũ. Bạn đã phân tích, giải quyết tình huống đó như thế nào (theo mô hình STAR) và kết quả ra sao?"
+        "Kể một lần bạn gặp sự cố kỹ thuật khó hoặc bất đồng trong team: "
+        "chuyện gì xảy ra, bạn đã làm gì, kết quả ra sao?"
     )
     prompts_en = (
-        "Describe a challenging situation at work where you faced a tough technical hurdle or a disagreement in your team. "
-        "How did you address the challenge using the STAR approach, and what was the outcome?"
+        "Tell me about a hard technical problem or a disagreement in your team: "
+        "what happened, what did you do, and what was the result?"
     )
     return {
         "schemaVersion": "1.0",
@@ -997,8 +1087,11 @@ async def select_and_freeze_questions(
     locale = session_row.get("locale") or "en-US"
     policy_version = payload.get("policyVersion")
     is_dynamic = (policy_version == "interview-planner-v2-dynamic")
-    salt = str(session_row.get("id") or "")
+    # Demo sessions break ties on the stable key instead of the session id, so
+    # every demo of a CV-JD pair asks the same questions as the demo script.
+    salt = "" if is_demo_duration(session_row.get("duration_minutes")) else str(session_row.get("id") or "")
     job_concepts, job_role = await _job_taxonomy(db, session_row.get("job_id"))
+    exposure = await _question_exposure(db, session_row)
     # Targets the ladder could not cover at all, and targets served with fewer
     # questions than planned. Both reach the report as uncovered competencies.
     uncovered_targets: list[dict[str, Any]] = []
@@ -1073,7 +1166,8 @@ async def select_and_freeze_questions(
                 target=target,
                 locale=locale,
                 difficulty=difficulty,
-                salt=str(session_row.get("id") or ""),
+                salt=salt,
+                exposure=exposure,
             )
             def _subsets(pool: list[_Candidate], target=target) -> list:
                 return _generate_target_feasible_subsets(
@@ -1098,6 +1192,7 @@ async def select_and_freeze_questions(
                     salt=salt,
                     job_concepts=job_concepts,
                     job_role=job_role,
+                    exposure=exposure,
                 )
                 feasible_subsets = _subsets(candidates + [c for c in extra if c.question_version_id not in seen])
             if not feasible_subsets:
@@ -1189,7 +1284,8 @@ async def select_and_freeze_questions(
                 target=target,
                 locale=locale,
                 difficulty=difficulty,
-                salt=str(session_row.get("id") or ""),
+                salt=salt,
+                exposure=exposure,
             )
             available = [item for item in candidates if item.question_version_id not in used_versions]
             # Honour the planner's per-target count exactly. P1 already guarantees
@@ -1217,6 +1313,7 @@ async def select_and_freeze_questions(
                     salt=salt,
                     job_concepts=job_concepts,
                     job_role=job_role,
+                    exposure=exposure,
                 )
                 selected += [c for c in extra if c.question_version_id not in taken][: needed - len(selected)]
 
@@ -1344,11 +1441,11 @@ async def select_and_freeze_questions(
                         key_technologies.append(s.strip())
 
     warmup_text = (
-        f"Chào bạn, chào mừng bạn đến với buổi phỏng vấn vị trí {job_title} tại INTERVIA. "
-        f"Để bắt đầu và giúp bạn thoải mái hơn, bạn hãy giới thiệu đôi nét về bản thân và kinh nghiệm làm việc gần đây của mình nhé?"
+        f"Chào bạn, mình là người phỏng vấn vị trí {job_title}. "
+        "Bạn giới thiệu ngắn về bản thân và kinh nghiệm gần nhất nhé?"
         if is_vi
-        else f"Hello and welcome to the interview for the {job_title} position at INTERVIA. "
-             f"To help you get comfortable, please give a brief introduction of yourself and your recent experience."
+        else f"Hi, I'm your interviewer for the {job_title} role. "
+             "Could you briefly introduce yourself and your most recent experience?"
     )
 
     if selected_project:
@@ -1374,30 +1471,22 @@ async def select_and_freeze_questions(
         )
     elif project_name:
         validate_text = (
-            f"Cảm ơn phần giới thiệu của bạn. Trong CV mình rất ấn tượng với dự án '{project_name}'. "
-            f"Bạn có thể chia sẻ cụ thể hơn về vai trò của bạn trong dự án này, "
-            f"và bài toán kỹ thuật phức tạp nhất mà bạn đã trực tiếp giải quyết là gì không?"
+            f"Trong '{project_name}', bạn trực tiếp làm phần nào, và bài toán khó nhất bạn giải quyết là gì?"
             if is_vi
-            else f"Thank you for your introduction. Looking at your CV, I was very interested in the '{project_name}' project. "
-                 f"Could you share more specifically about your role in this project, "
-                 f"and what was the most complex technical problem you directly solved?"
+            else f"In '{project_name}', which parts did you do yourself, and what was the hardest problem you solved?"
         )
     elif key_technologies:
         tech_str = ", ".join(key_technologies[:3])
         validate_text = (
-            f"Cảm ơn bạn. Nhìn vào CV, mình thấy bạn có thế mạnh về {tech_str}. "
-            f"Bạn có thể chia sẻ về một bài toán kỹ thuật thực tế gần đây nhất mà bạn áp dụng các công nghệ này không?"
+            f"CV của bạn có {tech_str}. Kể một bài toán gần đây bạn giải quyết bằng các công nghệ này?"
             if is_vi
-            else f"Thank you. Looking at your CV, I see you have strong background in {tech_str}. "
-                 f"Could you share a recent practical technical problem where you applied these technologies?"
+            else f"Your CV lists {tech_str}. What is a recent problem you solved with them?"
         )
     else:
         validate_text = (
-            "Cảm ơn phần giới thiệu của bạn. Nhìn vào hồ sơ CV của bạn, bạn có thể chia sẻ sâu hơn về một dự án "
-            "kỹ thuật nổi bật nhất mà bạn từng tham gia: vai trò cụ thể của bạn và bài toán khó nhất bạn đã trực tiếp giải quyết là gì không?"
+            "Dự án kỹ thuật nổi bật nhất của bạn là gì: bạn làm phần nào, và bài toán khó nhất là gì?"
             if is_vi
-            else "Thank you for your introduction. Looking at your CV, could you share more details about your most "
-                 "prominent technical project: your specific role and the hardest problem you directly solved?"
+            else "What is your most notable technical project: which part was yours, and what was the hardest problem?"
         )
 
     warmup_snapshot = {
@@ -1496,14 +1585,18 @@ async def select_and_freeze_questions(
     )
 
     # Deep-dive and challenge technical questions from Question Bank start at turn_index = 2
+    is_demo = is_demo_duration(session_row.get("duration_minutes"))
     for idx, (candidate, target, _orig_rank, fallback) in enumerate(frozen):
         turn_index = idx + 2
         target_rationale = target.get("rationale") or {}
         match_statuses = target_rationale.get("matchStatuses") or []
-        # Nếu là câu hỏi coding hoặc gap kỹ năng -> gắn nhãn CHALLENGE
-        is_coding = (candidate.question_type == "coding") if candidate else False
-        is_gap = any(s in ("not_met", "unknown") for s in match_statuses)
-        stage = "CHALLENGE" if (is_coding or (is_gap and idx >= 1)) else "DEEP_DIVE"
+        stage = _technical_stage(
+            idx,
+            total=len(frozen),
+            is_coding=(candidate.question_type == "coding") if candidate else False,
+            is_gap=any(s in ("not_met", "unknown") for s in match_statuses),
+            is_demo=is_demo,
+        )
         if candidate is None:
             snapshot = dict(fallback or {})
             snapshot["selectionRank"] = turn_index
