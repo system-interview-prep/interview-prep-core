@@ -63,6 +63,9 @@ class JobIngestionService:
             update={
                 "job_title": cand.title,
                 "seniority": DeterministicJobDescriptionParser._seniority(cand.title, plain_text),
+                "career_classifications": DeterministicJobDescriptionParser._classifications(
+                    parsed.requirements, trusted_title=cand.title
+                ),
             }
         )
 
