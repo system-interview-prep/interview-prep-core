@@ -1,6 +1,7 @@
 """Orchestration service for external job ingestion."""
 
 import hashlib
+import inspect
 import logging
 from datetime import UTC, datetime, timedelta
 
@@ -14,6 +15,7 @@ from src.modules.job_descriptions.ingestion.models import (
 from src.modules.job_descriptions.ingestion.repository import JobIngestionRepository
 from src.modules.job_descriptions.ingestion.sanitizer import HtmlSanitizer
 from src.modules.job_descriptions.parsing.deterministic import DeterministicJobDescriptionParser
+from src.modules.job_descriptions.parsing.hybrid import HybridJobDescriptionParser
 from src.modules.taxonomy.facade import classify_career
 from src.modules.user_cvs.facade import SourceBlock, SourceDocument
 
@@ -47,15 +49,17 @@ class JobIngestionService:
         self,
         repository: JobIngestionRepository,
         adapter: GreenhouseJobBoardAdapter | None = None,
-        parser: DeterministicJobDescriptionParser | None = None,
+        parser: DeterministicJobDescriptionParser | HybridJobDescriptionParser | None = None,
     ) -> None:
         self._repo = repository
         self._adapter = adapter or GreenhouseJobBoardAdapter()
         self._parser = parser or DeterministicJobDescriptionParser()
 
-    def _parse(self, cand: ExternalJobCandidate, content_hash: str, plain_text: str):
+    async def _parse(self, cand: ExternalJobCandidate, content_hash: str, plain_text: str):
         source = _build_source_doc(cand.external_job_id, content_hash, plain_text)
         parsed = self._parser.parse(source, extraction_version="1.0")
+        if inspect.isawaitable(parsed):  # HybridJobDescriptionParser (JD_PARSER_MODE=hybrid)
+            parsed = await parsed
         # The board body never repeats the posting title, so the parser guesses
         # one from lines like "Reports to: Engineering Manager" and derives a
         # "manager" seniority from it. The listing title is authoritative.
@@ -101,7 +105,7 @@ class JobIngestionService:
                     parsed = None
                     parse_error: str | None = None
                     try:
-                        parsed = self._parse(cand, content_hash, plain_text)
+                        parsed = await self._parse(cand, content_hash, plain_text)
                     except Exception as p_err:
                         parse_error = f"Parse error: {p_err}"
                         logger.warning(
@@ -168,7 +172,7 @@ class JobIngestionService:
 
                         if not is_human_reviewed:
                             try:
-                                parsed = self._parse(cand, content_hash, plain_text)
+                                parsed = await self._parse(cand, content_hash, plain_text)
                             except Exception as p_err:
                                 logger.warning(
                                     "Parser failed on update for '%s': %s", cand.external_job_id, p_err
