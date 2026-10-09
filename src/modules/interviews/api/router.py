@@ -29,11 +29,15 @@ from src.modules.interviews.application.text_runtime import (
     complete_text_runtime,
     read_text_runtime,
 )
+from src.modules.interviews.evaluation.evaluation_engine import EvaluationGradingError
 from src.modules.interviews.evaluation.evaluation_service import (
     EvaluationServiceError,
     get_session_evaluation,
 )
-from src.modules.interviews.planning.planner import read_session_plan
+from src.modules.interviews.planning.planner import (
+    PlannerPolicyConfigurationError,
+    read_session_plan,
+)
 from src.modules.interviews.planning.question_selector import (
     QuestionUnavailableError,
     read_frozen_turns,
@@ -82,6 +86,23 @@ class CompleteChatSession(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class CloseInterviewSession(BaseModel):
+    """Optional body for the generic close endpoint.
+
+    Abandonment defaults to USER_ENDED; a client compensating a failed
+    create -> plan -> lock sequence should pass TECHNICAL_FAILURE so the record
+    does not blame the candidate for a server-side failure.
+
+    COMPLETED is deliberately NOT accepted here. This endpoint bypasses the
+    agenda-coverage invariant enforced by /chat/complete, so allowing it would
+    let any client label a half-finished session as a completed interview.
+    """
+
+    reason: Literal["USER_ENDED", "TECHNICAL_FAILURE"] = Field(default="USER_ENDED")
+
+    model_config = {"populate_by_name": True}
+
+
 class SendVideoTranscript(BaseModel):
     client_message_id: str = Field(alias="clientMessageId", min_length=1, max_length=64)
     final_transcript: str = Field(alias="finalTranscript", min_length=1, max_length=10000)
@@ -102,7 +123,7 @@ class CreateInterviewSession(BaseModel):
     mode: InterviewMode = "text"
     experience_type: ExperienceType = Field(default="interview_chat", alias="experienceType")
     locale: str = Field(default="vi-VN", min_length=2, max_length=35)
-    duration_minutes: int = Field(default=25, alias="durationMinutes", ge=5, le=120)
+    duration_minutes: int = Field(default=25, alias="durationMinutes", ge=2, le=120)
 
     model_config = {"populate_by_name": True}
 
@@ -112,6 +133,7 @@ def _session_payload(row: dict) -> dict:
         "sessionId": row["id"],
         "resumeId": row.get("resume_id"),
         "jobId": row.get("job_id"),
+        "jobTitle": row.get("job_title"),
         "mode": row["mode"],
         "experienceType": row.get("experience_type") or "interview_chat",
         "endReason": row.get("end_reason"),
@@ -135,11 +157,21 @@ def _session_payload(row: dict) -> dict:
 _SESSION_SELECT = """
     SELECT s.id, s.resume_id, s.job_id, s.mode, s.locale, s.duration_minutes,
            s.status, s.started_at, s.ended_at, s.experience_type, s.end_reason, s.metadata,
+           j.title AS job_title,
            p.id AS plan_id, p.schema_version AS plan_schema_version,
            p.status AS plan_status
     FROM interview_sessions s
+    LEFT JOIN job_descriptions j ON j.id = s.job_id
     LEFT JOIN interview_session_plans p ON p.session_id = s.id
 """
+
+
+_EXPERIENCE_MODES: dict[str, str] = {
+    "question_practice": "text",
+    "interview_chat": "text",
+    "voice_interview": "voice",
+    "video_interview": "video",
+}
 
 
 async def _owned_session(db: AsyncSession, user_id: str, session_id: str) -> dict:
@@ -196,6 +228,15 @@ async def create_interview_session(
 
     started_at = time.monotonic()
     try:
+        expected_mode = _EXPERIENCE_MODES.get(payload.experience_type)
+        if expected_mode is not None and payload.mode != expected_mode:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"experienceType '{payload.experience_type}' requires mode "
+                    f"'{expected_mode}'"
+                ),
+            )
         await _validate_context(db, user, payload.resume_id, payload.job_id)
 
         session_id = str(uuid4())
@@ -320,6 +361,21 @@ async def build_interview_plan(
             duration_ms=round((time.monotonic() - started_at) * 1000),
         )
         return result
+    except PlannerPolicyConfigurationError as exc:
+        # A deployment-level misconfiguration, not a conflict on this session.
+        # Keep the offending setting name out of the client response.
+        trace_event(
+            "interviewer",
+            "plan_failed",
+            session_id=session_id,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Cấu hình interview planner của hệ thống không hợp lệ.",
+        ) from exc
     except RuntimeError as exc:
         trace_event(
             "interviewer",
@@ -329,6 +385,8 @@ async def build_interview_plan(
             error_message=str(exc),
             duration_ms=round((time.monotonic() - started_at) * 1000),
         )
+        # Release the plan row's FOR UPDATE lock now, not when the session closes.
+        await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         trace_event(
@@ -603,19 +661,32 @@ async def complete_interview_runtime(
 @router.post("/sessions/{session_id}/close")
 async def close_interview_session(
     session_id: str,
+    payload: CloseInterviewSession | None = None,
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    """Close a session without running the chat/text completion contract.
+
+    Used for abandonment and for compensating a failed create -> plan -> lock
+    sequence. `end_reason` is backfilled so every CLOSED session carries one;
+    `COALESCE` keeps a reason already written by the runtime intact, and the
+    status guard keeps the call idempotent.
+    """
+    reason = (payload.reason if payload else None) or "USER_ENDED"
     await _owned_session(db, user["sub"], session_id)
     await db.execute(
         text(
-            "UPDATE interview_sessions SET status = 'CLOSED', ended_at = now(), updated_at = now() "
+            "UPDATE interview_sessions "
+            "SET status = 'CLOSED', end_reason = COALESCE(end_reason, :reason), "
+            "ended_at = now(), updated_at = now() "
             "WHERE id = :sid AND user_id = :uid AND status <> 'CLOSED'"
         ),
-        {"sid": session_id, "uid": user["sub"]},
+        {"sid": session_id, "uid": user["sub"], "reason": reason},
     )
     await db.commit()
-    trace_event("interviewer", "session_closed", session_id=session_id, user_id=user["sub"])
+    trace_event(
+        "interviewer", "session_closed", session_id=session_id, user_id=user["sub"], reason=reason
+    )
     return _session_payload(await _owned_session(db, user["sub"], session_id))
 
 
@@ -867,6 +938,17 @@ async def evaluate_session_endpoint(
         )
         await db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except EvaluationGradingError as exc:
+        trace_event(
+            "interviewer",
+            "evaluation_endpoint_failed",
+            session_id=session_id,
+            error_type="EvaluationGradingError",
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        await db.rollback()
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         trace_event(
             "interviewer",
