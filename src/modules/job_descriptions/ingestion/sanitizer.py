@@ -60,6 +60,10 @@ class _PlainTextExtractingParser(HTMLParser):
             self._pieces.append("\n")
         elif t == "br":
             self._pieces.append("\n")
+        # Keep list items as Markdown bullets: the JD parser reads requirements
+        # from bullet lines and the job detail page renders Markdown.
+        if t == "li":
+            self._pieces.append("- ")
 
     def handle_endtag(self, tag: str) -> None:
         t = tag.lower()
