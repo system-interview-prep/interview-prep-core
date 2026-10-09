@@ -493,3 +493,43 @@ async def test_competency_weights_follow_planner_importance() -> None:
     await evaluate_closed_session(db, "s6", _Engine())
 
     assert weights == {"t0": 0.0, "t1": 0.5, "t2": 1.5, "t3": 0.5, "t4": 0.5}
+
+
+@pytest.mark.asyncio
+async def test_dropped_targets_and_generated_questions_reach_the_report() -> None:
+    """Fallback-ladder outcomes must be visible to the recruiter.
+
+    A target the selector dropped counts as uncovered, and a scored question
+    the LLM generated (not yet reviewed in the bank) is flagged.
+    """
+    session_row = {"id": "s7", "status": "CLOSED", "locale": "vi-VN", "duration_minutes": 25}
+    turns = [
+        {
+            "id": "t-gen",
+            "turn_index": 0,
+            "status": "ANSWERED",
+            "question_snapshot": {
+                "stage": "DEEP_DIVE",
+                "questionText": "Q generated",
+                "questionSource": "generated_unreviewed",
+                "taxonomyTarget": {"label": "XML"},
+            },
+            "answer_text": "Trả lời.",
+        }
+    ]
+    db = _eval_db(session_row, turns)
+
+    async def _scalar(query, params=None):
+        if "uncoveredTargets" in str(query):
+            return [{"conceptId": "skill-php", "label": "PHP"}]
+        return None
+
+    db.scalar.side_effect = _scalar
+
+    result = await evaluate_closed_session(db, "s7", _RecordingEngine("PASS"))
+
+    assert "PHP (chưa có câu hỏi phù hợp trong phiên này)" in result.next_round_topics
+    assert any("1/2" in flag for flag in result.red_flags)
+    assert any("1 câu hỏi do AI sinh" in flag for flag in result.red_flags)
+    # Half the agenda uncovered: the PASS is capped.
+    assert result.decision_recommendation is DecisionRecommendation.CONSIDER
