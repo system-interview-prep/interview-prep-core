@@ -80,8 +80,8 @@ async def _load_voice_session(db: AsyncSession, session_id: str, user_id: str) -
     if row is None:
         raise HTTPException(status_code=404, detail="Interview session not found")
     session = dict(row)
-    if session["mode"] != "voice":
-        raise HTTPException(status_code=409, detail="Interview session is not configured for voice")
+    if session["mode"] not in {"voice", "video"}:
+        raise HTTPException(status_code=409, detail="Interview session is not configured for LiveKit media")
     if session["plan_status"] != "LOCKED":
         raise HTTPException(status_code=409, detail="Lock the interview plan before starting voice")
     if session["status"] != "OPEN":
@@ -232,7 +232,8 @@ async def send_livekit_runtime_message(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     session = await _runtime_session(db, claims)
-    telemetry = {**payload.telemetry, "transport": "livekit", "modality": "VOICE"}
+    modality = "VIDEO" if session["mode"] == "video" else "VOICE"
+    telemetry = {**payload.telemetry, "transport": "livekit", "modality": modality}
     try:
         return await submit_voice_answer(
             db=db,
@@ -241,6 +242,7 @@ async def send_livekit_runtime_message(
             content=payload.content,
             telemetry=telemetry,
             duration_seconds=payload.duration_seconds,
+            modality=modality,
         )
     except ValueError as exc:
         await db.rollback()
