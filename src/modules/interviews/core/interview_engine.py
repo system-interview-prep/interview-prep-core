@@ -38,14 +38,8 @@ PROHIBITED_LEAK_PATTERNS = [
     r"\b\d+\s*điểm\b",
 ]
 
-SAFE_FALLBACK_PROBE_VI = (
-    "Bạn có thể phân tích rõ hơn về lý do bạn lựa chọn giải pháp này "
-    "và điểm hạn chế cần lưu ý của nó không?"
-)
-SAFE_FALLBACK_PROBE_EN = (
-    "Could you elaborate on the main reasoning behind this approach "
-    "and any trade-offs you considered?"
-)
+SAFE_FALLBACK_PROBE_VI = "Vì sao bạn chọn cách đó, và nó có hạn chế gì?"
+SAFE_FALLBACK_PROBE_EN = "Why that approach, and what are its downsides?"
 
 
 def validate_probe_text(probe_text: str) -> bool:
