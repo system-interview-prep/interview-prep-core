@@ -99,9 +99,11 @@ class JobIngestionService:
                 if existing is None:
                     # New Job: Parse plain text with deterministic parser
                     parsed = None
+                    parse_error: str | None = None
                     try:
                         parsed = self._parse(cand, content_hash, plain_text)
                     except Exception as p_err:
+                        parse_error = f"Parse error: {p_err}"
                         logger.warning(
                             "Parser failed for job '%s' (%s): %s", cand.external_job_id, cand.title, p_err
                         )
@@ -136,6 +138,7 @@ class JobIngestionService:
                         taxonomy_concept_id=taxonomy_concept_id,
                         taxonomy_version=taxonomy_version,
                         now=started_at,
+                        parse_error=parse_error,
                     )
                     metrics.created_count += 1
                 else:
