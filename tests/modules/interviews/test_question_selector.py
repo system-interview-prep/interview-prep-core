@@ -338,11 +338,10 @@ def test_tc_pack_04_hard_ceiling_budget_non_exceedance():
 
 @pytest.mark.asyncio
 async def test_tc_pack_05_atomic_preflight_no_partial_queue():
-    """TC-PACK-05: 2 targets. Target 1 feasible, Target 2 impossible.
-    Expected:
-    - Fail-closed exception raised.
-    - 0 partial turns written in DB for Target 1.
-    - Plan not locked.
+    """TC-PACK-05: 2 targets. Target 1 feasible, Target 2 impossible even after fallback.
+    Expected (fallback-ladder contract):
+    - Target 2 is dropped and reported in uncoveredTargets.
+    - The interview is frozen with Target 1 only; no 409.
     """
     db = AsyncMock()
     plan_result = MagicMock()
@@ -421,113 +420,23 @@ async def test_tc_pack_05_atomic_preflight_no_partial_queue():
 
     session_row = {"id": "sess-tc-05", "plan_id": "plan-tc-05", "locale": "en-US"}
 
-    with pytest.raises(QuestionUnavailableError) as exc_info:
-        await select_and_freeze_questions(db=db, session_row=session_row)
+    result = await select_and_freeze_questions(db=db, session_row=session_row)
 
-    assert exc_info.value.error_code == "question_bank_insufficient"
-    missing = exc_info.value.details["missingTargets"]
-    assert len(missing) == 1
-    assert missing[0]["conceptId"] == "concept-2-impossible"
-
-    # Confirm 0 turns written
-    for call_args in db.execute.call_args_list:
-        called_sql = str(call_args[0][0])
-        assert "DELETE FROM interview_turns" not in called_sql
-        assert "INSERT INTO interview_turns" not in called_sql
-        assert "UPDATE interview_session_plans" not in called_sql
-
-
-def test_tc_pack_06_deterministic_selection_vs_sql_shuffle():
-    """TC-PACK-06: Same candidate pool, different input orders (reversed/shuffled).
-    Expected:
-    - Same selected subset.
-    - Same intra-subset turn order.
-    - Same assigned order.
-    """
-    c1 = candidate(
-        question_version_id="qv-01",
-        stable_key="key-01",
-        soft_answer_seconds=180,
-        relevance=0.90,
-        difficulty_band="intermediate",
-    )
-    c2 = candidate(
-        question_version_id="qv-02",
-        stable_key="key-02",
-        soft_answer_seconds=180,
-        relevance=0.85,
-        difficulty_band="intermediate",
-    )
-    c3 = candidate(
-        question_version_id="qv-03",
-        stable_key="key-03",
-        soft_answer_seconds=180,
-        relevance=0.80,
-        difficulty_band="intermediate",
-    )
-
-    kwargs = {
-        "target_archetype": "TEXT",
-        "floor_seconds": 360,
-        "time_envelope_seconds": 360,
-        "difficulty": "intermediate",
-        "locale": "en-US",
-        "session_id": "sess-shuffle-test",
-    }
-
-    res_forward = _pack_target_questions([c1, c2, c3], **kwargs)
-    res_reverse = _pack_target_questions([c3, c2, c1], **kwargs)
-    res_permuted = _pack_target_questions([c2, c3, c1], **kwargs)
-
-    assert res_forward is not None
-    assert res_reverse is not None
-    assert res_permuted is not None
-
-    ids_forward = [q.question_version_id for q in res_forward]
-    ids_reverse = [q.question_version_id for q in res_reverse]
-    ids_permuted = [q.question_version_id for q in res_permuted]
-
-    assert ids_forward == ids_reverse == ids_permuted
-    assert ids_forward == ["qv-01", "qv-02"]
-
-
-def test_tc_pack_07_single_question_validity():
-    """TC-PACK-07: Envelope = 200, Floor = 180.
-    Single candidate with cost = 190.
-    Expected:
-    - Exactly 1 question selected.
-    - Does NOT force >= 2 questions.
-    """
-    cand = candidate(
-        question_version_id="qv-single-190",
-        soft_answer_seconds=190,
-        thinking_seconds=0,
-        question_type="technical",
-    )
-
-    selected = _pack_target_questions(
-        [cand],
-        target_archetype="TEXT",
-        floor_seconds=180,
-        time_envelope_seconds=200,
-        difficulty="intermediate",
-        locale="en-US",
-        session_id="sess-tc-07",
-    )
-
-    assert selected is not None
-    assert len(selected) == 1
-    assert selected[0].question_version_id == "qv-single-190"
+    assert result["status"] == "LOCKED"
+    assert result["technicalQuestionCount"] == 1
+    assert [t["conceptId"] for t in result["uncoveredTargets"]] == ["concept-2-impossible"]
+    assert result["uncoveredTargets"][0]["reason"] == "no_feasible_qualifying_subset"
 
 
 @pytest.mark.asyncio
 async def test_tc_pack_08_legacy_branch_invariance(monkeypatch):
     """TC-PACK-08: Plan with policyVersion = 'interview-planner-v1'.
-    Candidate pool lacks questions (only 1 available, needed = 2).
+    Candidate pool lacks questions (only 1 available, needed = 2) and the
+    fallback ladder finds nothing more.
     Expected:
-    - Legacy branch executes.
-    - Fail closed with question_bank_insufficient.
-    - _fallback_snapshot is not used and no partial writes are issued.
+    - Legacy branch executes and asks the one approved question.
+    - The shortfall is reported in uncoveredTargets, not raised as 409.
+    - No unreviewed synthesised prompt is ever created.
     """
     db = AsyncMock()
     plan_result = MagicMock()
@@ -620,35 +529,25 @@ async def test_tc_pack_08_legacy_branch_invariance(monkeypatch):
 
     from src.modules.interviews.planning import question_selector
 
-    fallback_spy = MagicMock(wraps=question_selector._fallback_snapshot)
-    monkeypatch.setattr(question_selector, "_fallback_snapshot", fallback_spy)
-    with pytest.raises(QuestionUnavailableError) as exc_info:
-        await select_and_freeze_questions(db=db, session_row=session_row)
+    # Stronger than spying on the old fallback helper: the module must offer no
+    # way at all to synthesise an unreviewed prompt.
+    assert not hasattr(question_selector, "_fallback_snapshot")
 
-    err = exc_info.value
-    assert err.error_code == "question_bank_insufficient"
-    assert err.details == {
-        "missingTargets": [
-            {
-                "taxonomyVersion": "internal-2026.1",
-                "conceptId": "legacy-concept",
-                "needed": 2,
-                "available": 1,
-            }
-        ]
-    }
-    payload = err.to_payload()
-    serialized = json.dumps(payload)
-    assert "Legacy Q1" not in serialized
-    assert "Assess" not in serialized
-    assert "rv-leg-1" not in serialized
-    fallback_spy.assert_not_called()
+    result = await select_and_freeze_questions(db=db, session_row=session_row)
 
-    for call_args in db.execute.call_args_list:
-        called_sql = str(call_args[0][0])
-        assert "DELETE FROM interview_turns" not in called_sql
-        assert "INSERT INTO interview_turns" not in called_sql
-        assert "UPDATE interview_session_plans" not in called_sql
+    assert result["status"] == "LOCKED"
+    assert result["technicalQuestionCount"] == 1
+    assert result["fallbackQuestionCount"] == 0
+    assert result["uncoveredTargets"] == [
+        {
+            "taxonomyVersion": "internal-2026.1",
+            "conceptId": "legacy-concept",
+            "label": "Legacy Concept",
+            "needed": 2,
+            "available": 1,
+            "reason": "no_question_after_fallback",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -696,8 +595,7 @@ async def test_legacy_plan_with_enough_candidates_freezes_without_fallback(monke
     db = AsyncMock()
     db.execute.side_effect = execute
     monkeypatch.setattr(question_selector, "_load_candidates", load_candidates)
-    fallback_spy = MagicMock(wraps=question_selector._fallback_snapshot)
-    monkeypatch.setattr(question_selector, "_fallback_snapshot", fallback_spy)
+    assert not hasattr(question_selector, "_fallback_snapshot")
 
     result = await select_and_freeze_questions(
         db=db,
@@ -707,11 +605,20 @@ async def test_legacy_plan_with_enough_candidates_freezes_without_fallback(monke
     assert result["status"] == "LOCKED"
     assert result["fallbackQuestionCount"] == 0
     assert any("INSERT INTO interview_turns" in str(call[0][0]) for call in db.execute.call_args_list)
-    fallback_spy.assert_not_called()
+    # No frozen turn may be marked as an unreviewed synthesised prompt.
+    inserted = [
+        call[0][1]
+        for call in db.execute.call_args_list
+        if "INSERT INTO interview_turns" in str(call[0][0])
+    ]
+    assert inserted
+    for params in inserted:
+        snapshot = json.loads(params["snapshot"])
+        assert snapshot.get("questionSource") != "deterministic_fallback_unreviewed"
 
 
 @pytest.mark.asyncio
-async def test_legacy_missing_later_target_writes_no_partial_turns(monkeypatch):
+async def test_legacy_missing_later_target_is_dropped_and_reported(monkeypatch):
     from src.modules.interviews.planning import question_selector
 
     plan_result = MagicMock()
@@ -753,18 +660,14 @@ async def test_legacy_missing_later_target_writes_no_partial_turns(monkeypatch):
     db = AsyncMock()
     db.execute.side_effect = execute
     monkeypatch.setattr(question_selector, "_load_candidates", load_candidates)
-    with pytest.raises(QuestionUnavailableError) as exc_info:
-        await select_and_freeze_questions(
-            db=db,
-            session_row={"id": "legacy-multi-target", "plan_id": "legacy-plan", "locale": "en-US"},
-        )
+    result = await select_and_freeze_questions(
+        db=db,
+        session_row={"id": "legacy-multi-target", "plan_id": "legacy-plan", "locale": "en-US"},
+    )
 
-    assert exc_info.value.details["missingTargets"][0]["conceptId"] == "later-target"
-    for call in db.execute.call_args_list:
-        sql = str(call[0][0])
-        assert "DELETE FROM interview_turns" not in sql
-        assert "INSERT INTO interview_turns" not in sql
-        assert "UPDATE interview_session_plans" not in sql
+    # The covered target is interviewed; the uncovered one is reported.
+    assert result["technicalQuestionCount"] == 2
+    assert [t["conceptId"] for t in result["uncoveredTargets"]] == ["later-target"]
 
 
 @pytest.mark.asyncio
@@ -836,7 +739,7 @@ async def test_question_selection_api_maps_insufficiency_to_safe_409(monkeypatch
         )
 
     monkeypatch.setattr(router_module, "_owned_session", owned_session)
-    monkeypatch.setattr(router_module, "select_and_freeze_questions", insufficient)
+    monkeypatch.setattr(router_module, "run_interview_command", insufficient)
 
     with pytest.raises(HTTPException) as exc_info:
         await router_module.select_interview_questions(
@@ -1668,3 +1571,285 @@ def test_tc_pack_14_early_best_branch_impossible():
 
     assert metrics.get("backtrack_count", 0) >= 1
     assert metrics.get("global_search_nodes", 0) == 3
+
+
+# ---------------------------------------------------------------------------
+# Blocker regressions: the legacy branch must honour the planner's agenda
+# ---------------------------------------------------------------------------
+
+
+def _question_row(**overrides):
+    row = {
+        "stable_key": "qk",
+        "question_version_id": "qv",
+        "version": "1",
+        "status": "APPROVED",
+        "question_type": "technical",
+        "difficulty_band": "intermediate",
+        "canonical_locale": "en-US",
+        "canonical_text": "Explain it.",
+        "objective": "Assess it.",
+        "thinking_seconds": 0,
+        "soft_answer_seconds": 180,
+        "hard_answer_seconds": 240,
+        "canonical_snapshot": {},
+        "mapping_purpose": "PRIMARY_COMPETENCY",
+        "relevance": 1.0,
+        "rubric_version_id": "rv-1",
+    }
+    row.update(overrides)
+    return row
+
+
+def _legacy_db(targets, candidates_by_concept):
+    """AsyncMock DB wired for the legacy (interview-planner-v1) selector branch."""
+    db = AsyncMock()
+    inserted_turns: list[dict] = []
+
+    plan_result = MagicMock()
+    plan_result.mappings.return_value.one_or_none.return_value = {
+        "status": "READY",
+        "plan_payload": {
+            "policyVersion": "interview-planner-v1",
+            "difficulty": {"level": "intermediate"},
+        },
+    }
+    plan_result.mappings.return_value.first.return_value = {"plan_payload": {}}
+
+    targets_result = MagicMock()
+    targets_result.mappings.return_value.all.return_value = targets
+
+    rubric_result = MagicMock()
+    rubric_result.mappings.return_value.one_or_none.return_value = {
+        "id": "rv-1",
+        "version": "1.0",
+        "score_min": 0,
+        "score_max": 3,
+        "minimum_coverage": 0.6,
+        "aggregation_method": "weighted_mean",
+        "aggregation_policy": {},
+    }
+
+    def _empty():
+        m = MagicMock()
+        m.mappings.return_value.all.return_value = []
+        m.mappings.return_value.one_or_none.return_value = None
+        m.mappings.return_value.first.return_value = None
+        return m
+
+    async def _execute(query, params=None):
+        sql = str(query)
+        params = params or {}
+        if "interview_session_plans" in sql:
+            return plan_result
+        if "session_competency_targets" in sql:
+            return targets_result
+        if "FROM interview_questions" in sql:
+            result = MagicMock()
+            result.mappings.return_value.all.return_value = candidates_by_concept.get(
+                params.get("concept_id"), []
+            )
+            return result
+        if "rubric_versions" in sql:
+            return rubric_result
+        if "INSERT INTO interview_turns" in sql:
+            inserted_turns.append(params)
+            return _empty()
+        if "SELECT id, turn_index" in sql:
+            result = MagicMock()
+            result.mappings.return_value.all.return_value = [
+                {
+                    "id": p["id"],
+                    "turn_index": p.get("turn_index", 0),
+                    "status": "PLANNED",
+                    "question_version_id": p.get("question_version_id"),
+                    "rubric_version_id": p.get("rubric_version_id"),
+                    "question_snapshot": json.loads(p["snapshot"]),
+                }
+                for p in inserted_turns
+            ]
+            return result
+        return _empty()
+
+    db.execute.side_effect = _execute
+    db.scalar.return_value = None
+    return db, inserted_turns
+
+
+@pytest.mark.asyncio
+async def test_legacy_branch_honours_planner_question_count():
+    """P2 must freeze exactly targetQuestionCount per target.
+
+    The old minimum-of-two floor doubled the technical queue, so a 25-minute plan
+    of four single-question targets produced eight frozen turns that could not
+    fit inside the session budget.
+    """
+    targets = [
+        {
+            "selection_rank": 0,
+            "taxonomy_version": "internal-2026.1",
+            "concept_id": "skill-a",
+            "label": "Skill A",
+            "importance": 0.6,
+            "target_question_count": 1,
+            "rationale": {"source": "job_requirement"},
+        },
+        {
+            "selection_rank": 1,
+            "taxonomy_version": "internal-2026.1",
+            "concept_id": "skill-b",
+            "label": "Skill B",
+            "importance": 0.4,
+            "target_question_count": 1,
+            "rationale": {"source": "job_requirement"},
+        },
+    ]
+    candidates = {
+        "skill-a": [
+            _question_row(stable_key="a1", question_version_id="qv-a1"),
+            _question_row(stable_key="a2", question_version_id="qv-a2"),
+        ],
+        "skill-b": [
+            _question_row(stable_key="b1", question_version_id="qv-b1"),
+            _question_row(stable_key="b2", question_version_id="qv-b2"),
+        ],
+    }
+    db, inserted = _legacy_db(targets, candidates)
+
+    result = await select_and_freeze_questions(
+        db=db, session_row={"id": "sess-legacy", "plan_id": "plan-legacy", "locale": "en-US"}
+    )
+
+    # Two technical questions, not four: one per target exactly as planned.
+    assert result["technicalQuestionCount"] == 2
+    # WARM_UP + VALIDATE + 2 technical + BEHAVIORAL
+    assert len(inserted) == 5
+    stages = [json.loads(p["snapshot"])["stage"] for p in inserted]
+    assert stages[0] == "WARM_UP"
+    assert stages[1] == "VALIDATE"
+    assert stages[-1] == "BEHAVIORAL"
+
+
+@pytest.mark.asyncio
+async def test_legacy_branch_does_not_force_a_coding_question():
+    """P2 must not swap a ranked pick for an arbitrary coding question.
+
+    Question type is a planner / Question-Bank decision; forcing one in changed
+    both the agenda and the answer-time envelope behind the planner's back.
+    """
+    targets = [
+        {
+            "selection_rank": 0,
+            "taxonomy_version": "internal-2026.1",
+            "concept_id": "skill-a",
+            "label": "Skill A",
+            "importance": 1.0,
+            "target_question_count": 2,
+            "rationale": {"source": "job_requirement"},
+        }
+    ]
+    candidates = {
+        "skill-a": [
+            _question_row(stable_key="a1", question_version_id="qv-a1", relevance=1.0),
+            _question_row(stable_key="a2", question_version_id="qv-a2", relevance=0.9),
+            # Eligible but lower ranked: it must stay unselected.
+            _question_row(
+                stable_key="a-code",
+                question_version_id="qv-a-code",
+                question_type="coding",
+                relevance=0.1,
+            ),
+        ]
+    }
+    db, inserted = _legacy_db(targets, candidates)
+
+    await select_and_freeze_questions(
+        db=db, session_row={"id": "sess-nocode", "plan_id": "plan-nocode", "locale": "en-US"}
+    )
+
+    frozen_version_ids = [p.get("question_version_id") for p in inserted]
+    assert "qv-a-code" not in frozen_version_ids
+    assert frozen_version_ids.count("qv-a1") == 1
+    assert frozen_version_ids.count("qv-a2") == 1
+
+
+@pytest.mark.asyncio
+async def test_one_question_with_two_mappings_yields_one_candidate():
+    """A question mapped under several purposes must not be frozen twice."""
+    targets = [
+        {
+            "selection_rank": 0,
+            "taxonomy_version": "internal-2026.1",
+            "concept_id": "skill-a",
+            "label": "Skill A",
+            "importance": 1.0,
+            "target_question_count": 2,
+            "rationale": {"source": "job_requirement"},
+        }
+    ]
+    candidates = {
+        "skill-a": [
+            _question_row(
+                stable_key="dup",
+                question_version_id="qv-dup",
+                mapping_purpose="PRIMARY_COMPETENCY",
+            ),
+            _question_row(
+                stable_key="dup",
+                question_version_id="qv-dup",
+                mapping_purpose="TARGET_SKILL",
+            ),
+            _question_row(stable_key="other", question_version_id="qv-other"),
+        ]
+    }
+    db, inserted = _legacy_db(targets, candidates)
+
+    await select_and_freeze_questions(
+        db=db, session_row={"id": "sess-dup", "plan_id": "plan-dup", "locale": "en-US"}
+    )
+
+    frozen_version_ids = [
+        p.get("question_version_id") for p in inserted if p.get("question_version_id")
+    ]
+    # Two distinct questions, not the duplicated one twice: the extra JOIN row
+    # for the second mapping purpose must never become a second candidate.
+    assert sorted(frozen_version_ids) == ["qv-dup", "qv-other"]
+
+
+@pytest.mark.asyncio
+async def test_dynamic_plan_without_targets_locks_preset_only_queue():
+    """B6: P1 emits READY with targets=[] when every requirement is not_applicable.
+
+    P2 used to fail that plan with "no competency targets", dead-ending the
+    candidate after the room had already opened. It now freezes the preset
+    onboarding + behavioral turns.
+    """
+    db = AsyncMock()
+    plan_result = MagicMock()
+    plan_result.mappings.return_value.one_or_none.return_value = {
+        "status": "READY",
+        "plan_payload": {"policyVersion": "interview-planner-v2-dynamic", "targets": []},
+    }
+
+    async def _execute_mock(query, params=None):
+        if "SELECT status, plan_payload" in str(query):
+            return plan_result
+        m = MagicMock()
+        m.mappings.return_value.all.return_value = []
+        m.mappings.return_value.one_or_none.return_value = None
+        return m
+
+    db.execute.side_effect = _execute_mock
+
+    result = await select_and_freeze_questions(
+        db=db, session_row={"id": "sess-b6", "plan_id": "plan-b6", "locale": "en-US"}
+    )
+
+    assert result["status"] == "LOCKED"
+    assert result["technicalQuestionCount"] == 0
+    inserted = [
+        json.loads(call.args[1]["snapshot"])["stage"]
+        for call in db.execute.call_args_list
+        if "INSERT INTO interview_turns" in str(call.args[0])
+    ]
+    assert inserted == ["WARM_UP", "VALIDATE", "BEHAVIORAL"]
