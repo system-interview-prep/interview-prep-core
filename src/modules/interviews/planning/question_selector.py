@@ -86,6 +86,9 @@ class _Candidate:
     canonical_snapshot: dict[str, Any] = field(default_factory=dict)
     # question_bank | broader_skill | role | generated_unreviewed
     source: str = "question_bank"
+    # Set when question_text is an approved localization in the session locale;
+    # holds the canonical text's locale (the rubric stays canonical).
+    localized_from: str | None = None
 
 
 def _allowed_purposes(target: dict[str, Any]) -> tuple[str, ...]:
@@ -145,8 +148,9 @@ def _candidate_rank(
     # asked longest ago. Relevance only orders questions within that.
     last_seen = (exposure or {}).get(candidate.question_version_id)
     exposure_rank = (0, "") if last_seen is None else (1, last_seen)
+    asked_locale = locale if candidate.localized_from else candidate.canonical_locale
     return (
-        _locale_rank(candidate.canonical_locale, locale),
+        _locale_rank(asked_locale, locale),
         _difficulty_distance(candidate.difficulty_band, difficulty),
         purpose_rank,
         exposure_rank,
@@ -185,7 +189,8 @@ async def _load_candidates(
                    qv.thinking_seconds, qv.soft_answer_seconds, qv.hard_answer_seconds,
                    qv.canonical_snapshot,
                    map.purpose AS mapping_purpose, map.relevance,
-                   qvr.rubric_version_id
+                   qvr.rubric_version_id,
+                   loc.question_text AS localized_text
             FROM interview_questions q
             JOIN interview_question_versions qv
               ON {version_join}
@@ -193,6 +198,13 @@ async def _load_candidates(
               ON map.question_version_id = qv.id
             JOIN question_version_rubrics qvr
               ON qvr.question_version_id = qv.id
+            -- Approved wording in the session locale (e.g. a vi-VN interview
+            -- asking an en-US question): same question and rubric, asked in
+            -- the candidate's language.
+            LEFT JOIN question_localizations loc
+              ON loc.question_version_id = qv.id
+             AND lower(loc.locale) = lower(:locale)
+             AND loc.status = 'APPROVED'
             WHERE q.retired_at IS NULL
               AND {status_filter}
               -- Concept ids are stable across taxonomy versions (parsers stamp
@@ -217,6 +229,7 @@ async def _load_candidates(
             "concept_id": target["conceptId"],
             "purposes": list(purposes),
             "generator": GENERATED_QUESTION_AUTHOR,
+            "locale": locale,
         },
     )
 
@@ -234,7 +247,8 @@ async def _load_candidates(
             continue
         if not generated and row["status"] not in _ELIGIBLE_STATUSES:
             continue
-        if _locale_rank(row["canonical_locale"], locale) >= 99:
+        localized = bool(row.get("localized_text")) and row["canonical_locale"].lower() != locale.lower()
+        if _locale_rank(locale if localized else row["canonical_locale"], locale) >= 99:
             continue
         if difficulty != "unspecified" and _difficulty_distance(row["difficulty_band"], difficulty) >= 99:
             continue
@@ -313,7 +327,7 @@ async def _load_candidates(
                 question_type=row["question_type"],
                 difficulty_band=row["difficulty_band"],
                 canonical_locale=row["canonical_locale"],
-                question_text=row["canonical_text"],
+                question_text=row["localized_text"] if localized else row["canonical_text"],
                 objective=row["objective"],
                 soft_answer_seconds=row["soft_answer_seconds"],
                 hard_answer_seconds=row["hard_answer_seconds"],
@@ -323,6 +337,7 @@ async def _load_candidates(
                 thinking_seconds=int(row.get("thinking_seconds") or 0),
                 canonical_snapshot=dict(row.get("canonical_snapshot") or {}),
                 source="generated_unreviewed" if generated else "question_bank",
+                localized_from=row["canonical_locale"] if localized else None,
                 rubric={
                     "rubricVersionId": str(rubric_row["id"]),
                     "version": rubric_row["version"],
@@ -615,6 +630,7 @@ def _snapshot(
         "difficulty": candidate.difficulty_band,
         "locale": locale,
         "canonicalLocale": candidate.canonical_locale,
+        "localizedFrom": candidate.localized_from,
         "questionText": candidate.question_text,
         "objective": candidate.objective,
         "thinkingSeconds": candidate.thinking_seconds,
