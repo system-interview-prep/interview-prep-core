@@ -9,11 +9,17 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.roles import QUESTION_AUTHOR, QUESTION_BANK_ADMIN, QUESTION_REVIEWER
-from src.core.security import current_user, require_roles
+from src.core.security import require_roles
 from src.infrastructure.database import get_db
 from src.modules.question_bank.import_parser import csv_template, xlsx_template
 from src.modules.question_bank.import_service import QuestionImportService
-from src.modules.question_bank.schemas import ApproveRequest, CreateQuestionDraftRequest, ReviewRequest
+from src.modules.question_bank.schemas import (
+    ApproveRequest,
+    AttachRubricRequest,
+    CreateQuestionDraftRequest,
+    ReviewRequest,
+    UpdateQuestionDraftRequest,
+)
 from src.modules.question_bank.service import QuestionBankService
 
 router = APIRouter(prefix="/admin/question-bank", tags=["question-bank"])
@@ -271,7 +277,8 @@ async def get_question(
         text(
             "SELECT q.id AS question_id, q.stable_key, qv.id AS question_version_id, qv.version, "
             "qv.status, qv.canonical_text, qv.canonical_locale, qv.question_type, "
-            "qv.difficulty_band, qv.soft_answer_seconds, qv.created_at "
+            "qv.difficulty_band, qv.soft_answer_seconds, qv.created_at, qv.objective, qv.created_by, "
+            "qv.thinking_seconds, qv.hard_answer_seconds, q.current_approved_version_id "
             "FROM interview_questions q JOIN LATERAL (SELECT * FROM interview_question_versions v "
             "WHERE v.question_id = q.id ORDER BY v.created_at DESC LIMIT 1) qv ON true WHERE q.id = :id"
         ),
@@ -287,7 +294,53 @@ async def get_question(
         ),
         {"version_id": item["question_version_id"]},
     )
-    return await _question_summary(dict(item), mappings.mappings().all())
+    summary = await _question_summary(dict(item), mappings.mappings().all())
+    summary["currentVersion"]["objective"] = item["objective"]
+    summary["currentVersion"]["createdBy"] = item["created_by"]
+    summary["currentVersion"]["thinkingSeconds"] = item["thinking_seconds"]
+    summary["currentVersion"]["hardAnswerSeconds"] = item["hard_answer_seconds"]
+    approved_id = item["current_approved_version_id"]
+    summary["approvedVersionId"] = str(approved_id) if approved_id else None
+    summary["rubric"] = await _version_rubric(db, item["question_version_id"])
+    return summary
+
+
+async def _version_rubric(db: AsyncSession, version_id: object) -> dict | None:
+    link = await db.execute(
+        text(
+            "SELECT rv.id, rv.version, rv.minimum_coverage, rv.approved_at, r.stable_key "
+            "FROM question_version_rubrics qvr JOIN rubric_versions rv ON rv.id = qvr.rubric_version_id "
+            "JOIN rubrics r ON r.id = rv.rubric_id WHERE qvr.question_version_id = :version_id"
+        ),
+        {"version_id": version_id},
+    )
+    rubric = link.mappings().one_or_none()
+    if rubric is None:
+        return None
+    criteria = await db.execute(
+        text(
+            "SELECT stable_key, name, description, weight, critical FROM rubric_criteria "
+            "WHERE rubric_version_id = :rubric_version_id ORDER BY display_order"
+        ),
+        {"rubric_version_id": rubric["id"]},
+    )
+    return {
+        "rubricVersionId": str(rubric["id"]),
+        "stableKey": rubric["stable_key"],
+        "version": rubric["version"],
+        "minimumCoverage": float(rubric["minimum_coverage"]),
+        "approved": rubric["approved_at"] is not None,
+        "criteria": [
+            {
+                "stableKey": row["stable_key"],
+                "name": row["name"],
+                "description": row["description"],
+                "weight": float(row["weight"]),
+                "critical": row["critical"],
+            }
+            for row in criteria.mappings().all()
+        ],
+    }
 
 
 @router.get("/rubrics")
@@ -332,6 +385,41 @@ async def list_rubrics(
     }
 
 
+@router.post("/question-versions/{version_id}/revise", status_code=status.HTTP_201_CREATED)
+async def revise_version(
+    version_id: UUID,
+    actor: dict = Depends(require_roles(QUESTION_AUTHOR)),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    version = await QuestionBankService(db).revise(version_id, actor["sub"])
+    await db.commit()
+    return _version_response(version)
+
+
+@router.patch("/question-versions/{version_id}")
+async def update_draft(
+    version_id: UUID,
+    payload: UpdateQuestionDraftRequest,
+    actor: dict = Depends(require_roles(QUESTION_AUTHOR)),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    version = await QuestionBankService(db).update_draft(version_id, actor["sub"], payload)
+    await db.commit()
+    return _version_response(version)
+
+
+@router.put("/question-versions/{version_id}/rubric")
+async def attach_rubric(
+    version_id: UUID,
+    payload: AttachRubricRequest,
+    actor: dict = Depends(require_roles(QUESTION_AUTHOR)),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    rubric_version = await QuestionBankService(db).attach_rubric(version_id, actor["sub"], payload)
+    await db.commit()
+    return {"questionVersionId": str(version_id), "rubricVersionId": str(rubric_version.id)}
+
+
 @router.post("/question-versions/{version_id}/submit")
 async def submit(
     version_id: UUID,
@@ -369,7 +457,12 @@ async def approve(
 
 @router.get("/active")
 async def list_active_questions(
-    _: dict = Depends(current_user), db: AsyncSession = Depends(get_db), limit: int = 50
+    # Returns canonical text and the scoring objective of every approved
+    # question; a candidate must never be able to read the bank before an
+    # interview.
+    _: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    db: AsyncSession = Depends(get_db),
+    limit: int = 50,
 ) -> dict:
     result = await db.execute(
         text("SELECT * FROM active_question_bank ORDER BY stable_key LIMIT :limit"),
