@@ -3,7 +3,10 @@ import json
 import unittest
 from unittest.mock import AsyncMock
 
-from src.modules.interviews.evaluation.evaluation_engine import InterviewEvaluationEngine
+from src.modules.interviews.evaluation.evaluation_engine import (
+    EvaluationGradingError,
+    InterviewEvaluationEngine,
+)
 from src.modules.interviews.evaluation.evaluation_types import (
     CompetencyScore,
     DecisionRecommendation,
@@ -103,11 +106,23 @@ class TestInterviewEvaluationEngine(unittest.IsolatedAsyncioTestCase):
 
         result = await engine.evaluate_turn(self.sample_turn_input)
 
-        # Engine không được quăng exception mà phải trả về fallback object an toàn
+        # Không quăng exception ở mức turn, nhưng cũng không bịa ra điểm 5.0:
+        # lượt bị đánh dấu chưa chấm được.
         self.assertEqual(result.turn_id, "turn-1")
-        self.assertEqual(result.score, 5.0)
+        self.assertFalse(result.graded)
         self.assertFalse(result.star_analysis.is_star_complete)
-        self.assertIn("Không thể phân tích dữ liệu", result.feedback)
+
+    async def test_evaluate_session_refuses_report_when_a_turn_cannot_be_graded(self):
+        """H6: an LLM outage must not produce (and persist) a fake 5.0/CONSIDER report."""
+        engine = InterviewEvaluationEngine(llm_client=MockLLM(text_payload="Invalid non-json output"))
+        with self.assertRaises(EvaluationGradingError):
+            await engine.evaluate_session("sess-1", [self.sample_turn_input])
+
+    async def test_evaluate_turn_rejects_response_without_score(self):
+        """A JSON reply without a score is a grader failure, not a midpoint score."""
+        engine = InterviewEvaluationEngine(llm_client=MockLLM(text_payload=json.dumps({"feedback": "ok"})))
+        result = await engine.evaluate_turn(self.sample_turn_input)
+        self.assertFalse(result.graded)
 
     async def test_aggregate_session_scoring_and_radar_chart(self):
         """4. Kiểm tra tổng hợp điểm theo Competency phục vụ vẽ Radar Chart trên Frontend."""
@@ -211,3 +226,35 @@ class TestInterviewEvaluationEngine(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConcurrentGrading(unittest.IsolatedAsyncioTestCase):
+    async def test_grading_is_bounded_and_keeps_turn_order(self):
+        """M7: turns are graded in parallel (bounded) and reported in session order."""
+        import asyncio
+
+        in_flight = 0
+        peak = 0
+
+        class _SlowLLM:
+            async def generate_json(self, system_prompt: str, user_content: str):
+                nonlocal in_flight, peak
+                in_flight += 1
+                peak = max(peak, in_flight)
+                await asyncio.sleep(0.01)
+                in_flight -= 1
+                return {"score": 7}
+
+        engine = InterviewEvaluationEngine(llm_client=_SlowLLM())
+        turns = [
+            TurnEvaluationInput(
+                turn_id=f"t{i}", turn_index=i, competency=f"C{i}",
+                question_prompt="Q", candidate_answer="A", weight=1.0,
+            )
+            for i in range(9)
+        ]
+        result = await engine.evaluate_session("sess", turns)
+
+        self.assertLessEqual(peak, InterviewEvaluationEngine.GRADING_CONCURRENCY)
+        self.assertGreater(peak, 1)
+        self.assertEqual([te.turn_id for te in result.turn_evaluations], [t.turn_id for t in turns])
