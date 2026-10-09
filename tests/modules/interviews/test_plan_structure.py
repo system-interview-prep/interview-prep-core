@@ -60,7 +60,7 @@ def _result(requirement_id: str, status: str, reason: str) -> RequirementResult:
         status=status,
         score=1.0 if status == "met" else None,
         confidence=1.0 if status == "met" else 0.0,
-        evidenceRefs=[],
+        evidenceRefs=[f"cv-{requirement_id}"] if status in {"met", "unknown"} else [],
         reasonCode=reason,
     )
 
