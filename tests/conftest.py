@@ -16,6 +16,12 @@ def _no_live_question_generation(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(question_generation, "generate_question_payloads", _no_payloads)
 
+    # Same for matching's LLM evidence search: with a real key it made
+    # test_targeted_reparse pass or fail depending on the model's answer.
+    from src.modules.matching.application import targeted_reparse
+
+    monkeypatch.setattr(targeted_reparse, "_default_evidence_searcher", lambda: None)
+
 
 @pytest.fixture
 def client() -> Iterator[TestClient]:
