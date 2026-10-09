@@ -174,7 +174,6 @@ async def test_generated_question_is_filed_for_review_and_reused(rollback_db, mo
     filed = await question_generation.generate_and_file(
         rollback_db,
         concept_id="skill-php",
-        skill_label="PHP",
         job_role="technology.software-engineering.backend",
         difficulty="unspecified",
         locale="en-US",
@@ -232,7 +231,6 @@ async def test_generation_disabled_files_nothing(rollback_db, monkeypatch) -> No
         await question_generation.generate_and_file(
             rollback_db,
             concept_id="skill-php",
-            skill_label="PHP",
             job_role=None,
             difficulty="intermediate",
             locale="en-US",
