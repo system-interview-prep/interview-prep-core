@@ -41,7 +41,7 @@ SKILL_CATALOG: dict[str, SkillEntry] = {
     # Languages
     "skill-python": SkillEntry("Python", ("python",), roles=(BACKEND, AI)),
     "skill-java": SkillEntry("Java", ("java",), roles=(BACKEND, MOBILE)),
-    "skill-kotlin": SkillEntry("Kotlin", ("kotlin",), roles=(MOBILE,)),
+    "skill-kotlin": SkillEntry("Kotlin", ("kotlin",), roles=(MOBILE, BACKEND)),
     "skill-javascript": SkillEntry("JavaScript", ("javascript", "js"), roles=(FRONTEND,)),
     "skill-typescript": SkillEntry("TypeScript", ("typescript",), ("skill-javascript",), (FRONTEND,)),
     "skill-csharp": SkillEntry("C#", ("c#", "csharp"), roles=(BACKEND, GAME)),
