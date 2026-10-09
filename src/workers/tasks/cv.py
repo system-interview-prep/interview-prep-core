@@ -21,11 +21,12 @@ from src.workers.celery_app import celery_app
     max_retries=3,
 )
 def parse_cv(self, payload: dict) -> dict:
-    del self
-    return worker_async_runner.run(_parse_cv(str(payload.get("cv_id") or "")))
+    # Only the last attempt may mark the CV FAILED; earlier timeouts are retried.
+    final_attempt = self.request.retries >= self.max_retries
+    return worker_async_runner.run(_parse_cv(str(payload.get("cv_id") or ""), final_attempt=final_attempt))
 
 
-async def _parse_cv(cv_id: str) -> dict:
+async def _parse_cv(cv_id: str, *, final_attempt: bool = True) -> dict:
     async with SessionFactory() as session:
         taxonomy = await load_active_skill_taxonomy(session)
         mode = get_settings().cv_parser_mode.casefold().strip()
@@ -42,7 +43,7 @@ async def _parse_cv(cv_id: str) -> dict:
             parser=parser,
             source_builder=build_source_document,
         )
-        result = await pipeline.run(cv_id)
+        result = await pipeline.run(cv_id, final_attempt=final_attempt)
         return {
             "status": result.status,
             "cv_id": result.cv_id,
