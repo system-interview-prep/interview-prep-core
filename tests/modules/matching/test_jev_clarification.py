@@ -34,6 +34,7 @@ from src.modules.matching.application.facade import MatchingFacade
 from src.modules.matching.domain.schemas import MatchRequest
 
 SHA256 = "a" * 64
+_USER = {"sub": "user-1", "email": "candidate@example.test", "roles": []}
 
 
 class StubEmbedder:
@@ -536,7 +537,7 @@ async def test_clarifications_by_ids_resolves_canonical_match_and_returns_questi
     expected = MatchClarificationAnalysis(matchResult=match, clarificationRequests=[])
     observed: list[MatchRequest] = []
 
-    async def resolve(_payload, _db):
+    async def resolve(_payload, _db, _user):
         return request
 
     async def analyze(resolved_request):
@@ -549,6 +550,7 @@ async def test_clarifications_by_ids_resolves_canonical_match_and_returns_questi
     response = await clarification_router_module.analyze_clarifications_by_ids(
         MatchClarificationIdsRequest(candidateId="cv-1", jobId="job-1"),
         db=object(),
+        user=_USER,
     )
 
     assert response is expected
@@ -581,7 +583,7 @@ async def test_rescore_by_ids_resolves_match_request_before_forwarding_answers(m
     )
     captured = []
 
-    async def resolve(_payload, _db):
+    async def resolve(_payload, _db, _user):
         return request
 
     async def rescore(rescore_request):
@@ -597,7 +599,7 @@ async def test_rescore_by_ids_resolves_match_request_before_forwarding_answers(m
         answers=answers,
     )
 
-    response = await clarification_router_module.rescore_after_clarifications_by_ids(payload, db=object())
+    response = await clarification_router_module.rescore_after_clarifications_by_ids(payload, db=object(), user=_USER)
 
     assert response is expected
     assert captured[0].match_request == request
