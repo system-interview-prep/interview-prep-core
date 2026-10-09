@@ -14,6 +14,15 @@ class Settings(BaseSettings):
     # None enables traces only in local/development environments.
     trace_logs_enabled: bool | None = None
     trace_logs_dir: str = "trace-logs"
+    # Seeds the curated Question Bank (approved questions, rubrics and taxonomy
+    # mappings). Interviews fail closed with question_bank_insufficient on an
+    # empty bank, so a demo deployment must turn this on explicitly.
+    # None seeds only in development/test environments.
+    question_bank_seed_enabled: bool | None = None
+    # When a JD skill has no approved question (nor a broader-skill or role
+    # question), ask the LLM for one, use it in that interview, and file it as
+    # an IN_REVIEW draft. Off -> the skill is dropped and reported uncovered.
+    question_generation_enabled: bool = True
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     jwt_secret: str = "development-only-secret-change-me"
@@ -65,6 +74,10 @@ class Settings(BaseSettings):
     llm_provider: str = "openai"
     # Pin the snapshot so an alias update cannot silently change eval behavior.
     llm_model: str = "gpt-5.4-mini-2026-03-17"
+    # Dynamic interview planning is opt-in because its time-allocation values
+    # are Product policy. When enabled, the JSON must satisfy PlannerPolicyConfig.
+    interview_dynamic_planner_enabled: bool = False
+    interview_planner_policy_json: str | None = None
     # Shared self-hosted model-service settings.  Modules consume these through
     # src.modules.ai rather than coupling themselves to a tunnel/provider.
     ai_model_url: str | None = None
