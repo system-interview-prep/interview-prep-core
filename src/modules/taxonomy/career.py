@@ -89,7 +89,7 @@ _RULES = (
     CareerRule(
         "technology.software-engineering.backend",
         "Backend Engineering",
-        ("backend", "back-end", "server-side"),
+        ("backend", "back-end", "server-side", "full stack", "fullstack", "full-stack"),
         role_skill_ids(BACKEND),
         "technology.software-engineering",
     ),
