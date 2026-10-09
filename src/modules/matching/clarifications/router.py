@@ -3,9 +3,14 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.security import current_user
 from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
-from src.modules.matching.application.input_resolver import resolve_job, resolve_resume
+from src.modules.matching.application.input_resolver import (
+    resolve_job,
+    resolve_resume,
+    resume_owner_scope,
+)
 from src.modules.matching.clarifications.models import (
     MatchClarificationAnalysis,
     MatchClarificationIdsRequest,
@@ -22,13 +27,15 @@ from src.modules.matching.clarifications.service import (
 )
 from src.modules.matching.domain.schemas import MatchRequest
 
-router = APIRouter(prefix="/api/v1/matching", tags=["matching"])
+router = APIRouter(prefix="/api/v1/matching", tags=["matching"], dependencies=[Depends(current_user)])
 
 
-async def _resolve_match_request(payload: MatchClarificationIdsRequest, db: AsyncSession) -> MatchRequest:
+async def _resolve_match_request(
+    payload: MatchClarificationIdsRequest, db: AsyncSession, user: dict
+) -> MatchRequest:
     if payload.candidate_id.startswith("sample-") or payload.job_id.startswith("sample-"):
         raise HTTPException(status_code=422, detail="Sample matches do not support clarification answers")
-    resume = await resolve_resume(db, payload.candidate_id)
+    resume = await resolve_resume(db, payload.candidate_id, owner_id=resume_owner_scope(user))
     job = await resolve_job(db, payload.job_id)
     return MatchRequest(
         schemaVersion="2.1",
@@ -51,6 +58,7 @@ async def analyze_clarifications(payload: MatchRequest) -> MatchClarificationAna
 async def analyze_clarifications_by_ids(
     payload: MatchClarificationIdsRequest,
     db: AsyncSession = Depends(get_db),
+    user: dict = Depends(current_user),
 ) -> MatchClarificationAnalysis:
     """Load canonical CV/JD data and return the match with AI clarification questions."""
 
@@ -61,7 +69,7 @@ async def analyze_clarifications_by_ids(
         candidate_id=payload.candidate_id,
         job_id=payload.job_id,
     )
-    request = await _resolve_match_request(payload, db)
+    request = await _resolve_match_request(payload, db, user)
     return await run_match_with_clarifications(request)
 
 
@@ -69,6 +77,7 @@ async def analyze_clarifications_by_ids(
 async def prepare_clarifications_by_ids(
     payload: MatchClarificationIdsRequest,
     db: AsyncSession = Depends(get_db),
+    user: dict = Depends(current_user),
 ) -> MatchClarificationAnalysis:
     """Run matching and Jev's eligibility gate before generating a question."""
 
@@ -79,7 +88,7 @@ async def prepare_clarifications_by_ids(
         candidate_id=payload.candidate_id,
         job_id=payload.job_id,
     )
-    request = await _resolve_match_request(payload, db)
+    request = await _resolve_match_request(payload, db, user)
     return await prepare_match_clarifications(request)
 
 
@@ -87,6 +96,7 @@ async def prepare_clarifications_by_ids(
 async def generate_clarification_questions_by_ids(
     payload: MatchClarificationQuestionsIdsRequest,
     db: AsyncSession = Depends(get_db),
+    user: dict = Depends(current_user),
 ) -> MatchClarificationAnalysis:
     """Generate questions for requirements approved by the Jev phase."""
 
@@ -98,7 +108,7 @@ async def generate_clarification_questions_by_ids(
         job_id=payload.job_id,
         requirement_ids=sorted(set(payload.requirement_ids)),
     )
-    request = await _resolve_match_request(payload, db)
+    request = await _resolve_match_request(payload, db, user)
     return await generate_match_clarifications(
         request,
         set(payload.requirement_ids),
@@ -122,10 +132,11 @@ async def rescore_after_clarifications(
 async def rescore_after_clarifications_by_ids(
     payload: MatchClarificationRescoreIdsRequest,
     db: AsyncSession = Depends(get_db),
+    user: dict = Depends(current_user),
 ) -> MatchClarificationRescoreResult:
     """Resolve canonical inputs server-side and recalculate after answers."""
 
-    request = await _resolve_match_request(payload, db)
+    request = await _resolve_match_request(payload, db, user)
     try:
         rescore_payload = MatchClarificationRescoreRequest(
             matchRequest=request,
