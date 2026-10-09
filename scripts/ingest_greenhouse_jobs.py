@@ -134,10 +134,17 @@ async def run_ingestion(args: argparse.Namespace) -> int:
         print("ERROR: Database SessionFactory is not available.", file=sys.stderr)
         return 1
 
+    from src.modules.taxonomy.facade import load_active_skill_taxonomy
+
+    # Parse with the same database taxonomy the upload worker uses.
+    async with SessionFactory() as session:
+        taxonomy = await load_active_skill_taxonomy(session)
+    parser = DeterministicJobDescriptionParser(taxonomy.skills, taxonomy.version)
+
     async with SessionFactory() as session:
         async with session.begin():
             repo = JobIngestionRepository(session)
-            service = JobIngestionService(repo, adapter)
+            service = JobIngestionService(repo, adapter, parser)
             summary = await service.ingest_candidates(config, candidates)
 
     print("\n" + "=" * 70)
