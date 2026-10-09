@@ -197,11 +197,33 @@ def test_missing_cv_fields_prompts_verification_not_assertion():
     # Must NOT assert candidate was Lead or created a specific metric
     assert "Lead" not in q_vi
     assert "xác minh chính xác vai trò" in q_vi
-    assert "đo lường bằng những chỉ số (metrics) nào so với baseline ban đầu" in q_vi
+    # No outcome in the CV: nothing to quote, measurement is left to the probe.
+    assert "Kết quả" not in q_vi
+    assert q_vi.count("?") == 1
 
     q_en = build_project_validation_question(project, job_title="Software Engineer", locale="en")
     assert "verify your direct contribution" in q_en
-    assert "metrics were used to measure the outcome against your initial baseline" in q_en
+    assert "measured" not in q_en
+
+
+def test_validation_question_is_one_short_spoken_question():
+    """The opening CV question asks one thing (plus the CV's own outcome), not four."""
+    project = StructuredProjectEvidence(
+        project_id="p1",
+        name="Hệ thống quản lý đơn hàng đa kênh",
+        role="Backend lead (team 4 người)",
+        role_status="present",
+        technologies=["Docker", "Node.Js", "Node.js", "PostgreSQL"],
+        technologies_status="present",
+        outcomes=["15.000 đơn/ngày"],
+        outcomes_status="present",
+    )
+    q_vi = build_project_validation_question(project, job_title="Backend", locale="vi")
+    assert q_vi.count("?") == 2
+    assert len(q_vi.split()) <= 45
+    assert "baseline" not in q_vi and "Đồng thời" not in q_vi and "Cảm ơn" not in q_vi
+    # Technologies are listed once each, case-insensitively.
+    assert "Docker, Node.Js, PostgreSQL" in q_vi
 
 
 # ============================================================================
