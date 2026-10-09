@@ -216,7 +216,8 @@ def test_deterministic_parser_extracts_grounded_skills_language_and_separate_pii
     assert result.identity.date_of_birth and result.identity.date_of_birth.value == "1998-12-04"
     classifications = {item.code: item for item in result.resume.career_classifications}
     assert classifications["technology.software-engineering.backend"].is_primary is True
-    assert classifications["technology.software-engineering.backend"].confidence == 0.75
+    # Python, FastAPI and PostgreSQL all signal backend in the shared skill catalogue.
+    assert classifications["technology.software-engineering.backend"].confidence == pytest.approx(0.9)
     assert classifications["technology"].evidence_refs
     assert "candidate@example.com" not in result.resume.model_dump_json()
     for evidence in result.resume.evidence:
