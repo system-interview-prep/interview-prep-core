@@ -22,6 +22,7 @@ from src.modules.auth import build_module as build_auth_module
 from src.modules.health import build_module as build_health_module
 from src.modules.interviews import build_module as build_interviews_module
 from src.modules.interviews.agent.checkpoints import interview_checkpoint_lifespan
+from src.modules.interviews.planning.planner import configured_planner_policy
 from src.modules.job_descriptions import build_module as build_job_descriptions_module
 from src.modules.matching import build_module as build_matching_module
 from src.modules.notifications import build_module as build_notifications_module
@@ -122,13 +123,21 @@ async def bootstrap_question_bank_schema(engine: object) -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     livekit_agent: asyncio.subprocess.Process | None = None
+    settings = get_settings()
+    # Validate the opt-in interview planner policy before serving traffic. A bad
+    # value used to surface only when a candidate called POST /plan, and the
+    # router mapped it to 409 - so a deployment mistake read as "your session is
+    # in conflict" instead of failing the boot that introduced it.
+    configured_planner_policy()
     async with postgres_lifespan():
         from src.infrastructure.database import engine
 
         await bootstrap_question_bank_schema(engine)
-        await run_all_seeds(SessionFactory)
+        # Pass settings explicitly: the fixture gate is environment-driven and
+        # fails closed without them.
+        await run_all_seeds(SessionFactory, settings)
         async with interview_checkpoint_lifespan(), rabbitmq_lifespan():
-            livekit_agent = await _start_livekit_agent(get_settings())
+            livekit_agent = await _start_livekit_agent(settings)
             try:
                 yield
             finally:
@@ -156,7 +165,15 @@ def create_app() -> FastAPI:
     async def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
-            content={"message": _message(exc.detail), "statusCode": exc.status_code},
+            # `detail` keeps FastAPI's original payload (a string, or a dict
+            # such as {errorCode, message, details}); the interview frontend
+            # reads it, and structured codes like question_bank_insufficient
+            # were lost when only `message` was sent.
+            content={
+                "message": _message(exc.detail),
+                "statusCode": exc.status_code,
+                "detail": exc.detail,
+            },
             headers=exc.headers,
         )
 
