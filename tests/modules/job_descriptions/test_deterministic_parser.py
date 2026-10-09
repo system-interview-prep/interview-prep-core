@@ -628,3 +628,25 @@ def test_slash_alternative_and_remaining_infrastructure_requirements_are_preserv
     assert requirement.group_operator == "all_of"
     assert requirement.priority == "preferred"
 
+
+
+def test_two_aliases_of_one_concept_do_not_crash_the_requirement_group() -> None:
+    # Real postings: "About You" heading, and a line naming monitoring twice
+    # (two aliases) next to another skill used to raise "atomicConcepts must be unique".
+    line = "- Experience with monitoring and observability for Kotlin services"
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown=f"About You:\n{line}",
+            content_list=[
+                {"type": "text", "text": "About You:", "page_idx": 0},
+                {"type": "text", "text": line, "page_idx": 0},
+            ],
+        ),
+        document_id="jd-duplicate-alias",
+        document_sha256="d" * 64,
+    )
+
+    parsed = DeterministicJobDescriptionParser().parse(source, extraction_version="test")
+
+    requirement = next(item for item in parsed.requirements if item.atomic_concepts)
+    assert [item.label for item in requirement.atomic_concepts] == ["Monitoring", "Kotlin"]
