@@ -7,7 +7,10 @@ from src.modules.interviews.evaluation.evaluation_types import (
     TurnEvaluationInput,
     TurnEvaluationResult,
 )
-from src.modules.interviews.evaluation.evaluation_engine import InterviewEvaluationEngine
+from src.modules.interviews.evaluation.evaluation_engine import (
+    EvaluationGradingError,
+    InterviewEvaluationEngine,
+)
 from src.modules.interviews.evaluation.evaluation_service import (
     EvaluationServiceError,
     evaluate_closed_session,
@@ -22,6 +25,7 @@ __all__ = [
     "TurnEvaluationInput",
     "TurnEvaluationResult",
     "InterviewEvaluationEngine",
+    "EvaluationGradingError",
     "EvaluationServiceError",
     "evaluate_closed_session",
     "get_session_evaluation",
