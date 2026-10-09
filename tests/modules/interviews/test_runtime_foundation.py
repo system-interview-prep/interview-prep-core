@@ -37,12 +37,19 @@ def test_create_interview_session_rejects_invalid_duration() -> None:
             {
                 "resumeId": "cv-1",
                 "jobId": "job-1",
-                "durationMinutes": 2,
+                "durationMinutes": 1,
             }
         )
     except ValidationError:
         return
-    raise AssertionError("durationMinutes below 5 must be rejected")
+    raise AssertionError("durationMinutes below 2 must be rejected")
+
+
+def test_create_interview_session_accepts_two_minute_demo() -> None:
+    payload = CreateInterviewSession.model_validate(
+        {"resumeId": "cv-1", "jobId": "job-1", "durationMinutes": 2}
+    )
+    assert payload.duration_minutes == 2
 
 
 def test_create_interview_session_rejects_unknown_mode() -> None:
