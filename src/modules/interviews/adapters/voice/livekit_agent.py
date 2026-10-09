@@ -8,6 +8,7 @@ Interview Core supplies every interview question and response.
 from __future__ import annotations
 
 import logging
+import json
 import os
 from pathlib import Path
 
@@ -54,11 +55,13 @@ class VoiceLabAgent(Agent):
         runtime_client: httpx.AsyncClient,
         session_id: str,
         room_name: str,
+        room: object,
     ) -> None:
         super().__init__(instructions=AGENT_INSTRUCTIONS)
         self._runtime_client = runtime_client
         self._session_id = session_id
         self._room_name = room_name
+        self._room = room
 
     async def on_user_turn_completed(self, _turn_ctx, new_message) -> None:
         transcript = new_message.text_content
@@ -82,7 +85,8 @@ class VoiceLabAgent(Agent):
                 },
             )
             response.raise_for_status()
-            assistant = response.json().get("assistantResponse")
+            response_payload = response.json()
+            assistant = response_payload.get("assistantResponse")
             content = assistant.get("content") if isinstance(assistant, dict) else None
             if not isinstance(content, str) or not content.strip():
                 raise RuntimeError("Interview Core returned no voice response")
@@ -103,7 +107,24 @@ class VoiceLabAgent(Agent):
         )
         # Speak the deterministic response directly. Since llm=None, LiveKit skips
         # its automatic generation after this callback returns.
-        self.session.say(content, allow_interruptions=False)
+        speech = self.session.say(content, allow_interruptions=False)
+        if response_payload.get("sessionStatus") == "CLOSED" or response_payload.get("completed"):
+            # Let the candidate hear the deterministic closing before the UI
+            # leaves the room, then publish a reliable terminal event.
+            await speech.wait_for_playout()
+            terminal_payload = json.dumps(
+                {
+                    "type": "interview.session.closed",
+                    "sessionId": self._session_id,
+                    "sessionStatus": "CLOSED",
+                    "endReason": response_payload.get("endReason") or "COMPLETED",
+                }
+            )
+            await self._room.local_participant.publish_data(
+                terminal_payload,
+                reliable=True,
+                topic="intervia.session",
+            )
 
 
 server = AgentServer()
@@ -224,6 +245,7 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
         runtime_client=runtime_client,
         session_id=session_id,
         room_name=ctx.room.name,
+        room=ctx.room,
     )
     await session.start(room=ctx.room, agent=agent)
     await session.say(opening_text, allow_interruptions=False)
