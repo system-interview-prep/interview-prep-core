@@ -1534,8 +1534,11 @@ class DeterministicJobDescriptionParser:
         return match.group(1).title() if match else None
 
     @staticmethod
-    def _classifications(requirements, job_title: str | None = None):
-        del job_title  # Canonical JD v1 has no evidenceRefs for its title.
+    def _classifications(requirements, job_title: str | None = None, *, trusted_title: str | None = None):
+        # A title guessed from the body is not used (canonical JD v1 has no
+        # evidenceRefs for it). A caller that knows the real posting title
+        # (board ingestion) passes it as ``trusted_title``.
+        del job_title
         skill_evidence: dict[str, list[str]] = {}
         # The role is what the job requires; a "nice to have Android plugin"
         # must not turn a Unity game role into a mobile one.
@@ -1552,7 +1555,7 @@ class DeterministicJobDescriptionParser:
 
         results = classify_career(
             skill_evidence,
-            [],
+            [(trusted_title, [])] if trusted_title else [],
             minimum_skill_signals=1,
             include_ancestors=False,
         )
