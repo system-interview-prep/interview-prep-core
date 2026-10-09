@@ -7,7 +7,7 @@ questions.
 
 from typing import Any
 
-from src.modules.matching.domain.schemas import (
+from src.modules.matching.schemas import (
     CanonicalJob,
     LanguageRequirement,
     MatchResult,
@@ -49,11 +49,14 @@ def derive_difficulty(job: CanonicalJob) -> dict[str, Any]:
 def _allocate_minutes(duration_minutes: int, weights: list[int]) -> list[int]:
     """Allocate whole minutes deterministically and preserve the exact total."""
 
-    if duration_minutes < len(weights):
+    if duration_minutes <= 0:
         raise ValueError("Interview duration is too short for the planner section contract")
 
-    minutes = [1] * len(weights)
-    remaining = duration_minutes - len(weights)
+    # Every section gets a minute when there is room. Demo sessions shorter
+    # than the number of sections get 0-minute sections instead of failing.
+    floor = 1 if duration_minutes >= len(weights) else 0
+    minutes = [floor] * len(weights)
+    remaining = duration_minutes - sum(minutes)
     total_weight = sum(weights)
 
     while remaining:
