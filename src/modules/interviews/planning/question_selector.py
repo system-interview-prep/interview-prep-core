@@ -512,7 +512,6 @@ async def _generate_missing_questions(
         await generate_and_file(
             db,
             concept_id=target["conceptId"],
-            skill_label=target["label"],
             job_role=job_role,
             difficulty=difficulty,
             locale=locale,
