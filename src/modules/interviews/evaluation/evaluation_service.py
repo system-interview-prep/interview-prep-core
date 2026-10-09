@@ -251,10 +251,12 @@ async def evaluate_closed_session(
         ),
         {"sid": session_id},
     )
+    dropped_labels: set[str] = set()
     for item in dropped if isinstance(dropped, list) else []:
         label = item.get("label") or item.get("conceptId") if isinstance(item, dict) else None
         if label and label not in uncovered_competencies:
             uncovered_competencies.append(str(label))
+            dropped_labels.add(str(label))
 
     # Generated questions are used before review; say so on the report.
     unreviewed = sum(
@@ -293,11 +295,18 @@ async def evaluate_closed_session(
 
         existing_topics = list(result.next_round_topics or [])
         for label in uncovered_competencies:
-            topic = (
-                f"{label} (chưa kịp hỏi trong phiên này)"
-                if is_vi
-                else f"{label} (not covered in this session)"
-            )
+            if label in dropped_labels:
+                topic = (
+                    f"{label} (chưa có câu hỏi phù hợp trong phiên này)"
+                    if is_vi
+                    else f"{label} (no suitable question in this session)"
+                )
+            else:
+                topic = (
+                    f"{label} (chưa kịp hỏi trong phiên này)"
+                    if is_vi
+                    else f"{label} (not covered in this session)"
+                )
             if topic not in existing_topics:
                 existing_topics.append(topic)
         result.next_round_topics = existing_topics
