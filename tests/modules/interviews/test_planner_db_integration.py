@@ -38,11 +38,23 @@ async def test_planner_persists_grounded_competency_agenda(monkeypatch) -> None:
     checksum = uuid4().hex + uuid4().hex
     user = {"sub": user_id, "email": f"{user_id}@example.test", "roles": ["CANDIDATE"]}
 
+    # `RequirementResult` refuses an `unknown` verdict that cites no CV evidence,
+    # so the resume has to carry the span the verdict points at.
+    cv_evidence = EvidenceSpan(
+        evidenceId="cv-ev-python",
+        documentId="cv-doc",
+        documentSha256="b" * 64,
+        section="experience",
+        text="Python",
+        charStart=0,
+        charEnd=6,
+    )
     resume = CanonicalResume(
         schemaVersion="2.1",
         resumeId=resume_id,
         documentId="cv-doc",
         documentSha256="b" * 64,
+        evidence=[cv_evidence],
     )
     jd_evidence = EvidenceSpan(
         evidenceId="jd-ev-python",
@@ -97,8 +109,9 @@ async def test_planner_persists_grounded_competency_agenda(monkeypatch) -> None:
                     status="unknown",
                     score=None,
                     confidence=0.0,
-                    evidenceRefs=[],
-                    reasonCode="evidence_missing",
+                    evidenceRefs=["cv-ev-python"],
+                    # What matching actually emits for `unknown` with evidence.
+                    reasonCode="generic_requirement_evidence_weak",
                 )
             ],
             factorResults=[],
@@ -164,8 +177,9 @@ async def test_planner_persists_grounded_competency_agenda(monkeypatch) -> None:
             plan = await build_interview_plan(created["sessionId"], user=user, db=db)
             assert plan["status"] == "READY"
             assert plan["policyVersion"] == "interview-planner-v1"
-            assert plan["questionBudget"] == 4
-            assert plan["targetQuestionCount"] == 3
+            # 20 minutes: presets (540s) + 2 questions x 240s fit; 4 did not.
+            assert plan["questionBudget"] == 2
+            assert plan["targetQuestionCount"] == 2
             assert plan["targets"][0]["conceptId"] == "skill.python"
             assert plan["targets"][0]["rationale"]["requirementIds"] == ["req-python"]
             assert plan["targets"][0]["rationale"]["matchStatuses"] == ["unknown"]
