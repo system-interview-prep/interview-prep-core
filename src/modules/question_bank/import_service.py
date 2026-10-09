@@ -12,13 +12,20 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.modules.question_bank.import_parser import parse_csv, parse_xlsx
+from src.modules.question_bank.import_parser import (
+    normalize_row_payload,
+    parse_csv,
+    parse_xlsx,
+    validate_row_payload,
+)
 from src.modules.question_bank.models import (
     InterviewQuestion,
     InterviewQuestionVersion,
     QuestionImport,
     QuestionImportRow,
+    QuestionVersionRubric,
     QuestionVersionTaxonomyConcept,
+    Rubric,
 )
 from src.modules.question_bank.service import QuestionBankService
 
@@ -93,6 +100,9 @@ class QuestionImportService:
         )
         if row is None:
             raise HTTPException(404, "Import row not found.")
+        import_run = await self.summary(import_id)
+        if import_run.status != "READY_FOR_REVIEW":
+            raise HTTPException(409, "Only imports awaiting review can be edited.")
         editable = {
             "canonical_text",
             "objective",
@@ -103,9 +113,16 @@ class QuestionImportService:
         if set(payload).difference(editable):
             raise HTTPException(422, "Payload contains non-editable import fields.")
         normalized = {**row.normalized_payload, **payload}
+        for key in ("soft_answer_seconds", "hard_answer_seconds"):
+            if isinstance(normalized.get(key), str) and normalized[key].strip().isdigit():
+                normalized[key] = int(normalized[key])
         errors = self._validate_payload(normalized)
         row.normalized_payload, row.validation_errors = normalized, errors
         row.status = "ERROR" if errors else "VALID"
+        await self.db.flush()
+        all_rows = await self.rows(import_id)
+        import_run.valid_rows = sum(item.status == "VALID" for item in all_rows)
+        import_run.error_rows = sum(item.status == "ERROR" for item in all_rows)
         await self.db.flush()
         return row
 
@@ -126,7 +143,12 @@ class QuestionImportService:
         return stream.getvalue().encode("utf-8")
 
     async def commit(self, import_id: UUID, actor_id: str, idempotency_key: str) -> list[QuestionImportRow]:
-        import_run = await self.summary(import_id)
+        # Lock the import so two concurrent commits cannot both create drafts.
+        import_run = await self.db.scalar(
+            select(QuestionImport).where(QuestionImport.id == import_id).with_for_update()
+        )
+        if import_run is None:
+            raise HTTPException(404, "Import not found.")
         if import_run.status == "COMMITTED":
             if import_run.commit_idempotency_key == idempotency_key:
                 return await self.rows(import_id)
@@ -134,12 +156,15 @@ class QuestionImportService:
         rows = await self.rows(import_id)
         if import_run.status != "READY_FOR_REVIEW" or any(row.status != "VALID" for row in rows):
             raise HTTPException(422, "All import rows must be valid before commit.")
+        await self._reject_duplicate_keys(rows)
         for row in rows:
             payload = row.normalized_payload
             errors = self._validate_payload(payload)
             if errors:
                 raise HTTPException(422, "Import validation changed; refresh and review rows.")
-            await self._validate_primary_competency(payload)
+            mappings = self._taxonomy_mappings(payload)
+            await QuestionBankService(self.db)._validate_taxonomy_mappings(payload["taxonomy_version"], mappings)
+            rubric_version_id = await self._resolve_rubric(payload)
             question = InterviewQuestion(id=uuid4(), stable_key=payload["stable_key"], created_by=actor_id)
             version = InterviewQuestionVersion(
                 id=uuid4(),
@@ -160,14 +185,19 @@ class QuestionImportService:
                 created_by=actor_id,
                 change_summary=payload.get("change_summary", ""),
             )
-            mapping = QuestionVersionTaxonomyConcept(
-                question_version_id=version.id,
-                taxonomy_version=payload["taxonomy_version"],
-                concept_id=payload["primary_competency_id"],
-                purpose="PRIMARY_COMPETENCY",
-                relevance=1,
+            self.db.add_all([question, version])
+            self.db.add_all(
+                QuestionVersionTaxonomyConcept(
+                    question_version_id=version.id,
+                    taxonomy_version=payload["taxonomy_version"],
+                    concept_id=item.concept_id,
+                    purpose=item.purpose,
+                    relevance=item.relevance,
+                )
+                for item in mappings
             )
-            self.db.add_all([question, version, mapping])
+            if rubric_version_id is not None:
+                self.db.add(QuestionVersionRubric(question_version_id=version.id, rubric_version_id=rubric_version_id))
             row.status, row.draft_question_id, row.draft_question_version_id = (
                 "COMMITTED",
                 question.id,
@@ -181,25 +211,55 @@ class QuestionImportService:
         await self.db.flush()
         return rows
 
-    async def _validate_primary_competency(self, payload: dict) -> None:
-        concept_id = str(payload.get("primary_competency_id", "")).strip()
-        if not concept_id:
-            raise HTTPException(422, "Import validation changed; refresh and review rows.")
-        await QuestionBankService(self.db)._validate_taxonomy_mappings(
-            payload["taxonomy_version"],
-            [SimpleNamespace(concept_id=concept_id, purpose="PRIMARY_COMPETENCY")],
+    async def _reject_duplicate_keys(self, rows: list[QuestionImportRow]) -> None:
+        """A duplicate stable key used to surface as an IntegrityError (500) mid-commit."""
+        keys = [str(row.normalized_payload.get("stable_key") or "").strip().lower() for row in rows]
+        in_file = sorted({key for key in keys if keys.count(key) > 1})
+        existing = await self.db.scalars(
+            select(InterviewQuestion.stable_key).where(InterviewQuestion.stable_key.in_(keys))
         )
+        in_bank = sorted(set(existing))
+        if in_file or in_bank:
+            raise HTTPException(
+                409,
+                {
+                    "message": "Import contains stable keys that are duplicated or already exist.",
+                    "duplicatedInFile": in_file,
+                    "alreadyInBank": in_bank,
+                },
+            )
+
+    @staticmethod
+    def _taxonomy_mappings(payload: dict) -> list[SimpleNamespace]:
+        """Every mapping the selector can match on, not only the primary competency.
+
+        P1 skill targets match TARGET_SKILL and the career-classification
+        fallback matches TARGET_ROLE only; dropping those columns made imported
+        questions invisible to P2.
+        """
+        primary = str(payload.get("primary_competency_id", "")).strip()
+        mappings = [SimpleNamespace(concept_id=primary, purpose="PRIMARY_COMPETENCY", relevance=1)]
+        for column, purpose in (
+            ("skill_ids", "TARGET_SKILL"),
+            ("target_role_ids", "TARGET_ROLE"),
+            ("supporting_competency_ids", "SUPPORTING_COMPETENCY"),
+        ):
+            for raw_id in payload.get(column) or []:
+                concept_id = str(raw_id).strip()
+                if concept_id and all((m.concept_id, m.purpose) != (concept_id, purpose) for m in mappings):
+                    mappings.append(SimpleNamespace(concept_id=concept_id, purpose=purpose, relevance=1))
+        return mappings
+
+    async def _resolve_rubric(self, payload: dict) -> UUID | None:
+        rubric_key = str(payload.get("rubric_key") or "").strip()
+        if not rubric_key:
+            return None
+        rubric = await self.db.scalar(select(Rubric).where(Rubric.stable_key == rubric_key))
+        if rubric is None or rubric.current_version_id is None:
+            raise HTTPException(422, f"Rubric {rubric_key!r} does not exist.")
+        return rubric.current_version_id
 
     @staticmethod
     def _validate_payload(payload: dict) -> list[dict]:
-        errors = []
-        if not str(payload.get("primary_competency_id", "")).strip():
-            errors.append({"field": "primary_competency_id", "code": "REQUIRED", "severity": "ERROR"})
-        try:
-            if int(payload["hard_answer_seconds"]) < int(payload["soft_answer_seconds"]):
-                errors.append(
-                    {"field": "hard_answer_seconds", "code": "HARD_BELOW_SOFT", "severity": "ERROR"}
-                )
-        except (KeyError, TypeError, ValueError):
-            errors.append({"field": "hard_answer_seconds", "code": "INVALID_INTEGER", "severity": "ERROR"})
-        return errors
+        normalize_row_payload(payload)
+        return validate_row_payload(payload)
