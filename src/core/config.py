@@ -102,6 +102,13 @@ class Settings(BaseSettings):
     # Document extraction provider. Select the adapter used by CV and JD jobs.
     # Supported values: mineru (default) and paddleocr.
     ocr_provider: str = "mineru"
+    # Provider tried when OCR_PROVIDER fails (outage, timeout, API error, missing
+    # key, empty output). "auto" = the other supported provider; "none" = no
+    # fallback; or name one explicitly.
+    ocr_fallback_provider: str = "auto"
+    # Read born-digital PDFs and .docx files locally before any OCR upload;
+    # scans, image-only PDFs and images still go to the OCR providers.
+    pdf_text_layer_enabled: bool = True
 
     # MinerU Precision Extract API. Set MINERU_API_KEY to enable CV parsing.
     mineru_api_key: str | None = None
