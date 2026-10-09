@@ -15,31 +15,31 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.core.trace_logging import trace_event
-
 from src.modules.interviews.planning.plan_structure import (
     build_evaluation_targets,
     build_sections,
     derive_difficulty,
     validate_must_have_coverage,
 )
-from src.modules.interviews.planning.project_evidence import extract_project_evidences
 from src.modules.interviews.planning.planner_config import (
     PlannerPolicyConfig,
     resolve_strict_hands_on_precedence,
 )
+from src.modules.interviews.planning.project_evidence import extract_project_evidences
 from src.modules.job_descriptions.schemas import CanonicalJobDescription
-from src.modules.matching.application.facade import canonical_job_from_description, evaluate_match
-from src.modules.matching.domain.schemas import (
+from src.modules.matching.facade import canonical_job_from_description, evaluate_match
+from src.modules.matching.schemas import (
     CanonicalJob,
     LanguageRequirement,
     MatchRequest,
     MatchResult,
     SkillRequirement,
-    TaxonomyRef,
     UnresolvedRequirement,
 )
-from src.modules.user_cvs.schemas import CanonicalResume
+# `TaxonomyRef` is owned by user_cvs; matching only re-exported it.
+from src.modules.user_cvs.schemas import CanonicalResume, TaxonomyRef
 
 PLANNER_POLICY_VERSION = "interview-planner-v1"
 PLANNER_POLICY_VERSION_DYNAMIC = "interview-planner-v2-dynamic"
@@ -56,6 +56,10 @@ _STATUS_BOOST = {
     "not_applicable": 0.0,
 }
 _MAX_QUESTIONS_PER_TARGET = 3
+
+
+class PlannerPolicyConfigurationError(RuntimeError):
+    """The deployment enabled dynamic planning without a usable policy."""
 
 
 @dataclass
@@ -88,22 +92,27 @@ class _CandidateTarget:
             self.source_evidence_refs.append(source_evidence_ref)
 
 
-def _question_budget(duration_minutes: int) -> int:
-    """Ma trận phân bổ câu hỏi kỹ thuật theo thời lượng (Question Allocation Matrix).
+# Expected (soft) seconds of the preset turns P2 always freezes - WARM_UP 120,
+# VALIDATE 180, BEHAVIORAL 180 (see question_selector snapshots) - plus the
+# runtime's 60s closing reserve.
+_PRESET_EXPECTED_SECONDS = 120 + 180 + 180 + 60
+# Expected seconds per technical question: thinking 30 + soft answer 150 + one
+# follow-up probe 60.
+_TECHNICAL_EXPECTED_SECONDS = 30 + 150 + 60
+_MAX_TECHNICAL_QUESTIONS = 8
 
-    Tổng số câu phỏng vấn thực tế = technical budget + 2 câu mở đầu (Turn 0: Warm-up, Turn 1: Validate CV).
-    - Gói 15 phút (Flash Screen): 2 câu kỹ thuật -> Tổng 4 câu
-    - Gói 25 phút (Standard, 20-30m): 4 câu kỹ thuật -> Tổng 6 câu
-    - Gói 45 phút (Deep Dive, 35-50m): 6 câu kỹ thuật -> Tổng 8 câu
-    - Trên 50 phút: tối đa 8 câu kỹ thuật -> Tổng 10 câu
+
+def _question_budget(duration_minutes: int) -> int:
+    """Technical question budget derived from the session's time.
+
+    The old fixed matrix (15m -> 2, 25m -> 4, 45m -> 6) ignored timing: a
+    25-minute session's hard limits summed to exactly 1500s with no room for a
+    single follow-up, and a 15-minute session needed ~1080s for 900s, so
+    HARD_TIMEOUT was routine. Now: 15m -> 1, 25m -> 4 (with probe room),
+    45m and longer -> 8.
     """
-    if duration_minutes <= 15:
-        return 2
-    elif duration_minutes <= 30:
-        return 4
-    elif duration_minutes <= 50:
-        return 6
-    return min(8, max(3, round((duration_minutes - 10) / 5)))
+    available = duration_minutes * 60 - _PRESET_EXPECTED_SECONDS
+    return max(1, min(_MAX_TECHNICAL_QUESTIONS, available // _TECHNICAL_EXPECTED_SECONDS))
 
 
 def _requirement_concepts(requirement: Any) -> list[TaxonomyRef]:
@@ -734,8 +743,12 @@ def _derive_competency_plan_dynamic(
 
     # Verification of Invariants
     total_env = sum(t["timeEnvelopeSeconds"] for t in targets)
-    assert total_env + unallocated_buffer_seconds == tech_pool_seconds, "Invariant 1 & 2 Conservation Violation"
-    assert len(canonical_map) == len(targets) + len(non_interviewed_targets), "Invariant 4B Partition Violation"
+    # Explicit checks, not `assert`: asserts vanish under `python -O` and would
+    # otherwise surface as an unhandled 500.
+    if total_env + unallocated_buffer_seconds != tech_pool_seconds:
+        raise PlannerPolicyConfigurationError("Invariant 1 & 2 Conservation Violation")
+    if len(canonical_map) != len(targets) + len(non_interviewed_targets):
+        raise PlannerPolicyConfigurationError("Invariant 4B Partition Violation")
 
     strengths_to_verify = [
         t["label"] or t["conceptId"]
@@ -813,6 +826,27 @@ def derive_competency_plan(
         duration_minutes=duration_minutes,
         config=policy_config,
     )
+
+
+def configured_planner_policy() -> PlannerPolicyConfig | None:
+    """Load an explicitly approved dynamic policy from application settings.
+
+    Raises `PlannerPolicyConfigurationError` on a bad deployment configuration so
+    callers can separate "this server is misconfigured" (500, and a failed boot)
+    from "this plan is already locked" (409 on the candidate's request).
+    """
+    settings = get_settings()
+    if not settings.interview_dynamic_planner_enabled:
+        return None
+    raw = settings.interview_planner_policy_json
+    if not raw or not raw.strip():
+        raise PlannerPolicyConfigurationError(
+            "INTERVIEW_PLANNER_POLICY_JSON is required when dynamic interview planning is enabled"
+        )
+    try:
+        return PlannerPolicyConfig.model_validate_json(raw)
+    except ValidationError as exc:
+        raise PlannerPolicyConfigurationError("INTERVIEW_PLANNER_POLICY_JSON is invalid") from exc
 
 
 async def _load_resume(
@@ -906,6 +940,7 @@ async def build_and_persist_session_plan(
         job=job,
         match=match,
         duration_minutes=session_row["duration_minutes"],
+        policy_config=configured_planner_policy(),
     )
     trace_event(
         "interviewer",
@@ -950,7 +985,7 @@ async def build_and_persist_session_plan(
         "eligibility": match.eligibility,
         "fitBand": match.fit_band,
         "plannerPolicyVersion": plan["policyVersion"],
-        "questionBudget": plan["questionBudget"],
+        "questionBudget": plan.get("questionBudget"),
         "nonCompetencyRequirementIds": plan["nonCompetencyRequirementIds"],
         "projectEvidences": [p.to_dict() for p in extract_project_evidences(
             projects_data=resume.projects,
@@ -995,16 +1030,7 @@ async def build_and_persist_session_plan(
         {
             "id": plan_id,
             "context": json.dumps(source_context),
-            "plan_payload": json.dumps(
-                {
-                    "policyVersion": plan["policyVersion"],
-                    "fingerprint": plan["fingerprint"],
-                    "questionBudget": plan["questionBudget"],
-                    "difficulty": plan["difficulty"],
-                    "sections": plan["sections"],
-                    "evaluationTargets": plan["evaluationTargets"],
-                }
-            ),
+            "plan_payload": json.dumps(plan),
         },
     )
     await db.commit()
@@ -1061,6 +1087,10 @@ async def read_session_plan(
         "fingerprint": payload.get("fingerprint"),
         "questionBudget": payload.get("questionBudget") or context.get("questionBudget"),
         "targetQuestionCount": sum(item["targetQuestionCount"] for item in targets),
+        # The dynamic selector fills each time envelope (up to the target's
+        # estimatedQuestionsRange), so the frozen count can exceed the P1
+        # estimate above. Once LOCKED this is the number actually asked.
+        "frozenTechnicalQuestionCount": (payload.get("questionSelection") or {}).get("technicalQuestionCount"),
         "difficulty": payload.get("difficulty"),
         "sections": payload.get("sections", []),
         "evaluationTargets": payload.get("evaluationTargets", []),
