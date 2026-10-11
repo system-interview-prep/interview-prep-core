@@ -1,7 +1,8 @@
 """LiveKit voice adapter for the authenticated Interview Core runtime.
 
 The API lifespan starts this worker automatically when ``LIVEKIT_AGENT_AUTOSTART``
-is enabled. It keeps streaming speech recognition and ElevenLabs TTS, while
+is enabled. It keeps streaming speech recognition and ElevenLabs TTS (with a
+LiveKit Inference fallback voice), while
 Interview Core supplies every interview question and response.
 """
 
@@ -672,7 +673,7 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
     )
 
     tts_language = {"language": tts_config.language} if tts_config.language else {}
-    tts = elevenlabs.TTS(
+    primary_tts = elevenlabs.TTS(
         voice_id=voice_id,
         model=tts_config.model,
         **tts_language,
@@ -685,6 +686,31 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
             speed=tts_config.speed,
             use_speaker_boost=tts_config.use_speaker_boost,
         ),
+    )
+    # An exhausted ElevenLabs quota answers every request with no audio, and a
+    # session with a single TTS then closes as unrecoverable: the candidate
+    # hears nothing. LiveKit Inference reuses the LiveKit credentials STT
+    # already needs, so the fallback adds no key. Empty disables it.
+    fallback_model = os.getenv("VOICE_LAB_FALLBACK_TTS_MODEL", "cartesia/sonic-3").strip()
+    tts_providers: list = [primary_tts]
+    if fallback_model:
+        fallback_voice = os.getenv("VOICE_LAB_FALLBACK_TTS_VOICE", "").strip()
+        tts_providers.append(
+            inference.TTS(
+                model=fallback_model,
+                language="vi" if is_vietnamese else "en",
+                **({"voice": fallback_voice} if fallback_voice else {}),
+            )
+        )
+    tts = (
+        agents.tts.FallbackAdapter(
+            tts_providers,
+            # Fail over on the first rejected request; each retry is a pause
+            # the candidate hears as dead air.
+            max_retry_per_tts=_int_env("VOICE_LAB_TTS_RETRIES_BEFORE_FALLBACK", 1),
+        )
+        if len(tts_providers) > 1
+        else primary_tts
     )
 
     degraded_components: set[str] = set()
@@ -724,6 +750,21 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
                 "streamed": bool(metric.streamed),
             },
         )
+
+    if tts is not primary_tts:
+
+        @tts.on("tts_availability_changed")
+        def on_tts_availability(event) -> None:
+            logger.warning(
+                "Voice TTS provider availability changed",
+                extra={
+                    "session_id": session_id,
+                    "room_name": ctx.room.name,
+                    "provider": getattr(event.tts, "provider", type(event.tts).__name__),
+                    "model": getattr(event.tts, "model", None),
+                    "available": bool(event.available),
+                },
+            )
 
     @tts.on("metrics_collected")
     def on_tts_metrics(metric) -> None:
