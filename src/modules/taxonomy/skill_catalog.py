@@ -210,7 +210,9 @@ _SEPARATORS = r"|,;/•·()\[\]:\-"
 def alias_pattern(alias: str) -> re.Pattern[str]:
     """Word-bounded, case-insensitive matcher for one alias."""
     escaped = re.escape(alias)
-    if alias in LIST_ONLY_ALIASES:
+    # The DB taxonomy also lists each label as an alias ("Monitoring"); the
+    # match is case-insensitive, so the list-only rule must be too.
+    if alias.casefold() in LIST_ONLY_ALIASES:
         before = rf"(?:^|(?<=[{_SEPARATORS}])|(?<=[{_SEPARATORS}] ))"
         # "-" separates list items, but "AI-assisted" is a compound word.
         after = rf"(?!-\w)(?=[ ]?(?:$|[{_SEPARATORS}.]))"
