@@ -14,3 +14,6 @@ trace-logs/
 .pytest-auth-full
 /.pytest-auth-full
 .pytest-auth-full/
+tmp/
+temp/
+*.tmp
