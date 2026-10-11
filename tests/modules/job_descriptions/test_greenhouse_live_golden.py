@@ -63,6 +63,8 @@ def test_live_posting_parses_to_its_reviewed_floor(case: dict) -> None:
         for ref in ([requirement.concept] if requirement.concept else requirement.atomic_concepts)
     }
     assert set(expected["required_concepts"]) <= found
+    # Hand-reviewed false positives ("AI-assisted tools", "post-release monitoring").
+    assert not set(expected.get("forbidden_concepts", [])) & found
     noise = [r.raw_label for r in parsed.requirements if _NOISE.search(r.raw_label.strip())]
     assert not noise, f"boilerplate parsed as requirements: {noise}"
 

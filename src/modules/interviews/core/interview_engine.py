@@ -4,8 +4,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Literal, Optional, Tuple
 from uuid import UUID
 
 from src.core.trace_logging import trace_event
@@ -19,6 +20,7 @@ from src.modules.interviews.core.interview_types import (
     SessionExitReason,
     TurnAction,
 )
+from src.modules.interviews.core.language_policy import response_matches_locale
 
 logger = logging.getLogger("InterviewCoreEngine")
 
@@ -119,6 +121,7 @@ def safe_acknowledgement(raw: Any, is_vi: bool) -> str:
         or "\n" in text_value
         or "?" in text_value
         or any(re.search(pattern, text_value, re.IGNORECASE) for pattern in PROHIBITED_LEAK_PATTERNS)
+        or not response_matches_locale(text_value, is_vi=is_vi)
     ):
         return default
     return text_value
@@ -202,6 +205,41 @@ def is_clarify_request(text: str) -> bool:
     return any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in CLARIFY_PATTERNS)
 
 
+# "Nghe chưa rõ", "gì cơ": the candidate did not get the question, so the
+# reply is not an answer. Same rules as the voice agent's is_repeat_request
+# (kept separate: the agent runs as its own script). Matched on the text with
+# its accents: folded, "họ" (they) would read as "hộ" (please).
+_REPEAT_NOT_HEARD = re.compile(
+    r"\b(chưa|không|ko)\s+nghe\s+(rõ|được|thấy|kịp)\b"
+    r"|\bnghe\s+(chưa|không|ko)\s+(rõ|được|kịp)\b"
+    r"|\b(hỏi|nói)\s+gì\s+cơ\b|^\W*(dạ\W+)?gì\s+cơ\b"
+    r"|\bcâu\s+hỏi\s+là\s+gì\b|\bnói\s+chậm\s+lại\b"
+)
+# "Bị ngắt" is also an answer ("kết nối DB bị ngắt thì em retry").
+_REPEAT_AUDIO_PROBLEM = re.compile(r"\b(đứt\s+đoạn|gián\s+đoạn|bị\s+ngắt|bị\s+rè|mất\s+tiếng)\b")
+_MAX_AUDIO_PROBLEM_WORDS = 6
+# Also answer words ("em hỏi lại PM"): a request only when addressed to the interviewer.
+_REPEAT_VERB = re.compile(r"\b(nói|nhắc|lặp|hỏi|đọc|nghe)\s+lại\b")
+_REPEAT_CUE = re.compile(r"\b(giúp|giùm|hộ|nhé|nha|được\s+không|được\s+ko|câu\s+hỏi)\b|\bđi\W*$")
+_REPEAT_ADDRESSEE = re.compile(r"^\W*((dạ|vâng|ơ)\W+)?(bạn|anh|chị|cho\s+(em|mình|tôi)|xin|làm\s+ơn)\b")
+_MAX_REPEAT_REQUEST_WORDS = 14
+
+
+def is_repeat_request(text: str) -> bool:
+    """A short aside asking to hear the current question again."""
+    spoken = unicodedata.normalize("NFC", text).lower().strip()
+    words = len(re.findall(r"\w+", spoken))
+    if not words or words > _MAX_REPEAT_REQUEST_WORDS:
+        return False
+    if _REPEAT_NOT_HEARD.search(spoken):
+        return True
+    if _REPEAT_AUDIO_PROBLEM.search(spoken):
+        return words <= _MAX_AUDIO_PROBLEM_WORDS
+    if not _REPEAT_VERB.search(spoken):
+        return False
+    return words <= 3 or bool(_REPEAT_CUE.search(spoken) or _REPEAT_ADDRESSEE.search(spoken))
+
+
 def is_abort_request(text: str) -> bool:
     """Nhận diện ứng viên xin dừng phỏng vấn.
 
@@ -279,6 +317,187 @@ def is_unresponsive_or_give_up(text: str, question_prompt: str = "") -> bool:
     """Nhận diện nhanh các câu trả lời bỏ cuộc, cộc lốc hoặc thiếu hợp tác (có nhận thức ngữ cảnh Yes/No)."""
     intent = classify_candidate_intent(text, question_prompt)
     return intent in ("GIVE_UP", "SKIP_REQUEST")
+
+
+CandidateQuestionIntent = Literal[
+    "SCORING", "PROCESS", "ROLE_QA", "OFF_TOPIC", "ABOUT_INTERVIEWER", "ANSWER_REQUEST"
+]
+
+
+def _has_phrase(text: str, phrases: tuple[str, ...]) -> bool:
+    """Whole-word match: "ot" must not fire inside "Spring Boot" or "hotfix"."""
+    return any(re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", text) for phrase in phrases)
+
+
+# Only short asides are classified this way; a long reply is an answer.
+_MAX_ASIDE_WORDS = 20
+# "Bạn là ai / bạn là AI à": a question about the interviewer itself.
+_ABOUT_INTERVIEWER = re.compile(
+    r"\b(bạn|anh|chị)\s+(là\s+(ai|người|bot|robot|chatbot|chatgpt|gpt|máy|trí tuệ nhân tạo)"
+    r"|có\s+phải\s+(là\s+)?(người|ai|bot|robot|chatgpt|gpt|máy))\b"
+)
+_ASKS_BACK = re.compile(r"\?|\b(à|hả|vậy|không|chứ|phải\s+không)\W*$")
+# Asking the interviewer to answer for the candidate.
+_ANSWER_REQUEST = re.compile(
+    r"\b(cho\s+(em|mình|tôi)\s+(xin\s+)?|gợi\s+ý\s+)(đáp\s+án|lời\s+giải|câu\s+trả\s+lời)\b"
+    r"|\b(đáp\s+án|lời\s+giải)\s+(đúng\s+)?là\s+gì\b"
+    r"|\b(trả\s+lời|giải|viết|làm|code)\b(\s+\w+){0,3}\s+(giúp|hộ|giùm|thay)\s+(em|mình|tôi)\b"
+)
+# Everyday topics with nothing to do with the interview.
+_OFF_TOPIC_MARKERS = (
+    "thời tiết", "bóng đá", "ăn cơm", "ăn trưa", "ăn tối", "ăn gì", "phim", "bài hát", "ca sĩ",
+    "người yêu", "chính trị", "giá vàng", "chứng khoán", "xổ số", "tử vi", "chuyện cười",
+    "du lịch", "mấy giờ rồi", "hôm nay thứ mấy",
+)
+
+
+def classify_candidate_question(text: str) -> CandidateQuestionIntent | None:
+    """Classify safe questions addressed to the interviewer.
+
+    Both a question cue and a narrow interview topic are required because valid
+    technical answers can also contain question marks or words such as "why".
+    """
+    cleaned = re.sub(r"\s+", " ", text.casefold()).strip()
+    if len(cleaned.split()) <= _MAX_ASIDE_WORDS:
+        if _ANSWER_REQUEST.search(cleaned):
+            return "ANSWER_REQUEST"
+        # Only when asked: "anh là người quyết định" may describe a team lead.
+        if _ABOUT_INTERVIEWER.search(cleaned) and _ASKS_BACK.search(cleaned):
+            return "ABOUT_INTERVIEWER"
+    asks_question = "?" in cleaned or any(
+        cue in cleaned
+        for cue in (
+            "cho hỏi",
+            "xin hỏi",
+            "muốn hỏi",
+            "là gì",
+            "như thế nào",
+            "bao nhiêu",
+            "bao lâu",
+            "được không",
+            "không ạ",
+        )
+    )
+    if not asks_question:
+        return None
+
+    if _has_phrase(
+        cleaned,
+        (
+            "rubric",
+            "rubik",
+            "barem",
+            "chấm điểm",
+            "thang điểm",
+            "điểm số",
+            "tiêu chí đánh giá",
+            "trọng số",
+            "đánh giá gì",
+        ),
+    ):
+        return "SCORING"
+    if _has_phrase(
+        cleaned,
+        (
+            "bao nhiêu câu",
+            "bao lâu",
+            "thời lượng",
+            "quy trình phỏng vấn",
+            "buổi phỏng vấn",
+            "các vòng",
+            "các phần",
+            "đổi câu",
+            "bỏ qua câu",
+            "tạm dừng",
+        ),
+    ):
+        return "PROCESS"
+    if _has_phrase(
+        cleaned,
+        (
+            "công việc",
+            "công ty",
+            "vị trí",
+            "team",
+            "đội ngũ",
+            "mức lương",
+            "lương",
+            "phúc lợi",
+            "ot",
+            "dự án của công ty",
+            "nhà tuyển dụng",
+        ),
+    ):
+        return "ROLE_QA"
+    if len(cleaned.split()) <= _MAX_ASIDE_WORDS and _has_phrase(cleaned, _OFF_TOPIC_MARKERS):
+        return "OFF_TOPIC"
+    return None
+
+
+def candidate_question_response(
+    intent: CandidateQuestionIntent,
+    *,
+    current_question: str,
+    is_vi: bool,
+    duration_minutes: int,
+) -> str:
+    """Answer a meta question, then explicitly restore the current turn."""
+    if is_vi:
+        if intent == "SCORING":
+            answer = (
+                "Rubric là bộ tiêu chí dùng để đánh giá tính đúng, độ sâu và bằng chứng thực tế "
+                "trong câu trả lời. Mình không thể cung cấp tiêu chí chi tiết, trọng số hoặc đáp án "
+                "trong lúc phỏng vấn để bảo đảm công bằng."
+            )
+        elif intent == "PROCESS":
+            answer = (
+                f"Buổi phỏng vấn dự kiến kéo dài khoảng {duration_minutes} phút và đi lần lượt qua "
+                "các phần trên thanh tiến độ. Bạn có thể yêu cầu nhắc lại, làm rõ, đổi câu hoặc kết "
+                "thúc bất cứ lúc nào."
+            )
+        elif intent == "ROLE_QA":
+            answer = (
+                "Mình đã ghi nhận câu hỏi về công việc hoặc công ty. Mình sẽ trả lời dựa trên thông "
+                "tin trong JD ở phần Hỏi đáp cuối buổi để không làm gián đoạn phần đánh giá hiện tại."
+            )
+        elif intent == "ABOUT_INTERVIEWER":
+            answer = (
+                "Mình là người phỏng vấn AI của INTERVIA, giúp bạn luyện phỏng vấn theo CV và JD. "
+                "Kết quả buổi này chỉ để bạn luyện tập."
+            )
+        elif intent == "ANSWER_REQUEST":
+            answer = (
+                "Mình không trả lời thay bạn được, vì buổi này là để bạn luyện tập. "
+                "Bạn cứ nói những gì mình biết, chưa chắc chắn cũng được."
+            )
+        else:
+            answer = "Câu này nằm ngoài buổi phỏng vấn nên mình xin phép không trả lời."
+        return f"{answer}\n\nQuay lại câu hiện tại: {current_question}"
+
+    if intent == "SCORING":
+        answer = (
+            "The rubric evaluates correctness, depth, and concrete evidence in your answer. I cannot "
+            "disclose detailed criteria, weights, or model answers during the interview so the "
+            "assessment remains fair."
+        )
+    elif intent == "PROCESS":
+        answer = (
+            f"The interview is expected to take about {duration_minutes} minutes and follows the "
+            "stages in the progress bar. You can ask me to repeat, clarify, skip a question, or end "
+            "the interview at any time."
+        )
+    elif intent == "ROLE_QA":
+        answer = (
+            "I have noted your question about the role or company. I will answer it from the job "
+            "description in the final Q&A so we do not interrupt the current assessment section."
+        )
+    elif intent == "ABOUT_INTERVIEWER":
+        answer = "I am INTERVIA's AI interviewer, here to help you practise against your CV and the job."
+    elif intent == "ANSWER_REQUEST":
+        answer = "I cannot answer for you: this session is your practice. Say what you know, even if unsure."
+    else:
+        answer = "That is outside this interview, so I will leave it there."
+    return f"{answer}\n\nBack to the current question: {current_question}"
 
 
 class InterviewCoreEngine:
@@ -464,7 +683,54 @@ class InterviewCoreEngine:
         current_question = session_state.get("current_question_context", {})
         question_prompt = current_question.get("main_prompt", "")
 
+        # The candidate did not hear the question: ask it again word for word.
+        # Not an answer, so it is neither evaluated nor counted against the
+        # one clarification each question allows.
+        if question_prompt and is_repeat_request(candidate_text):
+            return InterviewerTurnOutput(
+                session_id=session_id,
+                turn_index=turn_input.turn_index + 1,
+                message_text=(
+                    f"Mình nhắc lại câu hỏi nhé: {question_prompt}"
+                    if is_vi
+                    else f"Sure, here is the question again: {question_prompt}"
+                ),
+                action=TurnAction.CLARIFY,
+                current_stage=current_stage,
+                time_remaining_seconds=time_remaining_seconds,
+                metadata={
+                    "repeat_request": True,
+                    "turn_in_question": current_turn_in_question,
+                    "sufficiency_status": "NOT_ASSESSED",
+                },
+            )
+
         intent = classify_candidate_intent(candidate_text, question_prompt)
+
+        # Questions addressed to the interviewer are conversational control,
+        # not evidence that the current assessment turn has been answered.
+        # Reply deterministically, disclose no rubric details, and keep the
+        # current turn ASKED by returning CLARIFY.
+        candidate_question_intent = classify_candidate_question(candidate_text)
+        if candidate_question_intent is not None:
+            return InterviewerTurnOutput(
+                session_id=session_id,
+                turn_index=turn_input.turn_index + 1,
+                message_text=candidate_question_response(
+                    candidate_question_intent,
+                    current_question=question_prompt,
+                    is_vi=is_vi,
+                    duration_minutes=int(session_state.get("target_duration_minutes", 25)),
+                ),
+                action=TurnAction.CLARIFY,
+                current_stage=current_stage,
+                time_remaining_seconds=time_remaining_seconds,
+                metadata={
+                    "candidate_question_intent": candidate_question_intent,
+                    "turn_in_question": session_state.get("current_turn_in_question", 0),
+                    "sufficiency_status": "NOT_ASSESSED",
+                },
+            )
 
         # 2. ĐÁNH GIÁ CÂU TRẢ LỜI HIỆN TẠI (TURN EVALUATION)
         eval_result = await self._evaluate_candidate_response(
@@ -494,6 +760,27 @@ class InterviewCoreEngine:
                     "candidate_abort_intent": True,
                     "consecutive_uncooperative": 0,
                     "consecutive_fails": 0,  # Deprecated compatibility alias.
+                },
+            )
+
+        # Off-topic replies are not evidence: redirect without grading them.
+        if eval_result.get("intent") == "OFF_TOPIC":
+            return InterviewerTurnOutput(
+                session_id=session_id,
+                turn_index=turn_input.turn_index + 1,
+                message_text=candidate_question_response(
+                    "OFF_TOPIC",
+                    current_question=question_prompt,
+                    is_vi=is_vi,
+                    duration_minutes=int(session_state.get("target_duration_minutes", 25)),
+                ),
+                action=TurnAction.CLARIFY,
+                current_stage=current_stage,
+                time_remaining_seconds=time_remaining_seconds,
+                metadata={
+                    "candidate_question_intent": "OFF_TOPIC",
+                    "turn_in_question": current_turn_in_question,
+                    "sufficiency_status": "NOT_ASSESSED",
                 },
             )
 
@@ -637,13 +924,26 @@ class InterviewCoreEngine:
 
         # 5. XỬ LÝ CHUYỂN BƯỚC FSM
         if should_probe:
-            probe_question = await self._generate_probe_question(
-                candidate_text=turn_input.text_content,
-                current_question=current_question,
-                is_vi=is_vi,
-                telemetry=turn_input.telemetry,
-                missing_aspect=eval_result.get("missing_aspect", ""),
+            # The evaluator can return the one allowed probe in the same JSON
+            # response. This removes a second sequential model round-trip from
+            # the latency-critical voice path while preserving the existing
+            # guarded generator as a fallback for legacy/invalid responses.
+            probe_question = str(
+                eval_result.get("probe_question") or eval_result.get("reply_text") or ""
+            ).strip()
+            probe_from_evaluation = bool(
+                probe_question
+                and validate_probe_text(probe_question)
+                and response_matches_locale(probe_question, is_vi=is_vi)
             )
+            if not probe_from_evaluation:
+                probe_question = await self._generate_probe_question(
+                    candidate_text=turn_input.text_content,
+                    current_question=current_question,
+                    is_vi=is_vi,
+                    telemetry=turn_input.telemetry,
+                    missing_aspect=eval_result.get("missing_aspect", ""),
+                )
             return InterviewerTurnOutput(
                 session_id=session_id,
                 turn_index=turn_input.turn_index + 1,
@@ -658,6 +958,7 @@ class InterviewCoreEngine:
                     "pre_score": score_telemetry,
                     "sufficiency_status": sufficiency_status,
                     "hard_answer_timeout": is_hard_answer_timeout,
+                    "probe_generated_in_evaluation": probe_from_evaluation,
                 },
             )
 
@@ -801,6 +1102,8 @@ class InterviewCoreEngine:
                     temperature=0.4,
                 )
             answer_text = str(answer).strip()
+            if not response_matches_locale(answer_text, is_vi=is_vi):
+                raise ValueError("closing response language does not match session locale")
         except Exception as e:
             logger.warning(f"Error generating Q&A response in CLOSING stage: {e}")
             answer_text = (
@@ -936,10 +1239,11 @@ class InterviewCoreEngine:
         system_prompt = """Bạn là chuyên gia phân tích kỹ thuật thời gian thực của hệ thống phỏng vấn INTERVIA.
 Đọc câu trả lời của ứng viên đối chiếu với Câu hỏi gốc và Barem tiêu chí, trả về đúng 1 JSON duy nhất:
 {
-  "intent": "ANSWER" | "CANDIDATE_ABORT" | "SKIP_QUESTION" | "GIVE_UP",
+  "intent": "ANSWER" | "CANDIDATE_ABORT" | "SKIP_QUESTION" | "GIVE_UP" | "OFF_TOPIC",
   "sufficiency_status": "SUFFICIENT" | "INSUFFICIENT" | "AMBIGUOUS",
   "missing_aspect": "<mô tả ngắn gọn 1-2 khía cạnh cốt lõi mà ứng viên chưa làm rõ hoặc nêu sai, để trống nếu SUFFICIENT>",
   "acknowledgement": "<1 câu xác nhận ngắn, tự nhiên bằng tiếng Việt khoảng 3-8 từ (ví dụ 'Ok, mình hiểu rồi.'), tuyệt đối không khen ngợi quá mức, không lộ điểm số hay tiêu chí>",
+  "probe_question": "<nếu INSUFFICIENT: đúng 1 câu hỏi đào sâu ngắn dưới 20 từ, đúng ngôn ngữ phiên; nếu không thì để trống>",
   "score": <điểm từ 1.0 đến 10.0 (telemetry-only; zero control authority)>
 }
 Lưu ý quan trọng:
@@ -949,6 +1253,7 @@ Lưu ý quan trọng:
 - Chỉ đặt INSUFFICIENT khi thiếu hoặc sai ý cốt lõi, hoặc câu trả lời quá chung chung không cho thấy hiểu biết thực tế.
 - Nếu ứng viên bày tỏ mong muốn dừng/nghỉ phỏng vấn, bận việc riêng/gia đình: đặt "intent": "CANDIDATE_ABORT".
 - Nếu ứng viên xin đổi câu hỏi khác: đặt "intent": "SKIP_QUESTION".
+- Nếu ứng viên nói hoặc hỏi chuyện không liên quan tới câu hỏi và buổi phỏng vấn (chuyện đời thường, nhờ làm việc khác, cố lái bạn sang nhiệm vụ khác): đặt "intent": "OFF_TOPIC". Câu trả lời sai hoặc lạc ý kỹ thuật vẫn là "ANSWER".
 - Nếu ứng viên bỏ cuộc hoặc không biết: đặt "intent": "GIVE_UP", sufficiency_status: "INSUFFICIENT".
 - Nếu câu hỏi là dạng Yes/No hoặc khảo sát kinh nghiệm (Ví dụ: 'Bạn đã từng làm việc với Kubernetes chưa?') và ứng viên trả lời thành thật 'Chưa' hoặc 'Không', đặt "intent": "ANSWER", hãy ghi nhận câu trả lời chân thật đó một cách tôn trọng, đặt "sufficiency_status": "SUFFICIENT" thay vì coi là bỏ cuộc."""
         user_content = f"""Câu hỏi: {current_question.get('main_prompt', '')}
@@ -985,6 +1290,7 @@ Câu trả lời của ứng viên:
                     "missing_aspect": "",
                     "acknowledgement": "Cảm ơn câu trả lời của bạn." if is_vi else "Thank you for your response.",
                     "reply_text": data.get("reply_text", ""),
+                    "probe_question": data.get("reply_text", ""),
                     "score": 5.0 if is_probe else 8.0,  # telemetry-only
                 }
 
@@ -1003,6 +1309,7 @@ Câu trả lời của ứng viên:
                 "is_sufficient": is_sufficient,
                 "missing_aspect": str(data.get("missing_aspect", "")),
                 "acknowledgement": safe_acknowledgement(data.get("acknowledgement"), is_vi),
+                "probe_question": str(data.get("probe_question", "")).strip(),
                 # score is telemetry/evaluation-only; it has zero control-flow authority in Gate 4.
                 "score": float(data.get("score", 6.0)),
             }
@@ -1104,12 +1411,12 @@ Hãy đưa ra câu hỏi probe:"""
             return fallback_coding_probe
 
         # Guardrail: kiểm tra pattern cấm
-        if not validate_probe_text(cleaned):
+        if not validate_probe_text(cleaned) or not response_matches_locale(cleaned, is_vi=is_vi):
             logger.warning("Probe text leaked prohibited pattern, falling back to safe probe.")
             trace_event(
                 "interviewer",
                 "probe_guardrail_fallback_triggered",
-                reason="prohibited_pattern_leaked",
+                reason="invalid_or_wrong_language",
             )
             return fallback_coding_probe
 
@@ -1160,7 +1467,11 @@ Hãy đưa ra câu hỏi probe:"""
                     temperature=0.2,
                 )
             cleaned = str(resp).strip()
-            if cleaned and validate_probe_text(cleaned):
+            if (
+                cleaned
+                and validate_probe_text(cleaned)
+                and response_matches_locale(cleaned, is_vi=is_vi)
+            ):
                 return cleaned
             return fallback
         except Exception as e:

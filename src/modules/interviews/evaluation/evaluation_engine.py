@@ -48,6 +48,10 @@ class InterviewEvaluationEngine:
     def get_turn_evaluation_prompt(self, turn_input: TurnEvaluationInput, is_vi: bool = True) -> tuple[str, str]:
         """Tạo prompt chuẩn hóa cho Turn Evaluation, bao gồm chỉ thị Code-switching và Anchor Rubric."""
         instructions = (
+            "VOICE TRANSCRIPT SAFETY: When the answer source is VOICE, score only coherent, "
+            "explicit content present in the STT transcript. Never translate, repair, infer, or "
+            "invent content from noise or gibberish. Do not describe likely STT errors as a "
+            "candidate weakness. English technical terms inside Vietnamese are valid evidence.\n"
             "Bạn là chuyên gia thẩm định và đánh giá phỏng vấn nhân sự cấp cao.\n"
             "Nhiệm vụ: Phân tích câu trả lời của ứng viên cho câu hỏi phỏng vấn theo khung năng lực và phương pháp STAR.\n\n"
             "NGUYÊN TẮC ĐÁNH GIÁ QUAN TRỌNG:\n"
@@ -87,6 +91,8 @@ class InterviewEvaluationEngine:
         )
 
         user_content = (
+            f"Answer source: {turn_input.source_modality}; STT confidence: "
+            f"{turn_input.transcript_confidence if turn_input.transcript_confidence is not None else 'not supplied by provider'}\n"
             f"Chủ đề năng lực (Competency): {turn_input.competency}\n"
             f"Giai đoạn: {turn_input.stage or 'không rõ'}\n"
             f"Câu hỏi phỏng vấn: {turn_input.question_prompt}\n"
@@ -275,7 +281,7 @@ class InterviewEvaluationEngine:
             technical_comps = competency_scores
         total_weight = sum(cs.weight for cs in technical_comps) or 1.0
         weighted_sum = sum(cs.score * cs.weight for cs in technical_comps)
-        overall_score = round(weighted_sum / total_weight, 2)
+        overall_score = round(sum(te.score for te in turn_evaluations) / len(turn_evaluations), 2)
         decision = self.calculate_decision_recommendation(overall_score)
 
         # 2. Gom dữ liệu điểm mạnh, điểm yếu và bằng chứng

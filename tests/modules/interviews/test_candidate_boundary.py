@@ -1,11 +1,14 @@
 """Guards on what the candidate-facing interview API exposes and keeps."""
 
+import importlib
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
-import src.modules.interviews.api.router as interview_router
+# `src.modules.interviews.api` re-exports the APIRouter as `router`, which
+# shadows the submodule on attribute access; load the module itself.
+interview_router = importlib.import_module("src.modules.interviews.api.router")
 
 
 def test_candidate_evaluation_view_drops_every_hiring_verdict_field() -> None:

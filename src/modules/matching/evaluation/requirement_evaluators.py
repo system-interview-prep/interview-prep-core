@@ -8,7 +8,12 @@ from datetime import UTC, date, datetime
 from typing import Literal
 
 from src.core.trace_logging import trace_event
-from src.modules.matching.domain.schemas import ConceptResult, RequirementResult, UnresolvedRequirement
+from src.modules.matching.domain.schemas import (
+    NOT_EVIDENCED_REASON_CODES,
+    ConceptResult,
+    RequirementResult,
+    UnresolvedRequirement,
+)
 from src.modules.matching.retrieval.evidence_retrieval import (
     EvidenceCandidate,
     is_named_technology,
@@ -410,7 +415,7 @@ def _result(
     # Unknown means there is a CV passage to inspect, but its meaning or
     # strength is not enough to confirm the requirement. Absence without a
     # citation is a not-found result; a positive result also needs citations.
-    if status == "unknown" and not evidence_refs:
+    if status == "unknown" and not evidence_refs and reason_code not in NOT_EVIDENCED_REASON_CODES:
         status = "not_met"
         reason_code = "requirement_not_found"
         evidence_explanation = f"Không tìm thấy “{requirement.raw_label}” trong CV hiện tại."
@@ -421,7 +426,11 @@ def _result(
     elif status == "not_met" and not evidence_refs:
         evidence_explanation = f"Không tìm thấy “{requirement.raw_label}” trong CV hiện tại."
     elif status == "unknown" and evidence_explanation is None:
-        evidence_explanation = "CV có nhắc đến nội dung liên quan nhưng chưa đủ rõ để xác nhận yêu cầu."
+        evidence_explanation = (
+            "CV có nhắc đến nội dung liên quan nhưng chưa đủ rõ để xác nhận yêu cầu."
+            if evidence_refs
+            else f"CV hiện tại chưa nhắc tới “{requirement.raw_label}” — cần ứng viên xác nhận thêm."
+        )
     return RequirementResult(
         requirementId=requirement.requirement_id,
         status=status,
@@ -479,12 +488,16 @@ def _absence_result(
     *,
     reason_prefix: str = "requirement",
 ) -> RequirementResult:
+    # A requirement the CV never addresses ("excellent communication") is not
+    # evidence the candidate fails it; see NOT_EVIDENCED_REASON_CODES.
     return _result(
         requirement,
-        status="not_met",
-        reason_code=f"{reason_prefix}_not_found",
-        confidence=0.9,
-        evidence_explanation=f"Không tìm thấy “{requirement.raw_label}” trong CV hiện tại.",
+        status="unknown",
+        reason_code=f"{reason_prefix}_not_evidenced",
+        confidence=0.6,
+        evidence_explanation=(
+            f"CV hiện tại chưa nhắc tới “{requirement.raw_label}” — cần ứng viên xác nhận thêm."
+        ),
     )
 
 
@@ -941,13 +954,16 @@ def _evaluate_knowledge_skill(
                 "reason_code": "concept_not_found",
             }
         )
-        if concept.status == "unknown" and not concept.evidence_refs
+        if concept.status == "unknown"
+        and not concept.evidence_refs
+        and concept.reason_code not in NOT_EVIDENCED_REASON_CODES
         else concept
         for concept, _ in evaluated_concepts
     ]
     retrieval_candidates = [candidate for _, candidates in evaluated_concepts for candidate in candidates]
     status = _group_status(concepts, group_operator)
     confidence = _group_confidence(concepts, group_operator)
+    nothing_cited = not any(concept.evidence_refs for concept in concepts)
     return _result(
         requirement,
         status=status,
@@ -956,6 +972,8 @@ def _evaluate_knowledge_skill(
             if status == "met"
             else "concept_group_not_met"
             if status == "not_met"
+            else "concept_group_not_evidenced"
+            if nothing_cited
             else "concept_group_evidence_missing"
         ),
         confidence=confidence,
@@ -1062,13 +1080,14 @@ def _evaluate_atomic_concept(
         ranked = [candidate.evidence for candidate in semantic_candidates]
         retrieval_candidates = semantic_candidates
     if not ranked:
+        # Not mentioned is not evidence of absence (see NOT_EVIDENCED_REASON_CODES).
         return (
             ConceptResult(
                 conceptId=concept.concept_id,
                 label=concept.label,
-                status="not_met",
-                confidence=0.9,
-                reasonCode="concept_not_found",
+                status="unknown",
+                confidence=0.6,
+                reasonCode="concept_not_evidenced",
             ),
             [],
         )

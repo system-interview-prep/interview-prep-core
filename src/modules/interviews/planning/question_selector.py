@@ -594,7 +594,7 @@ async def _generate_missing_questions(
     from src.modules.interviews.planning.question_generation import ensure_generated_questions
 
     difficulty = (payload.get("difficulty") or {}).get("level", "unspecified")
-    locale = session_row.get("locale") or "en-US"
+    locale = session_row.get("locale") or "vi-VN"
     job_concepts, job_role = await _job_taxonomy(db, session_row.get("job_id"))
     for target in await _plan_targets_for_preflight(db, plan_id, payload):
         if (target["rationale"] or {}).get("source") == "career_classification_fallback":
@@ -1100,7 +1100,7 @@ async def select_and_freeze_questions(
 
     payload = plan["plan_payload"] or {}
     difficulty = (payload.get("difficulty") or {}).get("level", "unspecified")
-    locale = session_row.get("locale") or "en-US"
+    locale = session_row.get("locale") or "vi-VN"
     policy_version = payload.get("policyVersion")
     is_dynamic = (policy_version == "interview-planner-v2-dynamic")
     # Demo sessions break ties on the stable key instead of the session id, so

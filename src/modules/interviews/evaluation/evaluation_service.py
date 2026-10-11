@@ -4,15 +4,18 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.trace_logging import trace_event
-from src.modules.interviews.evaluation.evaluation_engine import InterviewEvaluationEngine
+from src.modules.interviews.evaluation.evaluation_engine import (
+    EvaluationGradingError,
+    InterviewEvaluationEngine,
+)
 from src.modules.interviews.evaluation.evaluation_types import (
     DecisionRecommendation,
     SessionEvaluationResult,
@@ -34,7 +37,7 @@ class EvaluationServiceError(RuntimeError):
 _PRESET_TURN_WEIGHT = {"WARM_UP": 0.0, "VALIDATE": 0.5, "BEHAVIORAL": 0.5}
 
 
-def _turn_weight(stage: str, snap: dict, importance_by_concept: Dict[str, float]) -> float:
+def _turn_weight(stage: str, snap: dict, importance_by_concept: dict[str, float]) -> float:
     """Weight of one turn's competency in the overall score.
 
     Technical competencies follow the planner's importance (must-have and
@@ -45,7 +48,9 @@ def _turn_weight(stage: str, snap: dict, importance_by_concept: Dict[str, float]
     """
     if stage in _PRESET_TURN_WEIGHT:
         return _PRESET_TURN_WEIGHT[stage]
-    concept_id = (snap.get("taxonomyTarget") or {}).get("conceptId") or (snap.get("target") or {}).get("conceptId")
+    concept_id = (snap.get("taxonomyTarget") or {}).get("conceptId") or (
+        snap.get("target") or {}
+    ).get("conceptId")
     importance = importance_by_concept.get(str(concept_id)) if concept_id else None
     if not importance or not importance_by_concept:
         return 1.0
@@ -55,8 +60,8 @@ def _turn_weight(stage: str, snap: dict, importance_by_concept: Dict[str, float]
 async def evaluate_closed_session(
     db: AsyncSession,
     session_id: str,
-    engine: Optional[InterviewEvaluationEngine] = None,
-) -> Optional[SessionEvaluationResult]:
+    engine: InterviewEvaluationEngine | None = None,
+) -> SessionEvaluationResult | None:
     """
     Trích xuất dữ liệu từ PostgreSQL, gọi P4 Evaluation Engine và lưu kết quả vào CSDL.
 
@@ -69,12 +74,9 @@ async def evaluate_closed_session(
 
     # 1. Kiểm tra session
     sess_res = await db.execute(
-        # Serialize evaluations of one session: the results page auto-triggers
-        # /evaluate on 404, so a refresh or second tab raced two full LLM
-        # gradings into DELETE+INSERT on the unique session_id (500).
         text(
             "SELECT id, status, locale, duration_minutes FROM interview_sessions "
-            "WHERE id = :sid FOR UPDATE"
+            "WHERE id = :sid"
         ),
         {"sid": session_id},
     )
@@ -132,7 +134,7 @@ async def evaluate_closed_session(
     msgs_res = await db.execute(
         text(
             """
-            SELECT turn_id, content
+            SELECT turn_id, content, metadata
             FROM interview_chat_messages
             WHERE session_id = :sid AND role = 'user'
             ORDER BY sequence ASC
@@ -141,13 +143,23 @@ async def evaluate_closed_session(
         {"sid": session_id},
     )
     user_msgs = [dict(r) for r in msgs_res.mappings().all()]
-    msgs_by_turn: Dict[str, List[str]] = {}
+    msgs_by_turn: dict[str, list[str]] = {}
+    telemetry_by_turn: dict[str, list[dict[str, Any]]] = {}
     for m in user_msgs:
         t_id = m.get("turn_id")
         if t_id:
             if t_id not in msgs_by_turn:
                 msgs_by_turn[t_id] = []
             msgs_by_turn[t_id].append(m["content"])
+            metadata = m.get("metadata") or {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except ValueError:
+                    metadata = {}
+            telemetry = metadata.get("telemetry") if isinstance(metadata, dict) else {}
+            if isinstance(telemetry, dict):
+                telemetry_by_turn.setdefault(t_id, []).append(telemetry)
 
     # 4. Chuẩn bị danh sách TurnEvaluationInput
     #
@@ -156,8 +168,10 @@ async def evaluate_closed_session(
     # reaching it. Scoring it would hand the
     # candidate a zero-weighted "did not answer" for a question the system chose
     # not to ask. Those competencies are reported as uncovered instead.
-    turns_input: List[TurnEvaluationInput] = []
-    uncovered_competencies: List[str] = []
+    turns_input: list[TurnEvaluationInput] = []
+    uncovered_competencies: list[str] = []
+    voice_turn_count = 0
+    voice_turns_without_confidence = 0
     for t in turns:
         t_id = str(t["id"])
         snap = t.get("question_snapshot") or {}
@@ -215,6 +229,23 @@ async def evaluate_closed_session(
         if not ans:
             ans = "Ứng viên không trả lời hoặc bỏ qua câu hỏi này."
 
+        turn_telemetry = telemetry_by_turn.get(t_id, [])
+        is_voice = any(
+            str(item.get("transport") or "").lower() == "livekit"
+            or str(item.get("modality") or "").upper() == "VOICE"
+            for item in turn_telemetry
+        )
+        confidences = [
+            float(item["transcriptConfidence"])
+            for item in turn_telemetry
+            if isinstance(item.get("transcriptConfidence"), (int, float))
+        ]
+        transcript_confidence = min(confidences) if confidences else None
+        if is_voice:
+            voice_turn_count += 1
+            if transcript_confidence is None:
+                voice_turns_without_confidence += 1
+
         turns_input.append(
             TurnEvaluationInput(
                 turn_id=t_id,
@@ -225,6 +256,8 @@ async def evaluate_closed_session(
                 candidate_answer=ans,
                 weight=weight,
                 stage=str(stage or ""),
+                source_modality="VOICE" if is_voice else "TEXT",
+                transcript_confidence=transcript_confidence,
             )
         )
 
@@ -236,12 +269,66 @@ async def evaluate_closed_session(
             f"Phiên phỏng vấn {session_id} chưa có lượt trả lời chuyên môn nào để đánh giá."
         )
 
-    # 5. Gọi Evaluation Engine
-    result: SessionEvaluationResult = await eval_engine.evaluate_session(
-        session_id=session_id,
-        turns_input=turns_input,
-        is_vi=is_vi,
+    # Claim a durable lease, then end the read transaction before the external
+    # grader call. This prevents a slow provider from holding a session row lock
+    # and a pooled DB connection for minutes, while also deduplicating work
+    # across API instances.
+    claimed = await db.scalar(
+        text(
+            """
+            INSERT INTO interview_evaluation_jobs
+                (session_id, status, lease_until, attempt_count, last_error, updated_at)
+            VALUES
+                (:sid, 'PROCESSING', now() + interval '10 minutes', 1, NULL, now())
+            ON CONFLICT (session_id) DO UPDATE
+            SET status = 'PROCESSING',
+                lease_until = now() + interval '10 minutes',
+                attempt_count = interview_evaluation_jobs.attempt_count + 1,
+                last_error = NULL,
+                updated_at = now()
+            WHERE interview_evaluation_jobs.status = 'FAILED'
+               OR interview_evaluation_jobs.lease_until < now()
+            RETURNING session_id
+            """
+        ),
+        {"sid": session_id},
     )
+    if claimed is None:
+        await db.rollback()
+        if await db.scalar(
+            text("SELECT 1 FROM interview_evaluations WHERE session_id = :sid"),
+            {"sid": session_id},
+        ):
+            return None
+        raise EvaluationGradingError("Báo cáo đang được tổng hợp. Vui lòng thử lại sau.")
+    await db.commit()
+
+    # 5. Gọi Evaluation Engine outside a database transaction.
+    try:
+        result: SessionEvaluationResult = await eval_engine.evaluate_session(
+            session_id=session_id,
+            turns_input=turns_input,
+            is_vi=is_vi,
+        )
+    except Exception as exc:
+        await db.rollback()
+        await db.execute(
+            text(
+                "UPDATE interview_evaluation_jobs SET status = 'FAILED', last_error = :error, "
+                "lease_until = now(), updated_at = now() WHERE session_id = :sid"
+            ),
+            {"sid": session_id, "error": f"{type(exc).__name__}: {exc}"[:2000]},
+        )
+        await db.commit()
+        raise
+
+    if voice_turns_without_confidence:
+        data_quality_warning = (
+            "Cảnh báo chất lượng dữ liệu, không phải năng lực ứng viên: "
+            f"{voice_turns_without_confidence}/{voice_turn_count} lượt VOICE được chấm từ bản chép STT "
+            "nhưng provider không cung cấp confidence; cần đối chiếu audio khi transcript bất thường."
+        )
+        result.red_flags = [data_quality_warning, *(result.red_flags or [])]
 
     # Competencies the selector dropped because nothing in the bank (nor its
     # fallback ladder) could cover them; they count against coverage too.
@@ -338,7 +425,7 @@ async def evaluate_closed_session(
 
     # 6. Lưu vào PostgreSQL
     eval_id = str(uuid4())
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Kiểm tra xem đã có evaluation cho session này chưa (upsert / replace)
     existing_eval = await db.scalar(
@@ -406,6 +493,14 @@ async def evaluate_closed_session(
             },
         )
 
+    await db.execute(
+        text(
+            "UPDATE interview_evaluation_jobs SET status = 'DONE', lease_until = now(), "
+            "last_error = NULL, updated_at = now() WHERE session_id = :sid"
+        ),
+        {"sid": session_id},
+    )
+
     await db.commit()
     trace_event(
         "interviewer",
@@ -419,7 +514,7 @@ async def evaluate_closed_session(
     return result
 
 
-async def get_session_evaluation(db: AsyncSession, session_id: str) -> Optional[Dict[str, Any]]:
+async def get_session_evaluation(db: AsyncSession, session_id: str) -> dict[str, Any] | None:
     """Truy vấn báo cáo đánh giá đã lưu của session."""
     eval_res = await db.execute(
         text(

@@ -278,11 +278,11 @@ def test_llm_recovered_quote_does_not_leak_into_other_requirements() -> None:
 
     assert results[0].status == "unknown"
     assert results[0].evidence_refs
-    assert results[1].status == "not_met"
+    assert (results[1].status, results[1].reason_code) == ("unknown", "skill_not_evidenced")
     assert not results[1].evidence_refs
 
 
-def test_unmentioned_skill_is_not_met_when_parser_and_source_find_no_quote() -> None:
+def test_unmentioned_skill_is_not_evidenced_when_parser_and_source_find_no_quote() -> None:
     incomplete = _resume("Backend developer.")
     complete = incomplete.model_copy(
         update={
@@ -299,7 +299,37 @@ def test_unmentioned_skill_is_not_met_when_parser_and_source_find_no_quote() -> 
     incomplete_result = MatchingFacade._evaluate_requirements(incomplete, _skill_job("Kafka"))[0]
     complete_result = MatchingFacade._evaluate_requirements(complete, _skill_job("Kafka"))[0]
 
-    assert incomplete_result.status == "not_met"
-    assert incomplete_result.reason_code == "skill_not_found"
-    assert complete_result.status == "not_met"
-    assert complete_result.reason_code == "skill_not_found"
+    assert (incomplete_result.status, incomplete_result.reason_code) == ("unknown", "skill_not_evidenced")
+    assert (complete_result.status, complete_result.reason_code) == ("unknown", "skill_not_evidenced")
+    assert not incomplete_result.evidence_refs and not complete_result.evidence_refs
+
+
+class _StubEmbedder:
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0] for _ in texts]
+
+
+def test_match_result_returns_spans_found_at_match_time_with_offsets() -> None:
+    from src.modules.matching.domain.schemas import MatchRequest
+
+    raw_text = "Backend developer using C# and .NET APIs."
+    request = MatchRequest.model_validate(
+        {
+            "schemaVersion": "2.1",
+            "resume": _resume(raw_text).model_dump(by_alias=True),
+            "job": _job("Strong hands-on experience with C# / .NET backend development").model_dump(
+                by_alias=True
+            ),
+        }
+    )
+    request = request.model_copy(update={"resume": request.resume.model_copy(update={"raw_text": raw_text})})
+
+    result = MatchingFacade(_StubEmbedder()).match(request)
+
+    cited = {ref for item in result.requirement_results for ref in item.evidence_refs}
+    returned = {span.evidence_id: span for span in result.evidence}
+    assert cited, "the reparse fixture should produce cited evidence"
+    assert cited <= returned.keys(), "every cited span must be resolvable from the result itself"
+    for span in returned.values():
+        assert span.section == "raw_text_fallback"
+        assert raw_text[span.char_start : span.char_end] == span.text

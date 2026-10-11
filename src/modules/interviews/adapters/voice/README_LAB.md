@@ -21,17 +21,79 @@ LIVEKIT_API_KEY=...
 LIVEKIT_API_SECRET=...
 LIVEKIT_AGENT_NAME=intervia-voice
 LIVEKIT_AGENT_AUTOSTART=true
+LIVEKIT_AGENT_IDLE_PROCESSES=1
+LIVEKIT_AGENT_MAX_RETRY=32
 LIVEKIT_AGENT_RUN_MODE=dev
-LIVEKIT_STT_MODEL=assemblyai/universal-3-5-pro
-LIVEKIT_STT_LANGUAGE=auto
+LIVEKIT_STT_MODEL=assemblyai/universal-3-6-pro
+LIVEKIT_STT_LANGUAGE=session
+VOICE_LAB_STT_MIN_TURN_SILENCE_MS=350
+VOICE_LAB_STT_MAX_TURN_SILENCE_MS=1500
+VOICE_LAB_STT_VAD_THRESHOLD=0.30
+VOICE_LAB_NOISE_CANCELLATION=bvc
+VOICE_LAB_VAD_MIN_SPEECH_DURATION=0.20
+VOICE_LAB_VAD_MIN_SILENCE_DURATION=0.65
+VOICE_LAB_VAD_ACTIVATION_THRESHOLD=0.50
+VOICE_LAB_VAD_DEACTIVATION_THRESHOLD=0.35
+VOICE_LAB_ENDPOINT_MAX_DELAY=1.8
+VOICE_LAB_INTERRUPTION_MODE=adaptive
+VOICE_LAB_INTERRUPTION_MIN_DURATION=0.5
+VOICE_LAB_INTERRUPTION_MIN_WORDS=0
+VOICE_LAB_FALSE_INTERRUPTION_TIMEOUT=1.0
+VOICE_LAB_BACKCHANNEL_START_BOUNDARY=0.5
+VOICE_LAB_BACKCHANNEL_END_BOUNDARY=2.2
+VOICE_LAB_AEC_WARMUP_DURATION=1.0
+VOICE_LAB_MIN_CONSECUTIVE_SPEECH_DELAY=0.18
 ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
+ELEVENLABS_VI_VOICE_ID=...
+ELEVENLABS_EN_VOICE_ID=...
+ELEVENLABS_STABILITY=0.45
+ELEVENLABS_SIMILARITY_BOOST=0.75
+ELEVENLABS_STYLE=0
+ELEVENLABS_SPEED=0.98
+ELEVENLABS_SPEAKER_BOOST=true
+ELEVENLABS_AUTO_MODE=true
+ELEVENLABS_TEXT_NORMALIZATION=auto
 VOICE_RUNTIME_API_BASE_URL=http://127.0.0.1:5000
+VOICE_AGENT_DNS_PRIMARY=1.1.1.1
+VOICE_AGENT_DNS_SECONDARY=8.8.8.8
 ```
 
 When the LiveKit worker runs in a separate container or service, set `VOICE_RUNTIME_API_BASE_URL` to an address it can use, such as `http://backend:5000`. The interview voice path does not require an OpenAI LLM in the LiveKit worker. `OPENAI_API_KEY` is still used by the separate `/transcribe`, `/speak`, and Realtime configuration endpoints.
 
 Install the optional LiveKit dependencies with `python -m pip install -e ".[voice-realtime]"`. The API starts the worker when `LIVEKIT_AGENT_AUTOSTART=true`; to run it separately, use `python src/modules/interviews/adapters/voice/livekit_agent.py dev`.
+
+## Production resilience
+
+The Compose voice worker uses two configurable upstream DNS resolvers and three
+resolver attempts. In private networks, replace the public defaults with the
+organization's redundant resolvers. `LIVEKIT_AGENT_MAX_RETRY` controls the
+worker's in-process registration retry budget; after it is exhausted, Docker's
+`restart: unless-stopped` starts a clean worker.
+
+Provider failures are published to the browser on `intervia.health` without raw
+exception text or credentials. The UI tells the candidate to pause while a
+recoverable STT/TTS outage retries, then clears the warning after the next
+successful provider metric. LiveKit signaling reconnects are shown separately.
+Monitor the structured log events `Voice provider degraded`, `Voice provider
+recovered`, `registered worker`, and `Voice STT metrics`. Alert on a degraded
+event without a matching recovery, repeated worker registration, or sessions
+with user speech but no final STT metric.
+
+## Vietnamese WER/CER benchmark
+
+The versioned corpus protocol lives in
+`../DOC_AND_PLAN/data/eval/stt/vi_v1/README.md`. Once consented audio and a
+human-verified `manifest.jsonl` exist, export provider hypotheses and run:
+
+```powershell
+python scripts/evaluate_vi_stt.py --manifest <manifest.jsonl> --predictions <predictions.jsonl>
+```
+
+The scorer reports micro WER/CER, S/D/I counts, exact-match rate, prediction
+coverage, and `dialect × environment` slices. Missing hypotheses count as full
+deletions, preventing provider/network failures from being hidden by scoring
+only successful requests.
 
 ## Start a voice interview
 
@@ -45,5 +107,25 @@ The API verifies session ownership, voice mode, and locked plan. It passes the w
 ## Notes
 
 - The browser must have microphone permission and connect to the configured LiveKit server.
-- AssemblyAI or Deepgram handles STT; ElevenLabs handles TTS.
+- AssemblyAI Universal-3.6 Pro handles Vietnamese/English code-switching. STT turn
+  silence, Silero sensitivity, endpoint delay, and barge-in thresholds can be tuned
+  independently with the values above.
+- `LIVEKIT_STT_LANGUAGE=session` locks recognition to the interview locale for
+  the whole call (`vi` for `vi-VN`, `en` for `en-US`). A single provider prompt
+  preserves English technical vocabulary; AssemblyAI does not receive the
+  mutually exclusive `prompt` and `keyterms_prompt` options together.
+- Normal interviewer speech is interruptible. The final closing remains
+  non-interruptible so the session-close event is delivered only after playout.
+- Adaptive interruption ignores short listener backchannels. If it degrades to
+  VAD, the transport resumes the unheard suffix for backchannels, treats short
+  hold requests without advancing the plan, and acknowledges genuine barge-ins
+  while Interview Core prepares its response.
+- Browser AEC/noise suppression/AGC is followed by LiveKit BVC on the worker.
+  Set `VOICE_LAB_NOISE_CANCELLATION=off` only for self-hosted deployments where
+  the LiveKit Cloud filter is unavailable. Literal STT noise tokens and probable
+  TTS echo fragments are discarded before Interview Core can score them.
+- ElevenLabs handles TTS with the interview locale passed explicitly (`vi` or
+  `en`). Configure a native-accent voice per locale; the generic voice remains
+  only a compatibility fallback. Auto mode removes chunk-schedule buffering
+  because every interview utterance is supplied as complete text.
 - The existing OpenAI Realtime experiment is separate and does not control this interview flow.

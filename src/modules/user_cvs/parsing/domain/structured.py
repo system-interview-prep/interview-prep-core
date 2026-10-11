@@ -3,6 +3,7 @@
 import re
 import unicodedata
 from collections.abc import Iterable
+from dataclasses import replace
 from hashlib import sha1
 
 from src.modules.user_cvs.domain.schemas import (
@@ -26,11 +27,18 @@ _MONTH_EN = (
 )
 _MONTH_VI = r"(?:thg\s*\d{1,2}|tháng\s*\d{1,2})"
 _MONTH = rf"(?:{_MONTH_EN}|{_MONTH_VI})"
-_DATE = rf"(?:(?:{_MONTH})\.?\s+)?{_YEAR}"
+# Numeric month, the usual Vietnamese CV format: "03/2023", "3/2023", "03.2023".
+_NUMERIC_MONTH = r"(?:0?[1-9]|1[0-2])\s*[/.]\s*"
+_DATE = rf"(?:(?:{_MONTH})\.?\s+|{_NUMERIC_MONTH})?{_YEAR}"
 _DATE_RANGE_RE = re.compile(
     rf"(?P<start>{_DATE})\s*(?:-|\u2013|\u2014|to|\u0111\u1ebfn)\s*"
     rf"(?:(?:expected|anticipated|est\.?|d\u1ef1\s*ki\u1ebfn)\s*)?"
-    rf"(?P<end>{_DATE}|present|current|now|hi\u1ec7n\s*t\u1ea1i|nay)",
+    rf"(?P<end>{_DATE}|present|current|now|hi\u1ec7n\s*t\u1ea1i|hi\u1ec7n\s*nay|nay)",
+    re.IGNORECASE,
+)
+_COMPANY_RE = re.compile(
+    r"\b(organization|t\u1ed5 ch\u1ee9c|company|c\u00f4ng ty|t\u1eadp \u0111o\u00e0n|"
+    r"corporation|corp|inc|ltd|llc|tnhh|jsc)\b",
     re.IGNORECASE,
 )
 _MONTH_NUMBER = {
@@ -109,13 +117,20 @@ def _stable_id(kind: str, block: SourceBlock) -> str:
     return f"{kind}-{digest.hexdigest()[:12]}"
 
 
+_CURRENT_WORDS = {"present", "current", "now", "hiện tại", "hien tai", "hiện nay", "hien nay", "nay"}
+
+
 def _partial_date(value: str) -> PartialDate | None:
     value = value.strip().rstrip(".")
-    if value.casefold() in {"present", "current", "now", "hiện tại", "hien tai", "nay"}:
+    if value.casefold() in _CURRENT_WORDS:
         return None
     year_match = re.search(_YEAR, value)
     if not year_match:
         return None
+    numeric_month = re.match(r"(0?[1-9]|1[0-2])\s*[/.]\s*(?:19|20)\d{2}", value)
+    if numeric_month:
+        month = int(numeric_month.group(1))
+        return PartialDate(value=f"{year_match.group()}-{month:02d}", precision="month")
     month_match = re.search(r"(?:thg\s*|tháng\s*)(\d{1,2})", value, re.I)
     if month_match:
         month = int(month_match.group(1))
@@ -151,11 +166,18 @@ def _section_blocks(source: SourceDocument, section: str) -> list[SourceBlock]:
     return [block for block in source.blocks if block.section == section]
 
 
-def _split_header(value: str) -> list[str]:
+def _split_header(value: str, *, dash_separated: bool = False) -> list[str]:
     # Commas are common inside job titles (for example, a department suffix).
     # Prefer explicit separators; only use commas when no stronger delimiter is
     # present in the CV header.
-    separator = r"\s*(?:\||@|\bat\b)\s*" if re.search(r"\||@|\bat\b", value, re.I) else r"\s*,\s*"
+    # A spaced dash ("Backend Developer — Công ty ShopNow") is the usual
+    # Vietnamese title/organization separator.
+    if re.search(r"\||@|\bat\b", value, re.I):
+        separator = r"\s*(?:\||@|\bat\b)\s*"
+    elif dash_separated and re.search(r"\s[-–—]\s", value):
+        separator = r"\s+[-–—]\s+"
+    else:
+        separator = r"\s*,\s*"
     return [part.strip(" -–—|,") for part in re.split(separator, value) if part.strip(" -–—|,")]
 
 
@@ -181,11 +203,54 @@ def _skill_ids_for_blocks(draft, blocks: Iterable[SourceBlock]) -> list[str]:
     return [skill.claim_id for skill in draft.skills if matching_evidence.intersection(skill.evidence_refs)]
 
 
+_BULLET_RE = re.compile(r"^\s*[-*•–—+●▪◦]\s*")
+
+
+def _line_items(blocks: list[SourceBlock]) -> list[SourceBlock]:
+    """Split blocks into one item per entry header or bullet.
+
+    PDF text layers often have no blank line between paragraphs, so a whole
+    section arrives as one block and only its first date range was seen: the
+    second job of a CV was lost. A line with a date range or a bullet starts a
+    new item, and so does the line right after a dated header (a job title
+    under "Công ty ABC (2020 – 2021)"); any other line is a wrapped
+    continuation of the previous one. Offsets stay those of the source text,
+    so evidence spans remain valid.
+    """
+    items: list[SourceBlock] = []
+    for block in blocks:
+        lines: list[tuple[int, int]] = []
+        previous_dated = False
+        offset = 0
+        for raw_line in block.text.split("\n"):
+            start, end = offset, offset + len(raw_line)
+            offset = end + 1
+            if not raw_line.strip():
+                continue
+            dated = _DATE_RANGE_RE.search(raw_line) is not None
+            starts_item = not lines or dated or previous_dated or _BULLET_RE.match(raw_line) is not None
+            if starts_item:
+                lines.append((start, end))
+            else:
+                lines[-1] = (lines[-1][0], end)
+            previous_dated = dated
+        for start, end in lines:
+            items.append(
+                replace(
+                    block,
+                    text=block.text[start:end],
+                    char_start=block.char_start + start,
+                    char_end=block.char_start + end,
+                )
+            )
+    return items
+
+
 class EmploymentExtractor:
     """Extract dated experience entries and their following responsibility blocks."""
 
     def extract(self, source: SourceDocument, mapper: EvidenceMapper, draft) -> None:
-        blocks = _section_blocks(source, "employment")
+        blocks = _line_items(_section_blocks(source, "employment"))
         starts = []
         for index, block in enumerate(blocks):
             if _is_section_title(block.text):
@@ -193,7 +258,9 @@ class EmploymentExtractor:
             match = _DATE_RANGE_RE.search(block.text)
             if match is not None:
                 starts.append((index, match.start(), match.group("start"), match.group("end")))
-            else:
+            elif _BULLET_RE.match(block.text) is None:
+                # A bare year only opens an entry on a header line, never on a
+                # responsibility bullet ("- Đạt giải 2022").
                 single_match = re.search(r"\b((?:19|20)\d{2})\b", block.text)
                 if single_match is not None:
                     starts.append(
@@ -208,22 +275,33 @@ class EmploymentExtractor:
             end_index = starts[position + 1][0] if position + 1 < len(starts) else len(blocks)
             entry_blocks = blocks[start_index:end_index]
             header = blocks[start_index]
-            header_text = header.text[:start_pos].strip(" -–—|,")
-            parts = _split_header(header_text)
+            # Dates are often wrapped: "Backend Developer — Công ty X (03/2023 – nay)".
+            header_text = header.text[:start_pos].strip(" -–—|,([")
+            parts = _split_header(header_text, dash_separated=True)
             if not parts:
                 continue
-            if len(parts) == 1 and re.search(r"\b(organization|tổ chức|company|công ty)\b", parts[0], re.I):
-                continue
+            job_title, organization = parts[0], (parts[1] if len(parts) > 1 else None)
+            if organization and _COMPANY_RE.search(job_title) and not _COMPANY_RE.search(organization):
+                # "Công ty X — Backend Developer": organization first.
+                job_title, organization = organization, job_title
+            if organization is None and _COMPANY_RE.search(job_title):
+                # Only an organization on the date line; the title is on the next line.
+                title = entry_blocks[1].text.strip() if len(entry_blocks) > 1 else ""
+                if not title or len(title) > 80 or re.match(r"^[-*•–—+]", title):
+                    continue
+                job_title, organization = title, job_title
             refs = [_add_block_evidence(draft, mapper, block, "employment") for block in entry_blocks]
             draft.employment.append(
                 EmploymentEntry(
                     employmentId=_stable_id("employment", header),
-                    jobTitle=parts[0],
-                    organization=parts[1] if len(parts) > 1 else None,
+                    jobTitle=job_title,
+                    organization=organization,
                     startDate=_partial_date(start_val),
                     endDate=_partial_date(end_val),
                     isCurrent=_partial_date(end_val) is None,
-                    responsibilities=[block.text for block in entry_blocks[1:]],
+                    responsibilities=[
+                        " ".join(_BULLET_RE.sub("", block.text).split()) for block in entry_blocks[1:]
+                    ],
                     skillClaimIds=_skill_ids_for_blocks(draft, entry_blocks),
                     evidenceRefs=refs,
                 )
@@ -318,7 +396,7 @@ class EducationExtractor:
             inst_block = next((b for b in group if _INSTITUTION_RE.search(b.text)), group[0])
             match_inst = _DATE_RANGE_RE.search(inst_block.text)
             inst_label_raw = (
-                inst_block.text[: match_inst.start()].strip(" -–—|,")
+                inst_block.text[: match_inst.start()].strip(" -–—|,([")
                 if match_inst
                 else inst_block.text.strip()
             )

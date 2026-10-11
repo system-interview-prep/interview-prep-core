@@ -117,10 +117,17 @@ async def list_cvs(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     career_code: str | None = Query(default=None, alias="careerCode", min_length=1),
 ) -> dict:
-    records = await _query_service(db).list(user["sub"], limit, career_code)
-    return {"items": [record.as_response() for record in records]}
+    """Newest first. `total` lets clients page with `offset` instead of a fixed cap."""
+    records, total = await _query_service(db).page(user["sub"], limit, offset, career_code)
+    return {
+        "items": [record.as_response() for record in records],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/career-taxonomy")

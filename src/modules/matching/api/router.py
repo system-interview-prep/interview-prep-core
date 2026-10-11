@@ -140,7 +140,23 @@ legacy_router = APIRouter(prefix="/ai", tags=["matching-legacy"], dependencies=[
         }
     },
 )
-async def match(payload: MatchRequest, response: Response) -> MatchAccepted | MatchResult:
+async def match(
+    payload: MatchRequest,
+    response: Response,
+    user: dict = Depends(current_user),
+) -> MatchAccepted | MatchResult:
+    if resume_owner_scope(user) is not None:
+        # The resume here is client-supplied, so its documentId is not proven to
+        # be the caller's CV. A stored-CV BM25 lookup by that id would let a user
+        # probe another user's CV text one keyword at a time; score the text
+        # that was sent instead. /match-ids resolves the CV with owner scoping.
+        payload = payload.model_copy(
+            update={
+                "matching_policy": payload.matching_policy.model_copy(
+                    update={"bm25_provider_mode": "in_memory"}
+                )
+            }
+        )
     if payload.async_processing:
         serialized = payload.model_dump(by_alias=True)
         serialized["resume"]["rawText"] = payload.resume.raw_text or ""

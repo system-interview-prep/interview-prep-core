@@ -111,15 +111,17 @@ def test_semantic_score_cannot_compensate_for_failed_must_have() -> None:
     assert result.failed_must_have_requirements == ["req-java"]
 
 
-def test_missing_must_have_without_cv_mention_is_not_met() -> None:
+def test_must_have_the_cv_never_mentions_needs_review_not_rejection() -> None:
+    """A CV that does not mention Java is no evidence the candidate lacks it:
+    the requirement is "not evidenced" and the candidate goes to review. Only a
+    CV that shows the skill below the required level fails (see above)."""
     result = MatchingFacade(StubEmbedder()).match(MatchRequest.model_validate(_payload(add_java=False)))
-    assert result.eligibility == "ineligible"
-    assert result.decision == "assessed"
-    assert result.requirement_results[0].status == "not_met"
-    assert result.suitability_score is None
-    assert result.diagnostic_score is not None
-    assert result.failed_must_have_requirements == ["req-java"]
-    assert "Không tìm thấy" in (result.requirement_results[0].evidence_explanation or "")
+    assert result.eligibility == "review_required"
+    assert result.failed_must_have_requirements == []
+    requirement = result.requirement_results[0]
+    assert (requirement.status, requirement.reason_code) == ("unknown", "skill_not_evidenced")
+    assert requirement.evidence_refs == []
+    assert "chưa nhắc tới Java" in (requirement.evidence_explanation or "")
 
 
 def test_named_skill_context_keeps_unknown_but_exposes_related_evidence() -> None:

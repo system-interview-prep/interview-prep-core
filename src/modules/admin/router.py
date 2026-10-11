@@ -121,6 +121,37 @@ async def get_admin_overview(
     }
 
 
+# Structured sessions store their mode in `mode`; legacy rows only have `type`.
+_EFFECTIVE_MODE = "LOWER(COALESCE(s.mode, s.type, 'text'))"
+_MODE_FILTERS = {
+    "video": f"AND {_EFFECTIVE_MODE} IN ('video', 'call')",
+    "chat": f"AND {_EFFECTIVE_MODE} IN ('text', 'chat')",
+    "voice": f"AND {_EFFECTIVE_MODE} = 'voice'",
+}
+
+
+def _session_filters(mode: str, search: str | None) -> tuple[str, dict]:
+    """WHERE clause shared by the page query, the total and the stats."""
+    clause = "WHERE 1=1 " + _MODE_FILTERS.get(mode, "")
+    params: dict = {}
+    if search and search.strip():
+        clause += " AND (LOWER(u.name) LIKE :kw OR LOWER(u.email) LIKE :kw)"
+        params["kw"] = f"%{search.strip().lower()}%"
+    return clause, params
+
+
+# Latest evaluation per session (a session can be re-graded).
+_LATEST_EVALUATION = """
+    LEFT JOIN LATERAL (
+        SELECT e.overall_score
+        FROM interview_evaluations e
+        WHERE e.session_id = s.id
+        ORDER BY e.evaluated_at DESC
+        LIMIT 1
+    ) ev ON TRUE
+"""
+
+
 @router.get("/sessions")
 async def list_admin_sessions(
     mode: str = Query("all", description="Mode filter: all, video, chat, voice"),
@@ -130,75 +161,56 @@ async def list_admin_sessions(
     _: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    query_parts = [
-        """
-        SELECT 
-            s.id,
-            s.user_id,
-            s.type,
-            s.language,
-            s.status,
-            s.started_at,
-            s.ended_at,
-            COALESCE(u.name, 'Ứng viên chưa đặt tên') AS candidate_name,
-            COALESCE(u.email, 'unknown@intervia.io') AS candidate_email,
-            ev.overall_score AS ai_score
-        FROM interview_sessions s
-        LEFT JOIN users u ON s.user_id = u.id
-        LEFT JOIN interview_evaluations ev ON ev.session_id = s.id
-        WHERE 1=1
-        """
-    ]
-    params: dict = {"limit": limit, "offset": offset}
+    where, filter_params = _session_filters(mode, search)
+    base = (
+        "FROM interview_sessions s LEFT JOIN users u ON s.user_id = u.id "
+        "LEFT JOIN job_descriptions j ON j.id = s.job_id " + _LATEST_EVALUATION + where
+    )
 
-    # Filter by mode
-    if mode == "video":
-        query_parts.append("AND UPPER(s.type) IN ('VIDEO', 'CALL')")
-    elif mode == "chat":
-        query_parts.append("AND UPPER(s.type) = 'CHAT'")
-    elif mode == "voice":
-        query_parts.append("AND UPPER(s.type) = 'VOICE'")
+    rows = (
+        await db.execute(
+            text(
+                f"""
+                SELECT s.id, s.status, s.started_at, s.locale, s.language,
+                       {_EFFECTIVE_MODE} AS effective_mode,
+                       j.title AS job_title,
+                       COALESCE(u.name, 'Ứng viên chưa đặt tên') AS candidate_name,
+                       COALESCE(u.email, 'unknown@intervia.io') AS candidate_email,
+                       ev.overall_score AS ai_score
+                {base}
+                ORDER BY s.started_at DESC LIMIT :limit OFFSET :offset
+                """
+            ),
+            {**filter_params, "limit": limit, "offset": offset},
+        )
+    ).mappings().all()
 
-    # Filter by search keyword
-    if search and search.strip():
-        query_parts.append("AND (LOWER(u.name) LIKE :kw OR LOWER(u.email) LIKE :kw)")
-        params["kw"] = f"%{search.strip().lower()}%"
-
-    query_parts.append("ORDER BY s.started_at DESC LIMIT :limit OFFSET :offset")
-
-    sql = "\n".join(query_parts)
-    res = await db.execute(text(sql), params)
-    rows = res.mappings().all()
-
-    # Total count query
-    count_sql = "SELECT COUNT(*) FROM interview_sessions s LEFT JOIN users u ON s.user_id = u.id WHERE 1=1 "
-    if mode == "video":
-        count_sql += "AND UPPER(s.type) IN ('VIDEO', 'CALL') "
-    elif mode == "chat":
-        count_sql += "AND UPPER(s.type) = 'CHAT' "
-    elif mode == "voice":
-        count_sql += "AND UPPER(s.type) = 'VOICE' "
-    if search and search.strip():
-        count_sql += "AND (LOWER(u.name) LIKE :kw OR LOWER(u.email) LIKE :kw) "
-
-    count_params = {"kw": params["kw"]} if "kw" in params else {}
-    total_count = (await db.execute(text(count_sql), count_params)).scalar() or 0
+    # Totals and stats cover every matching session, not just this page.
+    summary = (
+        await db.execute(
+            text(
+                f"""
+                SELECT COUNT(*) AS total,
+                       COUNT(*) FILTER (WHERE UPPER(COALESCE(s.status, '')) <> 'CLOSED') AS active,
+                       COUNT(*) FILTER (WHERE UPPER(COALESCE(s.status, '')) = 'CLOSED') AS completed,
+                       AVG(ev.overall_score) AS avg_score
+                {base}
+                """
+            ),
+            filter_params,
+        )
+    ).mappings().one()
 
     sessions = []
     for r in rows:
         c_name = r["candidate_name"]
         c_email = r["candidate_email"]
-        raw_type = (r["type"] or "").lower()
-        if raw_type in ("call", "video"):
-            ui_type = "video"
-        elif raw_type == "voice":
-            ui_type = "voice"
-        else:
-            ui_type = "chat"
+        raw_mode = (r["effective_mode"] or "").lower()
+        ui_type = "video" if raw_mode in ("call", "video") else "voice" if raw_mode == "voice" else "chat"
 
         is_closed = (r["status"] or "").upper() == "CLOSED"
         started_dt = r["started_at"]
-        date_label = started_dt.strftime("%d/%m/%Y") if started_dt else "Gần đây"
+        date_label = started_dt.strftime("%d/%m/%Y") if started_dt else ""
         time_label = started_dt.strftime("%H:%M") if started_dt else ""
 
         # Evaluation score is 0-10; the admin UI shows a percentage. A session
@@ -212,8 +224,9 @@ async def list_admin_sessions(
                 "candidateName": c_name,
                 "candidateEmail": c_email,
                 "candidateInitials": _calc_initials(c_name, c_email),
-                "position": "Software Engineer" if ui_type != "video" else "Fullstack Developer",
-                "teamAndLocation": f"Tech Division • {r['language'] or 'English'}",
+                # Real job title (null when the JD was deleted); no placeholder roles.
+                "position": r["job_title"],
+                "teamAndLocation": r["locale"] or r["language"] or "",
                 "type": ui_type,
                 "aiScore": final_score,
                 "dateLabel": date_label,
@@ -223,8 +236,15 @@ async def list_admin_sessions(
             }
         )
 
+    avg_score = summary["avg_score"]
     return {
         "success": True,
-        "total": total_count,
+        "total": int(summary["total"] or 0),
+        "stats": {
+            "active": int(summary["active"] or 0),
+            "completed": int(summary["completed"] or 0),
+            # Percentage like aiScore; null when nothing has been graded yet.
+            "avgScore": round(float(avg_score) * 10) if avg_score is not None else None,
+        },
         "sessions": sessions,
     }

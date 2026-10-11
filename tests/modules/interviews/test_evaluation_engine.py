@@ -99,6 +99,19 @@ class TestInterviewEvaluationEngine(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Kubernetes", instructions)
         self.assertIn("Microservices", instructions)
 
+    def test_voice_prompt_discloses_stt_provenance_and_forbids_repair(self):
+        engine = InterviewEvaluationEngine()
+        voice_input = self.sample_turn_input.model_copy(
+            update={"source_modality": "VOICE", "transcript_confidence": None}
+        )
+
+        instructions, user_content = engine.get_turn_evaluation_prompt(voice_input)
+
+        self.assertIn("VOICE TRANSCRIPT SAFETY", instructions)
+        self.assertIn("Never translate, repair, infer, or invent", instructions)
+        self.assertIn("Answer source: VOICE", user_content)
+        self.assertIn("not supplied by provider", user_content)
+
     async def test_evaluate_turn_fallback_on_invalid_json(self):
         """3. Kiểm tra cơ chế Fallback an toàn khi LLM trả về dữ liệu lỗi / JSON không hợp lệ."""
         mock_llm = MockLLM(text_payload="Invalid non-json output from LLM...")

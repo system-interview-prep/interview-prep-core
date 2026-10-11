@@ -191,5 +191,8 @@ def test_unresolved_jd_requirement_does_not_get_promoted_by_semantic_similarity(
     assert semantic.status == "scored"
     assert semantic.raw_score is not None
     assert result.suitability_score is None
-    assert result.score_provenance.mode == "requirement_aware"
-    assert result.requirement_results[0].status == "not_met"
+    # Nothing was assessed against a requirement, so the only scored factor is
+    # semantic and the score stays a suppressed estimate.
+    assert result.score_provenance.mode == "semantic_only_estimated"
+    assert result.requirement_results[0].status == "unknown"
+    assert result.requirement_results[0].reason_code == "requirement_not_evidenced"

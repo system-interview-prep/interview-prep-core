@@ -23,8 +23,10 @@ class CvRepository(Protocol):
     async def get_owned(self, user_id: str, cv_id: str) -> CvRecord | None: ...
 
     async def list_owned(
-        self, user_id: str, limit: int, career_code: str | None = None
+        self, user_id: str, limit: int, career_code: str | None = None, offset: int = 0
     ) -> list[CvRecord]: ...
+
+    async def count_owned(self, user_id: str, career_code: str | None = None) -> int: ...
 
     async def delete_owned(self, user_id: str, cv_id: str) -> CvRecord | None: ...
 
@@ -41,9 +43,17 @@ class CvQueryService:
         return record
 
     async def list(
-        self, user_id: str, limit: int, career_code: str | None = None
+        self, user_id: str, limit: int, career_code: str | None = None, offset: int = 0
     ) -> list[CvRecord]:
-        return await self._repository.list_owned(user_id, limit, career_code)
+        return await self._repository.list_owned(user_id, limit, career_code, offset)
+
+    async def page(
+        self, user_id: str, limit: int, offset: int = 0, career_code: str | None = None
+    ) -> "tuple[list[CvRecord], int]":
+        """One page of the user's CVs (newest first) plus the total they own."""
+        records = await self._repository.list_owned(user_id, limit, career_code, offset)
+        total = await self._repository.count_owned(user_id, career_code)
+        return records, total
 
     async def download(self, user_id: str, cv_id: str) -> tuple[CvRecord, bytes]:
         record = await self.get(user_id, cv_id)

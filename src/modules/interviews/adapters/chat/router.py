@@ -6,11 +6,17 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.core.security import current_user
 from src.infrastructure.database import get_db
 from src.modules.ai.facade import generate_text
 
 router = APIRouter(prefix="/ai", tags=["chat"])
+
+
+def _require_legacy_enabled() -> None:
+    if not get_settings().legacy_interview_api_enabled:
+        raise HTTPException(status_code=410, detail="Legacy interview API is disabled")
 
 
 class ChatRequest(BaseModel):
@@ -49,6 +55,7 @@ async def chat(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    _require_legacy_enabled()
     await _ensure_owned(db, user["sub"], payload.sessionId)
     await db.execute(
         text(
@@ -94,6 +101,7 @@ async def history(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    _require_legacy_enabled()
     await _ensure_owned(db, user["sub"], session_id)
     items = await _history(db, session_id)
     return {"history": items}

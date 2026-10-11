@@ -420,8 +420,8 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
     <div class="cl frozen"><span class="id">1.4.3</span><p>Chỉ báo của mỗi khái niệm <em class="k k-must">MUST</em> là một trong ba mức <span class="vtag up">TIẾN BỘ THẬT</span> · <span class="vtag noise">TRONG BIÊN NHIỄU</span> · <span class="vtag down">GIẢM</span>, và <em class="k k-must">MUST</em> chỉ được kết luận trên (a) hai lần trả lời cùng một câu neo, ngưỡng MDC95, hoặc (b) trung bình k quan sát gần nhất so với k quan sát trước, ngưỡng MDC95 / √k. Hai lượt đơn lẻ trên hai câu khác nhau <em class="k k-not">MUST NOT</em> được gắn TIẾN BỘ THẬT hay GIẢM.<span class="gap">CHƯA CÓ</span></p></div>
     <div class="cl frozen"><span class="id">1.4.4</span><p>Mỗi khái niệm đang dùng <em class="k k-should">SHOULD</em> có ít nhất một câu neo đã duyệt, được hỏi lại sau tối thiểu 7 ngày, để hai lần đo cùng đề. Bộ chọn câu <em class="k k-not">MUST NOT</em> dùng câu neo cho mục đích khác.<span class="gap">MỘT PHẦN</span></p></div>
     <div class="cl frozen"><span class="id">1.4.5</span><p>Mỗi tuyên bố trong CV có thể bị hỏi (dự án, vai trò, con số, công nghệ) <em class="k k-should">SHOULD</em> được theo dõi với trạng thái CHƯA HỎI, VỮNG hoặc LUNG LAY, kèm đoạn bằng chứng trong CV.<span class="gap">CHƯA CÓ</span></p></div>
-    <div class="cl frozen"><span class="id">1.4.6</span><p>Xóa CV <em class="k k-not">MUST NOT</em> ẩn hay xóa phiên và báo cáo cũ. Lịch sử luyện tập là của ứng viên, không phải của tệp CV.<span class="gap">ĐANG VI PHẠM</span></p></div>
-    <p class="callout">1.4.6 hiện vi phạm: khóa ngoại <code>resume_id</code> là <code>ON DELETE SET NULL</code>, trong khi danh sách phiên và kiểm quyền sở hữu đều lọc <code>resume_id IS NOT NULL</code>.</p>
+    <div class="cl frozen"><span class="id">1.4.6</span><p>Xóa CV <em class="k k-not">MUST NOT</em> ẩn hay xóa phiên và báo cáo cũ. Lịch sử luyện tập là của ứng viên, không phải của tệp CV.<span class="done">ĐÃ SỬA 09/10</span></p></div>
+    <p class="callout">1.4.6 đã sửa ngày 09/10: phiên có cấu trúc giờ được nhận diện bằng bản ghi plan thay vì <code>resume_id</code>. Trước đó: khóa ngoại <code>resume_id</code> là <code>ON DELETE SET NULL</code>, trong khi danh sách phiên và kiểm quyền sở hữu đều lọc <code>resume_id IS NOT NULL</code>.</p>
 
     <figure id="fig3">
       <div class="fh">
@@ -520,13 +520,13 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
       <p class="harm">Câu hỏi không có rubric thì câu trả lời không có căn cứ chấm. Code chốt được turn_id, nhưng nội dung câu PROBE do mô hình sinh vẫn chưa bị kiểm.</p>
       <div class="vs"><div><small>TRANSCRIPT NÓI</small>"Thêm một câu nữa: em giải thích CAP theorem?"</div><div><small>BẢN GHI NÓI</small><code>turn_id không có trong frozen turns</code></div></div></div>
 
-    <div class="sf"><div class="top"><span class="code">SF-03 · 3.3</span><p>Hệ thống <em class="k k-not">MUST NOT</em> để một ứng viên đọc hay ghi phiên, CV hoặc báo cáo của ứng viên khác.</p><span class="gap">ĐANG VI PHẠM</span></div>
+    <div class="sf"><div class="top"><span class="code">SF-03 · 3.3</span><p>Hệ thống <em class="k k-not">MUST NOT</em> để một ứng viên đọc hay ghi phiên, CV hoặc báo cáo của ứng viên khác.</p><span class="done">ĐÃ SỬA 09/10</span></div>
       <p class="harm">CV chứa họ tên, số điện thoại, nơi làm việc. Endpoint phỏng vấn đã kiểm quyền sở hữu; endpoint đối chiếu thì không xác thực và đọc CV theo id không lọc người dùng.</p>
-      <div class="vs"><div><small>YÊU CẦU</small><code>POST /api/v1/matching/match-ids</code> không token, với id CV của B</div><div><small>HIỆN TRẢ VỀ</small><code>200 OK · kết quả đối chiếu trên CV của B</code></div></div></div>
+      <div class="vs"><div><small>YÊU CẦU</small><code>POST /api/v1/matching/match-ids</code> không token, với id CV của B</div><div><small>TRƯỚC KHI SỬA</small><code>200 OK · kết quả đối chiếu trên CV của B</code></div></div></div>
 
-    <div class="sf"><div class="top"><span class="code">SF-04 · 3.4</span><p>Báo cáo cho ứng viên <em class="k k-not">MUST NOT</em> chứa nhãn tuyển hay loại: <code>STRONG_PASS</code>, <code>PASS</code>, <code>CONSIDER</code>, <code>REJECT</code>.</p><span class="gap">ĐANG VI PHẠM</span></div>
+    <div class="sf"><div class="top"><span class="code">SF-04 · 3.4</span><p>Báo cáo cho ứng viên <em class="k k-not">MUST NOT</em> chứa nhãn tuyển hay loại: <code>STRONG_PASS</code>, <code>PASS</code>, <code>CONSIDER</code>, <code>REJECT</code>.</p><span class="done">ĐÃ SỬA 09/10</span></div>
       <p class="harm">Một nhãn "REJECT" từ công cụ luyện tập đọc như một bản án, và vượt khỏi điều §1.2.1 cho phép.</p>
-      <div class="vs"><div><small>TRANSCRIPT NÓI</small>"Cảm ơn em, buổi luyện tập đã kết thúc."</div><div><small>API ỨNG VIÊN TRẢ VỀ</small><code>GET /evaluation → "decisionRecommendation": "REJECT"</code></div></div></div>
+      <div class="vs"><div><small>TRANSCRIPT NÓI</small>"Cảm ơn em, buổi luyện tập đã kết thúc."</div><div><small>TRƯỚC KHI SỬA</small><code>GET /evaluation → "decisionRecommendation": "REJECT"</code></div></div></div>
 
     <div class="sf"><div class="top"><span class="code">SF-05 · 3.5</span><p>Hệ thống <em class="k k-not">MUST NOT</em> hỏi về tuổi, hôn nhân, kế hoạch sinh con, tôn giáo, dân tộc, quê quán hay sức khỏe.</p><span class="gap">CHƯA CÓ</span></div>
       <p class="harm">Dạy ứng viên rằng câu hỏi phân biệt đối xử là bình thường.</p>
@@ -623,7 +623,7 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
     <span class="kk">"evidence_quotes"</span>: [ <span class="s">"Em dùng Redis để cache kết quả truy vấn"</span> ],  <span class="c">// §1.1.11</span>
     <span class="kk">"feedback"</span>: <span class="s">"..."</span>, <span class="kk">"strengths"</span>: [ ], <span class="kk">"weaknesses"</span>: [ ]
   } ],
-  <span class="kk">"decision_recommendation"</span>: <span class="s">"CONSIDER"</span>  <span class="c">// hiện CÓ trả về — vi phạm SF-04, phải bỏ</span>
+  <span class="c">// decision_recommendation: đã bị loại ở ranh giới API ứng viên — SF-04</span>
 }</pre>
     </div>
 

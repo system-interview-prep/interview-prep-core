@@ -15,7 +15,6 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.config import get_settings
 from src.core.security import current_user, require_admin
 from src.infrastructure.database import SessionFactory, get_db
 from src.infrastructure.r2 import delete_object, get_object, public_url, put_object
@@ -27,7 +26,7 @@ from src.modules.documents.facade import (
     InvalidDocumentFile,
     status_event_stream,
 )
-from src.modules.interviews.planning.question_coverage import enqueue_question_coverage
+from src.modules.interviews.facade import enqueue_question_coverage
 from src.modules.job_descriptions.domain.schemas import CanonicalJobDescription
 
 _inner_router = APIRouter(tags=["job-descriptions"])
@@ -1135,4 +1134,3 @@ router = APIRouter()
 _LEGACY_PREFIX = "".join(["/admin", "/job", "-profiles"])
 router.include_router(_inner_router, prefix=_LEGACY_PREFIX)
 router.include_router(_inner_router, prefix="/admin/job-descriptions")
-

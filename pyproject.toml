@@ -42,6 +42,7 @@ matching = [
 ]
 voice-realtime = [
   "livekit-agents[elevenlabs]~=1.8",
+  "livekit-plugins-noise-cancellation~=0.3.2",
 ]
 dev = [
   "pytest>=8,<9",

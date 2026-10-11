@@ -477,7 +477,7 @@ async def question_coverage(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """How well the bank covers locked sessions and the ACTIVE jobs' must-have skills."""
-    from src.modules.interviews.planning.question_coverage import question_coverage_report
+    from src.modules.interviews.facade import question_coverage_report
 
     return await question_coverage_report(db)
 
@@ -487,6 +487,6 @@ async def prepare_question_coverage(
     _: dict = Depends(require_roles(QUESTION_BANK_ADMIN)),
 ) -> dict:
     """Backfill: queue gated pre-generation for every ACTIVE job (idempotent)."""
-    from src.modules.interviews.planning.question_coverage import enqueue_question_coverage
+    from src.modules.interviews.facade import enqueue_question_coverage
 
     return {"queued": enqueue_question_coverage()}

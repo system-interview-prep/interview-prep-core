@@ -10,13 +10,14 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import current_user
 from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
+from src.modules.interviews.api.rate_limit import interview_rate_limiter
 from src.modules.interviews.application.agent_runtime import database_operations, run_interview_command
 from src.modules.interviews.application.chat_runtime import (
     ChatRuntimeError,
@@ -127,6 +128,12 @@ class CreateInterviewSession(BaseModel):
 
     model_config = {"populate_by_name": True}
 
+    @field_validator("locale")
+    @classmethod
+    def _vietnamese_only(cls, _value: str) -> str:
+        # Interviews are Vietnamese-only; older clients may still send "en-US".
+        return "vi-VN"
+
 
 def _session_payload(row: dict) -> dict:
     return {
@@ -193,6 +200,14 @@ async def _owned_session(db: AsyncSession, user_id: str, session_id: str) -> dic
     if row is None:
         raise HTTPException(status_code=404, detail="Interview session not found")
     return dict(row)
+
+
+def _require_runtime_mode(session: dict, *, mode: str, experience_type: str) -> None:
+    if session.get("mode") != mode or session.get("experience_type") != experience_type:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Session is not configured for {experience_type}",
+        )
 
 
 async def _validate_context(
@@ -339,7 +354,83 @@ async def list_interview_sessions(
         ),
         {"uid": user["sub"]},
     )
-    return {"sessions": [_session_payload(dict(row)) for row in result.mappings().all()]}
+    sessions = [_session_payload(dict(row)) for row in result.mappings().all()]
+    summaries = await _session_summaries(db, [item["sessionId"] for item in sessions])
+    for item in sessions:
+        item.update(summaries.get(item["sessionId"], _EMPTY_SUMMARY))
+    return {"sessions": sessions}
+
+
+_EMPTY_SUMMARY = {
+    "overallScore": None,
+    "evaluatedAt": None,
+    "competencyScores": [],
+    "totalTurns": 0,
+    "answeredTurns": 0,
+}
+
+
+def _competency_summary(raw: object) -> list[dict]:
+    """Competency scores of the latest evaluation, as {competency, score, weight}.
+
+    The JSONB column may arrive decoded or as text depending on the driver codec.
+    """
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    if not isinstance(raw, list):
+        return []
+    items: list[dict] = []
+    for entry in raw:
+        if not isinstance(entry, dict) or not entry.get("competency"):
+            continue
+        try:
+            score = float(entry.get("score"))
+            weight = float(entry.get("weight", 1.0))
+        except (TypeError, ValueError):
+            continue
+        items.append({"competency": str(entry["competency"]), "score": score, "weight": weight})
+    return items
+
+
+async def _session_summaries(db: AsyncSession, session_ids: list[str]) -> dict[str, dict]:
+    """Score and progress per session for history views (one query, no N+1)."""
+    if not session_ids:
+        return {}
+    result = await db.execute(
+        text(
+            """
+            SELECT s.id AS session_id,
+                   ev.overall_score, ev.evaluated_at, ev.competency_scores,
+                   COUNT(t.id) AS total_turns,
+                   COUNT(t.id) FILTER (WHERE t.status = 'ANSWERED') AS answered_turns
+            FROM interview_sessions s
+            LEFT JOIN LATERAL (
+                SELECT e.overall_score, e.evaluated_at, e.competency_scores
+                FROM interview_evaluations e
+                WHERE e.session_id = s.id
+                ORDER BY e.evaluated_at DESC
+                LIMIT 1
+            ) ev ON TRUE
+            LEFT JOIN interview_turns t ON t.session_id = s.id
+            WHERE s.id = ANY(:ids)
+            GROUP BY s.id, ev.overall_score, ev.evaluated_at, ev.competency_scores
+            """
+        ),
+        {"ids": session_ids},
+    )
+    return {
+        str(row["session_id"]): {
+            "overallScore": float(row["overall_score"]) if row["overall_score"] is not None else None,
+            "evaluatedAt": row["evaluated_at"].isoformat() if row["evaluated_at"] else None,
+            "competencyScores": _competency_summary(row.get("competency_scores")),
+            "totalTurns": int(row["total_turns"] or 0),
+            "answeredTurns": int(row["answered_turns"] or 0),
+        }
+        for row in result.mappings().all()
+    }
 
 
 @router.post("/sessions/{session_id}/plan")
@@ -350,6 +441,7 @@ async def build_interview_plan(
 ) -> dict:
     started_at = time.monotonic()
     trace_event("interviewer", "plan_started", session_id=session_id, user_id=user["sub"])
+    await interview_rate_limiter.check(user["sub"], "plan")
     session = await _owned_session(db, user["sub"], session_id)
     try:
         result = await run_interview_command(
@@ -441,6 +533,7 @@ async def select_interview_questions(
 ) -> dict:
     started_at = time.monotonic()
     trace_event("interviewer", "question_selection_started", session_id=session_id)
+    await interview_rate_limiter.check(user["sub"], "select")
     session = await _owned_session(db, user["sub"], session_id)
     try:
         result = await run_interview_command(
@@ -704,6 +797,7 @@ async def start_chat(
     started_at = time.monotonic()
     trace_event("interviewer", "chat_start_requested", session_id=session_id)
     session = await _owned_session(db, user["sub"], session_id)
+    _require_runtime_mode(session, mode="text", experience_type="interview_chat")
     try:
         result = await run_interview_command(
             session_id=session_id, command="open",
@@ -764,7 +858,9 @@ async def send_chat(
         client_message_id=payload.client_message_id,
         content_length=len(payload.content),
     )
+    await interview_rate_limiter.check(user["sub"], "respond")
     session = await _owned_session(db, user["sub"], session_id)
+    _require_runtime_mode(session, mode="text", experience_type="interview_chat")
     try:
         message_id = payload.client_message_id or str(uuid4())
         result = await run_interview_command(
@@ -833,7 +929,9 @@ async def send_video_transcript(
 
     Visual behaviour analysis is deliberately not part of competency scoring.
     """
+    await interview_rate_limiter.check(user["sub"], "respond")
     session = await _owned_session(db, user["sub"], session_id)
+    _require_runtime_mode(session, mode="video", experience_type="video_interview")
     try:
         return await run_interview_command(
             session_id=session_id, command="respond", event_id=payload.client_message_id,
@@ -917,6 +1015,7 @@ async def evaluate_session_endpoint(
 ) -> dict:
     started_at = time.monotonic()
     trace_event("interviewer", "evaluation_endpoint_requested", session_id=session_id)
+    await interview_rate_limiter.check(user["sub"], "evaluate")
     session = await _owned_session(db, user["sub"], session_id)
     try:
         eval_data = await run_interview_command(
@@ -998,3 +1097,81 @@ async def get_session_report_endpoint(
     return await get_session_evaluation_endpoint(session_id=session_id, user=user, db=db)
 
 
+
+
+class SaveSessionReflection(BaseModel):
+    """The candidate's own view of a finished session (debrief step 1 and 3)."""
+
+    # {turnId: 1..4}; 1 = weak … 4 = strong, the same bands the debrief compares against.
+    self_ratings: dict[str, int] = Field(default_factory=dict, alias="selfRatings")
+    takeaway: str | None = Field(default=None, max_length=1000)
+
+    model_config = {"populate_by_name": True}
+
+
+def _reflection_payload(session_id: str, row: dict | None) -> dict:
+    if row is None:
+        return {"sessionId": session_id, "selfRatings": {}, "takeaway": None, "submitted": False, "updatedAt": None}
+    return {
+        "sessionId": session_id,
+        "selfRatings": row["self_ratings"] or {},
+        "takeaway": row["takeaway"],
+        "submitted": True,
+        "updatedAt": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
+
+
+@router.get("/sessions/{session_id}/reflection")
+async def get_session_reflection(
+    session_id: str,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _owned_session(db, user["sub"], session_id)
+    result = await db.execute(
+        text(
+            "SELECT self_ratings, takeaway, updated_at FROM interview_session_reflections "
+            "WHERE session_id = :sid AND user_id = :uid"
+        ),
+        {"sid": session_id, "uid": user["sub"]},
+    )
+    row = result.mappings().one_or_none()
+    return _reflection_payload(session_id, dict(row) if row else None)
+
+
+@router.put("/sessions/{session_id}/reflection")
+async def save_session_reflection(
+    session_id: str,
+    payload: SaveSessionReflection,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _owned_session(db, user["sub"], session_id)
+    if any(not 1 <= value <= 4 for value in payload.self_ratings.values()):
+        raise HTTPException(status_code=422, detail="Tự đánh giá phải nằm trong khoảng 1–4.")
+    known = await db.execute(
+        text("SELECT id FROM interview_turns WHERE session_id = :sid"), {"sid": session_id}
+    )
+    turn_ids = {str(row[0]) for row in known.all()}
+    unknown = set(payload.self_ratings) - turn_ids
+    if unknown:
+        raise HTTPException(status_code=422, detail="Có lượt hỏi không thuộc phiên phỏng vấn này.")
+    takeaway = (payload.takeaway or "").strip() or None
+    result = await db.execute(
+        text(
+            "INSERT INTO interview_session_reflections (session_id, user_id, self_ratings, takeaway) "
+            "VALUES (:sid, :uid, CAST(:ratings AS jsonb), :takeaway) "
+            "ON CONFLICT (session_id) DO UPDATE SET self_ratings = EXCLUDED.self_ratings, "
+            "takeaway = EXCLUDED.takeaway, updated_at = now() "
+            "RETURNING self_ratings, takeaway, updated_at"
+        ),
+        {
+            "sid": session_id,
+            "uid": user["sub"],
+            "ratings": json.dumps(payload.self_ratings),
+            "takeaway": takeaway,
+        },
+    )
+    row = result.mappings().one()
+    await db.commit()
+    return _reflection_payload(session_id, dict(row))

@@ -22,6 +22,7 @@ from src.modules.auth import build_module as build_auth_module
 from src.modules.health import build_module as build_health_module
 from src.modules.interviews import build_module as build_interviews_module
 from src.modules.interviews.agent.checkpoints import interview_checkpoint_lifespan
+from src.modules.interviews.application.session_reaper import session_reaper_loop
 from src.modules.interviews.planning.planner import configured_planner_policy
 from src.modules.job_descriptions import build_module as build_job_descriptions_module
 from src.modules.matching import build_module as build_matching_module
@@ -123,6 +124,7 @@ async def bootstrap_question_bank_schema(engine: object) -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     livekit_agent: asyncio.subprocess.Process | None = None
+    session_reaper: asyncio.Task[None] | None = None
     settings = get_settings()
     # Validate the opt-in interview planner policy before serving traffic. A bad
     # value used to surface only when a candidate called POST /plan, and the
@@ -138,9 +140,15 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await run_all_seeds(SessionFactory, settings)
         async with interview_checkpoint_lifespan(), rabbitmq_lifespan():
             livekit_agent = await _start_livekit_agent(settings)
+            session_reaper = asyncio.create_task(
+                session_reaper_loop(SessionFactory), name="interview-session-reaper"
+            )
             try:
                 yield
             finally:
+                if session_reaper is not None:
+                    session_reaper.cancel()
+                    await asyncio.gather(session_reaper, return_exceptions=True)
                 await _stop_livekit_agent(livekit_agent)
 
 

@@ -95,14 +95,16 @@ def test_semantic_result_metrics_upgrade_query_optimization_evidence() -> None:
     assert query_concept.evidence_strength == "demonstrated"
 
 
-def test_named_technology_is_not_inferred_from_near_synonyms_and_is_not_met() -> None:
+def test_named_technology_is_not_inferred_from_near_synonyms() -> None:
     result = evaluate_unresolved_requirement(
         _requirement("Experience with Kafka, Redis, and MySQL"),
         _resume_from_lines(),
     )
 
-    assert result.status == "not_met"
-    assert result.reason_code == "requirement_not_found"
+    # Never promoted from near synonyms; with no mention it is "not evidenced".
+    assert result.status == "unknown"
+    assert result.reason_code == "requirement_not_evidenced"
+    assert not result.evidence_refs
     assert not result.retrieval_candidates
 
 

@@ -25,6 +25,16 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def _stub_celery_modules() -> None:
+    # Only stub when Celery is really unavailable: an empty stand-in for
+    # src.workers.celery_app leaked into every later test that imports a worker
+    # task ("cannot import name 'celery_app'"), depending on test order.
+    try:
+        import src.workers.celery_app  # noqa: F401
+        import src.workers.tasks.matching  # noqa: F401
+
+        return
+    except ImportError:
+        pass
     if "celery" not in sys.modules:
         celery_mod = ModuleType("celery")
 

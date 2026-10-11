@@ -185,7 +185,9 @@ async def test_unasked_turns_are_not_scored_as_missing_answers(monkeypatch) -> N
         return result
 
     db.execute.side_effect = _execute
-    db.scalar.return_value = None
+    db.scalar.side_effect = lambda query, params=None: (
+        "sess-eval" if "INSERT INTO interview_evaluation_jobs" in str(query) else None
+    )
 
     result = await evaluate_closed_session(db, "sess-eval", _Engine())
 
@@ -240,7 +242,9 @@ def _eval_db(session_row, turns):
         return result
 
     db.execute.side_effect = _execute
-    db.scalar.return_value = None
+    db.scalar.side_effect = lambda query, params=None: (
+        session_row["id"] if "INSERT INTO interview_evaluation_jobs" in str(query) else None
+    )
     return db
 
 
@@ -439,17 +443,19 @@ async def test_grading_failure_surfaces_as_503_through_the_agent_graph() -> None
 
 
 @pytest.mark.asyncio
-async def test_concurrent_evaluation_reuses_the_report_created_while_waiting() -> None:
-    """M6: the second /evaluate waits on the session lock, then must not regrade."""
+async def test_evaluation_reuses_an_existing_report_without_grading() -> None:
+    """M6: an already committed report is reused before claiming a lease."""
     session_row = {"id": "s5", "status": "CLOSED", "locale": "vi-VN", "duration_minutes": 25}
     db = _eval_db(session_row, [])
-    db.scalar.return_value = 1  # report committed by the first request
+    db.scalar.side_effect = lambda query, params=None: (
+        1 if "FROM interview_evaluations" in str(query) else None
+    )
     engine = _RecordingEngine("PASS")
 
     assert await evaluate_closed_session(db, "s5", engine) is None
     assert engine.turn_ids == []
     locked = [str(call.args[0]) for call in db.execute.call_args_list if "FOR UPDATE" in str(call.args[0])]
-    assert locked, "session row must be locked before checking for an existing report"
+    assert not locked, "external grading must not hold a session row lock"
 
 
 @pytest.mark.asyncio
@@ -520,6 +526,8 @@ async def test_dropped_targets_and_generated_questions_reach_the_report() -> Non
     db = _eval_db(session_row, turns)
 
     async def _scalar(query, params=None):
+        if "INSERT INTO interview_evaluation_jobs" in str(query):
+            return "s7"
         if "uncoveredTargets" in str(query):
             return [{"conceptId": "skill-php", "label": "PHP"}]
         return None

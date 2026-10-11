@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # When a job is published, a background task generates gated drafts so each
     # must-have skill has enough questions to rotate (question_coverage).
     question_pregeneration_enabled: bool = True
+    # Old unstructured interview endpoints bypass the structured turn state
+    # machine. They remain opt-in only for a controlled migration window.
+    legacy_interview_api_enabled: bool = False
+    interview_ai_requests_per_minute: int = Field(default=20, ge=1, le=600)
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     jwt_secret: str = "development-only-secret-change-me"

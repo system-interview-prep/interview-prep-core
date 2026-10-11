@@ -97,7 +97,9 @@ async def test_non_turn_commands_recheck_business_state(monkeypatch, command) ->
 @pytest.mark.asyncio
 async def test_video_endpoint_submits_only_final_transcript(monkeypatch) -> None:
     router = import_module("src.modules.interviews.api.router")
-    owner = AsyncMock(return_value={"id": "s"})
+    owner = AsyncMock(
+        return_value={"id": "s", "mode": "video", "experience_type": "video_interview"}
+    )
     runner = AsyncMock(return_value={"message": "next question"})
     monkeypatch.setattr(router, "_owned_session", owner)
     monkeypatch.setattr(router, "database_operations", lambda **_: {})

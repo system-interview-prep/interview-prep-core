@@ -36,6 +36,8 @@ class TurnEvaluationInput(BaseModel):
     # WARM_UP | VALIDATE | DEEP_DIVE | CHALLENGE | BEHAVIORAL; STAR is only
     # expected of experience questions (VALIDATE, BEHAVIORAL).
     stage: str = Field(default="")
+    source_modality: str = Field(default="TEXT")
+    transcript_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class TurnEvaluationResult(BaseModel):

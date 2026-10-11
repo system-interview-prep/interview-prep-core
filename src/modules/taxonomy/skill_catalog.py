@@ -100,15 +100,42 @@ SKILL_CATALOG: dict[str, SkillEntry] = {
         roles=(DEVOPS,),
     ),
     "skill-monitoring": SkillEntry(
-        "Monitoring", ("monitoring", "observability", "telemetry"), roles=(DEVOPS,)
+        "Monitoring",
+        (
+            "monitoring",
+            "monitoring tools",
+            "monitoring and alerting",
+            "monitoring and observability",
+            "observability",
+            "telemetry",
+        ),
+        roles=(DEVOPS,),
     ),
     "skill-git": SkillEntry("Git", ("git",)),
     # AI and search
     "skill-artificial-intelligence": SkillEntry(
-        "Artificial Intelligence", ("artificial intelligence", "ai"), roles=(AI,)
+        "Artificial Intelligence",
+        # Bare "ai" is list-only; in prose only "AI + engineering noun" means the skill
+        # ("building AI systems"), unlike "AI-assisted tools".
+        (
+            "artificial intelligence",
+            "ai",
+            "agentic ai",
+            "ai agents",
+            "ai systems",
+            "ai models",
+            "ai applications",
+            "ai solutions",
+            "ai products",
+            "ai engineering",
+        ),
+        roles=(AI,),
     ),
     "skill-machine-learning": SkillEntry(
-        "Machine Learning", ("machine learning", "ml"), ("skill-artificial-intelligence",), (AI,)
+        "Machine Learning",
+        ("machine learning", "ml", "ml models", "ml systems", "ml pipelines", "ml engineering"),
+        ("skill-artificial-intelligence",),
+        (AI,),
     ),
     "skill-natural-language-processing": SkillEntry(
         "Natural Language Processing",
@@ -160,7 +187,10 @@ SKILL_CATALOG: dict[str, SkillEntry] = {
     "skill-autocad": SkillEntry("AutoCAD", ("autocad",)),
 }
 
-LIST_ONLY_ALIASES = frozenset({"excel", "rest"})
+# Short or everyday words that are a skill only inside a list ("Python, AI, ML",
+# "- Monitoring"), never in prose: "AI-assisted tools", "post-release
+# monitoring" made AI/Monitoring must-have targets of plain backend JDs.
+LIST_ONLY_ALIASES = frozenset({"excel", "rest", "ai", "ml", "monitoring"})
 
 
 
@@ -182,7 +212,8 @@ def alias_pattern(alias: str) -> re.Pattern[str]:
     escaped = re.escape(alias)
     if alias in LIST_ONLY_ALIASES:
         before = rf"(?:^|(?<=[{_SEPARATORS}])|(?<=[{_SEPARATORS}] ))"
-        after = rf"(?=[ ]?(?:$|[{_SEPARATORS}.]))"
+        # "-" separates list items, but "AI-assisted" is a compound word.
+        after = rf"(?!-\w)(?=[ ]?(?:$|[{_SEPARATORS}.]))"
         return re.compile(rf"{before}{escaped}{after}", re.IGNORECASE | re.MULTILINE)
     # "js" must not match the tail of "node.js".
     before = r"(?<![\w.])" if alias == "js" else r"(?<!\w)"

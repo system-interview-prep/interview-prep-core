@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.core.security import current_user
 from src.infrastructure.database import get_db
 from src.modules.ai.facade import generate_text, synthesize_speech
@@ -28,6 +29,8 @@ async def chat_voice(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    if not get_settings().legacy_interview_api_enabled:
+        raise HTTPException(status_code=410, detail="Legacy interview API is disabled")
     owned = await db.execute(
         text("SELECT 1 FROM interview_sessions WHERE id = :sid AND user_id = :uid"),
         {"sid": payload.sessionId, "uid": user["sub"]},

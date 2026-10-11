@@ -1,0 +1,35 @@
+{
+  "stt_normalization": [
+    {"input": "Yeah.", "expected": "Dạ."},
+    {"input": "Yeah, yeah.", "expected": "Dạ, dạ."},
+    {"input": "Uh-huh.", "expected": "Vâng."},
+    {"input": "Alo.", "expected": "Alo."},
+    {
+      "input": "Yeah, em dùng PostgreSQL cho transaction chính.",
+      "expected": "Yeah, em dùng PostgreSQL cho transaction chính."
+    }
+  ],
+  "overlap": [
+    {"input": "Hello.", "intent": "backchannel"},
+    {"input": "Alo.", "intent": "backchannel"},
+    {"input": "xin chào.", "intent": "backchannel"},
+    {"input": "Dạ.", "intent": "backchannel"},
+    {"input": "Khoan đã.", "intent": "hold"},
+    {"input": "Không, ý của tôi là dùng Redis.", "intent": "content"}
+  ],
+  "replay_requests": [
+    "Bị đứt đoạn á.",
+    "Em chưa nghe rõ.",
+    "Bạn nói lại giúp mình nhé.",
+    "Âm thanh bị ngắt."
+  ],
+  "provider": {
+    "locale": "vi-VN",
+    "stt_language": "vi",
+    "stt_language_detection": false,
+    "tts_language": null,
+    "tts_model": "eleven_flash_v2_5",
+    "tts_auto_mode": true,
+    "tts_text_normalization": "auto"
+  }
+}

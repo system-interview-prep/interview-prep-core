@@ -132,3 +132,43 @@ async def test_match_sync_returns_the_same_unified_contract(client, monkeypatch:
     assert response.status_code == 200
     assert response.json()["pipelineVersion"] == "one-to-one-evidence-fusion-v1"
     assert response.json()["eligibility"] == "eligible"
+
+
+@pytest.mark.parametrize(
+    ("user", "expected_mode"),
+    [
+        (_CANDIDATE, "in_memory"),
+        ({"sub": "admin-1", "email": "admin@example.test", "roles": ["ADMIN"]}, "paradedb"),
+    ],
+)
+def test_match_does_not_score_a_stored_cv_by_a_client_supplied_id(
+    client, monkeypatch: pytest.MonkeyPatch, user: dict, expected_mode: str
+) -> None:
+    """/match takes a client-supplied resume: a candidate naming another user's
+    CV id as documentId must not get a ParadeDB score of that stored CV."""
+    seen: list[str] = []
+
+    async def fake_run_match(payload):
+        seen.append(payload.matching_policy.bm25_provider_mode)
+        return MatchResult(
+            resumeId="cv-1",
+            jobId="job-1",
+            policyVersion="balanced-v1",
+            eligibility="eligible",
+            suitabilityScore=0.8,
+            fitBand="strong_fit",
+            decision="assessed",
+            requirementResults=[],
+            factorResults=[],
+        )
+
+    monkeypatch.setattr(matching_router, "run_match", fake_run_match)
+    client.app.dependency_overrides[current_user] = lambda: user
+    # The documentId in the body is whatever the client claims it is.
+    body = _payload()
+    body["matchingPolicy"] = {**body.get("matchingPolicy", {}), "bm25ProviderMode": "paradedb"}
+
+    response = client.post("/api/v1/matching/match", json={**body, "asyncProcessing": False})
+
+    assert response.status_code == 200
+    assert seen == [expected_mode]

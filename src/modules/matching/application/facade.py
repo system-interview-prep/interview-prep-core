@@ -13,6 +13,7 @@ from src.modules.matching.domain.schemas import (
     CanonicalJob,
     CompatibilityResult,
     EvidenceCandidateTrace,
+    EvidenceSpan,
     FactorResult,
     LanguageRequirement,
     MatchRequest,
@@ -84,6 +85,14 @@ PROFICIENCY_RANK = {
     "expert": 3,
 }
 
+# Confidence of "the CV does not mention this skill": the absence itself is
+# observed reliably, but it says little about the candidate.
+_NOT_EVIDENCED_CONFIDENCE = 0.6
+
+
+def _not_evidenced_text(label: str) -> str:
+    return f"CV hiện tại chưa nhắc tới {label} — cần ứng viên xác nhận thêm."
+
 
 class MatchingFacade:
     """The only application entry point for one CV-to-one-JD fit assessment."""
@@ -136,6 +145,7 @@ class MatchingFacade:
             factorResults=factors,
             scoreProvenance=score_provenance,
             warnings=warnings,
+            evidence=self._cited_evidence(payload.resume, requirements, factors),
         )
 
     async def match_async(
@@ -179,7 +189,29 @@ class MatchingFacade:
             factorResults=factors,
             scoreProvenance=score_provenance,
             warnings=warnings,
+            evidence=self._cited_evidence(payload.resume, requirements, factors),
         )
+
+    @staticmethod
+    def _cited_evidence(
+        resume: CanonicalResume,
+        requirements: list[RequirementResult],
+        factors: list[FactorResult],
+    ) -> list[EvidenceSpan]:
+        """Return the CV spans this result cites, so clients can highlight them.
+
+        Targeted reparse adds spans at match time that never reach the stored
+        parsed CV; without this list their ids would be unresolvable.
+        """
+        cited: set[str] = set()
+        for requirement in requirements:
+            cited.update(requirement.evidence_refs)
+            for concept in requirement.concept_results:
+                cited.update(concept.evidence_refs)
+            cited.update(candidate.evidence_ref for candidate in requirement.retrieval_candidates)
+        for factor in factors:
+            cited.update(factor.evidence_refs)
+        return [span for span in resume.evidence if span.evidence_id in cited]
 
     @staticmethod
     def _evaluate_requirements(resume: CanonicalResume, job: CanonicalJob) -> list[RequirementResult]:
@@ -235,24 +267,30 @@ class MatchingFacade:
                     recovered_refs = [item.evidence_id for item in recovered_evidence]
                     context_refs = [item.evidence.evidence_id for item in context_candidates]
                     has_uncertain_evidence = bool(context_candidates or recovered_evidence)
+                    # A CV that never mentions a skill is not evidence the
+                    # candidate lacks it: CVs are short and parsers miss
+                    # sections. Absence is "not evidenced" (unknown, ask the
+                    # candidate), never a confident not_met that fails the
+                    # must-have gate. not_met is kept for skills the CV shows
+                    # below the required level or duration.
                     results.append(
                         RequirementResult(
                             requirementId=requirement.requirement_id,
-                            status="unknown" if has_uncertain_evidence else "not_met",
-                            score=None if has_uncertain_evidence else 0.0,
-                            confidence=0.45 if has_uncertain_evidence else 0.9,
+                            status="unknown",
+                            score=None,
+                            confidence=0.45 if has_uncertain_evidence else _NOT_EVIDENCED_CONFIDENCE,
                             evidenceRefs=list(dict.fromkeys([*context_refs, *recovered_refs])),
                             reasonCode=(
                                 "skill_semantic_context_needs_confirmation"
                                 if context_candidates
                                 else "skill_retrieved_evidence_needs_confirmation"
                                 if recovered_evidence
-                                else "skill_not_found"
+                                else "skill_not_evidenced"
                             ),
                             evidenceExplanation=(
                                 "CV source passage was recovered but still needs confirmation."
                                 if has_uncertain_evidence
-                                else f"Kh\u00f4ng t\u00ecm th\u1ea5y {requirement.skill.label} trong CV hi\u1ec7n t\u1ea1i."
+                                else _not_evidenced_text(requirement.skill.label)
                             ),
                             retrievalCandidates=[
                                 EvidenceCandidateTrace(**item.trace(rank=index, evidence_strength="applied"))
@@ -264,12 +302,12 @@ class MatchingFacade:
                     results.append(
                         RequirementResult(
                             requirementId=requirement.requirement_id,
-                            status="not_met",
-                            score=0.0,
-                            confidence=0.9,
+                            status="unknown",
+                            score=None,
+                            confidence=_NOT_EVIDENCED_CONFIDENCE,
                             evidenceRefs=[],
-                            reasonCode="skill_not_found",
-                            evidenceExplanation=f"Kh\u00f4ng t\u00ecm th\u1ea5y {requirement.skill.label} trong CV hi\u1ec7n t\u1ea1i.",
+                            reasonCode="skill_not_evidenced",
+                            evidenceExplanation=_not_evidenced_text(requirement.skill.label),
                         )
                     )
                 elif requirement.operator == "proficiency_gte" and claim.proficiency_level is None:

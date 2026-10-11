@@ -1,0 +1,1621 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>INTERVIA - Tổng quan hệ thống backend</title>
+  <style>
+    :root {
+      --navy: #13264f;
+      --blue: #2450a6;
+      --sky: #dce8ff;
+      --paper: #f7f9fd;
+      --ink: #142345;
+      --muted: #5d6f94;
+      --line: #d7e0f0;
+      --orange: #f2a43a;
+      --green: #147a61;
+      --red: #a43d47;
+      --serif: "Segoe UI", Arial, sans-serif;
+      --sans: Inter, "Segoe UI", Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: #071329; color: var(--ink); font-family: var(--sans); }
+    body { overflow: hidden; }
+
+    .deck {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+
+    .slide {
+      display: none;
+      position: relative;
+      width: 1280px;
+      height: 720px;
+      overflow: hidden;
+      background: var(--paper);
+      transform-origin: center center;
+      box-shadow: 0 28px 80px rgb(0 0 0 / 36%);
+    }
+
+    .slide.active { display: block; }
+    .slide.dark { background: var(--navy); color: white; }
+
+    .content {
+      position: absolute;
+      inset: 0;
+      padding: 66px 88px 58px;
+    }
+
+    .eyebrow {
+      margin: 0 0 22px;
+      color: var(--blue);
+      font-size: 17px;
+      font-weight: 800;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+
+    .dark .eyebrow { color: var(--orange); }
+
+    h1, h2 {
+      margin: 0;
+      font-family: var(--serif);
+      letter-spacing: normal;
+      font-weight: 800;
+      line-height: 1.04;
+    }
+
+    h1 { max-width: 980px; font-size: 68px; }
+    h2 { max-width: 1120px; font-size: 43px; color: var(--navy); }
+    .dark h1, .dark h2 { color: white; }
+
+    .lead {
+      max-width: 970px;
+      margin: 24px 0 0;
+      color: var(--muted);
+      font-size: 25px;
+      line-height: 1.42;
+    }
+
+    .dark .lead { color: #c7d2ea; }
+
+    .footer {
+      position: absolute;
+      left: 88px;
+      right: 88px;
+      bottom: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: #7484a5;
+      font-size: 13px;
+    }
+
+    .dark .footer { color: #9fb0d2; }
+
+    .timeline {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 22px;
+      margin-top: 72px;
+      border-top: 3px solid var(--line);
+    }
+
+    .milestone { position: relative; padding-top: 27px; }
+    .milestone::before {
+      content: "";
+      position: absolute;
+      top: -10px;
+      left: 0;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--blue);
+      border: 4px solid var(--paper);
+      box-shadow: 0 0 0 2px var(--blue);
+    }
+    .milestone strong { display: block; margin-bottom: 9px; color: var(--navy); font-size: 22px; }
+    .milestone span { color: var(--muted); font-size: 17px; line-height: 1.45; }
+
+    .system-map {
+      display: grid;
+      grid-template-columns: 210px 1fr 235px;
+      gap: 24px;
+      align-items: center;
+      margin-top: 60px;
+    }
+
+    .layer {
+      border-left: 5px solid var(--blue);
+      padding: 15px 0 15px 22px;
+    }
+    .layer h3 { margin: 0 0 9px; color: var(--navy); font-size: 22px; }
+    .layer p { margin: 0; color: var(--muted); font-size: 17px; line-height: 1.45; }
+
+    .core {
+      padding: 34px 42px;
+      background: var(--navy);
+      color: white;
+      border-radius: 26px;
+    }
+    .core h3 { margin: 0 0 14px; font: 700 31px/1.1 var(--serif); }
+    .core p { margin: 0; color: #cbd6ef; font-size: 18px; line-height: 1.5; }
+
+    .guardrail {
+      margin-top: 38px;
+      padding: 16px 21px;
+      border: 1px solid #bad0f7;
+      border-left: 6px solid var(--blue);
+      color: #284273;
+      font-size: 17px;
+      line-height: 1.45;
+      background: #edf3ff;
+    }
+
+    .process {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 44px;
+      margin-top: 68px;
+      counter-reset: step;
+    }
+    .process.five { grid-template-columns: repeat(5, 1fr); gap: 30px; }
+
+    .step { position: relative; min-height: 205px; padding-top: 62px; }
+    .step::before {
+      counter-increment: step;
+      content: counter(step, decimal-leading-zero);
+      position: absolute;
+      top: 0;
+      left: 0;
+      color: var(--blue);
+      font: 700 31px/1 var(--serif);
+    }
+    .step:not(:last-child)::after {
+      content: "";
+      position: absolute;
+      top: 18px;
+      right: -29px;
+      width: 31px;
+      height: 2px;
+      background: var(--line);
+    }
+    .step h3 { margin: 0 0 12px; color: var(--navy); font-size: 22px; line-height: 1.25; }
+    .step p { margin: 0; color: var(--muted); font-size: 17px; line-height: 1.45; }
+
+    .evidence-band {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 52px;
+      margin-top: 52px;
+    }
+
+    .plain-block { border-top: 4px solid var(--blue); padding-top: 20px; }
+    .plain-block.green { border-top-color: var(--green); }
+    .plain-block h3 { margin: 0 0 12px; color: var(--navy); font-size: 25px; }
+    .plain-block ul { margin: 0; padding-left: 20px; color: var(--muted); font-size: 18px; line-height: 1.55; }
+    .plain-block li + li { margin-top: 7px; }
+
+    .formula {
+      margin: 40px 0 0;
+      padding: 22px 28px;
+      color: white;
+      background: var(--navy);
+      font-size: 24px;
+      line-height: 1.35;
+      letter-spacing: .01em;
+    }
+
+    .state-line {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+      margin-top: 42px;
+    }
+    .state-line span {
+      padding: 15px 6px;
+      border: 1px solid var(--line);
+      color: var(--navy);
+      text-align: center;
+      font-size: 14px;
+      font-weight: 800;
+      letter-spacing: .055em;
+    }
+    .state-line span:last-child { color: white; background: var(--navy); border-color: var(--navy); }
+
+    .state-cards {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 12px;
+      margin-top: 26px;
+    }
+    .state-card {
+      padding: 13px 11px;
+      border: 1px solid var(--line);
+      background: white;
+      border-top: 4px solid var(--blue);
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .state-card:last-child {
+      border-top-color: var(--orange);
+    }
+    .state-card .code {
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .06em;
+      color: var(--blue);
+      text-transform: uppercase;
+    }
+    .state-card:last-child .code {
+      color: var(--orange);
+    }
+    .state-card strong {
+      font-size: 15px;
+      color: var(--navy);
+      line-height: 1.2;
+    }
+    .state-card p {
+      margin: 0;
+      font-size: 12px;
+      line-height: 1.38;
+      color: var(--muted);
+    }
+    .runtime-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 22px;
+      margin-top: 22px;
+    }
+    .runtime-item {
+      border-top: 3px solid var(--blue);
+      padding-top: 12px;
+    }
+    .runtime-item:nth-child(2) { border-top-color: var(--green); }
+    .runtime-item:nth-child(3) { border-top-color: var(--orange); }
+    .runtime-item h3 {
+      margin: 0 0 8px;
+      color: var(--navy);
+      font-size: 18px;
+      line-height: 1.25;
+    }
+    .runtime-item ul {
+      margin: 0;
+      padding-left: 17px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.42;
+    }
+    .runtime-item li + li { margin-top: 5px; }
+
+    .decision-split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 70px;
+      margin-top: 48px;
+    }
+    .decision-split h3 { margin: 0 0 20px; font: 700 29px/1.15 var(--serif); }
+    .decision-split ul { margin: 0; padding: 0; list-style: none; }
+    .decision-split li {
+      position: relative;
+      margin-bottom: 15px;
+      padding-left: 25px;
+      font-size: 18px;
+      line-height: 1.4;
+    }
+    .decision-split li::before { content: ""; position: absolute; left: 0; top: 10px; width: 9px; height: 9px; border-radius: 50%; background: var(--orange); }
+    .decision-split .rules li::before { background: #7eb7ff; }
+    .decision-split .ai { padding-right: 36px; border-right: 1px solid #5d7098; }
+    .decision-split .note { margin-top: 18px; color: #aebedf; font-size: 16px; line-height: 1.45; }
+
+    .voice-flow {
+      display: grid;
+      grid-template-columns: 1fr 44px 1fr 44px 1.15fr 44px 1fr;
+      align-items: center;
+      margin-top: 55px;
+    }
+    .voice-node {
+      min-height: 128px;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      border: 1px solid var(--line);
+      text-align: center;
+      color: var(--navy);
+      font-size: 20px;
+      font-weight: 750;
+      line-height: 1.3;
+      background: white;
+    }
+    .voice-node.engine { color: white; background: var(--navy); border-color: var(--navy); }
+    .connector { height: 2px; background: var(--blue); }
+
+    .report-flow {
+      display: grid;
+      grid-template-columns: 1.05fr .95fr;
+      gap: 74px;
+      margin-top: 48px;
+    }
+    .score-stack { display: grid; gap: 17px; }
+    .score-row { display: grid; grid-template-columns: 86px 1fr; gap: 18px; align-items: start; }
+    .score-row strong { color: var(--blue); font: 700 30px/1 var(--serif); }
+    .score-row span { color: var(--muted); font-size: 18px; line-height: 1.42; }
+
+    .report-output { border-left: 5px solid var(--green); padding-left: 28px; }
+    .report-output h3 { margin: 0 0 14px; color: var(--navy); font-size: 27px; }
+    .report-output p { margin: 0 0 14px; color: var(--muted); font-size: 18px; line-height: 1.46; }
+
+    .quality-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 38px;
+      margin-top: 58px;
+    }
+    .quality-item { padding-top: 20px; border-top: 4px solid var(--blue); }
+    .quality-item:nth-child(2) { border-top-color: var(--orange); }
+    .quality-item:nth-child(3) { border-top-color: var(--green); }
+    .quality-item h3 { margin: 0 0 12px; color: var(--navy); font-size: 24px; }
+    .quality-item p { margin: 0; color: var(--muted); font-size: 18px; line-height: 1.5; }
+
+    .appendix-title { font-size: 40px; max-width: 1140px; }
+    .schema-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 28px;
+      margin-top: 36px;
+    }
+    .schema-grid.two { grid-template-columns: 1fr 1fr; gap: 42px; }
+    .schema-panel {
+      min-height: 360px;
+      padding-top: 16px;
+      border-top: 4px solid var(--blue);
+    }
+    .schema-panel:nth-child(2) { border-top-color: var(--green); }
+    .schema-panel:nth-child(3) { border-top-color: var(--orange); }
+    .schema-grid.two .schema-panel { min-height: 0; }
+    .schema-panel h3 { margin: 0 0 14px; color: var(--navy); font-size: 22px; line-height: 1.22; }
+    .schema-panel p { margin: 0 0 12px; color: var(--muted); font-size: 16px; line-height: 1.42; }
+    .field-list { margin: 0; padding: 0; list-style: none; }
+    .field-list li {
+      display: grid;
+      grid-template-columns: minmax(118px, .9fr) 1.35fr;
+      gap: 10px;
+      padding: 7px 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.3;
+    }
+    .field-list code { color: var(--navy); font: 700 14px/1.3 Consolas, monospace; overflow-wrap: anywhere; }
+    .schema-grid.two .field-list li { grid-template-columns: minmax(170px, .85fr) 1.4fr; }
+    .schema-note {
+      margin-top: 24px;
+      padding: 13px 18px;
+      border-left: 6px solid var(--blue);
+      background: #edf3ff;
+      color: #284273;
+      font-size: 16px;
+      line-height: 1.4;
+    }
+    .contract-flow {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+      margin-top: 32px;
+    }
+    .contract-step {
+      position: relative;
+      min-height: 105px;
+      padding: 16px 14px;
+      border: 1px solid var(--line);
+      background: white;
+    }
+    .contract-step strong { display: block; margin-bottom: 8px; color: var(--navy); font-size: 17px; }
+    .contract-step span { color: var(--muted); font-size: 14px; line-height: 1.35; }
+    .contract-step:not(:last-child)::after {
+      content: "";
+      position: absolute;
+      right: -13px;
+      top: 50%;
+      width: 13px;
+      height: 2px;
+      background: var(--blue);
+    }
+    .voice-slide .appendix-title { font-size: 38px; }
+    .voice-slide .contract-flow { margin-top: 24px; }
+    .voice-slide .contract-step { min-height: 88px; padding: 13px 13px; }
+    .voice-slide .contract-step strong { margin-bottom: 5px; }
+    .voice-slide .contract-step span { font-size: 13px; line-height: 1.28; }
+    .voice-slide .schema-grid { margin-top: 22px; }
+    .voice-slide .schema-panel { padding-top: 13px; }
+    .voice-slide .schema-panel h3 { margin-bottom: 8px; }
+    .voice-slide .field-list li { padding: 5px 0; }
+    .voice-slide .schema-note { margin-top: 10px; padding: 9px 15px; font-size: 14px; }
+
+    .benchmark-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 22px; margin-top: 34px; }
+    .benchmark-item { min-height: 286px; padding-top: 15px; border-top: 4px solid var(--blue); }
+    .benchmark-item:nth-child(2) { border-top-color: var(--green); }
+    .benchmark-item:nth-child(3) { border-top-color: var(--orange); }
+    .benchmark-item:nth-child(4) { border-top-color: #8057b6; }
+    .benchmark-item h3 { margin: 0 0 11px; color: var(--navy); font-size: 21px; line-height: 1.2; }
+    .benchmark-item p { margin: 0 0 8px; color: var(--muted); font-size: 15px; line-height: 1.36; }
+    .benchmark-item strong.metric { display: block; margin: 8px 0 5px; color: var(--blue); font-size: 26px; line-height: 1; }
+
+    .architecture-flow { display: grid; grid-template-columns: 1.05fr 1fr 1.22fr 1fr 1.08fr; gap: 12px; margin-top: 32px; }
+    .architecture-node { position: relative; min-height: 126px; padding: 15px 14px; border: 1px solid var(--line); border-top: 4px solid var(--blue); background: white; }
+    .architecture-node:nth-child(2) { border-top-color: var(--green); }
+    .architecture-node:nth-child(3) { border-top-color: var(--navy); background: #edf3ff; }
+    .architecture-node:nth-child(4) { border-top-color: var(--orange); }
+    .architecture-node:nth-child(5) { border-top-color: #8057b6; }
+    .architecture-node:not(:last-child)::after { content: ""; position: absolute; right: -13px; top: 50%; width: 13px; height: 2px; background: var(--blue); }
+    .architecture-node strong { display: block; margin-bottom: 7px; color: var(--navy); font-size: 17px; }
+    .architecture-node span { color: var(--muted); font-size: 13px; line-height: 1.35; }
+    .architecture-support { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin-top: 23px; }
+    .architecture-support div { padding-top: 13px; border-top: 3px solid var(--line); }
+    .architecture-support strong { display: block; margin-bottom: 6px; color: var(--navy); font-size: 17px; }
+    .architecture-support span { color: var(--muted); font-size: 14px; line-height: 1.36; }
+    .contract-flow.four { grid-template-columns: repeat(4, 1fr); }
+    .compact-two .schema-panel { min-height: 0; }
+    .compact-two .field-list li { padding: 6px 0; }
+
+    .tech-map {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 26px;
+      margin-top: 48px;
+    }
+    .tech-lane {
+      min-height: 315px;
+      padding-top: 18px;
+      border-top: 4px solid var(--blue);
+    }
+    .tech-lane:nth-child(2) { border-top-color: var(--green); }
+    .tech-lane:nth-child(3) { border-top-color: var(--orange); }
+    .tech-lane:nth-child(4) { border-top-color: #8057b6; }
+    .tech-lane .tag {
+      display: inline-block;
+      margin-bottom: 16px;
+      color: var(--blue);
+      font-size: 14px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .tech-lane h3 { margin: 0 0 14px; color: var(--navy); font-size: 23px; line-height: 1.2; }
+    .tech-lane ul { margin: 0; padding-left: 19px; color: var(--muted); font-size: 16px; line-height: 1.45; }
+    .tech-lane li + li { margin-top: 9px; }
+    .tech-summary {
+      margin-top: 26px;
+      padding: 15px 20px;
+      border-left: 6px solid var(--blue);
+      background: #edf3ff;
+      color: #284273;
+      font-size: 17px;
+      line-height: 1.4;
+    }
+
+    .tech-map.compact {
+      margin-top: 36px;
+      gap: 22px;
+    }
+    .tech-map.compact .tech-lane {
+      min-height: 270px;
+      padding-top: 14px;
+    }
+    .tech-map.compact .tech-lane h3 {
+      margin: 0 0 10px;
+      color: var(--navy);
+      font-size: 21px;
+      line-height: 1.2;
+    }
+    .tech-map.compact .tech-lane ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.42;
+    }
+    .tech-map.compact .tech-lane li + li {
+      margin-top: 7px;
+    }
+    .tech-map.compact .tech-lane .tag {
+      margin-bottom: 11px;
+      font-size: 13px;
+    }
+    .tech-map.compact + .guardrail {
+      margin-top: 22px;
+      padding: 12px 18px;
+      font-size: 16px;
+      line-height: 1.4;
+    }
+
+    .controls {
+      position: fixed;
+      right: 22px;
+      bottom: 18px;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #d5def1;
+      font: 600 13px/1 var(--sans);
+    }
+    .controls button {
+      width: 38px;
+      height: 38px;
+      border: 1px solid #476087;
+      border-radius: 50%;
+      color: white;
+      background: #13264f;
+      cursor: pointer;
+      font-size: 18px;
+    }
+
+    .progress {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 9;
+      height: 4px;
+      background: rgb(255 255 255 / 12%);
+    }
+    .progress span { display: block; height: 100%; background: var(--orange); transition: width .2s ease; }
+
+    @media (max-width: 900px) {
+      .deck { padding: 0; }
+      .controls { right: 10px; bottom: 10px; }
+    }
+
+    /* Final layout refinements after 1280×720 visual QA. */
+    .slide:nth-of-type(3) .system-map { margin-top: 42px; }
+    .slide:nth-of-type(3) .guardrail { margin-top: 22px; padding: 12px 18px; }
+    .slide:nth-of-type(5) .process { margin-top: 44px; }
+    .slide:nth-of-type(5) .step { min-height: 168px; }
+    .slide:nth-of-type(5) .evidence-band { margin-top: 24px; }
+    .slide:nth-of-type(5) .plain-block ul { font-size: 16px; line-height: 1.4; }
+
+    @media print {
+      @page { size: 13.333in 7.5in; margin: 0; }
+      body { overflow: visible; background: white; }
+      .deck { position: static; display: block; padding: 0; }
+      .slide { display: block !important; page-break-after: always; transform: none !important; box-shadow: none; }
+      .controls, .progress { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck" aria-live="polite">
+    <!-- Slide 01: Mở đầu -->
+    <section class="slide dark active" data-title="Mở đầu">
+      <div class="content">
+        <p class="eyebrow">INTERVIA · TỔNG QUAN HỆ THỐNG</p>
+        <h1>Hệ thống phỏng vấn tuyển dụng thích ứng có bằng chứng</h1>
+        <p class="lead">Luồng xử lý từ hồ sơ ứng viên (Curriculum Vitae – CV), mô tả công việc (Job Description – JD), đối sánh năng lực đến phỏng vấn và chấm điểm.</p>
+        <div class="footer"><span>Bản trình bày tóm tắt cho Hội đồng · 10/10/2026</span><span>01</span></div>
+      </div>
+    </section>
+
+    <!-- Slide 02: Sơ đồ kiến trúc tổng thể -->
+    <section class="slide" data-title="Kiến trúc tổng thể">
+      <div class="content">
+        <p class="eyebrow">KIẾN TRÚC TỔNG THỂ</p>
+        <h2>Luồng thành phần từ giao diện đến lõi nghiệp vụ và dữ liệu</h2>
+        <div class="architecture-flow">
+          <div class="architecture-node"><strong>Web Frontend</strong><span>Tải CV/JD, theo dõi tác vụ, phỏng vấn chat hoặc voice và xem báo cáo.</span></div>
+          <div class="architecture-node"><strong>FastAPI + LiveKit</strong><span>FastAPI nhận HTTP/chat. LiveKit dùng WebRTC để vận chuyển âm thanh thời gian thực.</span></div>
+          <div class="architecture-node"><strong>Interview Core + LangGraph</strong><span>Core giữ máy trạng thái và luật phỏng vấn. LangGraph điều phối workflow và checkpoint.</span></div>
+          <div class="architecture-node"><strong>Celery + RabbitMQ</strong><span>RabbitMQ giữ hàng đợi. Celery worker xử lý bóc tách CV/JD, matching và tác vụ dài.</span></div>
+          <div class="architecture-node"><strong>PostgreSQL + pgvector</strong><span>PostgreSQL lưu trạng thái nghiệp vụ. pgvector hỗ trợ truy hồi vector embedding.</span></div>
+        </div>
+        <div class="architecture-support">
+          <div><strong>Luồng tài liệu</strong><span>PDF text layer → Optical Character Recognition (OCR) → schema CV/JD → evidence.</span></div>
+          <div><strong>Luồng đối sánh</strong><span>Okapi BM25 (Best Matching 25), vector embedding, Cosine Similarity và cổng must-have.</span></div>
+          <div><strong>Luồng voice và LLM</strong><span>Voice Activity Detection (VAD) → Speech-to-Text (STT) → Core → Text-to-Speech (TTS). LLM chỉ tạo đầu ra có kiểm soát.</span></div>
+        </div>
+        <div class="footer"><span>PostgreSQL giữ trạng thái chính; queue và checkpoint chỉ hỗ trợ thực thi và phục hồi</span><span>02</span></div>
+      </div>
+    </section>
+
+    <!-- Slide 03: Khâu 1 - Bóc tách CV & JD -->
+    <section class="slide" data-title="Bóc tách tài liệu">
+      <div class="content">
+        <p class="eyebrow">KHÂU 1 · XỬ LÝ TÀI LIỆU</p>
+        <h2>Bóc tách CV và JD: Kết hợp lớp văn bản, OCR và kiểm chứng nguồn</h2>
+        <div class="tech-map compact">
+          <div class="tech-lane">
+            <span class="tag">Lớp 1: Đọc tệp</span>
+            <h3>Lớp văn bản và OCR</h3>
+            <ul>
+              <li>Ưu tiên đọc lớp văn bản trực tiếp từ tệp Portable Document Format (PDF)</li>
+              <li>OCR xử lý trang ảnh, trang quét hoặc trang không có lớp văn bản</li>
+              <li>Giữ nguyên số trang và tọa độ để đối chiếu bằng chứng</li>
+            </ul>
+          </div>
+          <div class="tech-lane">
+            <span class="tag">Lớp 2: Quy tắc</span>
+            <h3>Regex và taxonomy</h3>
+            <ul>
+              <li>Regex bóc tách số năm kinh nghiệm, học vị, email, SĐT</li>
+              <li>Đối chiếu kỹ năng với taxonomy và từ điển tên tương đương (alias)</li>
+              <li>Tạo dữ liệu nền bằng quy tắc trước khi gọi LLM</li>
+            </ul>
+          </div>
+          <div class="tech-lane">
+            <span class="tag">Lớp 3: Mô hình</span>
+            <h3>Trích xuất bằng LLM</h3>
+            <ul>
+              <li>LLM điền thông tin dự án theo lược đồ JSON cố định</li>
+              <li>Chỉ trích xuất dữ kiện có thật trong văn bản</li>
+              <li>Kết quả không có dữ kiện nguồn sẽ không được lưu</li>
+            </ul>
+          </div>
+          <div class="tech-lane">
+            <span class="tag">Lớp 4: Kiểm soát</span>
+            <h3>Cổng kiểm chứng nguồn</h3>
+            <ul>
+              <li>Mọi kỹ năng trích xuất bắt buộc có câu trích nguyên văn</li>
+              <li>Đối soát ngược lại văn bản gốc trước khi lưu vào CSDL</li>
+              <li>Dữ kiện không có câu trích chứng minh sẽ bị loại bỏ ngay</li>
+            </ul>
+          </div>
+        </div>
+        <div class="guardrail"><strong>Bảo toàn tính xác thực:</strong> Dữ liệu từ CV chỉ được chấp nhận khi đối chiếu được câu trích nguyên văn từ tài liệu gốc.</div>
+        <div class="footer"><span>Dữ liệu không có câu trích đối chiếu sẽ không đi qua cổng kiểm chứng</span><span>03</span></div>
+      </div>
+    </section>
+
+    <!-- Slide 04: Khâu 2 - Matching đối sánh ứng viên -->
+    <section class="slide" data-title="Thuật toán Matching">
+      <div class="content">
+        <p class="eyebrow">KHÂU 2 · THUẬT TOÁN ĐỐI SÁNH</p>
+        <h2>Đối sánh ứng viên: BM25, độ tương đồng cosin và cổng yêu cầu bắt buộc</h2>
+        <div class="tech-map compact">
+          <div class="tech-lane">
+            <span class="tag">Tầng 1</span>
+            <h3>Truy hồi từ vựng bằng BM25</h3>
+            <ul>
+              <li>BM25 xếp hạng đoạn theo tần suất, độ hiếm của từ và độ dài văn bản</li>
+              <li>Đối chiếu chính xác mã kỹ năng, chứng chỉ và tên tương đương là bước riêng</li>
+              <li>Biểu thức chính quy chuẩn hóa số năm kinh nghiệm và khoảng thời gian</li>
+            </ul>
+          </div>
+          <div class="tech-lane">
+            <span class="tag">Tầng 2</span>
+            <h3>Cosine Similarity</h3>
+            <ul>
+              <li>Vector embedding chuyển mô tả dự án và yêu cầu JD thành vector</li>
+              <li>Cosine Similarity đo góc giữa hai vector</li>
+              <li>Tín hiệu này hỗ trợ tìm nội dung dùng cách diễn đạt khác nhau</li>
+            </ul>
+          </div>
+          <div class="tech-lane">
+            <span class="tag">Tầng 3</span>
+            <h3>Điểm số có trọng số</h3>
+            <ul>
+              <li>Công thức: Độ phủ yêu cầu + Kỹ năng + Kinh nghiệm + Ngôn ngữ</li>
+              <li>Trọng số tự động điều chỉnh theo độ tin cậy của bằng chứng</li>
+              <li>Xếp loại ứng viên: Phù hợp cao, Cần phỏng vấn thêm, Chưa đạt</li>
+            </ul>
+          </div>
+          <div class="tech-lane">
+            <span class="tag">Tầng 4</span>
+            <h3>Cổng bắt buộc</h3>
+            <ul>
+              <li>Yêu cầu bắt buộc (must-have) đóng vai trò cổng kiểm tra độc lập</li>
+              <li>Yêu cầu bắt buộc chỉ chặn kết quả khi bằng chứng đủ chắc chắn</li>
+              <li>Phân biệt rõ “Chưa đủ bằng chứng” để phỏng vấn làm rõ thêm</li>
+            </ul>
+          </div>
+        </div>
+        <div class="guardrail"><strong>Xử lý dữ liệu thiếu:</strong> Kỹ năng chưa thấy trong CV được xếp loại "Chưa đủ bằng chứng" để phỏng vấn làm rõ, không tự chuyển thành "Không đạt".</div>
+        <div class="footer"><span>BM25 xếp hạng theo từ vựng; véc-tơ biểu diễn và độ tương đồng cosin xử lý ngữ nghĩa</span><span>04</span></div>
+      </div>
+    </section>
+
+    <!-- Slide 05: Khâu 3 - Lập kế hoạch phỏng vấn -->
+    <section class="slide" data-title="Thuật toán Lập kế hoạch">
+      <div class="content">
+        <p class="eyebrow">KHÂU 3 · THUẬT TOÁN LẬP KẾ HOẠCH</p>
+        <h2>Lập kế hoạch thời gian và chọn tập câu hỏi theo ràng buộc</h2>
+        <div class="tech-map compact">
+          <div class="tech-lane">
+            <span class="tag">Thách thức</span>
+            <h3>Ràng buộc thời gian</h3>
+            <ul>
+              <li>Mỗi kỹ năng cần thời lượng tối thiểu để ứng viên kịp trình bày</li>
+              <li>Tổng thời lượng không được vượt quá quỹ thời gian cho phép</li>
+              <li>Thuật toán tham lam (Greedy) dễ gây thiếu thời gian đánh giá</li>
+            </ul>
+          </div>
+          <div class="tech-lane">
+            <span class="tag">Thuật toán</span>
+            <h3>Phân bổ và đóng gói</h3>
+            <ul>
+              <li>P1 giữ mức sàn rồi phân bổ thời gian dư bằng Hamilton–Hare</li>
+              <li>P2 tạo các tập câu hỏi khả thi theo dạng Knapsack (bài toán ba lô)</li>
+              <li>Xếp hạng tập theo độ phủ và khóa kết quả trong quỹ thời gian</li>
+            </ul>
+          </div>
+          <div class="tech-lane">
+            <span class="tag">Chất lượng</span>
+            <h3>Nguồn câu hỏi</h3>
+            <ul>
+              <li>Ưu tiên câu hỏi đã được chuyên gia phê duyệt</li>
+              <li>Khi thiếu, câu hỏi được tạo tự động phải vượt qua cổng kiểm tra</li>
+              <li>Bản chụp ghi rõ nguồn và trạng thái chưa được chuyên gia duyệt</li>
+            </ul>
+          </div>
+          <div class="tech-lane">
+            <span class="tag">Kiểm soát</span>
+            <h3>Bản chụp kế hoạch câu hỏi</h3>
+            <ul>
+              <li>Lưu bản chụp danh sách câu hỏi cố định trước phiên</li>
+              <li>Toàn bộ phiên phỏng vấn có thể kiểm tra lại nguyên vẹn</li>
+              <li>Ngăn chặn tình trạng thay đổi câu hỏi tùy tiện trong lúc phỏng vấn</li>
+            </ul>
+          </div>
+        </div>
+        <div class="guardrail"><strong>Kiểm soát thời lượng:</strong> Thuật toán tìm tập câu hỏi thỏa ràng buộc; bộ điều phối tiếp tục giám sát hạn thời gian trong phiên.</div>
+        <div class="footer"><span>Tập câu hỏi được chọn theo ràng buộc thời lượng và độ phủ kỹ năng</span><span>05</span></div>
+      </div>
+    </section>
+
+    <!-- Slide 06: Khâu 4 - Điều phối phỏng vấn FSM 6 pha -->
+    <section class="slide" data-title="Điều phối phỏng vấn">
+      <div class="content">
+        <p class="eyebrow">KHÂU 4 · ĐIỀU PHỐI PHỎNG VẤN</p>
+        <h2>Finite-State Machine (FSM): Điều phối phiên phỏng vấn qua 6 pha</h2>
+        <div class="state-cards">
+          <div class="state-card">
+            <span class="code">01 · WARM_UP</span>
+            <strong>Khởi động</strong>
+            <p>Chào hỏi, tạo tâm lý thoải mái, ghi nhận tác phong.</p>
+          </div>
+          <div class="state-card">
+            <span class="code">02 · VALIDATE</span>
+            <strong>Xác thực CV</strong>
+            <p>Thẩm định tính trung thực dự án và kinh nghiệm.</p>
+          </div>
+          <div class="state-card">
+            <span class="code">03 · DEEP_DIVE</span>
+            <strong>Đào sâu</strong>
+            <p>Kiểm tra chuyên môn kỹ thuật cốt lõi theo JD.</p>
+          </div>
+          <div class="state-card">
+            <span class="code">04 · CHALLENGE</span>
+            <strong>Thử thách</strong>
+            <p>Tình huống hóc búa, trade-off và xử lý sự cố.</p>
+          </div>
+          <div class="state-card">
+            <span class="code">05 · BEHAVIORAL</span>
+            <strong>Hành vi</strong>
+            <p>Câu hỏi hành vi theo Situation, Task, Action, Result (STAR).</p>
+          </div>
+          <div class="state-card">
+            <span class="code">06 · CLOSING</span>
+            <strong>Kết thúc</strong>
+            <p>Questions and Answers (Q&amp;A): ứng viên đặt câu hỏi và kết thúc phiên.</p>
+          </div>
+        </div>
+        <div class="runtime-grid">
+          <div class="runtime-item">
+            <h3>1. Finite-State Machine (FSM)</h3>
+            <ul>
+              <li>Máy trạng thái chỉ chuyển theo các nhánh đã khai báo</li>
+              <li>Giữ vững lộ trình phỏng vấn chuẩn theo thiết kế ban đầu</li>
+            </ul>
+          </div>
+          <div class="runtime-item">
+            <h3>2. Hỏi sâu có kiểm soát (Probing)</h3>
+            <ul>
+              <li>LLM phân tích câu trả lời để đề xuất câu hỏi phụ</li>
+              <li>Quy tắc giới hạn cứng: Tối đa 1 câu hỏi đào sâu cho mỗi câu chính</li>
+            </ul>
+          </div>
+          <div class="runtime-item">
+            <h3>3. Bộ điều tiết nhịp độ (Pacing)</h3>
+            <ul>
+              <li>Giám sát thời gian; nhắc nhở khi câu trả lời sắp hết giờ</li>
+              <li>Tự động ngắt khi chạm ngưỡng tối đa, chống trôi buổi phỏng vấn</li>
+            </ul>
+          </div>
+        </div>
+        <div class="guardrail"><strong>Nguyên tắc cốt lõi:</strong> LLM đề xuất nội dung câu hỏi phụ. FSM và bộ điều tiết nhịp độ quyết định chuyển pha hoặc kết thúc phiên.</div>
+        <div class="footer"><span>FSM điều khiển tuần tự; LLM hoạt động trong giới hạn của bộ luật nghiệp vụ (Rule Engine)</span><span>06</span></div>
+      </div>
+    </section>
+
+    <!-- Slide 07: Khâu 5 - Kênh âm thanh Realtime -->
+    <section class="slide" data-title="Hạ tầng Voice">
+      <div class="content">
+        <p class="eyebrow">KHÂU 5 · ÂM THANH THỜI GIAN THỰC</p>
+        <h2>Hội thoại giọng nói qua LiveKit và quy tắc xử lý ngắt lời</h2>
+        <div class="tech-map compact">
+          <div class="tech-lane">
+            <span class="tag">Kết nối</span>
+            <h3>LiveKit và WebRTC</h3>
+            <ul>
+              <li>Truyền nhận âm thanh 2 chiều thời gian thực bằng WebRTC</li>
+              <li>Acoustic Echo Cancellation (AEC) giảm tiếng vọng trong luồng âm thanh</li>
+              <li>Truyền luồng âm thanh liên tục giữa ứng viên và máy chủ</li>
+            </ul>
+          </div>
+          <div class="tech-lane">
+            <span class="tag">Nhận diện</span>
+            <h3>Silero VAD và STT</h3>
+            <ul>
+              <li>Silero VAD ước lượng thời điểm ứng viên bắt đầu và dừng nói</li>
+              <li>Chuyển giọng nói tiếng Việt thành văn bản tức thời kèm độ tin cậy</li>
+              <li>Gắn cảnh báo chất lượng nếu đường truyền âm thanh suy giảm</li>
+            </ul>
+          </div>
+          <div class="tech-lane">
+            <span class="tag">Phản xạ</span>
+            <h3>Quy tắc xử lý ngắt lời</h3>
+            <ul>
+              <li>Bỏ qua từ đệm ngắn như “dạ”, “ừm” khi hệ thống đang phát câu hỏi</li>
+              <li>Tự động phát lại câu hỏi nếu ứng viên yêu cầu (“alo”, “nói lại”)</li>
+              <li>Dừng TTS khi VAD và điều kiện ngắt lời xác nhận ứng viên đang nói</li>
+            </ul>
+          </div>
+          <div class="tech-lane">
+            <span class="tag">Phát giọng</span>
+            <h3>Tổng hợp giọng nói (TTS)</h3>
+            <ul>
+              <li>Luồng tuần tự: STT tạo văn bản, lõi xử lý, TTS phát phản hồi</li>
+              <li>Ghi nhận các mốc VAD, STT, quyết định và TTS để đo độ trễ</li>
+              <li>TTS nhận nội dung từ Interview Core thay vì tự tạo câu hỏi</li>
+            </ul>
+          </div>
+        </div>
+        <div class="guardrail"><strong>An toàn âm thanh:</strong> Kênh Voice chỉ là lớp truyền nhận và chuyển hóa âm thanh. Toàn bộ logic phỏng vấn và câu hỏi đều do lõi hệ thống quyết định.</div>
+        <div class="footer"><span>LiveKit vận chuyển âm thanh; VAD, STT và Interview Core xử lý lượt hội thoại</span><span>07</span></div>
+      </div>
+    </section>
+
+    <!-- Slide 08: Khâu 6 - Rubric chấm điểm sau phỏng vấn -->
+    <section class="slide" data-title="Rubric Chấm điểm">
+      <div class="content">
+        <p class="eyebrow">KHÂU 6 · RUBRIC CHẤM ĐIỂM</p>
+        <h2>Đánh giá theo rubric: 4 mức điểm, STAR và công thức tổng hợp</h2>
+        <div class="tech-map compact">
+          <div class="tech-lane">
+            <span class="tag">Thang điểm 0 - 10</span>
+            <h3>Neo điểm chuẩn 4 mức</h3>
+            <ul>
+              <li><strong>9 - 10 (Xuất sắc)</strong>: Đúng trọng tâm, giải pháp phù hợp, có số liệu/ví dụ</li>
+              <li><strong>7 - 8.9 (Đạt)</strong>: Nắm vững kiến thức, rõ ràng, có kinh nghiệm</li>
+              <li><strong>5 - 6.9 (Cân nhắc)</strong>: Chung chung, thiếu ý cốt lõi, vai trò mờ nhạt</li>
+              <li><strong>0 - 4.9 (Không đạt)</strong>: Hiểu sai bản chất hoặc không trả lời được</li>
+            </ul>
+          </div>
+          <div class="tech-lane">
+            <span class="tag">Khung STAR</span>
+            <h3>Bóc tách có điều kiện</h3>
+            <ul>
+              <li>STAR gồm Situation, Task, Action, Result</li>
+              <li>Chỉ áp dụng cho câu hỏi kinh nghiệm dự án và tình huống</li>
+              <li>Câu hỏi lý thuyết kỹ thuật không ép STAR và không bị trừ điểm</li>
+            </ul>
+          </div>
+          <div class="tech-lane">
+            <span class="tag">Nguồn chấm điểm</span>
+            <h3>Ngôn ngữ & Giọng nói</h3>
+            <ul>
+              <li>Không trừ điểm khi chêm từ tiếng Anh chuyên ngành (Deploy, Redis...)</li>
+              <li>Chỉ chấm nội dung có trong bản ghi STT; đoạn không rõ được gắn cờ dữ liệu</li>
+              <li>Xuất báo cáo kép: Tóm tắt cho Nhà tuyển dụng & Lời khuyên cho Ứng viên</li>
+            </ul>
+          </div>
+          <div class="tech-lane">
+            <span class="tag">Tính điểm</span>
+            <h3>Công thức tính điểm</h3>
+            <ul>
+              <li>Điểm tổng tính bằng <strong>trung bình cộng trực tiếp tất cả câu đã chấm</strong></li>
+              <li>Dùng cùng công thức với giao diện để người xem có thể kiểm tra lại</li>
+              <li>Bắt buộc trích dẫn nguyên văn câu nói từ transcript làm bằng chứng</li>
+            </ul>
+          </div>
+        </div>
+        <div class="guardrail"><strong>Khả năng kiểm tra lại:</strong> Điểm số đi kèm câu trích từ bản ghi. Báo cáo cung cấp một ví dụ câu trả lời đáp ứng rubric để ứng viên tham khảo.</div>
+        <div class="footer"><span>Điểm số có câu trích, công thức tổng hợp và dữ liệu để kiểm tra lại</span><span>08</span></div>
+      </div>
+    </section>
+
+    <!-- Slide 09: Vai trò LLM và thuật toán kiểm soát -->
+    <section class="slide dark" data-title="Vai trò LLM">
+      <div class="content">
+        <p class="eyebrow">KIỂM SOÁT HỆ THỐNG</p>
+        <h2>LLM đề xuất nội dung; thuật toán quyết định hành động</h2>
+        <div class="decision-split">
+          <div class="ai">
+            <h3>Large Language Model (LLM) đảm nhiệm</h3>
+            <ul>
+              <li>Bóc tách dữ liệu văn bản khó từ CV và JD thành cấu trúc chuẩn</li>
+              <li>Phân tích câu trả lời của ứng viên để đề xuất câu hỏi đào sâu</li>
+              <li>Chấm điểm từng câu theo tiêu chí barem và trích dẫn bằng chứng</li>
+              <li>Tạo lời khuyên định hướng phát triển nghề nghiệp cho ứng viên</li>
+            </ul>
+            <p class="note">LLM không quyết định thời lượng, không chuyển pha và không tính điểm tổng.</p>
+          </div>
+          <div class="rules">
+            <h3>Thuật toán & Quy tắc đảm nhiệm</h3>
+            <ul>
+              <li>Knapsack (bài toán ba lô): Chọn tập câu hỏi theo quỹ thời gian</li>
+              <li>Cosine Similarity: Đo góc giữa vector CV và vector JD</li>
+              <li>Máy trạng thái FSM: Điều khiển chuyển pha tuần tự, ngắt câu khi hết giờ</li>
+              <li>Công thức trung bình cộng: Chốt điểm tổng thể minh bạch và nhất quán</li>
+            </ul>
+            <p class="note">Cấu trúc này giới hạn ảnh hưởng của dữ kiện không có nguồn và giữ logic nghiệp vụ có thể kiểm tra lại.</p>
+          </div>
+        </div>
+        <div class="footer"><span>Nguyên tắc kiểm soát: LLM đề xuất; hệ thống xác minh và quyết định</span><span>09</span></div>
+      </div>
+    </section>
+
+    <!-- Slide 10: Tổng kết -->
+    <section class="slide" data-title="Tổng kết">
+      <div class="content">
+        <p class="eyebrow">TỔNG KẾT & ĐỊNH HƯỚNG</p>
+        <h2>Luồng đầu-cuối đã hình thành; chất lượng vận hành cần được đo tiếp</h2>
+        <div class="quality-grid">
+          <div class="quality-item">
+            <h3>Đã đo thử</h3>
+            <p>99 câu ghi âm từ 3 người nói. Word Error Rate (WER) là 20,69% và Character Error Rate (CER) là 18,15%.</p>
+          </div>
+          <div class="quality-item">
+            <h3>Giới hạn mẫu</h3>
+            <p>Kết quả mới là vòng thử nghiệm. Corpus chưa đạt 300 câu và số người nói chưa đủ để kết luận theo vùng giọng.</p>
+          </div>
+          <div class="quality-item">
+            <h3>Soak còn thiếu</h3>
+            <p>Bài soak hiện mới kiểm tra phân giải tên miền (DNS), bảo mật đường truyền (TLS) và worker. Cần chạy đủ 24–48 giờ trên đường âm thanh và STT đầu-cuối.</p>
+          </div>
+        </div>
+        <div class="guardrail"><strong>Kết luận:</strong> LLM xử lý ngôn ngữ; thuật toán, cổng kiểm chứng nguồn và máy trạng thái giữ quyền quyết định có thể kiểm tra lại.</div>
+        <div class="footer"><span>Báo cáo tóm tắt Đồ án Tốt nghiệp · INTERVIA Backend Core</span><span>10</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục CV schema">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG A · HỒ SƠ ỨNG VIÊN (CV) SAU TRÍCH XUẤT</p>
+        <h2 class="appendix-title">CanonicalResume 2.1: dữ liệu CV chuẩn hóa và liên kết bằng chứng</h2>
+        <div class="schema-grid">
+          <div class="schema-panel">
+            <h3>Định danh bản ghi</h3>
+            <ul class="field-list">
+              <li><code>schemaVersion</code><span>Phiên bản hợp đồng: 2.1</span></li>
+              <li><code>resumeId</code><span>Mã hồ sơ chuẩn hóa</span></li>
+              <li><code>documentId</code><span>Mã tài liệu nguồn</span></li>
+              <li><code>documentSha256</code><span>Dấu vân tay của đúng phiên bản tệp</span></li>
+              <li><code>documentLanguages</code><span>Ngôn ngữ nhận diện trong tài liệu</span></li>
+              <li><code>parsing</code><span>Phiên bản parser, trạng thái và cảnh báo</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>Các nhóm dữ liệu</h3>
+            <ul class="field-list">
+              <li><code>profile</code><span>Tiêu đề và phần tóm tắt</span></li>
+              <li><code>skills[]</code><span>Phát biểu kỹ năng gắn với hệ phân loại</span></li>
+              <li><code>employment[]</code><span>Chức danh, tổ chức, thời gian, trách nhiệm</span></li>
+              <li><code>education[]</code><span>Trường, bằng cấp, ngành học, điểm trung bình</span></li>
+              <li><code>projects[]</code><span>Dự án và kỹ năng liên quan</span></li>
+              <li><code>certifications[]</code><span>Chứng chỉ, đơn vị cấp và thời hạn</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>Liên kết và tách dữ liệu</h3>
+            <ul class="field-list">
+              <li><code>evidence[]</code><span>Các đoạn trích từ tài liệu</span></li>
+              <li><code>evidenceRefs</code><span>Tham chiếu từ phát biểu dữ liệu về đoạn trích</span></li>
+              <li><code>skillClaimIds</code><span>Liên kết việc làm, dự án với kỹ năng</span></li>
+              <li><code>rawText</code><span>Không lưu trong dữ liệu chuẩn hóa</span></li>
+              <li><code>ParsedResume</code><span>Gồm resume và identity tách riêng</span></li>
+              <li><code>identity</code><span>Vùng thông tin định danh cá nhân có kiểm soát</span></li>
+            </ul>
+          </div>
+        </div>
+        <div class="schema-note"><strong>Điểm cần trả lời:</strong> Thông tin định danh cá nhân (Personally Identifiable Information – PII) nằm ngoài dữ liệu dùng cho đối sánh; các mã tham chiếu phải tồn tại trong cùng hồ sơ.</div>
+        <div class="footer"><span>Phụ lục chỉ mở khi hội đồng hỏi về dữ liệu CV sau parse</span><span>11</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục JD schema">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG B · MÔ TẢ CÔNG VIỆC (JD) SAU TRÍCH XUẤT</p>
+        <h2 class="appendix-title">CanonicalJobDescription 1.0: yêu cầu tuyển dụng được tách thành cấu trúc</h2>
+        <div class="schema-grid">
+          <div class="schema-panel">
+            <h3>Thông tin công việc</h3>
+            <ul class="field-list">
+              <li><code>jobTitle</code><span>Tên vị trí</span></li>
+              <li><code>companyName</code><span>Tên doanh nghiệp nếu có trong nguồn</span></li>
+              <li><code>seniority</code><span>Cấp độ từ thực tập đến quản lý</span></li>
+              <li><code>employmentType</code><span>Toàn thời gian, bán thời gian, hợp đồng</span></li>
+              <li><code>workMode</code><span>Từ xa, kết hợp hoặc tại văn phòng</span></li>
+              <li><code>location</code><span>Địa điểm làm việc</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>JobRequirement</h3>
+            <ul class="field-list">
+              <li><code>requirementId</code><span>Mã yêu cầu nguyên tử</span></li>
+              <li><code>kind</code><span>skill, experience, education, language, other</span></li>
+              <li><code>priority</code><span>must-have hoặc preferred</span></li>
+              <li><code>concept</code><span>Khái niệm trong hệ phân loại</span></li>
+              <li><code>operator</code><span>required, gte, gt, lte, lt hoặc eq</span></li>
+              <li><code>evidenceRefs</code><span>Câu nguồn tạo ra yêu cầu</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>Ràng buộc dữ liệu</h3>
+            <ul class="field-list">
+              <li><code>atomicConcepts</code><span>Tách yêu cầu gồm nhiều khái niệm</span></li>
+              <li><code>groupOperator</code><span>all-of, any-of hoặc atomic</span></li>
+              <li><code>threshold</code><span>Ngưỡng điểm trung bình hoặc điều kiện định lượng</span></li>
+              <li><code>experienceMinYears</code><span>Số năm tối thiểu ở cấp JD</span></li>
+              <li><code>responsibilities[]</code><span>Trách nhiệm có nguồn trích</span></li>
+              <li><code>parsing</code><span>Mức bao phủ và cảnh báo khi trích xuất</span></li>
+            </ul>
+          </div>
+        </div>
+        <div class="schema-note"><strong>Kiểm tra schema:</strong> ID yêu cầu không được trùng; khoảng kinh nghiệm và lương phải hợp lệ; mọi evidenceRefs phải trỏ tới evidence trong cùng JD.</div>
+        <div class="footer"><span>JD được chuẩn hóa trước khi chuyển sang hợp đồng đối sánh 2.1</span><span>12</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục Evidence">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG C · BẰNG CHỨNG VÀ NGUỒN GỐC DỮ LIỆU</p>
+        <h2 class="appendix-title">EvidenceSpan: mỗi kết luận trỏ về đúng đoạn và đúng phiên bản tài liệu</h2>
+        <div class="schema-grid two">
+          <div class="schema-panel">
+            <h3>Trường của EvidenceSpan</h3>
+            <ul class="field-list">
+              <li><code>evidenceId</code><span>Mã đoạn bằng chứng</span></li>
+              <li><code>documentId</code><span>Tài liệu sở hữu đoạn trích</span></li>
+              <li><code>documentSha256</code><span>Phiên bản nội dung tài liệu</span></li>
+              <li><code>section</code><span>Nhóm nội dung như employment hoặc education</span></li>
+              <li><code>charStart / charEnd</code><span>Khoảng ký tự trong văn bản nguồn</span></li>
+              <li><code>page / boundingBox</code><span>Trang và vùng tọa độ nếu extractor cung cấp</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>Quy tắc toàn vẹn</h3>
+            <ul class="field-list">
+              <li><code>text.length</code><span>Phải bằng charEnd trừ charStart</span></li>
+              <li><code>evidenceRefs</code><span>Chỉ tham chiếu ID tồn tại</span></li>
+              <li><code>document revision</code><span>Hash phải khớp tài liệu của CV hoặc JD</span></li>
+              <li><code>sourceBlockId</code><span>Liên kết về block do extractor tạo</span></li>
+              <li><code>readingOrder</code><span>Thứ tự đọc trong trang</span></li>
+              <li><code>evidenceSource</code><span>document hoặc candidate-self-report</span></li>
+            </ul>
+          </div>
+        </div>
+        <div class="contract-flow">
+          <div class="contract-step"><strong>Tài liệu</strong><span>CV hoặc JD tại một phiên bản cụ thể</span></div>
+          <div class="contract-step"><strong>Bộ trích xuất</strong><span>Tạo khối nội dung, vị trí ký tự và trang</span></div>
+          <div class="contract-step"><strong>EvidenceSpan</strong><span>Lưu câu trích cùng thông tin nguồn gốc</span></div>
+          <div class="contract-step"><strong>Phát biểu dữ liệu</strong><span>Kỹ năng hoặc yêu cầu giữ evidenceRefs</span></div>
+          <div class="contract-step"><strong>Giao diện</strong><span>Hiển thị lại câu nguồn khi cần kiểm tra</span></div>
+        </div>
+        <div class="footer"><span>Provenance là thông tin nguồn gốc và đường liên kết của dữ liệu</span><span>13</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục MatchResult">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG D · KẾT QUẢ ĐỐI SÁNH</p>
+        <h2 class="appendix-title">MatchResult 2.1: trạng thái từng yêu cầu được giữ riêng với điểm tổng</h2>
+        <div class="schema-grid">
+          <div class="schema-panel">
+            <h3>Kết quả cấp yêu cầu</h3>
+            <ul class="field-list">
+              <li><code>requirementId</code><span>Yêu cầu JD đang được đánh giá</span></li>
+              <li><code>status</code><span>met, not-met, unknown, not-applicable</span></li>
+              <li><code>confidence</code><span>Độ tin cậy từ 0 đến 1</span></li>
+              <li><code>evidenceRefs</code><span>Các đoạn CV hỗ trợ kết luận</span></li>
+              <li><code>reasonCode</code><span>Mã nguyên nhân để giải thích</span></li>
+              <li><code>conceptResults</code><span>Kết quả cho từng khái niệm con</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>Tín hiệu và trọng số</h3>
+            <ul class="field-list">
+              <li><code>sparseScore</code><span>Điểm truy hồi từ Best Matching 25 (BM25)</span></li>
+              <li><code>denseScore</code><span>Điểm từ véc-tơ biểu diễn ngữ nghĩa</span></li>
+              <li><code>rawScore</code><span>Điểm yếu tố trước điều chỉnh</span></li>
+              <li><code>reliability</code><span>Độ tin cậy của yếu tố</span></li>
+              <li><code>effectiveWeight</code><span>Trọng số thực tế khi tổng hợp</span></li>
+              <li><code>scoreProvenance</code><span>Các yếu tố đã tham gia tính điểm</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>Kết quả tổng hợp</h3>
+            <ul class="field-list">
+              <li><code>eligibility</code><span>eligible, ineligible hoặc review-required</span></li>
+              <li><code>diagnosticScore</code><span>Điểm phân tích, có thể có khi cổng điều kiện chặn</span></li>
+              <li><code>suitabilityScore</code><span>Điểm phù hợp khi đủ điều kiện kết luận</span></li>
+              <li><code>fitBand</code><span>Nhóm mức độ phù hợp</span></li>
+              <li><code>decision</code><span>assessed hoặc abstained</span></li>
+              <li><code>warnings[]</code><span>Cảnh báo dữ liệu hoặc mức bao phủ</span></li>
+            </ul>
+          </div>
+        </div>
+        <div class="schema-note"><strong>Điểm cần trả lời:</strong> <code>unknown</code> khác <code>not-met</code>; <code>diagnosticScore</code> không thay thế cổng điều kiện bắt buộc; đối sánh chỉ hỗ trợ rà soát, không tự đưa ra quyết định tuyển dụng.</div>
+        <div class="footer"><span>Điểm tổng không làm mất trạng thái và bằng chứng của từng yêu cầu</span><span>14</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục Plan Snapshot">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG E · KẾ HOẠCH VÀ BẢN CHỤP CÂU HỎI</p>
+        <h2 class="appendix-title">Kế hoạch và câu hỏi được lưu theo phiên bản trước khi bộ điều phối sử dụng</h2>
+        <div class="schema-grid">
+          <div class="schema-panel">
+            <h3>Dữ liệu kế hoạch</h3>
+            <ul class="field-list">
+              <li><code>policyVersion</code><span>Phiên bản bộ lập kế hoạch</span></li>
+              <li><code>questionBudget</code><span>Ngân sách số câu và thời gian</span></li>
+              <li><code>difficulty</code><span>Mức lấy từ seniority của JD</span></li>
+              <li><code>sections[]</code><span>Mở đầu, nội dung chính, kiểm tra khoảng trống, kết thúc</span></li>
+              <li><code>targets[]</code><span>Concept và time envelope cần phủ</span></li>
+              <li><code>fingerprint</code><span>Mã băm của nội dung kế hoạch chuẩn hóa</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>Bản chụp câu hỏi</h3>
+            <ul class="field-list">
+              <li><code>questionVersionId</code><span>Phiên bản câu hỏi</span></li>
+              <li><code>rubricVersionId</code><span>Phiên bản thang tiêu chí đi kèm</span></li>
+              <li><code>stage / difficulty</code><span>Pha và mức độ câu hỏi</span></li>
+              <li><code>questionText</code><span>Nội dung được hỏi trong phiên</span></li>
+              <li><code>taxonomyTarget</code><span>Khái niệm mà câu hỏi đo</span></li>
+              <li><code>soft / hardAnswerSeconds</code><span>Ngưỡng thời gian trả lời</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>Lượt đã khóa dữ liệu</h3>
+            <ul class="field-list">
+              <li><code>turnId / turnIndex</code><span>Định danh và thứ tự lượt</span></li>
+              <li><code>status</code><span>Trạng thái xử lý của lượt</span></li>
+              <li><code>questionSource</code><span>Nguồn câu hỏi</span></li>
+              <li><code>expectedPoints</code><span>Các ý được chờ đợi trong thang tiêu chí</span></li>
+              <li><code>selectorPolicyVersion</code><span>Phiên bản bộ chọn câu hỏi</span></li>
+              <li><code>selectionRank</code><span>Thứ tự được chọn</span></li>
+            </ul>
+          </div>
+        </div>
+        <div class="schema-note"><strong>Lý do lưu bản chụp:</strong> Báo cáo sau phiên tham chiếu đúng câu hỏi và thang tiêu chí đã dùng, kể cả khi ngân hàng câu hỏi thay đổi về sau.</div>
+        <div class="footer"><span>Bộ lập kế hoạch tạo mục tiêu; bộ chọn lấy câu hỏi; bộ điều phối chỉ đọc bản đã khóa</span><span>15</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục Evaluation Schema">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG F · DỮ LIỆU CHẤM ĐIỂM</p>
+        <h2 class="appendix-title">Cấu trúc chấm điểm: đầu vào, kết quả từng lượt và báo cáo toàn phiên</h2>
+        <div class="schema-grid">
+          <div class="schema-panel">
+            <h3>TurnEvaluationInput</h3>
+            <ul class="field-list">
+              <li><code>turnId / turnIndex</code><span>Lượt cần chấm</span></li>
+              <li><code>competency</code><span>Năng lực đang đo</span></li>
+              <li><code>questionPrompt</code><span>Câu hỏi đã dùng</span></li>
+              <li><code>rubricCriteria</code><span>Thang tiêu chí của câu hỏi</span></li>
+              <li><code>candidateAnswer</code><span>Câu trả lời hoặc bản ghi STT</span></li>
+              <li><code>sourceModality</code><span>TEXT hoặc VOICE</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>TurnEvaluationResult</h3>
+            <ul class="field-list">
+              <li><code>score</code><span>Điểm từ 0 đến 10</span></li>
+              <li><code>starAnalysis</code><span>Tình huống, Nhiệm vụ, Hành động, Kết quả (STAR)</span></li>
+              <li><code>evidenceQuotes</code><span>Câu trích từ câu trả lời</span></li>
+              <li><code>strengths / weaknesses</code><span>Nhận xét theo nội dung</span></li>
+              <li><code>graded</code><span>false khi đầu ra chấm không hợp lệ</span></li>
+              <li><code>whatGoodLooksLike</code><span>Ví dụ trả lời đáp ứng thang tiêu chí</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>SessionEvaluationResult</h3>
+            <ul class="field-list">
+              <li><code>overallScore</code><span>Điểm tổng toàn phiên</span></li>
+              <li><code>competencyScores[]</code><span>Điểm theo năng lực</span></li>
+              <li><code>turnEvaluations[]</code><span>Chi tiết từng lượt</span></li>
+              <li><code>recruiterSummary</code><span>Tóm tắt cho bên đánh giá</span></li>
+              <li><code>candidateFeedback</code><span>Phản hồi cho ứng viên</span></li>
+              <li><code>nextRoundTopics[]</code><span>Chủ đề cần kiểm tra tiếp</span></li>
+            </ul>
+          </div>
+        </div>
+        <div class="schema-note"><strong>Khi chấm điểm lỗi:</strong> Nếu Mô hình Ngôn ngữ Lớn (LLM) vẫn không trả điểm hợp lệ sau khi thử lại, <code>graded=false</code> và lượt đó không được tính như một điểm hợp lệ.</div>
+        <div class="footer"><span>Cấu trúc tách điểm, bằng chứng và phần diễn giải để có thể kiểm tra từng lớp</span><span>16</span></div>
+      </div>
+    </section>
+
+    <section class="slide voice-slide" data-title="Phụ lục Voice Contract">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG G · HỢP ĐỒNG DỮ LIỆU THOẠI</p>
+        <h2 class="appendix-title">Kênh thoại chuyển âm thanh thành CandidateTurnInput dùng chung với chat</h2>
+        <div class="contract-flow">
+          <div class="contract-step"><strong>LiveKit</strong><span>Nhận luồng âm thanh qua Web Real-Time Communication (WebRTC)</span></div>
+          <div class="contract-step"><strong>VAD</strong><span>Voice Activity Detection: xác định khoảng có tiếng nói</span></div>
+          <div class="contract-step"><strong>STT</strong><span>Speech-to-Text: tạo bản ghi lời nói hoàn tất</span></div>
+          <div class="contract-step"><strong>Lõi phỏng vấn</strong><span>Xử lý cùng hợp đồng như chat</span></div>
+          <div class="contract-step"><strong>TTS</strong><span>Text-to-Speech: phát nội dung Core trả về</span></div>
+        </div>
+        <div class="schema-grid two">
+          <div class="schema-panel">
+            <h3>CandidateTurnInput</h3>
+            <ul class="field-list">
+              <li><code>sessionId</code><span>Phiên phỏng vấn</span></li>
+              <li><code>turnIndex</code><span>Thứ tự lượt</span></li>
+              <li><code>textContent</code><span>Bản ghi lời nói hoàn tất từ STT</span></li>
+              <li><code>modality</code><span>CHAT, VOICE hoặc VIDEO</span></li>
+              <li><code>durationSeconds</code><span>Thời lượng câu trả lời</span></li>
+              <li><code>telemetry</code><span>Mốc VAD và dữ liệu chất lượng</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>InterviewerTurnOutput</h3>
+            <ul class="field-list">
+              <li><code>messageText</code><span>Nội dung hiển thị hoặc đưa vào TTS</span></li>
+              <li><code>action</code><span>PROBE, CLARIFY, NEXT-QUESTION, WRAP-UP</span></li>
+              <li><code>currentStage</code><span>Pha của Finite State Machine (FSM) hiện tại</span></li>
+              <li><code>timeRemainingSeconds</code><span>Thời gian còn lại</span></li>
+              <li><code>isSessionFinished</code><span>Cờ kết thúc phiên</span></li>
+              <li><code>exitReason</code><span>Lý do kết thúc nếu có</span></li>
+            </ul>
+          </div>
+        </div>
+        <div class="schema-note"><strong>Ranh giới:</strong> Bộ chuyển đổi thoại không chọn câu hỏi. Nó chuyển bản ghi lời nói vào lõi phỏng vấn và phát lại <code>messageText</code> mà lõi trả về.</div>
+        <div class="footer"><span>Chat và voice dùng chung CandidateTurnInput và InterviewerTurnOutput</span><span>17</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục P1 P2">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG H · LẬP KẾ HOẠCH HAI GIAI ĐOẠN</p>
+        <h2 class="appendix-title">P1 phân bổ thời gian, P2 chọn và khóa câu hỏi</h2>
+        <div class="contract-flow">
+          <div class="contract-step"><strong>MatchResult</strong><span>Đưa vào trạng thái và mức ưu tiên của từng yêu cầu</span></div>
+          <div class="contract-step"><strong>P1 chọn mục tiêu</strong><span>Lọc năng lực cần kiểm tra và giữ mức thời gian tối thiểu</span></div>
+          <div class="contract-step"><strong>Hamilton–Hare</strong><span>Phân bổ phần thời gian dư theo phần dư lớn nhất</span></div>
+          <div class="contract-step"><strong>P2 chọn tập câu</strong><span>Tìm các tập khả thi rồi xếp hạng theo độ phủ</span></div>
+          <div class="contract-step"><strong>Khóa kế hoạch</strong><span>Lưu bản chụp câu hỏi và rubric cho toàn phiên</span></div>
+        </div>
+        <div class="schema-grid two">
+          <div class="schema-panel">
+            <h3>P1: phân bổ quỹ thời gian</h3>
+            <ul class="field-list">
+              <li><code>reserves</code><span>Giữ thời gian mở đầu, hành vi và kết thúc</span></li>
+              <li><code>floorSeconds</code><span>Mức sàn cho câu văn bản hoặc bài lập trình</span></li>
+              <li><code>importance</code><span>Ưu tiên từ yêu cầu bắt buộc và kết quả đối sánh</span></li>
+              <li><code>timeEnvelope</code><span>Khoảng thời gian cấp cho từng năng lực</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>P2: chọn câu hỏi</h3>
+            <ul class="field-list">
+              <li><code>feasible subset</code><span>Tập câu không vượt quá khoảng thời gian</span></li>
+              <li><code>objective</code><span>Xếp hạng theo độ phủ và mức phù hợp</span></li>
+              <li><code>tie-break</code><span>Mã băm ổn định xử lý trường hợp bằng điểm</span></li>
+              <li><code>snapshot</code><span>Khóa câu hỏi, rubric và nguồn trước khi bắt đầu</span></li>
+            </ul>
+          </div>
+        </div>
+        <div class="schema-note"><strong>Bất biến:</strong> Tổng thời gian đã phân bổ cộng phần đệm phải bằng quỹ kỹ thuật. Mỗi mục tiêu được chọn phải đủ mức sàn.</div>
+        <div class="footer"><span>P1 quyết định thời gian và mục tiêu, P2 quyết định tập câu hỏi cụ thể</span><span>18</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục nguồn câu hỏi">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG I · NGUỒN VÀ KIỂM SOÁT CÂU HỎI</p>
+        <h2 class="appendix-title">Thứ tự nguồn câu hỏi và thông tin được lưu trong bản chụp</h2>
+        <div class="contract-flow">
+          <div class="contract-step"><strong>1. Đúng kỹ năng</strong><span>Câu đã phê duyệt và gắn đúng mục tiêu</span></div>
+          <div class="contract-step"><strong>2. Kỹ năng rộng hơn</strong><span>Dùng quan hệ trong hệ phân loại khi nguồn chính thiếu</span></div>
+          <div class="contract-step"><strong>3. Theo vai trò</strong><span>Câu phù hợp nhóm nghề của JD</span></div>
+          <div class="contract-step"><strong>4. Câu được tạo</strong><span>Chỉ nhận bản vượt qua cổng kiểm tra tự động</span></div>
+          <div class="contract-step"><strong>5. Bản chụp</strong><span>Ghi <code>questionSource</code> vào lượt đã khóa</span></div>
+        </div>
+        <div class="schema-grid two">
+          <div class="schema-panel">
+            <h3>Cổng kiểm tra câu được tạo</h3>
+            <ul class="field-list">
+              <li><code>language</code><span>Đúng ngôn ngữ của phiên</span></li>
+              <li><code>rubric</code><span>Có tiêu chí và neo điểm hợp lệ</span></li>
+              <li><code>duplicate</code><span>Không gần trùng câu đã tồn tại</span></li>
+              <li><code>fit</code><span>Đúng kỹ năng và mức độ yêu cầu</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>Trạng thái và công khai nguồn</h3>
+            <ul class="field-list">
+              <li><code>APPROVED</code><span>Câu đã được chuyên gia phê duyệt</span></li>
+              <li><code>IN_REVIEW</code><span>Câu được tạo đang chờ chuyên gia duyệt</span></li>
+              <li><code>generated_unreviewed</code><span>Nhãn nguồn khi câu chưa được duyệt được sử dụng</span></li>
+              <li><code>report warning</code><span>Báo cáo nêu rõ số câu thuộc nguồn này</span></li>
+            </ul>
+          </div>
+        </div>
+        <div class="schema-note"><strong>Ranh giới:</strong> Cổng tự động giảm rủi ro nhưng không thay thế chuyên gia. Hệ thống phải giữ nhãn nguồn để người xem diễn giải kết quả đúng bối cảnh.</div>
+        <div class="footer"><span>Ưu tiên câu đã duyệt, chỉ dùng nguồn dự phòng theo chính sách có thể kiểm tra lại</span><span>19</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục clarification rescore">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG J · LÀM RÕ KẾT QUẢ ĐỐI SÁNH</p>
+        <h2 class="appendix-title">Yêu cầu chưa đủ bằng chứng được hỏi và đối sánh lại trong phạm vi</h2>
+        <div class="contract-flow">
+          <div class="contract-step"><strong>Trạng thái unknown</strong><span>Chỉ chọn yêu cầu chưa đủ bằng chứng</span></div>
+          <div class="contract-step"><strong>Phân tích thiếu hụt</strong><span>Xác định thông tin còn thiếu để kết luận</span></div>
+          <div class="contract-step"><strong>Câu hỏi làm rõ</strong><span>Hỏi đúng một yêu cầu đã chọn</span></div>
+          <div class="contract-step"><strong>Bằng chứng tự khai</strong><span>Lưu câu trả lời với nguồn riêng</span></div>
+          <div class="contract-step"><strong>Đối sánh lại</strong><span>Tính lại kết quả từ các trạng thái cuối</span></div>
+        </div>
+        <div class="schema-grid two">
+          <div class="schema-panel">
+            <h3>Điều kiện chấp nhận</h3>
+            <ul class="field-list">
+              <li><code>requirementId</code><span>Phải thuộc kết quả đối sánh hiện tại</span></li>
+              <li><code>initialStatus</code><span>Chỉ xử lý trạng thái <code>unknown</code></span></li>
+              <li><code>answer scope</code><span>Câu trả lời chỉ tác động yêu cầu đã hỏi</span></li>
+              <li><code>negative answer</code><span>Câu phủ định rõ ràng có thể tạo kết quả không đạt</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>Kiểm soát bằng chứng tự khai</h3>
+            <ul class="field-list">
+              <li><code>evidenceSource</code><span>Gắn nhãn <code>candidate_self_report</code></span></li>
+              <li><code>confidence</code><span>Giới hạn độ tin cậy vì chưa xác minh độc lập</span></li>
+              <li><code>no leakage</code><span>Không đưa câu trả lời vào yếu tố ngữ nghĩa toàn cục</span></li>
+              <li><code>warning</code><span>Kết quả cuối ghi cảnh báo đã dùng dữ liệu tự khai</span></li>
+            </ul>
+          </div>
+        </div>
+        <div class="schema-note"><strong>Ý nghĩa:</strong> <code>unknown</code> tạo một nhánh thu thập thêm dữ liệu. Nó không tự chuyển thành <code>not_met</code> và cũng không tự được xem là đạt.</div>
+        <div class="footer"><span>Làm rõ chỉ thay đổi kết quả khi bộ đánh giá thực sự sử dụng bằng chứng mới</span><span>20</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục runtime consistency">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG K · TÍNH NHẤT QUÁN CỦA PHIÊN</p>
+        <h2 class="appendix-title">Một lượt phỏng vấn được ghi theo hai giao dịch cơ sở dữ liệu</h2>
+        <div class="schema-grid">
+          <div class="schema-panel">
+            <h3>Giao dịch 1</h3>
+            <ul class="field-list">
+              <li><code>ownership</code><span>Kiểm tra người dùng sở hữu phiên</span></li>
+              <li><code>session state</code><span>Kiểm tra trạng thái và lượt hiện tại</span></li>
+              <li><code>candidate message</code><span>Ghi câu trả lời theo mã sự kiện</span></li>
+              <li><code>commit</code><span>Kết thúc nhanh trước khi gọi mô hình</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>Xử lý ngoài giao dịch</h3>
+            <ul class="field-list">
+              <li><code>LLM call</code><span>Không giữ khóa cơ sở dữ liệu khi chờ phản hồi</span></li>
+              <li><code>validation</code><span>Kiểm tra ngôn ngữ, độ dài và phạm vi câu hỏi</span></li>
+              <li><code>safe fallback</code><span>Dùng mẫu an toàn khi đầu ra không hợp lệ</span></li>
+              <li><code>action</code><span>FSM quyết định hỏi sâu, chuyển câu hoặc kết thúc</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>Giao dịch 2 và phục hồi</h3>
+            <ul class="field-list">
+              <li><code>row lock</code><span>Khóa lại phiên trước khi ghi kết quả</span></li>
+              <li><code>idempotency</code><span>Request lặp trả lại kết quả đã có</span></li>
+              <li><code>checkpoint</code><span>LangGraph lưu tiến độ workflow theo phiên</span></li>
+              <li><code>reaper</code><span>Đóng các phiên bị bỏ dở theo chính sách</span></li>
+            </ul>
+          </div>
+        </div>
+        <div class="schema-note"><strong>Nguồn dữ liệu chính:</strong> PostgreSQL giữ trạng thái nghiệp vụ. Điểm lưu tiến độ hỗ trợ tiếp tục workflow nhưng không thay thế giao dịch của cơ sở dữ liệu.</div>
+        <div class="footer"><span>Idempotency ngăn một sự kiện mạng tạo nhiều câu trả lời hoặc chuyển trạng thái hai lần</span><span>21</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục đánh giá chất lượng">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG L · ĐÁNH GIÁ VÀ ĐIỀU KIỆN PHÁT HÀNH</p>
+        <h2 class="appendix-title">Baseline đo theo từng khâu; kết quả chưa được suy rộng ngoài bộ dữ liệu thử nghiệm</h2>
+        <div class="benchmark-grid">
+          <div class="benchmark-item">
+            <h3>Bóc tách CV · 60 hồ sơ thật</h3>
+            <strong class="metric">Macro F1 0,3168</strong>
+            <p>Evidence hợp lệ 100%; fallback 1,67%; độ trễ trung bình 9.836 ms/CV.</p>
+            <p>Chưa đạt ngưỡng chất lượng Macro F1 ≥ 0,50; cần tiếp tục cải thiện kỹ năng và chứng chỉ.</p>
+          </div>
+          <div class="benchmark-item">
+            <h3>Bóc tách JD · 50 mô tả thật</h3>
+            <strong class="metric">Macro 0,6255</strong>
+            <p>Evidence hợp lệ 100%; fallback 0%; độ trễ trung bình 4.200 ms/JD.</p>
+            <p>Requirements F1 0,6104; Responsibilities F1 0,5331; Benefits F1 0,6014.</p>
+          </div>
+          <div class="benchmark-item">
+            <h3>Đối sánh · 60 trường hợp</h3>
+            <strong class="metric">Accuracy 93,33%</strong>
+            <p>Hybrid: Macro F1 0,6388; Mean Absolute Error (MAE) 25,49 điểm; 48/60 trường hợp cần xem xét.</p>
+            <p>Lớp “không đạt” chỉ có 3 mẫu và F1 = 0; chưa đủ cân bằng để kết luận phát hành.</p>
+          </div>
+          <div class="benchmark-item">
+            <h3>STT tiếng Việt · pilot</h3>
+            <strong class="metric">WER 20,69%</strong>
+            <p>Character Error Rate (CER) 18,15%; 99 câu, 3 người nói, 345,63 giây âm thanh.</p>
+            <p>Chưa đạt 300 câu và chưa soak đủ đường âm thanh đầu-cuối trong 24–48 giờ.</p>
+          </div>
+        </div>
+        <div class="schema-note"><strong>Điểm cần chốt:</strong> <code>overallScore</code> hiện là trung bình cộng các lượt chấm hợp lệ, chưa áp dụng trọng số năng lực dù schema đã lưu trọng số.</div>
+        <div class="footer"><span>Các con số là baseline có phạm vi dữ liệu rõ ràng, không phải cam kết chất lượng môi trường vận hành</span><span>22</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục kiến trúc triển khai">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG M · KIẾN TRÚC TỔNG THỂ</p>
+        <h2 class="appendix-title">Một lõi nghiệp vụ dùng chung cho chat và voice; xử lý nền tách khỏi lượt phỏng vấn</h2>
+        <div class="architecture-flow">
+          <div class="architecture-node"><strong>Ứng viên & giao diện</strong><span>Tải CV/JD, chọn phiên, gửi câu trả lời bằng văn bản hoặc âm thanh.</span></div>
+          <div class="architecture-node"><strong>Lớp giao tiếp</strong><span>FastAPI kiểm tra schema, xác thực và quyền sở hữu; LiveKit vận chuyển âm thanh WebRTC.</span></div>
+          <div class="architecture-node"><strong>Interview Core</strong><span>Máy trạng thái, kế hoạch P1/P2, chọn câu hỏi, giới hạn probe và kết thúc phiên.</span></div>
+          <div class="architecture-node"><strong>Lớp tác vụ</strong><span>Celery + RabbitMQ cho bóc tách/đối sánh; Voice Agent cho VAD → STT → Core → TTS.</span></div>
+          <div class="architecture-node"><strong>Lớp dữ liệu</strong><span>PostgreSQL lưu trạng thái chính; pgvector hỗ trợ truy hồi; kho đối tượng giữ tệp nguồn.</span></div>
+        </div>
+        <div class="architecture-support">
+          <div><strong>Lớp tích hợp mô hình</strong><span>OCR, embedding, LLM, STT và TTS nằm sau giao diện thay thế được; đầu ra phải qua schema và cổng kiểm tra.</span></div>
+          <div><strong>Điều phối workflow</strong><span>LangGraph lưu điểm tiếp tục; checkpoint không thay thế giao dịch cơ sở dữ liệu.</span></div>
+          <div><strong>Ranh giới trạng thái</strong><span>PostgreSQL là nguồn có thẩm quyền; queue và checkpoint chỉ hỗ trợ thực thi/phục hồi.</span></div>
+        </div>
+        <div class="footer"><span>Sơ đồ mức thành phần, không công bố endpoint, hostname, khóa hoặc cấu hình nhà cung cấp</span><span>23</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục bảo vệ dữ liệu">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG N · BẢO VỆ DỮ LIỆU</p>
+        <h2 class="appendix-title">Thông tin định danh được tách khỏi dữ liệu đánh giá và giới hạn theo quyền sở hữu</h2>
+        <div class="schema-grid">
+          <div class="schema-panel">
+            <h3>Kiểm soát truy cập</h3>
+            <ul class="field-list">
+              <li><code>JWT</code><span>JSON Web Token xác thực request của người dùng</span></li>
+              <li><code>ownership</code><span>CV, JD và session phải thuộc người gọi</span></li>
+              <li><code>rate limit</code><span>Giới hạn tần suất các thao tác tốn tài nguyên</span></li>
+              <li><code>admin boundary</code><span>Quyền quản trị tách khỏi luồng ứng viên</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>Ranh giới dữ liệu</h3>
+            <ul class="field-list">
+              <li><code>identity</code><span>Thông tin định danh nằm ngoài dữ liệu matching</span></li>
+              <li><code>canonical data</code><span>Chỉ giữ trường cần cho đối sánh và phỏng vấn</span></li>
+              <li><code>prompt input</code><span>Chỉ gửi ngữ cảnh cần thiết cho nhiệm vụ</span></li>
+              <li><code>telemetry</code><span>Tách dữ liệu chất lượng khỏi nội dung chấm điểm</span></li>
+            </ul>
+          </div>
+          <div class="schema-panel">
+            <h3>Vòng đời dữ liệu</h3>
+            <ul class="field-list">
+              <li><code>document hash</code><span>Liên kết kết quả với đúng phiên bản tệp</span></li>
+              <li><code>object deletion</code><span>Xóa tệp nguồn khi người dùng xóa tài liệu</span></li>
+              <li><code>audit source</code><span>Giữ nguồn câu hỏi và bằng chứng cần kiểm tra</span></li>
+              <li><code>log hygiene</code><span>Không ghi khóa hoặc nội dung nhạy cảm không cần thiết</span></li>
+            </ul>
+          </div>
+        </div>
+        <div class="schema-note"><strong>Nguyên tắc:</strong> Slide chỉ mô tả lớp kiểm soát. Các khóa, địa chỉ dịch vụ và cấu hình triển khai không được đưa vào tài liệu trình chiếu.</div>
+        <div class="footer"><span>Bảo vệ dữ liệu dựa trên tách phạm vi, quyền sở hữu và vòng đời tài liệu</span><span>24</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục luồng đồng bộ và bất đồng bộ">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG O · RANH GIỚI THỰC THI</p>
+        <h2 class="appendix-title">Luồng tài liệu chạy nền; lượt phỏng vấn cần phản hồi theo thời gian tương tác</h2>
+        <div class="schema-grid two compact-two">
+          <div class="schema-panel"><h3>Bất đồng bộ: tài liệu và đối sánh</h3><div class="contract-flow four"><div class="contract-step"><strong>1 · Nhận tệp</strong><span>API kiểm tra loại tệp, quyền sở hữu và tạo bản ghi tác vụ.</span></div><div class="contract-step"><strong>2 · Xếp hàng</strong><span>RabbitMQ chuyển thông điệp tới Celery worker.</span></div><div class="contract-step"><strong>3 · Xử lý</strong><span>Đọc PDF/OCR, chuẩn hóa schema, tạo evidence và matching.</span></div><div class="contract-step"><strong>4 · Công bố</strong><span>Ghi trạng thái/kết quả; giao diện truy vấn tiến độ.</span></div></div></div>
+          <div class="schema-panel"><h3>Đồng bộ: chat và voice</h3><div class="contract-flow four"><div class="contract-step"><strong>1 · Đầu vào</strong><span>Chat gửi text; voice dùng VAD và STT tạo text.</span></div><div class="contract-step"><strong>2 · Core</strong><span>Máy trạng thái kiểm tra lượt hiện tại và hành động hợp lệ.</span></div><div class="contract-step"><strong>3 · Ghi nhận</strong><span>Ghi câu trả lời, quyết định tiếp theo và khóa idempotency.</span></div><div class="contract-step"><strong>4 · Đầu ra</strong><span>Trả text; kênh voice chuyển text sang TTS.</span></div></div></div>
+        </div>
+        <div class="schema-note"><strong>Điểm phân tách:</strong> Celery không nằm trên đường phản hồi của từng lượt phỏng vấn. Điều này tránh để độ trễ hàng đợi quyết định nhịp hội thoại.</div>
+        <div class="footer"><span>Một hệ thống có hai kiểu tải: tác vụ dài có thể chờ và hội thoại cần phản hồi ngay</span><span>25</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục vòng đời phiên">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG P · VÒNG ĐỜI VÀ PHỤC HỒI</p>
+        <h2 class="appendix-title">Phiên chỉ có hai trạng thái lưu chính; kế hoạch và lượt hỏi có trạng thái chi tiết riêng</h2>
+        <div class="contract-flow"><div class="contract-step"><strong>OPEN</strong><span>Phiên được tạo và thuộc về ứng viên.</span></div><div class="contract-step"><strong>Plan LOCKED</strong><span>P1 phân bổ thời gian; P2 khóa danh sách câu hỏi.</span></div><div class="contract-step"><strong>Turn PLANNED</strong><span>Câu hỏi đã có snapshot nhưng chưa được hỏi.</span></div><div class="contract-step"><strong>ASKED → ANSWERED</strong><span>Mỗi lượt chuyển tuần tự; có thể SKIPPED theo điều kiện.</span></div><div class="contract-step"><strong>CLOSED</strong><span>Ghi lý do kết thúc và thời điểm đóng phiên.</span></div></div>
+        <div class="schema-grid compact-two"><div class="schema-panel"><h3>Kết thúc hợp lệ</h3><ul class="field-list"><li><code>COMPLETED</code><span>Đã xử lý hết chương trình đã khóa</span></li><li><code>USER_ENDED</code><span>Ứng viên chủ động dừng</span></li></ul></div><div class="schema-panel"><h3>Kết thúc do điều kiện</h3><ul class="field-list"><li><code>HARD_TIMEOUT</code><span>Hết ngân sách thời gian hoặc phiên bỏ dở quá hạn</span></li><li><code>TECHNICAL_FAILURE</code><span>Không thể tiếp tục đúng hợp đồng</span></li></ul></div><div class="schema-panel"><h3>Phục hồi</h3><ul class="field-list"><li><code>idempotency</code><span>Request lặp không tạo lượt mới</span></li><li><code>reaper</code><span>Đóng phiên OPEN bị bỏ dở</span></li></ul></div></div>
+        <div class="footer"><span>Không gộp trạng thái phiên, trạng thái plan và trạng thái turn thành một chuỗi giả định</span><span>26</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục data lineage">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG Q · DÒNG DỮ LIỆU VÀ PHIÊN BẢN</p>
+        <h2 class="appendix-title">Có thể lần ngược báo cáo về câu trả lời, câu hỏi, kế hoạch và tài liệu nguồn</h2>
+        <div class="contract-flow four"><div class="contract-step"><strong>Hàm băm SHA-256</strong><span>Nhận diện đúng nội dung tài liệu nguồn.</span></div><div class="contract-step"><strong>EvidenceSpan</strong><span>Trang, vị trí và câu trích chứng minh dữ kiện.</span></div><div class="contract-step"><strong>Canonical CV/JD</strong><span>Dữ liệu chuẩn hóa kèm schemaVersion.</span></div><div class="contract-step"><strong>MatchResult</strong><span>Trạng thái từng requirement, điểm và cảnh báo.</span></div></div>
+        <div class="contract-flow four"><div class="contract-step"><strong>Plan Snapshot</strong><span>policyVersion, ngân sách thời gian và target năng lực.</span></div><div class="contract-step"><strong>Question Snapshot</strong><span>questionVersionId, rubricVersionId và nguồn câu hỏi.</span></div><div class="contract-step"><strong>Interview Turn</strong><span>Câu trả lời, telemetry cần thiết và trạng thái lượt.</span></div><div class="contract-step"><strong>Evaluation</strong><span>Điểm, câu trích transcript và phiên bản rubric.</span></div></div>
+        <div class="schema-note"><strong>Nguyên tắc lineage:</strong> dữ liệu dẫn xuất không ghi đè nguồn. Khi parser, policy hoặc rubric đổi phiên bản, kết quả cũ vẫn giữ được ngữ cảnh để kiểm tra lại.</div>
+        <div class="footer"><span>Phiên bản và fingerprint giúp tái hiện kết quả mà không cần công bố cấu hình nhạy cảm</span><span>27</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục fallback quan sát phát hành">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG R · SỰ CỐ, QUAN SÁT VÀ PHÁT HÀNH</p>
+        <h2 class="appendix-title">Phương án dự phòng phải giữ tính đúng của trạng thái, không chỉ giữ giao diện tiếp tục chạy</h2>
+        <div class="schema-grid"><div class="schema-panel"><h3>Dự phòng theo khâu</h3><ul class="field-list"><li><code>PDF</code><span>Không có text layer thì chuyển OCR</span></li><li><code>LLM output</code><span>Sai schema thì thử lại có giới hạn hoặc từ chối ghi</span></li><li><code>STT</code><span>Đoạn không rõ được gắn cờ, không tự suy diễn nội dung</span></li><li><code>TTS</code><span>Lỗi phát giọng không tự chuyển lượt trong Core</span></li></ul></div><div class="schema-panel"><h3>Quan sát vận hành</h3><ul class="field-list"><li><code>trace</code><span>Liên kết session, turn và task bằng mã tương quan</span></li><li><code>latency</code><span>Đo phân vị p50/p95 cho parse, STT, LLM và TTS</span></li><li><code>quality</code><span>WER/CER, evidence validity, F1 và fallback rate</span></li><li><code>recovery</code><span>Theo dõi retry, duplicate, reaper và lý do đóng phiên</span></li></ul></div><div class="schema-panel"><h3>Cổng phát hành</h3><ul class="field-list"><li><code>offline</code><span>Benchmark trên corpus có ground truth</span></li><li><code>shadow</code><span>Chạy song song nhưng chưa tác động kết quả</span></li><li><code>pilot</code><span>Giới hạn người dùng và theo dõi sai lệch</span></li><li><code>rollback</code><span>Quay lại parser/policy/model adapter đã biết</span></li></ul></div></div>
+        <div class="schema-note"><strong>Blocker voice:</strong> chỉ gỡ khi đủ corpus đại diện và soak 24–48 giờ trên chính đường âm thanh đầu-cuối; kiểm tra DNS/TLS riêng không thay thế phép đo này.</div>
+        <div class="footer"><span>Release gate gắn với chỉ số có ground truth và khả năng rollback theo phiên bản</span><span>28</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Phụ lục phạm vi coding và video">
+      <div class="content">
+        <p class="eyebrow">PHỤ LỤC DỰ PHÒNG S · RANH GIỚI TÍNH NĂNG</p>
+        <h2 class="appendix-title">Coding và video đã có dữ liệu/transport, nhưng chưa nên trình bày như hệ thống chấm thực thi hoặc giám sát thi</h2>
+        <div class="schema-grid two compact-two"><div class="schema-panel"><h3>Câu hỏi coding</h3><ul class="field-list"><li><code>đã có</code><span>Loại câu hỏi coding, starter code, test cases, solution và ngôn ngữ trong snapshot</span></li><li><code>đã có</code><span>P1 dành thời lượng tối thiểu; P2 có chính sách chọn/loại khi thiếu thời gian</span></li><li><code>đầu vào</code><span>Core nhận cờ kết quả test từ telemetry để quyết định probe</span></li><li><code>chưa thấy</code><span>Backend chưa có bộ chạy mã (runner) cách ly để tự biên dịch/chạy mã không tin cậy</span></li></ul></div><div class="schema-panel"><h3>Video và báo hiệu</h3><ul class="field-list"><li><code>đã có</code><span>Socket.IO chuyển tiếp offer, answer và Interactive Connectivity Establishment (ICE) candidate cho WebRTC</span></li><li><code>đã có</code><span>Bản ghi vòng đời cuộc gọi và kiểm tra quyền sở hữu phiên</span></li><li><code>trạng thái</code><span>Router video thuộc API cũ và bị chặn khi cờ legacy tắt</span></li><li><code>chưa có</code><span>Không có pipeline giám sát thi tự động (proctoring) được xác nhận trong luồng chính</span></li></ul></div></div>
+        <div class="schema-note"><strong>Cách trình bày an toàn:</strong> gọi đây là “khung dữ liệu coding” và “lớp báo hiệu video thử nghiệm”. Không tuyên bố môi trường chạy cách ly (sandbox) hoặc proctoring khi chưa có thành phần tương ứng và benchmark.</div>
+        <div class="footer"><span>Ranh giới tính năng được xác nhận từ mã nguồn hiện tại, không suy rộng từ tên trường telemetry</span><span>29</span></div>
+      </div>
+    </section>
+  </main>
+
+  <div class="controls" aria-label="Điều khiển slide">
+    <button id="prev" type="button" aria-label="Slide trước">‹</button>
+    <span id="counter">1 / 10</span>
+    <button id="next" type="button" aria-label="Slide tiếp theo">›</button>
+  </div>
+  <div class="progress" aria-hidden="true"><span id="bar"></span></div>
+
+  <script>
+    const slides = [...document.querySelectorAll('.slide')];
+    const counter = document.getElementById('counter');
+    const bar = document.getElementById('bar');
+    let current = Math.max(0, Math.min(slides.length - 1, Number(location.hash.slice(1)) - 1 || 0));
+
+    function fit() {
+      const scale = Math.min((innerWidth - 48) / 1280, (innerHeight - 48) / 720);
+      slides.forEach((slide) => { slide.style.transform = `scale(${Math.max(.2, scale)})`; });
+    }
+
+    function show(index) {
+      current = (index + slides.length) % slides.length;
+      slides.forEach((slide, i) => slide.classList.toggle('active', i === current));
+      counter.textContent = `${current + 1} / ${slides.length}`;
+      bar.style.width = `${((current + 1) / slides.length) * 100}%`;
+      document.title = `${slides[current].dataset.title} · INTERVIA`;
+      history.replaceState(null, '', `#${current + 1}`);
+      fit();
+    }
+
+    document.getElementById('prev').addEventListener('click', () => show(current - 1));
+    document.getElementById('next').addEventListener('click', () => show(current + 1));
+    addEventListener('keydown', (event) => {
+      if (['ArrowRight', 'PageDown', ' '].includes(event.key)) show(current + 1);
+      if (['ArrowLeft', 'PageUp'].includes(event.key)) show(current - 1);
+      if (event.key === 'Home') show(0);
+      if (event.key === 'End') show(slides.length - 1);
+    });
+    addEventListener('resize', fit);
+    show(current);
+  </script>
+</body>
+</html>

@@ -7,6 +7,8 @@ import pytest
 from src.modules.interviews.application.chat_runtime import (
     SAFE_FALLBACK_PROBE_VI,
     ChatRuntimeError,
+    _candidate_name_parts,
+    _personalize_candidate_address,
     _validate_probe_text,
     complete_chat_session,
     get_chat_runtime,
@@ -36,6 +38,7 @@ class MockChatSession:
         self.turns = {t["id"]: dict(t) for t in turns}
         self.messages = [dict(m) for m in (messages or [])]
         self.job_title = "AI Engineer"
+        self.candidate_name: str | None = None
 
     async def scalar(self, statement: Any, params: dict[str, Any] | None = None):
         sql = str(statement).strip()
@@ -51,6 +54,8 @@ class MockChatSession:
             return len([m for m in self.messages if m["session_id"] == params.get("sid")])
         if "SELECT title FROM job_descriptions" in sql:
             return self.job_title
+        if "JOIN users u ON u.id = s.user_id" in sql:
+            return self.candidate_name
         if "SELECT status FROM interview_sessions" in sql:
             return self.session_row.get("status")
         if "SELECT COALESCE(MAX(sequence), 0)" in sql:
@@ -126,6 +131,8 @@ class MockChatSession:
                     self.turns[turn_id]["status"] = "SKIPPED"
                 if ":ans" in sql:
                     self.turns[turn_id]["answer_text"] = params.get("ans")
+                if ":previous_answer" in sql:
+                    self.turns[turn_id]["answer_text"] = params.get("previous_answer")
             return MockResult([])
 
         if "INSERT INTO interview_turns" in sql:
@@ -144,6 +151,16 @@ class MockChatSession:
         if "FROM interview_sessions" in sql:
             return MockResult([{"status": self.session_row.get("status"), "end_reason": self.session_row.get("end_reason")}])
 
+        if "UPDATE interview_chat_messages" in sql:
+            for message in self.messages:
+                if message.get("id") == params.get("message_id"):
+                    message["message_type"] = params.get("message_type")
+                    extra = params.get("extra_metadata")
+                    message.setdefault("metadata", {}).update(
+                        json.loads(extra) if isinstance(extra, str) else (extra or {})
+                    )
+            return MockResult([])
+
         if "INSERT INTO interview_chat_messages" in sql:
             cid = params.get("cid")
             if cid and any(m.get("client_message_id") == cid for m in self.messages):
@@ -158,6 +175,11 @@ class MockChatSession:
                 "session_id": params["sid"],
                 "role": "assistant" if "assistant" in sql else "user",
                 "content": params["content"],
+                "metadata": (
+                    json.loads(params["metadata"])
+                    if isinstance(params.get("metadata"), str)
+                    else params.get("metadata", {})
+                ),
                 "turn_id": params.get("turn_id"),
                 "message_type": params.get("msg_type") or ("GREETING" if "GREETING" in sql else "MAIN_QUESTION" if "MAIN_QUESTION" in sql else "WRAP_UP" if "WRAP_UP" in sql else "CANDIDATE_ANSWER"),
                 "sequence": params["seq"] if "seq" in params else (1 if "'MAIN_QUESTION', 1" in sql or "GREETING" in sql else 2),
@@ -262,6 +284,28 @@ async def test_inv1_and_inv5_start_chat_session_success(mock_session_data):
     assert db.turns["turn-1"]["status"] == "ASKED"
 
 
+@pytest.mark.asyncio
+async def test_opening_uses_full_name_then_one_word_call_name(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    db.candidate_name = "Nguyễn Văn Nam"
+
+    runtime = await start_chat_session(db, session_row)
+
+    opening = runtime["messages"][0]["content"]
+    assert opening.startswith("Chào Nguyễn Văn Nam,")
+    assert "hồ sơ của Nam" in opening
+    assert "bạn" not in opening.casefold()
+
+
+def test_subsequent_messages_use_only_the_last_name_word() -> None:
+    assert _candidate_name_parts("  Nguyễn   Minh Anh  ") == ("Nguyễn Minh Anh", "Anh")
+    assert _personalize_candidate_address(
+        "Cảm ơn bạn. Bạn hãy trình bày rõ hơn nhé.", "Anh"
+    ) == "Cảm ơn Anh. Anh hãy trình bày rõ hơn nhé."
+    assert _candidate_name_parts("Google User") == (None, None)
+
+
 # INV-2: Idempotency Guarantee
 @pytest.mark.asyncio
 async def test_inv2_idempotency_duplicate_client_message(mock_session_data):
@@ -292,6 +336,42 @@ async def test_inv2_idempotency_duplicate_client_message(mock_session_data):
         assert res2["userMessage"]["sequence"] == 2
         assert res2["assistantResponse"]["sequence"] == 3
         assert len(db.messages) == 3
+
+
+@pytest.mark.asyncio
+async def test_voice_interruption_telemetry_is_persisted(mock_session_data):
+    session_row, turns = mock_session_data
+    session_row["mode"] = "voice"
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    interruption = {
+        "occurred": True,
+        "speech_id": "speech-1",
+        "expected_text": "Câu hỏi đầy đủ",
+        "delivered_text": "Câu hỏi",
+    }
+
+    with patch(
+        "src.modules.interviews.application.chat_runtime.generate_text",
+        new_callable=AsyncMock,
+    ) as mock_llm:
+        mock_llm.return_value = (
+            '{"decision": "NEXT", "reply_text": "", '
+            '"acknowledgement": "Mình hiểu rồi."}'
+        )
+        await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="voice-interruption-1",
+            content="Tôi muốn sửa lại câu trả lời.",
+            modality="VOICE",
+            telemetry={"interruption": interruption},
+        )
+
+    user_message = next(
+        message for message in db.messages if message.get("client_message_id") == "voice-interruption-1"
+    )
+    assert user_message["metadata"]["telemetry"]["interruption"] == interruption
 
 
 # INV-3: Probe Budget Cap (Never exceed 1 probe per turn)
@@ -721,6 +801,33 @@ async def test_rt05_clarification(mock_session_data):
     assert res["turnStatus"]["isFollowUp"] is True
     assert res["completed"] is False
     assert len(res["message"]) > 0
+    assert res["userMessage"]["messageType"] == "CLARIFY"
+    assert db.turns[res["turnStatus"]["turnId"]]["answer_text"] is None
+
+
+@pytest.mark.asyncio
+async def test_candidate_rubric_question_is_answered_without_advancing_turn(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    current_turn_id = next(turn_id for turn_id, turn in db.turns.items() if turn["status"] == "ASKED")
+
+    res = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="candidate-rubric-question",
+        content=(
+            "Tôi là Nguyễn Thị Thanh Hiền và tôi muốn hỏi rubric điểm "
+            "ở trong hệ thống của mình là gì không?"
+        ),
+    )
+
+    assert res["action"] == "CLARIFY"
+    assert res["userMessage"]["messageType"] == "CANDIDATE_QUESTION"
+    assert "Rubric là bộ tiêu chí" in res["message"]
+    assert "Quay lại câu hiện tại" in res["message"]
+    assert db.turns[current_turn_id]["status"] == "ASKED"
+    assert db.turns[current_turn_id]["answer_text"] is None
 
 
 @pytest.mark.asyncio
@@ -2061,15 +2168,25 @@ async def test_regression_message_while_reply_in_flight_is_rejected():
 
 
 @pytest.mark.asyncio
-async def test_regression_retry_without_reply_never_returns_empty_assistant():
-    """H4: retrying a message whose reply never landed must not report success with no reply."""
+async def test_regression_retry_without_reply_resumes_same_event():
+    """H4: a stale Phase-1 write resumes without inserting the answer twice."""
     db, session_row = _in_flight_fixture(sent_seconds_ago=5)
     with pytest.raises(ChatRuntimeError, match="IN_PROGRESS"):
         await process_candidate_message(db, session_row, client_message_id="c-first", content="first answer")
 
     stale_db, stale_row = _in_flight_fixture(sent_seconds_ago=3600)
-    with pytest.raises(ChatRuntimeError, match="STALE_MESSAGE"):
-        await process_candidate_message(stale_db, stale_row, client_message_id="c-first", content="first answer")
+    async def _generator(**_kwargs):
+        return '{"intent":"ANSWER","sufficiency_status":"INSUFFICIENT","acknowledgement":"Ok.","probe_question":"Chi tiết hơn?","score":5}'
+
+    result = await process_candidate_message(
+        stale_db,
+        stale_row,
+        client_message_id="c-first",
+        content="first answer",
+        core_engine=InterviewCoreEngine(ai_generator=_generator),
+    )
+    assert result["assistantResponse"] is not None
+    assert len([m for m in stale_db.messages if m["role"] == "user"]) == 1
 
 
 @pytest.mark.asyncio
@@ -2084,8 +2201,8 @@ async def test_regression_reply_is_not_written_after_session_closed_mid_llm():
 
     with pytest.raises(ChatRuntimeError, match="SESSION_CLOSED"):
         await process_candidate_message(
-            db, session_row, client_message_id="c-new",
-            content="A long and detailed answer about the architecture and its trade offs.",
+            db, session_row, client_message_id="c-first",
+            content="first answer",
             core_engine=InterviewCoreEngine(ai_generator=_closing_generator),
         )
     assert db.session_row["end_reason"] == "USER_ENDED"

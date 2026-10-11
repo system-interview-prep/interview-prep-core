@@ -47,6 +47,7 @@ MessageType = Literal[
     "CLARIFY",
     "PROBE",
     "CANDIDATE_ANSWER",
+    "CANDIDATE_QUESTION",
     "ACKNOWLEDGMENT",
     "WRAP_UP",
     "CONFIRM_ABORT",
@@ -84,6 +85,72 @@ _IN_FLIGHT_STALE_SECONDS = 300
 # network lost). It is closed as HARD_TIMEOUT when the candidate comes back,
 # instead of staying OPEN forever.
 _ABANDONED_GRACE_SECONDS = 600
+
+_GENERIC_CANDIDATE_NAMES = frozenset(
+    {"user", "google user", "candidate", "ứng viên", "admin", "administrator"}
+)
+
+
+def _candidate_name_parts(raw_name: Any) -> tuple[str | None, str | None]:
+    """Return a safe full display name and its one-word Vietnamese call name."""
+    if not isinstance(raw_name, str):
+        return None, None
+    normalized = " ".join(raw_name.split()).strip(".,;:!?()[]{}\"'")
+    if (
+        not normalized
+        or len(normalized) > 100
+        or normalized.casefold() in _GENERIC_CANDIDATE_NAMES
+        or not any(char.isalpha() for char in normalized)
+        or any(not (char.isalpha() or char in " -'’") for char in normalized)
+    ):
+        return None, None
+    words = normalized.split()
+    return normalized, words[-1].strip("-'’") or None
+
+
+async def _candidate_names(
+    db: AsyncSession, session_id: str
+) -> tuple[str | None, str | None]:
+    # Matching deliberately receives a PII-free CanonicalResume. Addressing is
+    # therefore sourced from the authenticated user's profile, not copied into
+    # matching payloads, plans, prompts, or evaluation evidence.
+    raw_name = await db.scalar(
+        text(
+            "SELECT NULLIF(BTRIM(u.name), '') FROM interview_sessions s "
+            "JOIN users u ON u.id = s.user_id WHERE s.id = :sid"
+        ),
+        {"sid": session_id},
+    )
+    return _candidate_name_parts(raw_name)
+
+
+def _personalize_candidate_address(text_value: str, short_name: str | None) -> str:
+    """Use the candidate's one-word call name instead of the generic `bạn`."""
+    if not short_name:
+        return text_value
+    return re.sub(r"\b[Bb]ạn\b", short_name, text_value)
+
+
+def _personalize_opening(
+    text_value: str, full_name: str | None, short_name: str | None
+) -> str:
+    """Use the full name for the first greeting and the short name afterwards."""
+    if not full_name:
+        return text_value
+    personalized, count = re.subn(
+        r"\bChào\s+bạn\b", f"Chào {full_name}", text_value, count=1, flags=re.IGNORECASE
+    )
+    already_named = re.match(
+        rf"^Chào\s+{re.escape(full_name)}\b", personalized, flags=re.IGNORECASE
+    )
+    if count == 0 and not already_named:
+        personalized = f"Chào {full_name}, {personalized}"
+    greeting_end = personalized.find(",") + 1
+    if greeting_end > 0:
+        return personalized[:greeting_end] + _personalize_candidate_address(
+            personalized[greeting_end:], short_name
+        )
+    return personalized
 
 
 def _unfinished_agenda_turns(
@@ -407,6 +474,14 @@ async def start_chat_session(
             "P2_NOT_LOCKED: Phiên phỏng vấn phải được chuẩn bị câu hỏi (LOCKED) trước khi bắt đầu chat."
         )
 
+    # Serialize the empty-transcript check with creation of sequence 1. Without
+    # this lock two tabs can both observe an empty session and race the opening
+    # INSERT, leaving one request as an avoidable 500.
+    await db.execute(
+        text("SELECT id FROM interview_sessions WHERE id = :sid FOR UPDATE"),
+        {"sid": session_id},
+    )
+
     # Check if already started in interview_chat_messages
     existing_count = await db.scalar(
         text("SELECT COUNT(*) FROM interview_chat_messages WHERE session_id = :sid"),
@@ -458,6 +533,7 @@ async def start_chat_session(
 
     is_vi = (session_row.get("locale") or "vi").lower().startswith("vi")
     job_title = await _get_job_title(db, session_row.get("job_id"))
+    candidate_full_name, candidate_short_name = await _candidate_names(db, session_id)
 
     # Single opening message: greeting + first turn question
     q_snapshot = first_turn.get("question_snapshot") or {}
@@ -473,7 +549,8 @@ async def start_chat_session(
 
     if "Chào bạn" not in q_text and "Hello" not in q_text:
         opening_text = (
-            f"Chào bạn, tôi là AI Interviewer của INTERVIA. Hôm nay chúng ta sẽ cùng phỏng vấn "
+            f"Chào {candidate_full_name or 'bạn'}, tôi là AI Interviewer của INTERVIA. "
+            f"Hôm nay chúng ta sẽ cùng phỏng vấn "
             f"cho vị trí {job_title} dựa trên yêu cầu công việc và hồ sơ của bạn.\n\n"
             f"{q_text}"
             if is_vi
@@ -483,6 +560,10 @@ async def start_chat_session(
         )
     else:
         opening_text = q_text
+    if is_vi:
+        opening_text = _personalize_opening(
+            opening_text, candidate_full_name, candidate_short_name
+        )
 
     question_id = str(uuid4())
     q_meta = {
@@ -809,38 +890,19 @@ async def process_candidate_message(
         text("SELECT id FROM interview_sessions WHERE id = :sid FOR UPDATE"),
         {"sid": session_id},
     )
-    last_msg = (
-        await db.execute(
-            text(
-                """
-                SELECT role, EXTRACT(EPOCH FROM (now() - created_at)) AS age_seconds
-                FROM interview_chat_messages
-                WHERE session_id = :sid
-                ORDER BY sequence DESC LIMIT 1
-                """
-            ),
-            {"sid": session_id},
-        )
-    ).mappings().one_or_none()
-    # Age is computed by the database clock, so app/DB timezone skew cannot
-    # make every message look in flight.
-    reply_in_flight = bool(
-        last_msg
-        and last_msg.get("role") == "user"
-        and float(last_msg.get("age_seconds") or 0) < _IN_FLIGHT_STALE_SECONDS
-    )
-    if reply_in_flight:
-        raise ChatRuntimeError(
-            "IN_PROGRESS: Câu trả lời trước vẫn đang được xử lý. Vui lòng chờ phản hồi của người phỏng vấn."
-        )
+    recovered_phase1 = False
+    existing_user_msg = None
+    previous_answer = current_turn.get("answer_text")
 
-    # Idempotency check: if client_message_id already exists, return existing reply immediately
+    # Check the event id before the generic in-flight guard. Once Phase 1 has
+    # committed, retrying this exact event is the only safe way to finish it.
     if client_message_id:
         existing = await db.execute(
             text(
                 """
                 SELECT id, session_id, role, content, metadata, created_at,
-                       turn_id, message_type, sequence, client_message_id
+                       turn_id, message_type, sequence, client_message_id,
+                       EXTRACT(EPOCH FROM (now() - created_at)) AS age_seconds
                 FROM interview_chat_messages
                 WHERE session_id = :sid AND client_message_id = :cid
                 """
@@ -863,130 +925,131 @@ async def process_candidate_message(
             )
             asst_msg = asst_res.mappings().one_or_none()
             if asst_msg is None or asst_msg.get("role") != "assistant":
-                # The original request died before replying (an in-flight one
-                # was rejected above). Never hand back an empty reply or the
-                # candidate's next message as if it were the interviewer's.
-                raise ChatRuntimeError(
-                    "STALE_MESSAGE: Tin nhắn này không được xử lý. Vui lòng gửi lại câu trả lời."
-                )
-            remaining_time = _session_remaining_seconds(
-                session_row, elapsed_override_seconds=elapsed_override_seconds
-            )
-            action_name = asst_msg.get("message_type")
-            return {
-                "sessionId": session_id,
-                "currentStage": (current_turn.get("question_snapshot") or {}).get("stage", "INTRO"),
-                "currentTurnIndex": current_turn_index,
-                "action": action_name,
-                "message": asst_msg.get("content") if asst_msg else "",
-                "remainingTimeSeconds": remaining_time,
-                "probeCount": 0,
-                "completed": False,
-                "userMessage": _message_payload(dict(existing_user_msg)),
-                "assistantResponse": _message_payload(dict(asst_msg)) if asst_msg else None,
-                "turnStatus": {"completed": False},
-                "sessionStatus": session_row["status"],
-            }
-
-    # =========================================================================
-    # PHASE 1: Fast Write Candidate Message (Committed immediately)
-    # =========================================================================
-    max_seq = await db.scalar(
-        text("SELECT COALESCE(MAX(sequence), 0) FROM interview_chat_messages WHERE session_id = :sid"),
-        {"sid": session_id},
-    )
-    user_seq = int(max_seq or 0) + 1
-    asst_seq = user_seq + 1
-
-    user_msg_id = str(uuid4())
-    try:
-        await db.execute(
-            text(
-                """
-                INSERT INTO interview_chat_messages
-                (id, session_id, role, content, metadata, turn_id, message_type, sequence, client_message_id, created_at)
-                VALUES
-                (:id, :sid, 'user', :content, '{}'::jsonb, :turn_id, 'CANDIDATE_ANSWER', :seq, :cid, now())
-                """
-            ),
-            {
-                "id": user_msg_id,
-                "sid": session_id,
-                "content": cleaned_content,
-                "turn_id": current_turn_id,
-                "seq": user_seq,
-                "cid": client_message_id,
-            },
-        )
-    except IntegrityError as exc:
-        # Safe duplicate-race recovery for concurrent requests with same client_message_id
-        err_str = str(exc).lower()
-        if client_message_id and ("client_message_id" in err_str or "unique" in err_str or "duplicate" in err_str):
-            await db.rollback()
-            existing = await db.execute(
-                text(
-                    """
-                    SELECT id, session_id, role, content, metadata, created_at,
-                           turn_id, message_type, sequence, client_message_id
-                    FROM interview_chat_messages
-                    WHERE session_id = :sid AND client_message_id = :cid
-                    """
-                ),
-                {"sid": session_id, "cid": client_message_id},
-            )
-            existing_user_msg = existing.mappings().one_or_none()
-            if existing_user_msg:
-                existing_user_seq = existing_user_msg["sequence"]
-                asst_res = await db.execute(
-                    text(
-                        """
-                        SELECT id, session_id, role, content, metadata, created_at,
-                               turn_id, message_type, sequence, client_message_id
-                        FROM interview_chat_messages
-                        WHERE session_id = :sid AND sequence = :seq
-                        """
-                    ),
-                    {"sid": session_id, "seq": existing_user_seq + 1},
-                )
-                asst_msg = asst_res.mappings().one_or_none()
+                age_seconds = existing_user_msg.get("age_seconds")
+                created_at = existing_user_msg.get("created_at")
+                if age_seconds is None and isinstance(created_at, datetime):
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=UTC)
+                    age_seconds = (datetime.now(UTC) - created_at).total_seconds()
+                if float(age_seconds or 0) < _IN_FLIGHT_STALE_SECONDS:
+                    raise ChatRuntimeError(
+                        "IN_PROGRESS: Câu trả lời trước vẫn đang được xử lý. Vui lòng chờ phản hồi của người phỏng vấn."
+                    )
+                if str(existing_user_msg.get("content") or "").strip() != cleaned_content:
+                    raise ValueError("EVENT_ID_PAYLOAD_MISMATCH")
+                metadata = existing_user_msg.get("metadata") or {}
+                if isinstance(metadata, str):
+                    try:
+                        metadata = json.loads(metadata)
+                    except ValueError:
+                        metadata = {}
+                previous_answer = metadata.get("previousAnswer")
+                telemetry = metadata.get("telemetry") or telemetry
+                user_msg_id = str(existing_user_msg["id"])
+                user_seq = int(existing_user_msg["sequence"])
+                asst_seq = user_seq + 1
+                recovered_phase1 = True
+            else:
                 remaining_time = _session_remaining_seconds(
                     session_row, elapsed_override_seconds=elapsed_override_seconds
                 )
-                action_name = asst_msg.get("message_type") if asst_msg else "NONE"
                 return {
                     "sessionId": session_id,
                     "currentStage": (current_turn.get("question_snapshot") or {}).get("stage", "INTRO"),
                     "currentTurnIndex": current_turn_index,
-                    "action": action_name,
-                    "message": asst_msg.get("content") if asst_msg else "",
+                    "action": asst_msg.get("message_type"),
+                    "message": asst_msg.get("content") or "",
                     "remainingTimeSeconds": remaining_time,
                     "probeCount": 0,
                     "completed": False,
                     "userMessage": _message_payload(dict(existing_user_msg)),
-                    "assistantResponse": _message_payload(dict(asst_msg)) if asst_msg else None,
+                    "assistantResponse": _message_payload(dict(asst_msg)),
                     "turnStatus": {"completed": False},
                     "sessionStatus": session_row["status"],
                 }
-        raise
 
-    # Accumulate answer text into interview_turns
-    existing_answer = current_turn.get("answer_text") or ""
-    new_accumulated = (
-        f"{existing_answer}\n\n[Follow-up Answer]: {cleaned_content}"
-        if existing_answer
-        else cleaned_content
-    )
-    await db.execute(
-        text(
-            """
-            UPDATE interview_turns
-            SET answer_text = :ans, updated_at = now()
-            WHERE id = :turn_id
-            """
-        ),
-        {"ans": new_accumulated, "turn_id": current_turn_id},
-    )
-    # Commit Phase 1: User message is securely stored
+    if not recovered_phase1:
+        last_msg = (
+            await db.execute(
+                text(
+                    """
+                    SELECT role, client_message_id,
+                           EXTRACT(EPOCH FROM (now() - created_at)) AS age_seconds
+                    FROM interview_chat_messages
+                    WHERE session_id = :sid
+                    ORDER BY sequence DESC LIMIT 1
+                    """
+                ),
+                {"sid": session_id},
+            )
+        ).mappings().one_or_none()
+        if last_msg and last_msg.get("role") == "user":
+            if float(last_msg.get("age_seconds") or 0) < _IN_FLIGHT_STALE_SECONDS:
+                raise ChatRuntimeError(
+                    "IN_PROGRESS: Câu trả lời trước vẫn đang được xử lý. Vui lòng chờ phản hồi của người phỏng vấn."
+                )
+            raise ChatRuntimeError(
+                "RECOVERY_REQUIRED: Câu trả lời trước đã được lưu nhưng chưa có phản hồi. "
+                "Vui lòng thử lại đúng tin nhắn đó."
+            )
+
+    # =========================================================================
+    # PHASE 1: Fast Write Candidate Message (Committed immediately)
+    # =========================================================================
+    if not recovered_phase1:
+        max_seq = await db.scalar(
+            text("SELECT COALESCE(MAX(sequence), 0) FROM interview_chat_messages WHERE session_id = :sid"),
+            {"sid": session_id},
+        )
+        user_seq = int(max_seq or 0) + 1
+        asst_seq = user_seq + 1
+        user_msg_id = str(uuid4())
+        try:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO interview_chat_messages
+                    (id, session_id, role, content, metadata, turn_id, message_type, sequence, client_message_id, created_at)
+                    VALUES
+                    (:id, :sid, 'user', :content, CAST(:metadata AS jsonb), :turn_id, 'CANDIDATE_ANSWER', :seq, :cid, now())
+                    """
+                ),
+                {
+                    "id": user_msg_id,
+                    "sid": session_id,
+                    "content": cleaned_content,
+                    "metadata": json.dumps(
+                        {"telemetry": telemetry or {}, "previousAnswer": previous_answer}
+                    ),
+                    "turn_id": current_turn_id,
+                    "seq": user_seq,
+                    "cid": client_message_id,
+                },
+            )
+        except IntegrityError:
+            await db.rollback()
+            raise ChatRuntimeError(
+                "IN_PROGRESS: Câu trả lời đang được xử lý. Vui lòng thử lại sau."
+            )
+
+        existing_answer = previous_answer or ""
+        new_accumulated = (
+            f"{existing_answer}\n\n[Follow-up Answer]: {cleaned_content}"
+            if existing_answer
+            else cleaned_content
+        )
+        await db.execute(
+            text(
+                """
+                UPDATE interview_turns
+                SET answer_text = :ans, updated_at = now()
+                WHERE id = :turn_id
+                """
+            ),
+            {"ans": new_accumulated, "turn_id": current_turn_id},
+        )
+    # Commit/release the Phase 1 lock before the provider call. Recovered
+    # requests skip the writes above, so answer_text is not accumulated twice.
     await db.commit()
 
     # =========================================================================
@@ -994,6 +1057,7 @@ async def process_candidate_message(
     # =========================================================================
     is_vi = (session_row.get("locale") or "vi").lower().startswith("vi")
     job_title = await _get_job_title(db, session_row.get("job_id"))
+    _, candidate_short_name = await _candidate_names(db, session_id)
 
     asst_msg_id = str(uuid4())
 
@@ -1004,6 +1068,10 @@ async def process_candidate_message(
             SELECT turn_id, message_type
             FROM interview_chat_messages
             WHERE session_id = :sid AND role = 'assistant' AND message_type IN ('PROBE', 'CLARIFY')
+              -- Repeating an unheard question or answering a question about the
+              -- interview is not the question's one clarification.
+              AND metadata->>'repeatRequest' IS NULL
+              AND metadata->>'candidateQuestionIntent' IS NULL
             """
         ),
         {"sid": session_id},
@@ -1073,6 +1141,11 @@ async def process_candidate_message(
             error_message=str(exc),
         )
         raise
+
+    if is_vi:
+        core_output.message_text = _personalize_candidate_address(
+            core_output.message_text, candidate_short_name
+        )
 
     trace_event(
         "interviewer",
@@ -1172,19 +1245,64 @@ async def process_candidate_message(
         }
 
     if core_output.action == TurnAction.CLARIFY:
+        candidate_question_intent = core_output.metadata.get("candidate_question_intent")
+        repeat_request = bool(core_output.metadata.get("repeat_request"))
+        user_message_type = "CANDIDATE_QUESTION" if candidate_question_intent else "CLARIFY"
+        # A request directed at the interviewer is part of the conversation,
+        # but it is not assessment evidence for the current question. Phase 1
+        # writes optimistically before the engine runs, so restore the previous
+        # accumulated answer and correct the persisted user-message type here.
+        await db.execute(
+            text(
+                """
+                UPDATE interview_turns
+                SET answer_text = :previous_answer, updated_at = now()
+                WHERE id = :turn_id
+                """
+            ),
+            {"previous_answer": previous_answer, "turn_id": current_turn_id},
+        )
+        await db.execute(
+            text(
+                """
+                UPDATE interview_chat_messages
+                SET message_type = :message_type,
+                    metadata = metadata || CAST(:extra_metadata AS jsonb)
+                WHERE id = :message_id
+                """
+            ),
+            {
+                "message_type": user_message_type,
+                "extra_metadata": json.dumps(
+                    {"candidateQuestionIntent": candidate_question_intent}
+                    if candidate_question_intent
+                    else {"repeatRequest": True}
+                    if repeat_request
+                    else {"clarificationRequest": True}
+                ),
+                "message_id": user_msg_id,
+            },
+        )
         await db.execute(
             text(
                 """
                 INSERT INTO interview_chat_messages
                 (id, session_id, role, content, metadata, turn_id, message_type, sequence, created_at)
                 VALUES
-                (:id, :sid, 'assistant', :content, '{}'::jsonb, :turn_id, :msg_type, :seq, now())
+                (:id, :sid, 'assistant', :content, CAST(:metadata AS jsonb), :turn_id, :msg_type, :seq, now())
                 """
             ),
             {
                 "id": asst_msg_id,
                 "sid": session_id,
                 "content": core_output.message_text,
+                "metadata": json.dumps(
+                    {"candidateQuestionIntent": candidate_question_intent}
+                    if candidate_question_intent
+                    else {"repeatRequest": True}
+                    if repeat_request
+                    else {}
+                ),
                 "turn_id": current_turn_id,
                 "msg_type": "CLARIFY",
                 "seq": asst_seq,
@@ -1203,7 +1321,7 @@ async def process_candidate_message(
             "userMessage": {
                 "messageId": user_msg_id,
                 "role": "user",
-                "messageType": "CANDIDATE_ANSWER",
+                "messageType": user_message_type,
                 "turnId": current_turn_id,
                 "sequence": user_seq,
                 "content": cleaned_content,
@@ -1465,6 +1583,8 @@ async def process_candidate_message(
             or next_snap.get("question_text")
             or "Câu hỏi tiếp theo dành cho bạn."
         )
+        if is_vi:
+            next_q_text = _personalize_candidate_address(next_q_text, candidate_short_name)
 
         # Bridge Transition: natural acknowledgment + next main question
         next_content = core_output.message_text
@@ -1477,6 +1597,8 @@ async def process_candidate_message(
                 next_content = f"{ack}\n\nChúng ta hãy cùng chuyển sang câu hỏi tiếp theo nhé:\n\n{next_q_text}"
             else:
                 next_content = f"{ack}\n\nLet's move on to the next question:\n\n{next_q_text}"
+        if is_vi:
+            next_content = _personalize_candidate_address(next_content, candidate_short_name)
 
         q_meta = {
             "questionVersionId": str(next_turn["question_version_id"])
@@ -1633,6 +1755,8 @@ async def process_candidate_message(
                 "topics. You can review the full conversation transcript here. "
                 "Wishing you great success!"
             )
+    if is_vi:
+        wrap_text = _personalize_candidate_address(wrap_text, candidate_short_name)
 
     await db.execute(
         text(
@@ -1702,6 +1826,7 @@ async def complete_chat_session(
 ) -> dict[str, Any]:
     session_id = session_row["id"]
     is_vi = (session_row.get("locale") or "vi").lower().startswith("vi")
+    _, candidate_short_name = await _candidate_names(db, session_id)
 
     # Check if session is already closed (either in passed dict or in DB)
     if session_row["status"] == "CLOSED":
@@ -1717,11 +1842,11 @@ async def complete_chat_session(
             "sessionStatus": "CLOSED",
             "endReason": existing_reason,
             "endedAt": ended_str,
-            "summary": (
+            "summary": _personalize_candidate_address((
                 "Phiên phỏng vấn đã kết thúc. Bạn có thể xem lại toàn bộ nội dung trò chuyện."
                 if is_vi
                 else "The interview session has ended. You can review the full transcript."
-            ),
+            ), candidate_short_name if is_vi else None),
         }
 
     # Verify directly from DB to prevent race condition / multiple complete calls.
@@ -1740,11 +1865,11 @@ async def complete_chat_session(
             "sessionStatus": "CLOSED",
             "endReason": existing_reason,
             "endedAt": datetime.now(UTC).isoformat(),
-            "summary": (
+            "summary": _personalize_candidate_address((
                 "Phiên phỏng vấn đã kết thúc. Bạn có thể xem lại toàn bộ nội dung trò chuyện."
                 if is_vi
                 else "The interview session has ended. You can review the full transcript."
-            ),
+            ), candidate_short_name if is_vi else None),
         }
 
     # A client may only assert COMPLETED when the frozen agenda really is done.
@@ -1794,6 +1919,8 @@ async def complete_chat_session(
             if is_vi
             else "The interview session has been concluded per your request. Thank you for your time!"
         )
+        if is_vi:
+            wrap_text = _personalize_candidate_address(wrap_text, candidate_short_name)
         await db.execute(
             text(
                 """
@@ -1836,6 +1963,8 @@ async def complete_chat_session(
         if is_vi
         else "The interview session has ended. You can review the full transcript."
     )
+    if is_vi:
+        summary_text = _personalize_candidate_address(summary_text, candidate_short_name)
 
     return {
         "sessionId": session_id,

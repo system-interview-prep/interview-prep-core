@@ -25,16 +25,20 @@ Vì vậy, ở trạng thái hiện tại, một người dùng dán CV và JD v
 
 ## 2. Điểm chặn
 
+**Cập nhật 09/10/2026:** B-1, B-2, B-6 đã sửa trong code kèm test (`tests/modules/matching/test_router.py`, `tests/modules/interviews/test_candidate_boundary.py`).
+
+**Cập nhật 10/10/2026:** B-4 đã sửa. **Đính chính:** bản 09/10 mô tả sai B-4. Các chuỗi "98% Accuracy", "Sentiment Analysis Engine" và lời chứng thực hư cấu có trong `i18n.ts` nhưng **không trang nào hiển thị** (không có tham chiếu); đã xóa để tránh bị nối lại sau này. Những tuyên bố sai mà người dùng **thật sự nhìn thấy** là: modal VietQR hiển thị số tài khoản và báo "tài khoản đã được nâng cấp" sau một lần chuyển khoản giả; mô tả hình thức phỏng vấn tiếng Việt nói có "phân tích giọng điệu", "cảm xúc", "biểu cảm"; danh sách tính năng gói có "phân tích từ khóa ATS" không tồn tại; trang Cài đặt báo đổi mật khẩu / xóa tài khoản thành công dù không gọi máy chủ. Tất cả đã được sửa thành thông báo trung thực hoặc khóa lại với nhãn "chưa hỗ trợ". B-3 (thanh toán thật) và B-5 (đồng ý, xóa dữ liệu) vẫn chặn ra mắt.
+
 B-1, B-2, B-4, B-6 chặn **demo** (kể cả buổi bảo vệ). B-3, B-5 chặn **ra mắt** (thu tiền hoặc mở cho người dùng thật).
 
 | # | Vấn đề | Bằng chứng | Hậu quả |
 |---|---|---|---|
-| B-1 | **Endpoint đối chiếu không có xác thực.** `/api/v1/matching/match`, `/match-ids`, `/ai/score-cv-jp` và `/clarifications*` không có `Depends(current_user)`. `resolve_resume` đọc `user_cvs` theo id mà không lọc `user_id`. | `src/modules/matching/api/router.py`; `src/modules/matching/application/input_resolver.py:25` | Ai biết id CV đều đọc được dữ liệu CV của người khác (IDOR), và có thể đốt chi phí mô hình không giới hạn. Vi phạm SF-03. |
-| B-2 | **Ứng viên thấy nhãn tuyển/loại.** API trả `decisionRecommendation`; trang kết quả mở tab "nhà tuyển dụng" làm mặc định, hiện REJECT và red flags. | `evaluation/evaluation_service.py`; frontend `InterviewReportView.tsx` | Vi phạm SF-04 ở cả API lẫn giao diện. |
+| B-1 | **[Đã sửa 09/10]** **Endpoint đối chiếu không có xác thực.** `/api/v1/matching/match`, `/match-ids`, `/ai/score-cv-jp` và `/clarifications*` không có `Depends(current_user)`. `resolve_resume` đọc `user_cvs` theo id mà không lọc `user_id`. | `src/modules/matching/api/router.py`; `src/modules/matching/application/input_resolver.py:25` | Ai biết id CV đều đọc được dữ liệu CV của người khác (IDOR), và có thể đốt chi phí mô hình không giới hạn. Vi phạm SF-03. |
+| B-2 | **[Đã sửa 09/10]** **Ứng viên thấy nhãn tuyển/loại.** API trả `decisionRecommendation`; trang kết quả mở tab "nhà tuyển dụng" làm mặc định, hiện REJECT và red flags. | `evaluation/evaluation_service.py`; frontend `InterviewReportView.tsx` | Vi phạm SF-04 ở cả API lẫn giao diện. |
 | B-3 | **Thanh toán giả.** Modal VietQR chờ timeout rồi báo "demo-complete". Credit tạo khi đăng ký nhưng không bao giờ bị trừ hay kiểm. | frontend `VietQrModal.tsx:88-92`; backend không có chỗ nào trừ `user_credits` | Không thể bán; nếu mở công khai là thu tiền không giao dịch thật hoặc cho dùng miễn phí không giới hạn. |
-| B-4 | **Tuyên bố marketing không có căn cứ.** "98% Accuracy", "Sentiment Analysis Engine", lời chứng thực của nhân vật hư cấu. | frontend `i18n.ts:1368-1369`, `:3506-3514` | Quảng cáo sai sự thật. "Sentiment analysis" còn mâu thuẫn §1.2.3 của contract. |
+| B-4 | **[Đã sửa 10/10 — xem đính chính ở trên]** **Tuyên bố không có căn cứ mà người dùng nhìn thấy:** modal VietQR báo nâng cấp sau chuyển khoản giả, mô tả hình thức phỏng vấn nói có phân tích cảm xúc/giọng điệu, tính năng gói không tồn tại, cài đặt báo thành công giả. | frontend `VietQrModal.tsx`, `i18n.ts`, `pricing.data.ts`, `dashboard/settings/page.tsx` | Quảng cáo sai sự thật. "Sentiment analysis" còn mâu thuẫn §1.2.3 của contract. |
 | B-5 | **Không có đồng ý xử lý dữ liệu và không xóa được tài khoản.** Xóa CV không xóa transcript và snapshot chứa nội dung CV. | backend: không có endpoint xóa tài khoản; không có logic retention | Luật Bảo vệ dữ liệu cá nhân 2025 yêu cầu đồng ý rõ ràng và quyền xóa. |
-| B-6 | **Xóa CV làm mất lịch sử phỏng vấn.** FK `resume_id` là `ON DELETE SET NULL`, trong khi danh sách phiên và `_owned_session` lọc `resume_id IS NOT NULL`. | `migrations/versions/20260925_0013_...py:30`; `api/router.py:182, 332` | Người dùng xóa CV cũ thì mất toàn bộ báo cáo cũ. Mọi tính năng theo dõi tiến bộ đều hỏng từ gốc. |
+| B-6 | **[Đã sửa 09/10]** **Xóa CV làm mất lịch sử phỏng vấn.** FK `resume_id` là `ON DELETE SET NULL`, trong khi danh sách phiên và `_owned_session` lọc `resume_id IS NOT NULL`. | `migrations/versions/20260925_0013_...py:30`; `api/router.py:182, 332` | Người dùng xóa CV cũ thì mất toàn bộ báo cáo cũ. Mọi tính năng theo dõi tiến bộ đều hỏng từ gốc. |
 
 ---
 

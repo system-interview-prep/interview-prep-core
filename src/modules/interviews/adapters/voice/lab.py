@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.config import get_settings
 from src.core.security import bearer_scheme, current_user
 from src.infrastructure.database import get_db
+from src.modules.interviews.api.rate_limit import interview_rate_limiter
 from src.modules.interviews.application.facade import (
     ChatRuntimeError,
     start_voice_interview,
@@ -222,7 +223,12 @@ async def start_livekit_runtime(
     )
     if not opening:
         raise HTTPException(status_code=409, detail="Interview runtime has no opening question")
-    return {"sessionId": session["id"], "openingMessage": opening, "sessionStatus": runtime["sessionStatus"]}
+    return {
+        "sessionId": session["id"],
+        "openingMessage": opening,
+        "sessionStatus": runtime["sessionStatus"],
+        "locale": session.get("locale") or "vi-VN",
+    }
 
 
 @router.post("/livekit/runtime/message")
@@ -259,7 +265,11 @@ async def livekit_token(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Issue a room token and a session-scoped credential for the voice worker."""
+    await interview_rate_limiter.check(user["sub"], "voice-token")
     session = await _load_voice_session(db, payload.sessionId, user["sub"])
+    expected_room_name = f"interview-{session['id']}"
+    if payload.roomName != expected_room_name:
+        raise HTTPException(status_code=409, detail="Room name does not match the interview session")
     settings = get_settings()
     if not settings.livekit_url or not settings.livekit_api_key or not settings.livekit_api_secret:
         raise HTTPException(status_code=503, detail="LiveKit is not configured")
@@ -292,7 +302,7 @@ async def livekit_token(
         .with_grants(
             api.VideoGrants(
                 room_join=True,
-                room=payload.roomName,
+                room=expected_room_name,
                 can_publish=True,
                 can_subscribe=True,
                 can_publish_data=True,
@@ -314,5 +324,6 @@ async def livekit_token(
         "serverUrl": settings.livekit_url,
         "participantToken": token,
         "agentName": settings.livekit_agent_name,
+        "roomName": expected_room_name,
         "expiresInSeconds": 600,
     }

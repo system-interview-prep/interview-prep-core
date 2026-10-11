@@ -12,7 +12,9 @@ from src.modules.interviews.core.interview_types import (
 from src.modules.interviews.core.interview_engine import (
     SAFE_FALLBACK_PROBE_VI,
     InterviewCoreEngine,
+    classify_candidate_question,
     is_abort_request,
+    is_repeat_request,
     is_skip_request,
 )
 
@@ -31,6 +33,27 @@ class MockLLM:
 
     async def generate_text(self, system_prompt: str, user_content: str):
         return self.probe_text
+
+
+class SinglePassProbeLLM:
+    def __init__(self):
+        self.evaluation_calls = 0
+        self.probe_generation_calls = 0
+
+    async def generate_json(self, system_prompt: str, user_content: str):
+        self.evaluation_calls += 1
+        return {
+            "intent": "ANSWER",
+            "sufficiency_status": "INSUFFICIENT",
+            "missing_aspect": "failure handling",
+            "acknowledgement": "Mình hiểu rồi.",
+            "probe_question": "Khi Redis lỗi, hệ thống của bạn xử lý thế nào?",
+            "score": 5.0,
+        }
+
+    async def generate_text(self, system_prompt: str, user_content: str):
+        self.probe_generation_calls += 1
+        return "Không được gọi lượt sinh thứ hai."
 
 
 class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
@@ -140,6 +163,118 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output.current_stage, InterviewStage.VALIDATE)
         self.assertEqual(output.metadata.get("turn_in_question"), 1)
         self.assertIn("caching strategy", output.message_text)
+
+    async def test_probe_is_generated_in_single_model_round_trip(self):
+        llm = SinglePassProbeLLM()
+        engine = InterviewCoreEngine(llm_client=llm)
+        turn_input = CandidateTurnInput(
+            session_id=self.session_id,
+            turn_index=1,
+            text_content="Tôi dùng Redis để cache dữ liệu.",
+        )
+        session_state = {
+            "locale": "vi-VN",
+            "current_stage": InterviewStage.VALIDATE.value,
+            "started_at": datetime.now(timezone.utc),
+            "target_duration_minutes": 25,
+            "questions_pool": self.sample_questions_pool,
+            "asked_question_ids": [],
+            "current_turn_in_question": 0,
+            "current_question_context": {
+                "main_prompt": "Bạn đã tối ưu Redis như thế nào?",
+            },
+        }
+
+        output = await engine.handle_turn(turn_input, session_state)
+
+        self.assertEqual(output.action, TurnAction.PROBE)
+        self.assertEqual(output.message_text, "Khi Redis lỗi, hệ thống của bạn xử lý thế nào?")
+        self.assertTrue(output.metadata["probe_generated_in_evaluation"])
+        self.assertEqual(llm.evaluation_calls, 1)
+        self.assertEqual(llm.probe_generation_calls, 0)
+
+    def test_candidate_questions_are_classified_without_stealing_technical_answers(self):
+        self.assertEqual(
+            classify_candidate_question("Cho tôi hỏi rubric điểm trong hệ thống là gì?"),
+            "SCORING",
+        )
+        self.assertEqual(
+            classify_candidate_question("Buổi phỏng vấn có bao nhiêu câu và kéo dài bao lâu?"),
+            "PROCESS",
+        )
+        self.assertEqual(
+            classify_candidate_question("Team backend hiện có bao nhiêu người?"),
+            "ROLE_QA",
+        )
+        self.assertIsNone(
+            classify_candidate_question(
+                "Tôi chọn Redis. Tại sao? Vì dữ liệu đọc nhiều và chấp nhận eventual consistency."
+            )
+        )
+
+    def test_off_topic_and_meta_asides_are_classified(self):
+        cases = {
+            "Hôm nay thời tiết thế nào?": "OFF_TOPIC",
+            "Bạn là ChatGPT à?": "ABOUT_INTERVIEWER",
+            "Bạn là ai vậy?": "ABOUT_INTERVIEWER",
+            "Viết code giúp em được không?": "ANSWER_REQUEST",
+            "Cho em xin đáp án câu này": "ANSWER_REQUEST",
+        }
+        for text, intent in cases.items():
+            self.assertEqual(classify_candidate_question(text), intent, text)
+        for answer in (
+            # Whole words: "ot" inside "Boot" / "hotfix" is not overtime.
+            "Em dùng Spring Boot, hotfix thì sao? Em rollback qua tag.",
+            "Leader của em, anh là người quyết định kiến trúc.",
+            "Em so sánh đáp án của API với expected output trong test.",
+            "Hệ thống đặt tour du lịch em làm phần thanh toán.",
+        ):
+            self.assertIsNone(classify_candidate_question(answer), answer)
+
+    def test_repeat_requests_are_recognised_without_stealing_answers(self):
+        for text in (
+            "mình nghe chưa rõ bạn có thể nói lại được không?",
+            "Mình nghe chưa rõ.",
+            "Bạn hỏi gì cơ?",
+            "Gì cơ ạ?",
+            "Câu hỏi là gì vậy ạ",
+            "Bạn nhắc lại giúp em nhé",
+            "Nhắc lại đi",
+        ):
+            self.assertTrue(is_repeat_request(text), text)
+        for text in (
+            "Em hỏi lại PM để chốt yêu cầu rồi mới code.",
+            "Khi request lỗi em cho retry, lặp lại tối đa ba lần với backoff rồi mới báo lỗi cho người dùng.",
+            "Em dùng Redis để cache kết quả truy vấn.",
+            "Em hỏi lại họ để chốt yêu cầu.",
+            "Em nghe lại recording để tìm lỗi.",
+            "Kết nối DB bị ngắt thì em retry.",
+        ):
+            self.assertFalse(is_repeat_request(text), text)
+
+    async def test_repeat_request_reasks_the_question_without_evaluating(self):
+        llm = SinglePassProbeLLM()
+        engine = InterviewCoreEngine(llm_client=llm)
+        question = "Bạn xử lý webhook trùng lặp thế nào?"
+
+        output = await engine.handle_turn(
+            CandidateTurnInput(session_id=self.session_id, turn_index=2, text_content="Mình nghe chưa rõ."),
+            {
+                "current_stage": InterviewStage.DEEP_DIVE.value,
+                "started_at": datetime.now(timezone.utc),
+                "target_duration_minutes": 25,
+                "questions_pool": self.sample_questions_pool,
+                "asked_question_ids": ["q-val-1"],
+                "current_turn_in_question": 0,
+                "current_question_context": {"main_prompt": question},
+            },
+        )
+
+        self.assertEqual(output.action, TurnAction.CLARIFY)
+        self.assertIn(question, output.message_text)
+        self.assertTrue(output.metadata["repeat_request"])
+        self.assertEqual(output.metadata["sufficiency_status"], "NOT_ASSESSED")
+        self.assertEqual(llm.evaluation_calls, 0)
 
     async def test_no_probe_when_turn_in_question_is_already_1(self):
         """3. Đã ở lượt probe (turn_in_question=1) -> Bắt buộc chuyển câu hỏi tiếp theo, không probe lặp."""

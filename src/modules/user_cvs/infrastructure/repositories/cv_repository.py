@@ -27,18 +27,29 @@ class SqlAlchemyCvRepository:
         row = result.mappings().one_or_none()
         return CvRecord.from_row(row) if row else None
 
-    async def list_owned(self, user_id: str, limit: int, career_code: str | None = None) -> list[CvRecord]:
+    async def list_owned(
+        self, user_id: str, limit: int, career_code: str | None = None, offset: int = 0
+    ) -> list[CvRecord]:
         query = _SELECT + " WHERE user_id = :user_id"
-        params: dict[str, object] = {"user_id": user_id, "limit": limit}
+        params: dict[str, object] = {"user_id": user_id, "limit": limit, "offset": max(0, offset)}
         if career_code:
             query += " AND parsed_data @> CAST(:career_filter AS jsonb)"
             params["career_filter"] = json.dumps({"careerClassifications": [{"code": career_code}]})
-        query += " ORDER BY created_at DESC, id DESC LIMIT :limit"
+        query += " ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset"
         result = await self._session.execute(
             text(query),
             params,
         )
         return [CvRecord.from_row(row) for row in result.mappings().all()]
+
+    async def count_owned(self, user_id: str, career_code: str | None = None) -> int:
+        query = "SELECT COUNT(*) AS total FROM user_cvs WHERE user_id = :user_id"
+        params: dict[str, object] = {"user_id": user_id}
+        if career_code:
+            query += " AND parsed_data @> CAST(:career_filter AS jsonb)"
+            params["career_filter"] = json.dumps({"careerClassifications": [{"code": career_code}]})
+        result = await self._session.execute(text(query), params)
+        return int(result.scalar_one() or 0)
 
     async def delete_owned(self, user_id: str, cv_id: str) -> CvRecord | None:
         record = await self.get_owned(user_id, cv_id)

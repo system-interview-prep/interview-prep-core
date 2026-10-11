@@ -6,10 +6,16 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.core.security import current_user
 from src.infrastructure.database import get_db
 
 router = APIRouter(prefix="/interview/video-calls", tags=["video-calls"])
+
+
+def _require_legacy_enabled() -> None:
+    if not get_settings().legacy_interview_api_enabled:
+        raise HTTPException(status_code=410, detail="Legacy interview API is disabled")
 
 
 class StartCall(BaseModel):
@@ -40,6 +46,7 @@ async def _call(db: AsyncSession, user_id: str, call_id: str) -> dict:
 async def start_call(
     payload: StartCall, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
 ) -> dict:
+    _require_legacy_enabled()
     session_id = payload.sessionId
     if session_id:
         result = await db.execute(
@@ -78,6 +85,7 @@ async def start_call(
 async def end_call(
     call_id: str, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
 ) -> dict:
+    _require_legacy_enabled()
     await _call(db, user["sub"], call_id)
     result = await db.execute(
         text("UPDATE video_calls SET status = 'ENDED', ended_at = now() WHERE id = :id RETURNING ended_at"),
@@ -89,6 +97,7 @@ async def end_call(
 
 @router.get("")
 async def list_calls(user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)) -> list[dict]:
+    _require_legacy_enabled()
     result = await db.execute(
         text(
             "SELECT id, session_id, status, started_at, ended_at, metadata "
@@ -116,6 +125,7 @@ async def chat_voice_on_call(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    _require_legacy_enabled()
     call = await _call(db, user["sub"], call_id)
     import base64
 
