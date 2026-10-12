@@ -190,6 +190,7 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output.action, TurnAction.PROBE)
         self.assertEqual(output.message_text, "Khi Redis lỗi, hệ thống của bạn xử lý thế nào?")
         self.assertTrue(output.metadata["probe_generated_in_evaluation"])
+        self.assertEqual(output.metadata["generated_by"], "llm")
         self.assertEqual(llm.evaluation_calls, 1)
         self.assertEqual(llm.probe_generation_calls, 0)
 
@@ -275,6 +276,30 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(output.metadata["repeat_request"])
         self.assertEqual(output.metadata["sufficiency_status"], "NOT_ASSESSED")
         self.assertEqual(llm.evaluation_calls, 0)
+
+    async def test_repeat_after_a_probe_repeats_the_probe(self):
+        llm = SinglePassProbeLLM()
+        engine = InterviewCoreEngine(llm_client=llm)
+        probe = "Bạn lưu trạng thái idempotency ở bảng nào?"
+
+        output = await engine.handle_turn(
+            CandidateTurnInput(session_id=self.session_id, turn_index=2, text_content="Mình nghe chưa rõ."),
+            {
+                "current_stage": InterviewStage.DEEP_DIVE.value,
+                "started_at": datetime.now(timezone.utc),
+                "target_duration_minutes": 25,
+                "questions_pool": self.sample_questions_pool,
+                "asked_question_ids": ["q-val-1"],
+                "current_turn_in_question": 1,
+                "current_question_context": {
+                    "main_prompt": "Bạn xử lý webhook trùng lặp thế nào?",
+                    "follow_up_prompt": probe,
+                },
+            },
+        )
+
+        self.assertEqual(output.action, TurnAction.CLARIFY)
+        self.assertEqual(output.message_text, f"Mình nhắc lại câu hỏi nhé: {probe}")
 
     async def test_no_probe_when_turn_in_question_is_already_1(self):
         """3. Đã ở lượt probe (turn_in_question=1) -> Bắt buộc chuyển câu hỏi tiếp theo, không probe lặp."""
@@ -872,7 +897,7 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(output.action, TurnAction.CONFIRM_ABORT)
         self.assertFalse(output.is_session_finished)
-        self.assertIn("hộp thoại xác nhận kết thúc", output.message_text)
+        self.assertIn("Kết thúc & xem báo cáo", output.message_text)
         self.assertTrue(output.metadata.get("requires_abort_confirmation"))
 
     async def test_skip_question_request_advances_to_next_topic(self):
@@ -898,7 +923,7 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
         output = await engine.handle_turn(turn_input, session_state)
 
         self.assertEqual(output.action, TurnAction.NEXT_QUESTION)
-        self.assertIn("Được chứ, không sao cả", output.message_text)
+        self.assertIn("Được, mình chuyển sang câu khác nhé.", output.message_text)
 
     async def test_warmup_turn_0_candidate_abort_triggers_confirm_abort_modal(self):
         """15. Turn 0 (WARM_UP): Ứng viên gõ 'em có việc bận gia đình xin dừng lại đây' -> Kích hoạt CONFIRM_ABORT modal, không chuyển sang Validate."""
@@ -924,7 +949,7 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(output.action, TurnAction.CONFIRM_ABORT)
         self.assertFalse(output.is_session_finished)
-        self.assertIn("hộp thoại xác nhận kết thúc", output.message_text)
+        self.assertIn("Kết thúc & xem báo cáo", output.message_text)
         self.assertNotIn("IVORA", output.message_text)
         self.assertTrue(output.metadata.get("requires_abort_confirmation"))
 
@@ -953,7 +978,7 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(output.action, TurnAction.CONFIRM_ABORT)
         self.assertFalse(output.is_session_finished)
-        self.assertIn("hộp thoại xác nhận kết thúc", output.message_text)
+        self.assertIn("Kết thúc & xem báo cáo", output.message_text)
         self.assertTrue(output.metadata.get("requires_abort_confirmation"))
 
 
@@ -975,3 +1000,76 @@ def test_acknowledgement_from_llm_is_sanitised():
         None,
     ]:
         assert safe_acknowledgement(injected, True) == "Cảm ơn chia sẻ của bạn."
+
+
+def test_llm_lines_address_the_candidate_as_ban():
+    """The room swaps "bạn" for the candidate's name, so "em"/"anh"/"chị" must not reach it."""
+    from src.modules.interviews.core.interview_engine import (
+        normalize_candidate_pronoun,
+        safe_acknowledgement,
+    )
+
+    assert safe_acknowledgement("Ok, mình hiểu phần em phụ trách.", True) == "Ok, mình hiểu phần bạn phụ trách."
+    assert normalize_candidate_pronoun("Em hãy nêu ví dụ cụ thể.") == "Bạn hãy nêu ví dụ cụ thể."
+    assert normalize_candidate_pronoun("Anh/chị dùng index nào?") == "Bạn dùng index nào?"
+    # A title before a name and words merely containing the letters are kept.
+    assert normalize_candidate_pronoun("Chị Hiền đã nêu rõ.") == "Chị Hiền đã nêu rõ."
+    assert normalize_candidate_pronoun("Kênh member team.") == "Kênh member team."
+    assert normalize_candidate_pronoun("Did you measure it?", is_vi=False) == "Did you measure it?"
+
+
+def test_closing_invitation_has_no_bracketed_aside():
+    """The voice room reads the invitation aloud, so the limit is spoken, not bracketed."""
+    engine = InterviewCoreEngine()
+    stage, question = engine._get_next_stage_and_question(
+        {
+            "current_stage": InterviewStage.BEHAVIORAL.value,
+            "target_duration_minutes": 25,
+            "remaining_time": 180,
+            "questions_pool": {
+                InterviewStage.BEHAVIORAL.value: [{
+                    "question_id": "q-beh-1",
+                    "competency": "Behavioral",
+                    "stage": InterviewStage.BEHAVIORAL.value,
+                    "main_prompt": "Hãy kể về một lần bạn xử lý xung đột.",
+                }],
+            },
+            "asked_question_ids": ["q-beh-1"],
+        }
+    )
+
+    assert stage == InterviewStage.CLOSING
+    assert question.main_prompt == (
+        "Mình hỏi xong rồi. Bạn có muốn hỏi mình một, hai câu về công việc, team hay công ty không?"
+    )
+
+
+def test_probe_provenance_marks_fixed_fallbacks():
+    from src.modules.interviews.application.chat_runtime import _provenance_metadata
+    from src.modules.interviews.core.interview_engine import (
+        _FIXED_PROBES,
+        SAFE_FALLBACK_PROBE_VI,
+        clarify_fallback_text,
+    )
+
+    assert SAFE_FALLBACK_PROBE_VI in _FIXED_PROBES
+    assert "Redis là gì?" in clarify_fallback_text("Redis là gì?", is_vi=True)
+
+    class _Out:
+        metadata = {"generated_by": "fixed_fallback", "missing_aspect": "trade-off", "other": 1}
+
+    assert _provenance_metadata(_Out()) == {"generatedBy": "fixed_fallback", "missingAspect": "trade-off"}
+    assert _provenance_metadata(object()) == {}
+
+
+def test_spoken_stop_requests_open_the_confirmation_but_answers_do_not():
+    from src.modules.interviews.core.interview_engine import is_abort_request
+
+    # Voice turns from a real session and short spoken stops.
+    for text in ("dừng", "Dừng lại.", "thôi dừng lại", "kết thúc phiên",
+                 "tôi đau đầu quá tôi có thể kết thúc phiên được không?"):
+        assert is_abort_request(text), text
+    for text in ("service phải dừng lại rồi rollback",
+                 "em dùng consumer, khi lỗi thì dừng lại và retry",
+                 "khi user kết thúc phiên đăng nhập thì em xoá refresh token"):
+        assert not is_abort_request(text), text
