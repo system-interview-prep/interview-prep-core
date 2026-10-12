@@ -182,6 +182,32 @@ class TestInterviewEvaluationEngine(unittest.IsolatedAsyncioTestCase):
         # System Design: 7.0
         self.assertEqual(comp_map["System Design"], 7.0)
 
+    async def test_overall_score_is_weighted_and_skips_zero_weight_turns(self):
+        """Điểm tổng theo trọng số competency; WARM_UP (trọng số 0) không kéo điểm."""
+        llm = MockLLM(json_payload={"recruiter_summary": "S", "candidate_feedback": "F",
+                                    "next_round_topics": [], "red_flags": []})
+        engine = InterviewEvaluationEngine(llm_client=llm)
+        turn_inputs = [
+            TurnEvaluationInput(turn_id="w", turn_index=0, competency="Khởi động",
+                                question_prompt="Q", candidate_answer="A", weight=0.0),
+            TurnEvaluationInput(turn_id="a", turn_index=1, competency="Node.js",
+                                question_prompt="Q", candidate_answer="A", weight=3.0),
+            TurnEvaluationInput(turn_id="b", turn_index=2, competency="STAR",
+                                question_prompt="Q", candidate_answer="A", weight=1.0),
+        ]
+        evaluations = [
+            TurnEvaluationResult(turn_id="w", score=0.0),
+            TurnEvaluationResult(turn_id="a", score=8.0),
+            TurnEvaluationResult(turn_id="b", score=4.0),
+        ]
+        result = await engine.aggregate_session_evaluation("s", evaluations, turn_inputs)
+        # (8×3 + 4×1) / 4 = 7.0; the old plain mean was (0 + 8 + 4) / 3 = 4.0.
+        self.assertEqual(result.overall_score, 7.0)
+        self.assertEqual(result.decision_recommendation, DecisionRecommendation.PASS)
+
+        only_warmup = await engine.aggregate_session_evaluation("s", evaluations[:1], turn_inputs[:1])
+        self.assertEqual(only_warmup.overall_score, 0.0)
+
     def test_decision_thresholds(self):
         """5. Kiểm tra phân loại ngưỡng quyết định (STRONG_PASS, PASS, CONSIDER, REJECT)."""
         engine = InterviewEvaluationEngine()
