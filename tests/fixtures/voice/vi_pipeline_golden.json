@@ -6,7 +6,15 @@
     {"input": "Alo.", "expected": "Alo."},
     {
       "input": "Yeah, em dùng PostgreSQL cho transaction chính.",
-      "expected": "Yeah, em dùng PostgreSQL cho transaction chính."
+      "expected": "Dạ, em dùng PostgreSQL cho transaction chính."
+    },
+    {
+      "input": "Hello,",
+      "expected": "Alô."
+    },
+    {
+      "input": "Hello, bạn nghe rõ không?",
+      "expected": "Alô, bạn nghe rõ không?"
     }
   ],
   "overlap": [
