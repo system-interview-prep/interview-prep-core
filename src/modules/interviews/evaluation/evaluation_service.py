@@ -37,6 +37,31 @@ class EvaluationServiceError(RuntimeError):
 _PRESET_TURN_WEIGHT = {"WARM_UP": 0.0, "VALIDATE": 0.5, "BEHAVIORAL": 0.5}
 
 
+def _format_expected_points(points: Any) -> str:
+    """Expected points of the question as a grading checklist, empty when it has none.
+
+    Without them the grader invented its own ideal answer and always found
+    something missing, so complete technical answers never scored above 8.9.
+    """
+    if not isinstance(points, list):
+        return ""
+    core: list[str] = []
+    bonus: list[str] = []
+    for point in points:
+        if not isinstance(point, dict) or not str(point.get("description") or "").strip():
+            continue
+        target = bonus if str(point.get("importance") or "").upper() == "BONUS" else core
+        target.append(f"- {str(point['description']).strip()}")
+    if not core and not bonus:
+        return ""
+    lines = ["Ý cần có (EXPECTED POINTS):"]
+    if core:
+        lines += ["Ý cốt lõi:", *core]
+    if bonus:
+        lines += ["Ý cộng thêm (không bắt buộc):", *bonus]
+    return "\n".join(lines)
+
+
 def _turn_weight(stage: str, snap: dict, importance_by_concept: dict[str, float]) -> float:
     """Weight of one turn's competency in the overall score.
 
@@ -134,7 +159,7 @@ async def evaluate_closed_session(
     msgs_res = await db.execute(
         text(
             """
-            SELECT turn_id, content, metadata
+            SELECT turn_id, content, metadata, message_type
             FROM interview_chat_messages
             WHERE session_id = :sid AND role = 'user'
             ORDER BY sequence ASC
@@ -148,15 +173,19 @@ async def evaluate_closed_session(
     for m in user_msgs:
         t_id = m.get("turn_id")
         if t_id:
-            if t_id not in msgs_by_turn:
-                msgs_by_turn[t_id] = []
-            msgs_by_turn[t_id].append(m["content"])
             metadata = m.get("metadata") or {}
             if isinstance(metadata, str):
                 try:
                     metadata = json.loads(metadata)
                 except ValueError:
                     metadata = {}
+            # Clarify requests, questions to the interviewer and stop requests
+            # are conversation, not answers; only real answers are grading evidence.
+            is_answer = (m.get("message_type") or "CANDIDATE_ANSWER") == "CANDIDATE_ANSWER" and not (
+                isinstance(metadata, dict) and metadata.get("abortRequest")
+            )
+            if is_answer:
+                msgs_by_turn.setdefault(t_id, []).append(m["content"])
             telemetry = metadata.get("telemetry") if isinstance(metadata, dict) else {}
             if isinstance(telemetry, dict):
                 telemetry_by_turn.setdefault(t_id, []).append(telemetry)
@@ -225,6 +254,9 @@ async def evaluate_closed_session(
             criteria = json.dumps(criteria_raw, ensure_ascii=False)
         else:
             criteria = str(criteria_raw or "")
+        expected_block = _format_expected_points(snap.get("expectedPoints"))
+        if expected_block:
+            criteria = f"{criteria}\n\n{expected_block}" if criteria else expected_block
 
         if not ans:
             ans = "Ứng viên không trả lời hoặc bỏ qua câu hỏi này."
