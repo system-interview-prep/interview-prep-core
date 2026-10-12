@@ -172,6 +172,9 @@ def is_repeat_request(text: str, *, locale: str = "vi-VN") -> bool:
     if not locale.lower().startswith("vi"):
         # Pad so markers match whole words only.
         phrase = f" {' '.join(tokens)} "
+        # The re-prompt tells candidates to just say "repeat".
+        if len(tokens) <= 3 and "repeat" in tokens:
+            return True
         return any(f" {marker} " in phrase for marker in _EN_REPEAT_MARKERS)
     spoken = unicodedata.normalize("NFC", text).lower().strip()
     if _VI_NOT_HEARD.search(spoken):
