@@ -10,12 +10,13 @@ from pathlib import Path
 
 import av
 from livekit import rtc
-from livekit.agents import inference
+from livekit.agents import inference, stt as agent_stt
 from livekit.agents.utils import http_context
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.modules.interviews.adapters.voice.evaluation import validate_corpus_manifest  # noqa: E402
+from src.modules.interviews.adapters.voice.language import assemblyai_stream_options  # noqa: E402
 
 
 def decode_audio(path: Path) -> list[rtc.AudioFrame]:
@@ -68,7 +69,16 @@ async def run(args: argparse.Namespace) -> None:
     errors_path = args.output.with_suffix(".errors.jsonl")
     failures = 0
     async with http_context.open():
-        stt = inference.STT(model=args.model, language=args.language)
+        # Score what a live interview hears: the same steering prompt, agent
+        # context and turn-silence settings as the voice agent.
+        extra = (
+            assemblyai_stream_options(args.language, agent_context=args.agent_context)
+            if args.model.startswith("assemblyai/") and not args.bare
+            else None
+        )
+        stt = inference.STT(
+            model=args.model, language=args.language, **({"extra_kwargs": extra} if extra else {})
+        )
         try:
             for index, row in enumerate(rows, start=1):
                 if row["id"] in completed:
@@ -76,25 +86,31 @@ async def run(args: argparse.Namespace) -> None:
                 audio_path = (args.manifest.parent / row["audioPath"]).resolve()
                 try:
                     speech_stream = stt.stream(language=args.language)
-                    event = None
+                    # A pause inside one recording can end a turn; every final
+                    # turn is part of the answer, not only the last one.
+                    finals: list[str] = []
                     try:
                         for frame in decode_audio(audio_path):
                             speech_stream.push_frame(frame)
                         speech_stream.end_input()
                         async for candidate in speech_stream:
-                            if candidate.alternatives:
-                                event = candidate
+                            if (
+                                candidate.type == agent_stt.SpeechEventType.FINAL_TRANSCRIPT
+                                and candidate.alternatives
+                                and candidate.alternatives[0].text.strip()
+                            ):
+                                finals.append(candidate.alternatives[0].text.strip())
                     finally:
                         await speech_stream.aclose()
 
-                    if event is None:
-                        raise RuntimeError("STT stream ended without a transcript")
-                    hypothesis = event.alternatives[0].text if event.alternatives else ""
+                    hypothesis = " ".join(finals)
                     completed[row["id"]] = {
                         "id": row["id"],
                         "hypothesis": hypothesis,
                         "model": args.model,
                         "language": args.language,
+                        "finalTurns": len(finals),
+                        "productionOptions": extra is not None,
                     }
                     args.output.write_text(
                         "".join(
@@ -136,6 +152,8 @@ def main() -> None:
     parser.add_argument("--model", default="assemblyai/universal-3-6-pro")
     parser.add_argument("--language", default="vi")
     parser.add_argument("--shakedown-per-dialect", type=int, default=0)
+    parser.add_argument("--agent-context", default=None, help="Interviewer line the answer follows.")
+    parser.add_argument("--bare", action="store_true", help="Omit the production AssemblyAI options.")
     asyncio.run(run(parser.parse_args()))
 
 
