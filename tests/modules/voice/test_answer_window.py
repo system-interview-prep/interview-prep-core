@@ -5,7 +5,8 @@ import pytest
 from src.modules.interviews.adapters.voice.answer_window import (
     SHORT_ANSWER_WORDS,
     AnswerWindow,
-    is_done_command,
+    silence_reprompt,
+    turn_taking_tip,
 )
 
 
@@ -41,27 +42,9 @@ def test_blank_fragments_are_ignored() -> None:
     assert window.is_empty and window.first_message_id is None
 
 
-@pytest.mark.parametrize(
-    "text",
-    ["Xong.", "Em trả lời xong rồi ạ.", "Dạ, em xong rồi.", "Hết rồi ạ", "Vậy thôi ạ."],
-)
-def test_short_done_phrases_hand_the_floor_back(text: str) -> None:
-    assert is_done_command(text)
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Deploy xong thì em chạy smoke test và theo dõi log.",
-        "Khi xong bước một em chuyển sang bước hai",
-        "Em làm xong phần API trong hai tuần với Node.js và PostgreSQL",
-        "",
-    ],
-)
-def test_xong_inside_a_sentence_is_content_not_a_command(text: str) -> None:
-    assert not is_done_command(text)
-
-
-def test_english_done_phrases() -> None:
-    assert is_done_command("That's all.", locale="en-US")
-    assert not is_done_command("Xong.", locale="en-US")
+@pytest.mark.parametrize("locale", ["vi-VN", "en-US"])
+def test_voice_guidance_is_hands_free(locale: str) -> None:
+    guidance = f"{turn_taking_tip(locale)} {silence_reprompt(locale)}".lower()
+    assert "button" not in guidance
+    assert "bấm" not in guidance
+    assert "press" not in guidance
