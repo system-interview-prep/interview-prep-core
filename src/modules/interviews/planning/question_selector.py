@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.trace_logging import trace_event
 from src.modules.interviews.core.demo_mode import is_demo_duration
+from src.modules.interviews.core.opening_script import warmup_question
 from src.modules.interviews.planning.project_evidence import (
     build_project_validation_question,
     extract_project_evidences,
@@ -170,9 +171,15 @@ async def _load_candidates(
     salt: str = "",
     generated: bool = False,
     exposure: Mapping[str, str] | None = None,
+    spoken_only: bool = False,
 ) -> list[_Candidate]:
     """Approved questions mapped to the target, or (``generated``) the
-    machine-generated drafts still waiting for review."""
+    machine-generated drafts still waiting for review.
+
+    ``spoken_only`` (voice and video sessions) drops coding questions: those
+    rooms have no code editor, and the question text tells the candidate to
+    edit and run code in it.
+    """
     purposes = _allowed_purposes(target)
     version_join = "qv.question_id = q.id" if generated else "qv.id = q.current_approved_version_id"
     status_filter = (
@@ -207,6 +214,7 @@ async def _load_candidates(
              AND loc.status = 'APPROVED'
             WHERE q.retired_at IS NULL
               AND {status_filter}
+              AND (NOT :spoken_only OR qv.question_type <> 'coding')
               -- Concept ids are stable across taxonomy versions (parsers stamp
               -- `internal-2026.1`, the bank is authored against the version
               -- that holds the concepts, admins can clone new versions), so
@@ -230,6 +238,7 @@ async def _load_candidates(
             "purposes": list(purposes),
             "generator": GENERATED_QUESTION_AUTHOR,
             "locale": locale,
+            "spoken_only": spoken_only,
         },
     )
 
@@ -479,6 +488,7 @@ async def _fallback_candidates(
     job_concepts: set[str],
     job_role: str | None,
     exposure: Mapping[str, str] | None = None,
+    spoken_only: bool = False,
 ) -> list[_Candidate]:
     """Questions for a target the bank does not cover, in ladder order.
 
@@ -498,6 +508,7 @@ async def _fallback_candidates(
             difficulty=difficulty,
             salt=salt,
             exposure=exposure,
+            spoken_only=spoken_only,
         ):
             found.append(replace(candidate, source="broader_skill"))
     role_target = {**target, "rationale": {"source": "career_classification_fallback"}}
@@ -505,12 +516,14 @@ async def _fallback_candidates(
         for candidate in await _load_candidates(
             db, target={**role_target, "conceptId": role}, locale=locale, difficulty=difficulty, salt=salt,
             exposure=exposure,
+            spoken_only=spoken_only,
         ):
             if await _question_skill_concepts(db, candidate.question_version_id) & job_concepts:
                 found.append(replace(candidate, source="role"))
     found += await _load_candidates(
         db, target=skill_target, locale=locale, difficulty=difficulty, salt=salt, generated=True,
         exposure=exposure,
+            spoken_only=spoken_only,
     )
     unique: dict[str, _Candidate] = {}
     for candidate in found:
@@ -1106,6 +1119,7 @@ async def select_and_freeze_questions(
     # Demo sessions break ties on the stable key instead of the session id, so
     # every demo of a CV-JD pair asks the same questions as the demo script.
     salt = "" if is_demo_duration(session_row.get("duration_minutes")) else str(session_row.get("id") or "")
+    spoken_only = str(session_row.get("mode") or "").lower() in {"voice", "video"}
     job_concepts, job_role = await _job_taxonomy(db, session_row.get("job_id"))
     exposure = await _question_exposure(db, session_row)
     # Targets the ladder could not cover at all, and targets served with fewer
@@ -1184,6 +1198,7 @@ async def select_and_freeze_questions(
                 difficulty=difficulty,
                 salt=salt,
                 exposure=exposure,
+                spoken_only=spoken_only,
             )
             def _subsets(pool: list[_Candidate], target=target) -> list:
                 return _generate_target_feasible_subsets(
@@ -1209,6 +1224,7 @@ async def select_and_freeze_questions(
                     job_concepts=job_concepts,
                     job_role=job_role,
                     exposure=exposure,
+                    spoken_only=spoken_only,
                 )
                 feasible_subsets = _subsets(candidates + [c for c in extra if c.question_version_id not in seen])
             if not feasible_subsets:
@@ -1302,6 +1318,7 @@ async def select_and_freeze_questions(
                 difficulty=difficulty,
                 salt=salt,
                 exposure=exposure,
+                spoken_only=spoken_only,
             )
             available = [item for item in candidates if item.question_version_id not in used_versions]
             # Honour the planner's per-target count exactly. P1 already guarantees
@@ -1330,6 +1347,7 @@ async def select_and_freeze_questions(
                     job_concepts=job_concepts,
                     job_role=job_role,
                     exposure=exposure,
+                    spoken_only=spoken_only,
                 )
                 selected += [c for c in extra if c.question_version_id not in taken][: needed - len(selected)]
 
@@ -1456,13 +1474,9 @@ async def select_and_freeze_questions(
                     elif isinstance(s, str) and s.strip() not in key_technologies:
                         key_technologies.append(s.strip())
 
-    warmup_text = (
-        f"Chào bạn, mình là người phỏng vấn vị trí {job_title}. "
-        "Bạn giới thiệu ngắn về bản thân và kinh nghiệm gần nhất nhé?"
-        if is_vi
-        else f"Hi, I'm your interviewer for the {job_title} role. "
-             "Could you briefly introduce yourself and your most recent experience?"
-    )
+    # The question only: the greeting, agenda and how-to are the opening's
+    # (core/opening_script.py), spoken once before it.
+    warmup_text = warmup_question(is_vi=is_vi, is_demo=is_demo_duration(session_row.get("duration_minutes")))
 
     if selected_project:
         validate_text = build_project_validation_question(
@@ -1511,6 +1525,9 @@ async def select_and_freeze_questions(
         "questionVersionId": None,
         "stableKey": "warmup-intro",
         "version": "1.0.0",
+        # Every frozen turn names its origin so audits never infer it from a
+        # null questionVersionId.
+        "questionSource": "warmup_template",
         "questionType": "WARM_UP",
         "stage": "WARM_UP",
         "difficulty": "foundational",
@@ -1538,6 +1555,7 @@ async def select_and_freeze_questions(
         "questionVersionId": None,
         "stableKey": "cv-validation",
         "version": "1.0.0",
+        "questionSource": "cv_project_template" if selected_project else "cv_generic_template",
         "questionType": "VALIDATE_CV",
         "stage": "VALIDATE",
         "difficulty": "intermediate",
