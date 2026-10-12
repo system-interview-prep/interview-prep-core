@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
+from src.modules.interviews.core.opening_script import build_opening
 from src.modules.interviews.core.demo_mode import is_demo_duration
 from src.modules.interviews.core.interview_engine import (
     SAFE_FALLBACK_PROBE_EN,
@@ -171,6 +172,44 @@ def _unfinished_agenda_turns(
     ]
 
 
+def _provenance_metadata(core_output: Any) -> dict[str, str]:
+    """Who wrote an assistant follow-up: the model ("llm") or a fixed fallback.
+
+    PROBE, CLARIFY and closing answers are the only interviewer text not frozen
+    from the question bank, so audits need this on the stored message.
+    """
+    raw = getattr(core_output, "metadata", None) or {}
+    out: dict[str, str] = {}
+    if raw.get("generated_by"):
+        out["generatedBy"] = str(raw["generated_by"])
+    if raw.get("missing_aspect"):
+        out["missingAspect"] = str(raw["missing_aspect"])
+    return out
+
+
+async def _displayed_question_text(
+    db: AsyncSession, session_row: dict[str, Any], turn: dict[str, Any]
+) -> str | None:
+    """The question as the interviewer actually said it, for the pinned card.
+
+    Spoken questions are personalised (full name in the greeting, call name
+    after it); the frozen snapshot keeps the generic "bạn", so the card showed
+    "Chào bạn…" while the candidate heard their own name.
+    """
+    snapshot = turn.get("question_snapshot") or {}
+    question = snapshot.get("questionText")
+    if not question or not (session_row.get("locale") or "vi").lower().startswith("vi"):
+        return question
+    _, short_name = await _candidate_names(db, session_row["id"])
+    if snapshot.get("stableKey") == "warmup-intro" or snapshot.get("stage") == "WARM_UP":
+        # New sessions ask the warm-up without a greeting (the opening greets);
+        # older snapshots still begin "Chào bạn".
+        if re.match(r"^\s*Chào\b", question):
+            return _personalize_opening(question, short_name, short_name)
+        return _personalize_candidate_address(question, short_name)
+    return _personalize_candidate_address(question, short_name)
+
+
 def _turn_stage(turn: dict[str, Any]) -> str:
     return str((turn.get("question_snapshot") or {}).get("stage") or "UNKNOWN")
 
@@ -299,7 +338,7 @@ async def get_chat_runtime(
     turns_res = await db.execute(
         text(
             """
-            SELECT id, turn_index, status, question_version_id, question_snapshot, answer_text
+            SELECT id, turn_index, status, question_version_id, question_snapshot, answer_text, started_at
             FROM interview_turns
             WHERE session_id = :session_id
             ORDER BY turn_index ASC
@@ -408,6 +447,14 @@ async def get_chat_runtime(
                 "language": (current_turn.get("question_snapshot") or {}).get("language", "python"),
                 "isFollowUp": is_follow_up,
                 "probeCount": len(current_turn_probes),
+                # The room pins the question being answered and times it: the
+                # clean bank wording (no acknowledgement prefix), the follow-up
+                # if one is open, and the question's own time box.
+                "questionText": await _displayed_question_text(db, session_row, current_turn),
+                "followUpText": current_turn_probes[-1].get("content") if current_turn_probes else None,
+                "startedAt": current_turn["started_at"].isoformat() if current_turn.get("started_at") else None,
+                "softAnswerSeconds": (current_turn.get("question_snapshot") or {}).get("softAnswerSeconds"),
+                "hardAnswerSeconds": (current_turn.get("question_snapshot") or {}).get("hardAnswerSeconds"),
             }
             if current_turn
             else None
@@ -547,23 +594,27 @@ async def start_chat_session(
         )
     )
 
-    if "Chào bạn" not in q_text and "Hello" not in q_text:
+    if re.match(r"^\s*(Chào|Hi|Hello)\b", q_text, flags=re.IGNORECASE):
+        # A session frozen before the opening script existed: its warm-up
+        # snapshot already greets, so only personalise it.
         opening_text = (
-            f"Chào {candidate_full_name or 'bạn'}, tôi là AI Interviewer của INTERVIA. "
-            f"Hôm nay chúng ta sẽ cùng phỏng vấn "
-            f"cho vị trí {job_title} dựa trên yêu cầu công việc và hồ sơ của bạn.\n\n"
-            f"{q_text}"
-            if is_vi
-            else f"Hello, I am the INTERVIA AI Interviewer. Today we will conduct an interview "
-            f"for the {job_title} position based on your resume and job requirements.\n\n"
-            f"{q_text}"
+            _personalize_opening(q_text, candidate_short_name, candidate_short_name) if is_vi else q_text
         )
     else:
-        opening_text = q_text
-    if is_vi:
-        opening_text = _personalize_opening(
-            opening_text, candidate_full_name, candidate_short_name
+        opening_text = build_opening(
+            is_vi=is_vi,
+            mode=str(session_row.get("mode") or "text"),
+            duration_minutes=session_row.get("duration_minutes"),
+            job_title=job_title,
+            # Vietnamese greets by the call name ("Chào Hiền"); the full name
+            # ("Chào Nguyễn Thị Thanh Hiền") sounded like a roll call.
+            call_name=candidate_short_name,
+            planned_stages=[(turn.get("question_snapshot") or {}).get("stage") for turn in turns],
+            first_question=q_text,
         )
+        if is_vi:
+            greeting, _, rest = opening_text.partition(". ")
+            opening_text = f"{greeting}. {_personalize_candidate_address(rest, candidate_short_name)}"
 
     question_id = str(uuid4())
     q_meta = {
@@ -1065,13 +1116,14 @@ async def process_candidate_message(
     probe_msgs_res = await db.execute(
         text(
             """
-            SELECT turn_id, message_type
+            SELECT turn_id, message_type, content
             FROM interview_chat_messages
             WHERE session_id = :sid AND role = 'assistant' AND message_type IN ('PROBE', 'CLARIFY')
               -- Repeating an unheard question or answering a question about the
               -- interview is not the question's one clarification.
               AND metadata->>'repeatRequest' IS NULL
               AND metadata->>'candidateQuestionIntent' IS NULL
+            ORDER BY sequence
             """
         ),
         {"sid": session_id},
@@ -1098,6 +1150,12 @@ async def process_candidate_message(
         elapsed_override_seconds=elapsed_override_seconds,
     )
     session_state["job_title"] = job_title
+    current_turn_probe_texts = [
+        m.get("content") for m in all_probe_msgs
+        if m["turn_id"] == current_turn_id and m["message_type"] == "PROBE" and m.get("content")
+    ]
+    if current_turn_probe_texts and session_state.get("current_question_context"):
+        session_state["current_question_context"]["follow_up_prompt"] = current_turn_probe_texts[-1]
     if _turn_stage(current_turn) == "CLOSING":
         session_state["job_context"] = await _get_job_context(db, session_row.get("job_id"))
         # Questions the candidate has sent on this closing turn, including this one.
@@ -1190,6 +1248,29 @@ async def process_candidate_message(
         await db.rollback()
         raise ChatRuntimeError("SESSION_CLOSED: Phiên phỏng vấn đã kết thúc trong lúc xử lý câu trả lời.")
     if core_output.action == TurnAction.CONFIRM_ABORT:
+        # A stop request is not an answer. Phase 1 stored it as one, so a session
+        # ended here graded "em xin dừng" as the answer to the open question (0.0)
+        # instead of reporting that question as uncovered.
+        await db.execute(
+            text(
+                """
+                UPDATE interview_turns
+                SET answer_text = :previous_answer, updated_at = now()
+                WHERE id = :turn_id
+                """
+            ),
+            {"previous_answer": previous_answer, "turn_id": current_turn_id},
+        )
+        await db.execute(
+            text(
+                """
+                UPDATE interview_chat_messages
+                SET metadata = metadata || '{"abortRequest": true}'::jsonb
+                WHERE id = :message_id
+                """
+            ),
+            {"message_id": user_msg_id},
+        )
         await db.execute(
             text(
                 """
@@ -1297,11 +1378,14 @@ async def process_candidate_message(
                 "sid": session_id,
                 "content": core_output.message_text,
                 "metadata": json.dumps(
-                    {"candidateQuestionIntent": candidate_question_intent}
-                    if candidate_question_intent
-                    else {"repeatRequest": True}
-                    if repeat_request
-                    else {}
+                    (
+                        {"candidateQuestionIntent": candidate_question_intent}
+                        if candidate_question_intent
+                        else {"repeatRequest": True}
+                        if repeat_request
+                        else {}
+                    )
+                    | _provenance_metadata(core_output)
                 ),
                 "turn_id": current_turn_id,
                 "msg_type": "CLARIFY",
@@ -1352,13 +1436,14 @@ async def process_candidate_message(
                 INSERT INTO interview_chat_messages
                 (id, session_id, role, content, metadata, turn_id, message_type, sequence, created_at)
                 VALUES
-                (:id, :sid, 'assistant', :content, '{}'::jsonb, :turn_id, :msg_type, :seq, now())
+                (:id, :sid, 'assistant', :content, CAST(:metadata AS jsonb), :turn_id, :msg_type, :seq, now())
                 """
             ),
             {
                 "id": asst_msg_id,
                 "sid": session_id,
                 "content": core_output.message_text,
+                "metadata": json.dumps(_provenance_metadata(core_output)),
                 "turn_id": current_turn_id,
                 "msg_type": "PROBE",
                 "seq": asst_seq,
@@ -1410,13 +1495,16 @@ async def process_candidate_message(
                 INSERT INTO interview_chat_messages
                 (id, session_id, role, content, metadata, turn_id, message_type, sequence, created_at)
                 VALUES
-                (:id, :sid, 'assistant', :content, '{"is_qna_answer": true}'::jsonb, :turn_id, 'MAIN_QUESTION', :seq, now())
+                (:id, :sid, 'assistant', :content, CAST(:metadata AS jsonb), :turn_id, 'MAIN_QUESTION', :seq, now())
                 """
             ),
             {
                 "id": asst_msg_id,
                 "sid": session_id,
                 "content": core_output.message_text,
+                # Typed MAIN_QUESTION for the transcript, but it is the model's
+                # answer to the candidate, never a bank question.
+                "metadata": json.dumps({"is_qna_answer": True} | _provenance_metadata(core_output)),
                 "turn_id": current_turn_id,
                 "seq": asst_seq,
             },
@@ -1511,6 +1599,7 @@ async def process_candidate_message(
         closing_turn_index = max(t["turn_index"] for t in turns) + 1
         closing_snap = {
             "stage": "CLOSING",
+            "questionSource": "closing_template",
             "questionText": core_output.message_text,
             "target": {"conceptId": "closing-qna"},
             "taxonomyTarget": {"label": "Hỏi đáp & Tổng kết"},
@@ -1746,13 +1835,13 @@ async def process_candidate_message(
         elif is_vi:
             wrap_text = (
                 "Cảm ơn bạn đã tham gia buổi phỏng vấn hôm nay! Chúng ta đã hoàn thành tất cả các chủ đề "
-                "chuyên môn theo kế hoạch. Bạn có thể xem lại toàn bộ nội dung trò chuyện tại đây. "
+                "chuyên môn theo kế hoạch. Báo cáo đánh giá của bạn sẽ có ngay sau đây. "
                 "Chúc bạn luôn gặt hái nhiều thành công!"
             )
         else:
             wrap_text = (
                 "Thank you for participating in today's interview! We have completed all the planned "
-                "topics. You can review the full conversation transcript here. "
+                "topics. Your evaluation report will be ready right after this. "
                 "Wishing you great success!"
             )
     if is_vi:
