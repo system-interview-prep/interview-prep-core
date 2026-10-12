@@ -57,14 +57,20 @@ class InterviewEvaluationEngine:
             "NGUYÊN TẮC ĐÁNH GIÁ QUAN TRỌNG:\n"
             "1. Code-switching fairness: Tuyệt đối không trừ điểm hoặc đánh giá tiêu cực khi ứng viên sử dụng thuật ngữ tiếng Anh chuyên ngành công nghệ (Deploy, Cache, Redis, Kubernetes, Sharding, Microservices, Scale...).\n"
             "2. Anchor Rubric Calibration: Tránh xu hướng chấm điểm an toàn (7-8 điểm). Hãy sử dụng đầy đủ thang điểm từ 0.0 đến 10.0:\n"
-            "   - 9.0 - 10.0 (Xuất sắc): Trả lời đúng trọng tâm, đủ các ý cốt lõi, có ví dụ hoặc số liệu thực tế.\n"
-            "   - 7.0 - 8.9 (Đạt yêu cầu): Nắm vững kiến thức, các ý chính đúng và rõ, có kinh nghiệm thực tế "
-            "nhưng chưa có số liệu đo lường sâu.\n"
-            "   - 5.0 - 6.9 (Cần cân nhắc): Trả lời chung chung, thiếu ý cốt lõi, vai trò cá nhân chưa rõ ràng.\n"
+            "   - 9.0 - 10.0 (Xuất sắc): Trả lời đúng trọng tâm, đủ và đúng các ý cốt lõi. Với câu hỏi kiến thức "
+            "kỹ thuật (DEEP_DIVE, CHALLENGE): giải thích đúng cơ chế cho các ý cốt lõi là đủ 9.0 trở lên, không "
+            "bắt buộc ví dụ code hay số liệu. Với câu hỏi kinh nghiệm (VALIDATE, BEHAVIORAL): cần thêm ví dụ "
+            "cụ thể hoặc kết quả đo được.\n"
+            "   - 7.0 - 8.9 (Đạt yêu cầu): Các ý chính đúng nhưng thiếu hoặc giải thích chưa đúng một ý cốt lõi; "
+            "với câu kinh nghiệm thì có trải nghiệm thực tế nhưng chưa có kết quả cụ thể.\n"
+            "   - 5.0 - 6.9 (Cần cân nhắc): Trả lời chung chung, thiếu nhiều ý cốt lõi, vai trò cá nhân chưa rõ ràng.\n"
             "   - 0.0 - 4.9 (Không đạt): Sai lệch kiến thức cơ bản, né tránh câu hỏi hoặc không trả lời được.\n"
+            "   Nếu Tiêu chí đánh giá có mục 'Ý cần có (EXPECTED POINTS)': chấm theo đúng danh sách đó. Đủ và "
+            "đúng mọi ý cốt lõi thì được 9.0 trở lên; ý cộng thêm chỉ nâng điểm trong khoảng 9-10. Không trừ "
+            "điểm vì thiếu những ý nằm ngoài danh sách; có thể nêu chúng trong feedback như gợi ý mở rộng.\n"
             "   Câu trả lời dạng liệt kê ý / gạch đầu dòng / câu ngắn như khi nói trong phỏng vấn thật "
             "là bình thường: chấm theo nội dung, KHÔNG trừ điểm vì văn phong, độ dài hay không viết "
-            "thành đoạn văn.\n"
+            "thành đoạn văn, và KHÔNG ghi văn phong liệt kê vào weaknesses.\n"
             "3. STAR Extraction: Chỉ áp dụng cho câu hỏi kinh nghiệm (Giai đoạn VALIDATE hoặc BEHAVIORAL): "
             "trích xuất Situation, Task, Action, Result; nếu thiếu Result hoặc Action, đánh dấu "
             "is_star_complete = false. Với câu hỏi kiến thức kỹ thuật (DEEP_DIVE, CHALLENGE, WARM_UP), "
@@ -276,12 +282,16 @@ class InterviewEvaluationEngine:
         competency_scores = self.compute_competency_scores(turn_evaluations, turns_input)
 
         # Weighted overall score (miễn trừ các competency có trọng số <= 0 như WARM_UP)
+        # The weighted mean was computed but a plain mean of every turn was
+        # reported, so WARM_UP (weight 0) and the presets counted as much as a
+        # must-have competency.
         technical_comps = [cs for cs in competency_scores if cs.weight > 0]
-        if not technical_comps:
-            technical_comps = competency_scores
-        total_weight = sum(cs.weight for cs in technical_comps) or 1.0
-        weighted_sum = sum(cs.score * cs.weight for cs in technical_comps)
-        overall_score = round(sum(te.score for te in turn_evaluations) / len(turn_evaluations), 2)
+        total_weight = sum(cs.weight for cs in technical_comps)
+        if total_weight > 0:
+            weighted_sum = sum(cs.score * cs.weight for cs in technical_comps)
+            overall_score = round(weighted_sum / total_weight, 2)
+        else:
+            overall_score = round(sum(te.score for te in turn_evaluations) / len(turn_evaluations), 2)
         decision = self.calculate_decision_recommendation(overall_score)
 
         # 2. Gom dữ liệu điểm mạnh, điểm yếu và bằng chứng
