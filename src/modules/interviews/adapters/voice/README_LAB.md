@@ -5,7 +5,7 @@
 The authenticated voice interview uses the existing interview session, locked P2 plan, and chat runtime:
 
 ```text
-Browser microphone -> LiveKit STT -> Interview Core chat runtime -> ElevenLabs TTS -> Browser audio
+Browser microphone -> LiveKit STT -> Interview Core chat runtime -> selected TTS provider -> Browser audio
 ```
 
 LiveKit does not attach a free-form LLM. It sends each final transcript to Interview Core and speaks the response returned by the current runtime. Interview Core continues to use its configured model where its existing decision logic requires it.
@@ -44,6 +44,7 @@ VOICE_LAB_BACKCHANNEL_START_BOUNDARY=0.5
 VOICE_LAB_BACKCHANNEL_END_BOUNDARY=2.2
 VOICE_LAB_AEC_WARMUP_DURATION=1.0
 VOICE_LAB_MIN_CONSECUTIVE_SPEECH_DELAY=0.18
+VOICE_LAB_TTS_PROVIDER=elevenlabs  # elevenlabs | vieneu | cartesia
 ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
 ELEVENLABS_VI_VOICE_ID=...
@@ -55,6 +56,11 @@ ELEVENLABS_SPEED=0.98
 ELEVENLABS_SPEAKER_BOOST=true
 ELEVENLABS_AUTO_MODE=true
 ELEVENLABS_TEXT_NORMALIZATION=auto
+VIENEU_TTS_BASE_URL=http://host.docker.internal:8000
+VIENEU_TTS_API_KEY=...
+# The existing VIENEU_API_KEY name is also accepted as a fallback.
+VIENEU_TTS_VOICE=
+VIENEU_TTS_TIMEOUT_SECONDS=180
 VOICE_RUNTIME_API_BASE_URL=http://127.0.0.1:5000
 VOICE_AGENT_DNS_PRIMARY=1.1.1.1
 VOICE_AGENT_DNS_SECONDARY=8.8.8.8
@@ -125,6 +131,10 @@ The API verifies session ownership, voice mode, and locked plan. It passes the w
   Set `VOICE_LAB_NOISE_CANCELLATION=off` only for self-hosted deployments where
   the LiveKit Cloud filter is unavailable. Literal STT noise tokens and probable
   TTS echo fragments are discarded before Interview Core can score them.
+- Set `VOICE_LAB_TTS_PROVIDER=elevenlabs` or `vieneu`. The VieNeu adapter calls
+  `/v1/audio/speech` with `stream_format=sse`, strips the streamed WAV header,
+  and forwards PCM frames to LiveKit as they arrive. With Docker Desktop and an
+  SSH tunnel to the EC2 TTS server, use `VIENEU_TTS_BASE_URL=http://host.docker.internal:8000`.
 - ElevenLabs handles TTS with the interview locale passed explicitly (`vi` or
   `en`). Configure a native-accent voice per locale; the generic voice remains
   only a compatibility fallback. Auto mode removes chunk-schedule buffering

@@ -53,6 +53,7 @@ try:
     from .transcript_quality import assess_transcript
     from .tts_cache import SpeechAudioCache, SpeechClip
     from .tuning import voice_tuning
+    from .vieneu_tts import VieNeuTTS
 except ImportError:  # Executed directly by the API's LiveKit subprocess.
     from answer_window import (  # type: ignore[no-redef]
         PROCESSING_FILLER_SECONDS,
@@ -82,6 +83,7 @@ except ImportError:  # Executed directly by the API's LiveKit subprocess.
     from transcript_quality import assess_transcript  # type: ignore[no-redef]
     from tts_cache import SpeechAudioCache, SpeechClip  # type: ignore[no-redef]
     from tuning import voice_tuning  # type: ignore[no-redef]
+    from vieneu_tts import VieNeuTTS  # type: ignore[no-redef]
 
 # Prefer variables supplied by Docker/the backend environment. The project-root
 # .env file only fills values that are not already present.
@@ -661,6 +663,12 @@ server = AgentServer(
 @server.rtc_session(agent_name=os.getenv("LIVEKIT_AGENT_NAME", "intervia-voice"))
 async def voice_lab_session(ctx: agents.JobContext) -> None:
     default_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
+    tts_provider = os.getenv("VOICE_LAB_TTS_PROVIDER", "elevenlabs").strip().lower()
+    if tts_provider in {"vieneu", "vieneu-tts"}:
+        tts_provider = "vieneu"
+    elif tts_provider not in {"elevenlabs", "cartesia"}:
+        logger.warning("Unknown VOICE_LAB_TTS_PROVIDER=%r; falling back to elevenlabs", tts_provider)
+        tts_provider = "elevenlabs"
 
     runtime_token = (ctx.job.metadata or "").strip()
     if not runtime_token:
@@ -698,8 +706,9 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
     voice_id = os.getenv(locale_voice_var, "").strip() or default_voice_id
     # "cartesia" speaks through LiveKit Inference only, so development and
     # automated tests do not spend ElevenLabs credits.
-    tts_provider = os.getenv("VOICE_LAB_TTS_PROVIDER", "elevenlabs").strip().lower()
-    use_elevenlabs = tts_provider != "cartesia"
+    use_elevenlabs = tts_provider == "elevenlabs"
+    use_vieneu = tts_provider == "vieneu"
+    use_inference = tts_provider == "cartesia"
     if use_elevenlabs and not voice_id:
         raise RuntimeError(f"{locale_voice_var} or ELEVENLABS_VOICE_ID is missing")
     if use_elevenlabs and is_vietnamese and not os.getenv("ELEVENLABS_VI_VOICE_ID", "").strip():
@@ -733,7 +742,7 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
         logger.warning("Unknown interruption mode %r; falling back to vad", interruption_mode)
         interruption_mode = "vad"
     tuning = voice_tuning()
-    tts_config = tts_provider_config(locale)
+    tts_config = tts_provider_config(locale) if use_elevenlabs else None
 
     logger.info(
         "Voice session language locked",
@@ -743,11 +752,12 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
             "locale": locale,
             "stt_language": stt_language,
             "stt_model": stt_model,
-            "tts_language": tts_config.language or "auto",
+            "tts_provider": tts_provider,
+            "tts_language": tts_config.language if tts_config else "auto",
         },
     )
 
-    tts_language = {"language": tts_config.language} if tts_config.language else {}
+    tts_language = {"language": tts_config.language} if tts_config and tts_config.language else {}
     fallback_model = os.getenv("VOICE_LAB_FALLBACK_TTS_MODEL", "cartesia/sonic-3").strip()
     fallback_voice = os.getenv("VOICE_LAB_FALLBACK_TTS_VOICE", "").strip()
     # Pinning "vi" reads English terms with Vietnamese phonology; auto
@@ -759,26 +769,46 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
             **({} if fallback_language == "auto" else {"language": "vi" if is_vietnamese else "en"}),
             **({"voice": fallback_voice} if fallback_voice else {}),
         )
-        if fallback_model
+        if fallback_model and (use_elevenlabs or use_inference)
         else None
     )
-    if not use_elevenlabs and inference_tts is None:
+    if use_inference and inference_tts is None:
         raise RuntimeError("VOICE_LAB_TTS_PROVIDER=cartesia needs VOICE_LAB_FALLBACK_TTS_MODEL")
-    inference_signature = f"inference|{fallback_model}|{fallback_voice}|{fallback_language}|{locale}"
-    primary_tts = inference_tts if not use_elevenlabs else elevenlabs.TTS(
-        voice_id=voice_id,
-        model=tts_config.model,
-        **tts_language,
-        auto_mode=tts_config.auto_mode,
-        apply_text_normalization=tts_config.apply_text_normalization,
-        voice_settings=elevenlabs.VoiceSettings(
-            stability=tts_config.stability,
-            similarity_boost=tts_config.similarity_boost,
-            style=tts_config.style,
-            speed=tts_config.speed,
-            use_speaker_boost=tts_config.use_speaker_boost,
-        ),
-    )
+    if use_vieneu:
+        vieneu_api_key = os.getenv("VIENEU_TTS_API_KEY", "").strip() or os.getenv(
+            "VIENEU_API_KEY", ""
+        ).strip()
+        try:
+            vieneu_timeout = float(os.getenv("VIENEU_TTS_TIMEOUT_SECONDS", "180"))
+        except ValueError:
+            vieneu_timeout = 180.0
+        primary_tts = VieNeuTTS(
+            base_url=os.getenv("VIENEU_TTS_BASE_URL", "http://host.docker.internal:8000"),
+            api_key=vieneu_api_key,
+            voice=os.getenv("VIENEU_TTS_VOICE", ""),
+            model=os.getenv("VIENEU_TTS_MODEL", ""),
+            timeout_seconds=vieneu_timeout,
+            sample_rate=_int_env("VIENEU_TTS_SAMPLE_RATE", 16000),
+        )
+    elif use_elevenlabs:
+        assert tts_config is not None
+        primary_tts = elevenlabs.TTS(
+            voice_id=voice_id,
+            model=tts_config.model,
+            **tts_language,
+            auto_mode=tts_config.auto_mode,
+            apply_text_normalization=tts_config.apply_text_normalization,
+            voice_settings=elevenlabs.VoiceSettings(
+                stability=tts_config.stability,
+                similarity_boost=tts_config.similarity_boost,
+                style=tts_config.style,
+                speed=tts_config.speed,
+                use_speaker_boost=tts_config.use_speaker_boost,
+            ),
+        )
+    else:
+        assert inference_tts is not None
+        primary_tts = inference_tts
     # An exhausted ElevenLabs quota answers every request with no audio, and a
     # session with a single TTS then closes as unrecoverable: the candidate
     # hears nothing. LiveKit Inference reuses the LiveKit credentials STT
@@ -789,7 +819,11 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
     voice_signature = (
         f"elevenlabs|{voice_id}|{json.dumps(tts_config.telemetry(), sort_keys=True)}|{locale}"
         if use_elevenlabs
-        else inference_signature
+        else (
+            f"{tts_provider}|{primary_tts.model}|{os.getenv('VIENEU_TTS_VOICE', '')}|{locale}"
+            if use_vieneu
+            else f"inference|{fallback_model}|{fallback_voice}|{fallback_language}|{locale}"
+        )
     )
     speech_cache = SpeechAudioCache(
         voice_signature=voice_signature,
