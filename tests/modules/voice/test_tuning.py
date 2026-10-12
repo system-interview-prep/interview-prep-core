@@ -7,8 +7,8 @@ def test_noise_resistant_defaults_keep_real_barge_in_responsive() -> None:
     assert tuning.vad_activation_threshold == 0.5
     assert tuning.vad_deactivation_threshold < tuning.vad_activation_threshold
     assert tuning.vad_min_speech_duration == 0.2
-    assert tuning.interruption_min_duration == 0.5
-    assert tuning.false_interruption_timeout == 1.0
+    assert tuning.interruption_min_duration == 0.7
+    assert tuning.false_interruption_timeout == 2.0
 
 
 def test_invalid_settings_fall_back_or_are_clamped_safely() -> None:
