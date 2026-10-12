@@ -7,6 +7,7 @@ It does not select questions and it does not ask an LLM to invent competencies.
 import hashlib
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -206,6 +207,7 @@ def _derive_competency_plan_legacy(
     job: CanonicalJob,
     match: MatchResult,
     duration_minutes: int,
+    listing: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Legacy fixed question budget algorithm (interview-planner-v1)."""
     result_by_id = {item.requirement_id: item for item in match.requirement_results}
@@ -323,7 +325,7 @@ def _derive_competency_plan_legacy(
         "policyVersion": PLANNER_POLICY_VERSION,
         "questionBudget": budget,
         "targetQuestionCount": sum(item["targetQuestionCount"] for item in targets),
-        "difficulty": derive_difficulty(job),
+        "difficulty": derive_difficulty(job, listing=listing),
         "sections": build_sections(duration_minutes),
         "targets": targets,
         "evaluationTargets": evaluation_targets,
@@ -368,6 +370,7 @@ def _derive_competency_plan_dynamic(
     match: MatchResult,
     duration_minutes: int,
     config: PlannerPolicyConfig,
+    listing: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Gate 2 dynamic time envelope allocation algorithm (interview-planner-v2-dynamic)."""
     result_by_id = {item.requirement_id: item for item in match.requirement_results}
@@ -516,7 +519,7 @@ def _derive_competency_plan_dynamic(
             "closingReserveSeconds": config.t_closing_reserve,
             "techPoolSeconds": tech_pool_seconds,
             "unallocatedBufferSeconds": tech_pool_seconds,
-            "difficulty": derive_difficulty(job),
+            "difficulty": derive_difficulty(job, listing=listing),
             "sections": build_sections(duration_minutes),
             "targets": [],
             "nonInterviewedTargets": non_interviewed_targets,
@@ -806,7 +809,7 @@ def _derive_competency_plan_dynamic(
         "closingReserveSeconds": config.t_closing_reserve,
         "techPoolSeconds": tech_pool_seconds,
         "unallocatedBufferSeconds": unallocated_buffer_seconds,
-        "difficulty": derive_difficulty(job),
+        "difficulty": derive_difficulty(job, listing=listing),
         "sections": build_sections(duration_minutes),
         "targets": targets,
         "nonInterviewedTargets": non_interviewed_targets,
@@ -832,6 +835,7 @@ def derive_competency_plan(
     match: MatchResult,
     duration_minutes: int,
     policy_config: PlannerPolicyConfig | None = None,
+    listing: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic competency agenda from canonical requirements.
 
@@ -847,12 +851,14 @@ def derive_competency_plan(
             job=job,
             match=match,
             duration_minutes=duration_minutes,
+            listing=listing,
         )
     return _derive_competency_plan_dynamic(
         job=job,
         match=match,
         duration_minutes=duration_minutes,
         config=policy_config,
+        listing=listing,
     )
 
 
@@ -937,6 +943,21 @@ async def _load_job(
     return job
 
 
+async def _load_job_listing_hints(db: AsyncSession, *, job_id: str) -> dict[str, Any]:
+    """Posting fields the canonical JD lacks but difficulty can use.
+
+    ``seniority`` here is the admin-editable column, so a corrected level wins
+    over the parser; ``title`` and ``experience_min_years`` back it up.
+    """
+    row = (
+        await db.execute(
+            text("SELECT seniority, title, experience_min_years FROM job_descriptions WHERE id = :id"),
+            {"id": job_id},
+        )
+    ).mappings().one_or_none()
+    return dict(row) if row else {}
+
+
 async def build_and_persist_session_plan(
     *,
     db: AsyncSession,
@@ -969,10 +990,14 @@ async def build_and_persist_session_plan(
         match=match,
         duration_minutes=session_row["duration_minutes"],
         policy_config=configured_planner_policy(),
+        listing=await _load_job_listing_hints(db, job_id=session_row["job_id"]),
     )
+    difficulty = plan.get("difficulty") or {}
     trace_event(
         "interviewer",
         "plan_derived",
+        difficulty_level=difficulty.get("level"),
+        difficulty_source=difficulty.get("source"),
         session_id=session_row.get("id"),
         resume_id=session_row.get("resume_id"),
         job_id=session_row.get("job_id"),
