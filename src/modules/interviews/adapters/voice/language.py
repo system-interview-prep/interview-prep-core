@@ -7,7 +7,9 @@ session to English after a short or technical utterance.
 
 from __future__ import annotations
 
+import os
 import re
+from collections.abc import Mapping
 from typing import Any
 
 _SHORT_VI_MISRECOGNITIONS = {
@@ -23,7 +25,18 @@ _SHORT_VI_MISRECOGNITIONS = {
     "uh-huh": "Vâng.",
     "mm hmm": "Vâng.",
     "mhm": "Vâng.",
+    "hello": "Alô.",
+    "hello hello": "Alô, alô.",
 }
+
+# A Vietnamese sentence opened by "dạ" or "alô" is decoded as "Yeah, em nghe
+# rõ" / "Hello, bạn nghe rõ không". Only the opening filler is rewritten, and
+# only when the rest is Vietnamese; the answer itself is never touched.
+_LEADING_VI_MISRECOGNITIONS = {"yeah": "Dạ", "yah": "Dạ", "yep": "Dạ", "yes": "Dạ", "hello": "Alô"}
+_LEADING_FILLER = re.compile(r"^(yeah|yah|yep|yes|hello)\b[,.!?]?\s+(?=\S)", re.IGNORECASE)
+_VIETNAMESE_LETTER = re.compile(
+    "[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", re.IGNORECASE
+)
 
 
 def _phrase_key(value: str) -> str:
@@ -41,15 +54,96 @@ def normalize_transcript_for_locale(text: str, *, locale: str) -> str:
     cleaned = text.strip()
     if not locale.lower().startswith("vi"):
         return cleaned
-    return _SHORT_VI_MISRECOGNITIONS.get(_phrase_key(cleaned), cleaned)
+    exact = _SHORT_VI_MISRECOGNITIONS.get(_phrase_key(cleaned))
+    if exact is not None:
+        return exact
+    leading = _LEADING_FILLER.match(cleaned)
+    if leading and _VIETNAMESE_LETTER.search(cleaned[leading.end():]):
+        filler = _LEADING_VI_MISRECOGNITIONS[leading.group(1).casefold()]
+        return f"{filler}, {cleaned[leading.end():]}"
+    return cleaned
+
+
+# Written forms a TTS voice reads badly: a Vietnamese voice says "CI gạch CD"
+# and "C thăng". The transcript keeps the written form; only speech changes.
+_SPOKEN_FORMS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bCI/CD\b", re.IGNORECASE), "CI CD"),
+    (re.compile(r"\bUI/UX\b", re.IGNORECASE), "UI UX"),
+    (re.compile(r"\bTCP/IP\b", re.IGNORECASE), "TCP IP"),
+    (re.compile(r"\bI/O\b"), "I O"),
+    (re.compile(r"\bA/B\b"), "A B"),
+    (re.compile(r"(?<![\w#])C#", re.IGNORECASE), "C sharp"),
+    (re.compile(r"(?<![\w.])\.NET\b", re.IGNORECASE), "dot NET"),
+    (re.compile(r"\b(Node|Next|Vue|Nuxt|Express|Nest|Three)\.js\b", re.IGNORECASE), r"\1 JS"),
+)
+# "REST/GraphQL" between two Latin words: read the slash as "or", not "gạch".
+_WORD_SLASH = re.compile(r"(?<=[A-Za-z0-9])/(?=[A-Za-z])")
+
+
+def speakable_text(text: str, *, locale: str) -> str:
+    """Rewrite technical notation into what the interviewer voice should say."""
+
+    spoken = text
+    for pattern, replacement in _SPOKEN_FORMS:
+        spoken = pattern.sub(replacement, spoken)
+    conjunction = " hoặc " if locale.lower().startswith("vi") else " or "
+    return re.sub(
+        r"\S+",
+        lambda token: token.group(0)
+        if "://" in token.group(0) or token.group(0).startswith("www.")
+        else _WORD_SLASH.sub(conjunction, token.group(0)),
+        spoken,
+    )
+
+
+# Terms a candidate says in English with a Vietnamese accent ("bắc en", "đốc
+# cơ", "rê đít"). The streaming model keeps them in English spelling when they
+# are listed here; a free-text prompt did not. AssemblyAI accepts up to 100.
+INTERVIEW_KEYTERMS: tuple[str, ...] = (
+    # Vietnamese words the model otherwise hears as English ("hello", "yeah").
+    "alô", "dạ", "vâng",
+    # Languages, frameworks, platforms (taxonomy labels plus close relatives).
+    "Python", "Java", "Kotlin", "JavaScript", "TypeScript", "C#", "PHP", "SQL", "HTML", "CSS",
+    "Spring Boot", "FastAPI", "Django", "Node.js", ".NET", "React", "Angular", "Vue", "Next.js",
+    "Android", "iOS", "Flutter", "PostgreSQL", "MySQL", "MongoDB", "Redis", "Kafka", "RabbitMQ",
+    "Elasticsearch", "Docker", "Kubernetes", "AWS", "Azure", "Google Cloud", "Linux", "Nginx",
+    "Git", "GitHub", "Jira", "Postman",
+    # Everyday engineering vocabulary.
+    "backend", "frontend", "full-stack", "API", "REST API", "GraphQL", "endpoint", "webhook",
+    "database", "schema", "query", "index", "transaction", "cache", "microservices", "monolith",
+    "service", "deploy", "rollback", "pipeline", "CI/CD", "unit test", "integration test",
+    "refactor", "code review", "pull request", "merge", "branch", "bug", "debug", "logging",
+    "monitoring", "performance", "latency", "throughput", "scale", "load balancer", "message queue",
+    "event", "retry", "timeout", "authentication", "authorization", "JWT", "OAuth", "token",
+    "refresh token", "session", "trade-off", "consistency", "availability", "deadline", "sprint",
+    "Agile", "Scrum",
+)
 
 
 def assemblyai_session_options(
     language: str,
     *,
     agent_context: str | None = None,
+    steering: str = "prompt",
 ) -> dict[str, Any]:
-    """Return non-conflicting AssemblyAI options for a fixed session language."""
+    """Return non-conflicting AssemblyAI options for a fixed session language.
+
+    ``steering="keyterms"`` sends INTERVIEW_KEYTERMS; ``"prompt"`` sends the
+    language-steering prompt. U3 Pro ignores the term list when both are set.
+    """
+
+    if steering == "keyterms":
+        options: dict[str, Any] = {
+            "keyterms_prompt": list(INTERVIEW_KEYTERMS),
+            # Keep partial captions streaming while using the balanced profile
+            # to improve recognition of ordinary speech.
+            "mode": "balanced",
+            "language_detection": False,
+            "previous_context_n_turns": 2,
+        }
+        if agent_context and agent_context.strip():
+            options["agent_context"] = agent_context.strip()
+        return options
 
     language_name = "Vietnamese" if language == "vi" else "English"
     prompt = (
@@ -61,17 +155,18 @@ def assemblyai_session_options(
             "Use Vietnamese spelling and diacritics. Short acknowledgements are "
             "Vietnamese words such as dạ, vâng, ừ, ừm, rồi, nhé and được; do not "
             "render them as yeah, yep, uh-huh or other English words. "
+            "The Vietnamese call greeting alô (also written alo) is not the English "
+            "hello: write alô. "
             "If the audio is silence, music, background conversation, or is not "
             "intelligible, do not invent a transcript or translate noise into English. "
         )
     prompt += (
         "Keep genuine software names and technical terms such as REST API, Docker, "
-        "Kubernetes, JavaScript, PostgreSQL, JWT, CI/CD and microservices verbatim."
+        "Kubernetes, JavaScript, PostgreSQL, Redis, cache, webhook, JWT, CI/CD and "
+        "microservices verbatim."
     )
-    options: dict[str, Any] = {
+    options = {
         # U3 Pro documents `prompt` and `keyterms_prompt` as mutually exclusive.
-        # A single language-steering prompt is more important than English-only
-        # keyterms for a Vietnamese interview.
         "prompt": prompt,
         "mode": "balanced",
         "language_detection": False,
@@ -82,3 +177,35 @@ def assemblyai_session_options(
         # user turn. This is context, not a transcript to copy.
         options["agent_context"] = agent_context.strip()
     return options
+
+
+def _env_number(env: Mapping[str, str], name: str, default: float) -> float:
+    try:
+        return float(env.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+def assemblyai_stream_options(
+    language: str,
+    *,
+    agent_context: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """The full AssemblyAI options of a live interview, shared with the STT benchmark."""
+
+    values = os.environ if env is None else env
+    steering = values.get("VOICE_LAB_STT_STEERING", "prompt").strip().lower()
+    return {
+        **assemblyai_session_options(
+            language,
+            agent_context=agent_context,
+            steering=steering if steering in {"keyterms", "prompt"} else "prompt",
+        ),
+        # Keep natural pauses inside one answer instead of finalizing
+        # every short clause as a separate turn.
+        "mode": "balanced",
+        "min_turn_silence": max(0, int(_env_number(values, "VOICE_LAB_STT_MIN_TURN_SILENCE_MS", 128))),
+        "max_turn_silence": max(0, int(_env_number(values, "VOICE_LAB_STT_MAX_TURN_SILENCE_MS", 900))),
+        "vad_threshold": _env_number(values, "VOICE_LAB_STT_VAD_THRESHOLD", 0.3),
+    }
