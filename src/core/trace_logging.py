@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,30 @@ _WORKFLOW_DIRECTORIES = {
 }
 
 
+# Interview turns are followed live in the backend terminal; the app configures no
+# logging handlers, so this logger owns its stdout handler.
+_CONSOLE_WORKFLOWS = {"interviewer", "interview"}
+_console = logging.getLogger("interview.trace")
+if not _console.handlers:
+    _handler = logging.StreamHandler(sys.stdout)
+    _handler.setFormatter(logging.Formatter("%(asctime)s TRACE %(message)s", "%H:%M:%S"))
+    _console.addHandler(_handler)
+    _console.setLevel(logging.INFO)
+    _console.propagate = False
+
+
+def _echo_to_console(workflow: str, event: str, fields: dict[str, Any]) -> None:
+    parts = [f"[{workflow}] {event}"]
+    for key, value in fields.items():
+        if value is None or value == "":
+            continue
+        text = str(value)
+        if key.endswith("_id") and len(text) > 8:
+            text = text[:8]
+        parts.append(f"{key}={text}")
+    _console.info(" ".join(parts))
+
+
 def trace_event(workflow: str, event: str, **fields: Any) -> None:
     """Append one local-development trace event without interrupting work."""
     settings = get_settings()
@@ -42,6 +67,8 @@ def trace_event(workflow: str, event: str, **fields: Any) -> None:
         "event": event,
         **fields,
     }
+    if workflow in _CONSOLE_WORKFLOWS:
+        _echo_to_console(workflow, event, fields)
     try:
         path = Path(settings.trace_logs_dir) / _WORKFLOW_DIRECTORIES.get(workflow, "system")
         path.mkdir(parents=True, exist_ok=True)
