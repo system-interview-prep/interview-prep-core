@@ -5,6 +5,8 @@ an explainable interview agenda. It deliberately does not select or generate
 questions.
 """
 
+import re
+from collections.abc import Mapping
 from typing import Any
 
 from src.modules.matching.schemas import (
@@ -26,24 +28,65 @@ _SENIORITY_DIFFICULTY = {
 }
 
 
-def derive_difficulty(job: CanonicalJob) -> dict[str, Any]:
-    """Derive difficulty only from explicit JD seniority.
+# Level words in posting titles the JD parser does not map to a seniority:
+# "Android Engineer I", "Staff Engineer", "Principal Developer".
+_TITLE_LEVELS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\b(intern|internship|graduate|entry[- ]level|thực tập)\b", re.IGNORECASE), "foundational"),
+    (re.compile(r"\b(staff|principal|distinguished|architect)\b", re.IGNORECASE), "advanced"),
+    (re.compile(r"\b(?:engineer|developer|programmer)\s+(?:III|IV|V|3|4|5)\b", re.IGNORECASE), "advanced"),
+    (re.compile(r"\b(?:engineer|developer|programmer)\s+(?:II|2)\b", re.IGNORECASE), "intermediate"),
+    (re.compile(r"\b(?:engineer|developer|programmer)\s+(?:I|1)\b", re.IGNORECASE), "foundational"),
+)
 
-    P1 does not infer a candidate's level from CV prose and does not silently
-    upgrade difficulty from matching scores.
+
+def _level_from_years(min_years: float) -> str:
+    if min_years <= 1:
+        return "foundational"
+    if min_years < 5:
+        return "intermediate"
+    return "advanced"
+
+
+def derive_difficulty(job: CanonicalJob, *, listing: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Derive the session difficulty from what the job posting states.
+
+    Still JD-only: never inferred from CV prose or matching scores. Most
+    postings carry no seniority word, which used to leave difficulty
+    "unspecified" and switched it off for the selector (54 of 55 plans), so
+    the posting's other signals are tried in order:
+
+    1. ``listing.seniority``: the listing column (ingest copies the parsed
+       value; an admin correction lands here too), so it wins over the parser;
+    2. the parsed seniority;
+    3. a level in the title ("Engineer II", "Staff", "Principal");
+    4. ``listing.experience_min_years``: <=1 foundational, <5 intermediate;
+    5. otherwise "intermediate", marked as a default so it stays visible.
     """
 
-    if job.seniority is None:
-        return {
-            "level": "unspecified",
-            "source": "job_seniority_missing",
-            "seniority": None,
-        }
-    return {
-        "level": _SENIORITY_DIFFICULTY[job.seniority],
-        "source": "job_seniority",
-        "seniority": job.seniority,
-    }
+    listing = listing or {}
+    override = str(listing.get("seniority") or "").strip().lower()
+    if override in _SENIORITY_DIFFICULTY:
+        return {"level": _SENIORITY_DIFFICULTY[override], "source": "job_listing_seniority", "seniority": override}
+    if job.seniority is not None:
+        return {"level": _SENIORITY_DIFFICULTY[job.seniority], "source": "job_seniority", "seniority": job.seniority}
+    title = str(listing.get("title") or job.job_title or "")
+    for pattern, level in _TITLE_LEVELS:
+        if pattern.search(title):
+            return {"level": level, "source": "job_title_level", "seniority": None, "title": title}
+    min_years = listing.get("experience_min_years")
+    if min_years is not None:
+        try:
+            years = float(min_years)
+        except (TypeError, ValueError):
+            years = None
+        if years is not None and years >= 0:
+            return {
+                "level": _level_from_years(years),
+                "source": "job_min_experience_years",
+                "seniority": None,
+                "minExperienceYears": years,
+            }
+    return {"level": "intermediate", "source": "default_no_job_signal", "seniority": None}
 
 
 def _allocate_minutes(duration_minutes: int, weights: list[int]) -> list[int]:
