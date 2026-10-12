@@ -324,44 +324,21 @@ def build_project_validation_question(
     """One short, grounded question about the candidate's CV project.
 
     A real interviewer asks one thing at a time: what the candidate did and the
-    hardest decision. The CV's own facts (project, role, technologies, stated
-    outcome) are quoted, never invented; a missing role is asked, not asserted.
-    Measurement and baselines are left to the follow-up probe instead of being
-    packed into the opening question.
+    hardest decision. Only the CV's project name is quoted, never invented; a
+    missing role is asked, not asserted. The role, technology list and stated
+    outcome made the question about 40 syllables long and steered the probe to
+    whichever technology came first, so they are left to the follow-up probe.
     """
     is_vi = (locale or "vi").lower().startswith("vi")
-    unique_techs: list[str] = []
-    if project.technologies_status == "present":
-        for tech in project.technologies:
-            if tech.casefold() not in {item.casefold() for item in unique_techs}:
-                unique_techs.append(tech)
-    techs = ", ".join(unique_techs[:3])
     has_role = project.role_status == "present" and bool(project.role)
-    outcome = project.outcomes[0] if project.outcomes_status == "present" and project.outcomes else ""
 
     if is_vi:
+        ask = "bạn trực tiếp làm phần nào, và quyết định kỹ thuật khó nhất là gì?"
         if has_role:
-            opening = f"Ở dự án '{project.name}', với vai trò {project.role}, bạn trực tiếp làm phần nào"
-        else:
-            opening = (
-                f"CV chưa ghi rõ vai trò của bạn trong dự án '{project.name}'. "
-                "Bạn xác minh chính xác vai trò và phần việc bạn trực tiếp làm"
-            )
-        decision = f"quyết định kỹ thuật khó nhất với {techs}" if techs else "quyết định kỹ thuật khó nhất"
-        question = f"{opening}, và {decision} là gì?"
-        if outcome:
-            question += f" Kết quả “{outcome}” được đo thế nào?"
-        return question
+            return f"Trong dự án '{project.name}', {ask}"
+        return f"CV chưa ghi rõ vai trò của bạn trong dự án '{project.name}'. {ask[0].upper()}{ask[1:]}"
 
+    ask = "which parts did you build yourself, and what was the hardest technical decision?"
     if has_role:
-        opening = f"In the '{project.name}' project, as {project.role}, which parts did you build yourself"
-    else:
-        opening = (
-            f"Your CV does not state your role in the '{project.name}' project. "
-            "Please verify your direct contribution"
-        )
-    decision = f"the hardest technical decision with {techs}" if techs else "the hardest technical decision"
-    question = f"{opening}, and what was {decision}?"
-    if outcome:
-        question += f" How was “{outcome}” measured?"
-    return question
+        return f"In the '{project.name}' project, {ask}"
+    return f"Your CV does not state your role in the '{project.name}' project. {ask[0].upper()}{ask[1:]}"
