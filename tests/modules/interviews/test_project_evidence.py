@@ -148,7 +148,7 @@ def test_tie_break_stability_independent_of_order():
 # ============================================================================
 
 def test_question_grounds_on_cv_claims_without_hallucination():
-    """Requirement 4: Question mentions actual role and metrics from CV without inventing facts."""
+    """Requirement 4: Question quotes the CV's project and invents nothing."""
     project = StructuredProjectEvidence(
         project_id="cax",
         name="Career Assistant X",
@@ -161,19 +161,17 @@ def test_question_grounds_on_cv_claims_without_hallucination():
     )
 
     q_vi = build_project_validation_question(project, job_title="AI Engineer", locale="vi")
-    assert "Career Assistant X" in q_vi
-    assert "Lead Developer" in q_vi
-    assert "Python" in q_vi
-    assert "90+ users" in q_vi
+    assert q_vi == (
+        "Trong dự án 'Career Assistant X', bạn trực tiếp làm phần nào, "
+        "và quyết định kỹ thuật khó nhất là gì?"
+    )
     # Check that no imaginary facts were introduced
     assert "1000" not in q_vi
     assert "Docker" not in q_vi
 
     q_en = build_project_validation_question(project, job_title="AI Engineer", locale="en")
     assert "Career Assistant X" in q_en
-    assert "Lead Developer" in q_en
-    assert "Python" in q_en
-    assert "90+ users" in q_en
+    assert q_en.count("?") == 1
 
 
 # ============================================================================
@@ -181,7 +179,7 @@ def test_question_grounds_on_cv_claims_without_hallucination():
 # ============================================================================
 
 def test_missing_cv_fields_prompts_verification_not_assertion():
-    """Requirement 5: When role or outcomes are missing in CV, system asks candidate to verify."""
+    """Requirement 5: When the role is missing in the CV, the question says so instead of asserting one."""
     project = StructuredProjectEvidence(
         project_id="sparse-proj",
         name="Internal Tool",
@@ -196,18 +194,17 @@ def test_missing_cv_fields_prompts_verification_not_assertion():
     q_vi = build_project_validation_question(project, job_title="Software Engineer", locale="vi")
     # Must NOT assert candidate was Lead or created a specific metric
     assert "Lead" not in q_vi
-    assert "xác minh chính xác vai trò" in q_vi
-    # No outcome in the CV: nothing to quote, measurement is left to the probe.
+    assert q_vi.startswith("CV chưa ghi rõ vai trò của bạn trong dự án 'Internal Tool'.")
     assert "Kết quả" not in q_vi
     assert q_vi.count("?") == 1
 
     q_en = build_project_validation_question(project, job_title="Software Engineer", locale="en")
-    assert "verify your direct contribution" in q_en
+    assert q_en.startswith("Your CV does not state your role")
     assert "measured" not in q_en
 
 
 def test_validation_question_is_one_short_spoken_question():
-    """The opening CV question asks one thing (plus the CV's own outcome), not four."""
+    """The opening CV question asks one thing, without the role, technology list or outcome."""
     project = StructuredProjectEvidence(
         project_id="p1",
         name="Hệ thống quản lý đơn hàng đa kênh",
@@ -219,12 +216,10 @@ def test_validation_question_is_one_short_spoken_question():
         outcomes_status="present",
     )
     q_vi = build_project_validation_question(project, job_title="Backend", locale="vi")
-    assert q_vi.count("?") == 2
-    # Most words are the CV's own project name and role; the old 4-part question was ~80.
-    assert len(q_vi.split()) <= 50
-    assert "baseline" not in q_vi and "Đồng thời" not in q_vi and "Cảm ơn" not in q_vi
-    # Technologies are listed once each, case-insensitively.
-    assert "Docker, Node.Js, PostgreSQL" in q_vi
+    assert q_vi.count("?") == 1
+    assert len(q_vi.split()) <= 30  # was 38 with role, technologies and outcome
+    # Listing technologies steered every probe to the first one (Docker).
+    assert "Docker" not in q_vi and "team 4 người" not in q_vi and "15.000" not in q_vi
 
 
 # ============================================================================
