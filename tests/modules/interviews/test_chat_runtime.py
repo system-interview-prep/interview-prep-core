@@ -285,7 +285,7 @@ async def test_inv1_and_inv5_start_chat_session_success(mock_session_data):
 
 
 @pytest.mark.asyncio
-async def test_opening_uses_full_name_then_one_word_call_name(mock_session_data):
+async def test_opening_greets_by_call_name_and_keeps_it(mock_session_data):
     session_row, turns = mock_session_data
     db = MockChatSession(session_row, turns)
     db.candidate_name = "Nguyễn Văn Nam"
@@ -293,8 +293,9 @@ async def test_opening_uses_full_name_then_one_word_call_name(mock_session_data)
     runtime = await start_chat_session(db, session_row)
 
     opening = runtime["messages"][0]["content"]
-    assert opening.startswith("Chào Nguyễn Văn Nam,")
-    assert "hồ sơ của Nam" in opening
+    # "Chào Nguyễn Văn Nam" read like a roll call; Vietnamese greets the call name.
+    assert opening.startswith("Chào Nam, mình là người phỏng vấn AI của Intervia.")
+    assert "Nguyễn Văn Nam" not in opening
     assert "bạn" not in opening.casefold()
 
 
@@ -468,7 +469,7 @@ async def test_early_exit_sets_user_ended(mock_session_data):
     )
     assert res["action"] == "CONFIRM_ABORT"
     assert res["assistantResponse"]["messageType"] == "CONFIRM_ABORT"
-    assert "hộp thoại xác nhận" in res["assistantResponse"]["content"]
+    assert "Kết thúc & xem báo cáo" in res["assistantResponse"]["content"]
     assert res["sessionStatus"] == "OPEN"
 
     # 2. Ứng viên xác nhận dừng trên Modal -> Đóng session với USER_ENDED
@@ -523,7 +524,7 @@ async def test_two_consecutive_give_up_messages_trigger_early_exit(mock_session_
     assert res2["sessionStatus"] == "CLOSED"
     assert res2["assistantResponse"]["messageType"] == "WRAP_UP"
     assert res2["endReason"] == "FAST_FAIL_TECH"
-    assert "kết thúc phiên phỏng vấn tại đây" in res2["assistantResponse"]["content"]
+    assert "dừng buổi phỏng vấn tại đây" in res2["assistantResponse"]["content"]
     assert db.session_row["status"] == "CLOSED"
     assert db.session_row["end_reason"] == "FAST_FAIL_TECH"
 
@@ -654,7 +655,7 @@ async def test_closing_reverse_qna_flow(mock_session_data):
         content="Dạ mình nắm rõ rồi, mình không còn câu hỏi nào nữa. Cảm ơn bạn rất nhiều!",
     )
     assert res3["sessionStatus"] == "CLOSED"
-    assert "Chúc mừng bạn đã hoàn thành" in res3["assistantResponse"]["content"] or "báo cáo đánh giá" in res3["assistantResponse"]["content"]
+    assert "Báo cáo đánh giá đang được tạo" in res3["assistantResponse"]["content"]
     assert db.session_row["status"] == "CLOSED"
 
 
@@ -824,8 +825,9 @@ async def test_candidate_rubric_question_is_answered_without_advancing_turn(mock
 
     assert res["action"] == "CLARIFY"
     assert res["userMessage"]["messageType"] == "CANDIDATE_QUESTION"
-    assert "Rubric là bộ tiêu chí" in res["message"]
-    assert "Quay lại câu hiện tại" in res["message"]
+    assert "Chi tiết tiêu chí mình không chia sẻ" in res["message"]
+    # The chat room shows the question on screen; it is not pasted again.
+    assert "Mình quay lại câu hỏi vừa rồi nhé." in res["message"]
     assert db.turns[current_turn_id]["status"] == "ASKED"
     assert db.turns[current_turn_id]["answer_text"] is None
 
@@ -1908,7 +1910,7 @@ async def test_pacing_cutoff_closes_session_instead_of_dead_ending():
     assert len(wrap_ups) == 1
     # The transcript must not claim a full agenda was covered.
     assert "hoàn thành tất cả" not in wrap_ups[0]["content"]
-    assert "đã hết" in wrap_ups[0]["content"]
+    assert "hết thời gian" in wrap_ups[0]["content"]
     assert db.turns["t-deep"]["status"] == "ANSWERED"
 
 
@@ -2414,3 +2416,28 @@ async def test_runtime_current_turn_is_the_asked_turn_not_lowest_planned(mock_se
     assert runtime["currentTurn"]["turnId"] == "t-json"
     assert runtime["currentTurn"]["stage"] == "DEEP_DIVE"
     assert runtime["currentTurnIndex"] == 5
+
+
+@pytest.mark.asyncio
+async def test_pinned_question_uses_the_names_the_interviewer_speaks(monkeypatch):
+    from src.modules.interviews.application import chat_runtime
+
+    async def names(_db, _session_id):
+        return "Nguyễn Thị Thanh Hiền", "Hiền"
+
+    monkeypatch.setattr(chat_runtime, "_candidate_names", names)
+    session = {"id": "s1", "locale": "vi-VN"}
+    warmup = {"question_snapshot": {"stableKey": "warmup-intro", "stage": "WARM_UP",
+                                    "questionText": "Chào bạn, mình là người phỏng vấn. Bạn giới thiệu ngắn nhé?"}}
+    technical = {"question_snapshot": {"stage": "DEEP_DIVE", "questionText": "Ở dự án X, bạn làm phần nào?"}}
+
+    # An older snapshot that still greets.
+    assert await chat_runtime._displayed_question_text(None, session, warmup) == (
+        "Chào Hiền, mình là người phỏng vấn. Hiền giới thiệu ngắn nhé?"
+    )
+    new_warmup = {"question_snapshot": {"stableKey": "warmup-intro", "stage": "WARM_UP",
+                                        "questionText": "Bạn giới thiệu ngắn về mình nhé?"}}
+    assert await chat_runtime._displayed_question_text(None, session, new_warmup) == "Hiền giới thiệu ngắn về mình nhé?"
+    assert await chat_runtime._displayed_question_text(None, session, technical) == "Ở dự án X, Hiền làm phần nào?"
+    english = {"id": "s1", "locale": "en-US"}
+    assert await chat_runtime._displayed_question_text(None, english, technical) == "Ở dự án X, bạn làm phần nào?"
