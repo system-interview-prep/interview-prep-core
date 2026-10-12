@@ -32,6 +32,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.seeds.question_bank_expected_points_vi import EXPECTED_POINTS_VI
 from src.seeds.question_bank_seed_vi import QUESTION_TEXT_VI
 
 # The taxonomy_version used by the JD/CV parsers and stored in
@@ -164,34 +165,6 @@ _CONCEPT_FIXTURES: list[dict[str, Any]] = [
                 "difficulty": "advanced",
                 "type": "technical",
                 "locale": "vi-VN",
-            },
-            {
-                "stable_key": "ai-python-concurrency-race-condition",
-                "text": "Đoạn mã thu thập metrics thống kê dưới đây đang gặp lỗi Race Condition khi chạy đa luồng/bất đồng bộ khiến biến đếm counter bị sai lệch. Bạn hãy tìm nguyên nhân, sửa lại hàm increment() trên editor bên phải và bấm Chạy thử test cases nhé.",
-                "objective": "Phát hiện critical section chưa được bảo vệ; sử dụng asyncio.Lock() hoặc Semaphore; giải thích được cơ chế Event loop và nguy cơ deadlock nếu code bên trong Lock bắn exception.",
-                "difficulty": "intermediate",
-                "type": "coding",
-                "locale": "vi-VN",
-                "canonical_snapshot": {
-                    "language": "python",
-                    "starter_code": "import asyncio\n\nclass MetricsCollector:\n    def __init__(self):\n        self.counter = 0\n\n    async def increment(self):\n        # BUG: Race condition xảy ra ở đây khi chạy đồng thời\n        temp = self.counter\n        await asyncio.sleep(0.001)\n        self.counter = temp + 1\n",
-                    "test_cases_code": "async def run_tests():\n    collector = MetricsCollector()\n    await asyncio.gather(*[collector.increment() for _ in range(100)])\n    assert collector.counter == 100, f'Expected 100, but got {collector.counter}'\n    print('TEST PASSED: Concurrency handled correctly!')\n",
-                    "solution_code": "import asyncio\n\nclass MetricsCollector:\n    def __init__(self):\n        self.counter = 0\n        self._lock = asyncio.Lock()\n\n    async def increment(self):\n        async with self._lock:\n            temp = self.counter\n            await asyncio.sleep(0.001)\n            self.counter = temp + 1\n",
-                },
-            },
-            {
-                "stable_key": "ai-python-memory-leak-session",
-                "text": "Hàm gọi Model Inference dưới đây tạo HTTP client session mới cho mỗi request nhưng không đóng lại, gây rò rỉ connection pool khi tải cao. Hãy tối ưu lại bằng Connection Pooling hoặc Singleton Client.",
-                "objective": "Đánh giá khả năng quản lý tài nguyên HTTP/Async client và connection pooling trong FastAPI/Python.",
-                "difficulty": "intermediate",
-                "type": "coding",
-                "locale": "vi-VN",
-                "canonical_snapshot": {
-                    "language": "python",
-                    "starter_code": "import asyncio\n\nclass InferenceClient:\n    def __init__(self):\n        self.active_sessions = []\n\n    async def predict(self, prompt: str):\n        # BUG: Tạo session mới nhưng không cleanup\n        session = {'id': len(self.active_sessions) + 1, 'closed': False}\n        self.active_sessions.append(session)\n        return f'Result for {prompt}'\n",
-                    "test_cases_code": "async def run_tests():\n    client = InferenceClient()\n    for i in range(10):\n        await client.predict(f'prompt {i}')\n    unclosed = [s for s in client.active_sessions if not s['closed']]\n    assert len(unclosed) == 0, f'Leaked {len(unclosed)} unclosed sessions!'\n    print('TEST PASSED: No connection leak!')\n",
-                    "solution_code": "import asyncio\n\nclass InferenceClient:\n    def __init__(self):\n        self.active_sessions = []\n\n    async def predict(self, prompt: str):\n        session = {'id': len(self.active_sessions) + 1, 'closed': True}\n        self.active_sessions.append(session)\n        return f'Result for {prompt}'\n",
-                },
             },
         ],
     },
@@ -373,6 +346,37 @@ _CONCEPT_FIXTURES: list[dict[str, Any]] = [
         "concept_id": "skill-python",
         "role_concepts": ("technology.software-engineering.backend",),
         "questions": [
+            # asyncio exercises: they test Python concurrency and resource
+            # handling, not AI. They sat under skill-artificial-intelligence,
+            # so AI targets drew a race-condition coding task.
+            {
+                "stable_key": "ai-python-concurrency-race-condition",
+                "text": "Đoạn mã thu thập metrics thống kê dưới đây đang gặp lỗi Race Condition khi chạy đa luồng/bất đồng bộ khiến biến đếm counter bị sai lệch. Bạn hãy tìm nguyên nhân, sửa lại hàm increment() trong Khung viết code, bấm “Chạy thử” để kiểm tra rồi bấm “Nộp bài” nhé.",
+                "objective": "Phát hiện critical section chưa được bảo vệ; sử dụng asyncio.Lock() hoặc Semaphore; giải thích được cơ chế Event loop và nguy cơ deadlock nếu code bên trong Lock bắn exception.",
+                "difficulty": "intermediate",
+                "type": "coding",
+                "locale": "vi-VN",
+                "canonical_snapshot": {
+                    "language": "python",
+                    "starter_code": "import asyncio\n\nclass MetricsCollector:\n    def __init__(self):\n        self.counter = 0\n\n    async def increment(self):\n        # BUG: Race condition xảy ra ở đây khi chạy đồng thời\n        temp = self.counter\n        await asyncio.sleep(0.001)\n        self.counter = temp + 1\n",
+                    "test_cases_code": "async def run_tests():\n    collector = MetricsCollector()\n    await asyncio.gather(*[collector.increment() for _ in range(100)])\n    assert collector.counter == 100, f'Expected 100, but got {collector.counter}'\n    print('TEST PASSED: Concurrency handled correctly!')\n",
+                    "solution_code": "import asyncio\n\nclass MetricsCollector:\n    def __init__(self):\n        self.counter = 0\n        self._lock = asyncio.Lock()\n\n    async def increment(self):\n        async with self._lock:\n            temp = self.counter\n            await asyncio.sleep(0.001)\n            self.counter = temp + 1\n",
+                },
+            },
+            {
+                "stable_key": "ai-python-memory-leak-session",
+                "text": "Hàm gọi Model Inference dưới đây tạo HTTP client session mới cho mỗi request nhưng không đóng lại, gây rò rỉ connection pool khi tải cao. Hãy tối ưu lại bằng Connection Pooling hoặc Singleton Client.",
+                "objective": "Đánh giá khả năng quản lý tài nguyên HTTP/Async client và connection pooling trong FastAPI/Python.",
+                "difficulty": "intermediate",
+                "type": "coding",
+                "locale": "vi-VN",
+                "canonical_snapshot": {
+                    "language": "python",
+                    "starter_code": "import asyncio\n\nclass InferenceClient:\n    def __init__(self):\n        self.active_sessions = []\n\n    async def predict(self, prompt: str):\n        # BUG: Tạo session mới nhưng không cleanup\n        session = {'id': len(self.active_sessions) + 1, 'closed': False}\n        self.active_sessions.append(session)\n        return f'Result for {prompt}'\n",
+                    "test_cases_code": "async def run_tests():\n    client = InferenceClient()\n    for i in range(10):\n        await client.predict(f'prompt {i}')\n    unclosed = [s for s in client.active_sessions if not s['closed']]\n    assert len(unclosed) == 0, f'Leaked {len(unclosed)} unclosed sessions!'\n    print('TEST PASSED: No connection leak!')\n",
+                    "solution_code": "import asyncio\n\nclass InferenceClient:\n    def __init__(self):\n        self.active_sessions = []\n\n    async def predict(self, prompt: str):\n        session = {'id': len(self.active_sessions) + 1, 'closed': True}\n        self.active_sessions.append(session)\n        return f'Result for {prompt}'\n",
+                },
+            },
             {
                 "stable_key": "python-mutable-default-and-scoping",
                 "text": "Explain what happens when a mutable object is used as a default argument in a Python function, why it surprises people, and how you would write it correctly.",
@@ -1257,6 +1261,26 @@ async def _upsert_taxonomy_mappings(
         (_CAREER_TAXONOMY_VERSION, role_code, "TARGET_ROLE") for role_code in role_concepts
     ]
 
+    # A fixture moved to another skill (or role) must not keep its old rows:
+    # the selector would still serve it for the old target. Only seed-authored
+    # versions are pruned, and only the two purposes the seed writes.
+    await db.execute(
+        text(
+            "DELETE FROM question_version_taxonomy_concepts m "
+            "USING interview_question_versions v "
+            "WHERE m.question_version_id = v.id AND v.id = CAST(:qvid AS uuid) "
+            "  AND v.created_by = :seed_author "
+            "  AND ((m.purpose = 'PRIMARY_COMPETENCY' AND m.concept_id <> :concept_id) "
+            "    OR (m.purpose = 'TARGET_ROLE' AND NOT (m.concept_id = ANY(:role_concepts))))"
+        ),
+        {
+            "qvid": str(version_id),
+            "seed_author": _SEED_AUTHOR,
+            "concept_id": concept_id,
+            "role_concepts": list(role_concepts),
+        },
+    )
+
     for taxonomy_version, mapped_concept, purpose in mappings:
         await db.execute(
             text(
@@ -1385,6 +1409,8 @@ async def seed_question_bank(session_factory: Callable[[], AsyncSession]) -> dic
                     seeded += 1
                 if q.get("locale", "en-US") != "vi-VN" and stable_key in QUESTION_TEXT_VI:
                     await _upsert_vi_localization(db, stable_key, QUESTION_TEXT_VI[stable_key])
+                if stable_key in EXPECTED_POINTS_VI:
+                    await _upsert_expected_points(db, stable_key, EXPECTED_POINTS_VI[stable_key])
 
             summary[concept_id] = seeded
 
@@ -1413,6 +1439,36 @@ async def _upsert_vi_localization(db: AsyncSession, stable_key: str, question_te
             "stable_key": stable_key,
         },
     )
+
+
+async def _upsert_expected_points(
+    db: AsyncSession, stable_key: str, points: list[tuple[str, str, str]]
+) -> None:
+    """Expected points of a seed question (see question_bank_expected_points_vi).
+
+    Applied outside _seed_one_question so an already-seeded database also gets
+    new or edited points.
+    """
+    version_id = _det_uuid("question-version", stable_key)
+    for order, (point_key, description, importance) in enumerate(points):
+        await db.execute(
+            text(
+                "INSERT INTO expected_points "
+                "(id, question_version_id, stable_key, description, importance, display_order) "
+                "VALUES (CAST(:id AS uuid), CAST(:qvid AS uuid), :key, :description, :importance, :order) "
+                "ON CONFLICT (question_version_id, stable_key) DO UPDATE SET "
+                "description = EXCLUDED.description, importance = EXCLUDED.importance, "
+                "display_order = EXCLUDED.display_order"
+            ),
+            {
+                "id": str(_det_uuid(f"expected-point-{point_key}", stable_key)),
+                "qvid": str(version_id),
+                "key": point_key,
+                "description": description,
+                "importance": importance,
+                "order": order,
+            },
+        )
 
 
 async def _seed_one_question(
@@ -1497,6 +1553,24 @@ async def _seed_one_question(
                 "thinking": thinking,
                 "soft": soft,
                 "hard": hard,
+            },
+        )
+        # Wording fixes in the fixture (e.g. naming the room's real buttons)
+        # never reached a seeded database. Only the seed's own version is
+        # rewritten; an admin revision is a separate version and stays as is.
+        await db.execute(
+            text(
+                "UPDATE interview_question_versions "
+                "SET canonical_text = :canonical_text, objective = :objective "
+                "WHERE id = CAST(:version_id AS uuid) AND created_by = :seed_author "
+                "  AND (canonical_text IS DISTINCT FROM :canonical_text "
+                "       OR objective IS DISTINCT FROM :objective)"
+            ),
+            {
+                "version_id": str(version_id),
+                "canonical_text": canonical_text,
+                "objective": objective,
+                "seed_author": _SEED_AUTHOR,
             },
         )
         return False
