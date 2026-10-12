@@ -232,7 +232,9 @@ class TestSeedIdempotency:
 
         summary = await seed_question_bank(factory)
 
-        assert summary["skill-artificial-intelligence"] == 12
+        # The two asyncio coding exercises belong to Python, not AI.
+        assert summary["skill-artificial-intelligence"] == 10
+        assert summary["skill-python"] >= 2
         assert summary["skill-generative-ai"] == 6
         assert summary["skill-large-language-models"] == 6
         assert summary["skill-natural-language-processing"] == 6
