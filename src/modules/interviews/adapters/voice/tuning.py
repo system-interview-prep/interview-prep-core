@@ -63,10 +63,10 @@ def voice_tuning(values: Mapping[str, str] | None = None) -> VoiceTuning:
             env, "VOICE_LAB_ENDPOINT_MAX_DELAY", 1.8, minimum=0.5, maximum=5.0
         ),
         interruption_min_duration=_number(
-            env, "VOICE_LAB_INTERRUPTION_MIN_DURATION", 0.5, minimum=0.2, maximum=2.0
+            env, "VOICE_LAB_INTERRUPTION_MIN_DURATION", 0.7, minimum=0.2, maximum=2.0
         ),
         false_interruption_timeout=_number(
-            env, "VOICE_LAB_FALSE_INTERRUPTION_TIMEOUT", 1.0, minimum=0.5, maximum=5.0
+            env, "VOICE_LAB_FALSE_INTERRUPTION_TIMEOUT", 2.0, minimum=0.5, maximum=5.0
         ),
         aec_warmup_duration=_number(
             env, "VOICE_LAB_AEC_WARMUP_DURATION", 2.0, minimum=0.0, maximum=5.0
