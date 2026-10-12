@@ -1,12 +1,13 @@
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import require_admin
 from src.infrastructure.database import get_db
+from src.modules.interviews.facade import interview_question_quality_report, session_plan_audit
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -248,3 +249,32 @@ async def list_admin_sessions(
         },
         "sessions": sessions,
     }
+
+
+@router.get("/sessions/{session_id}/plan")
+async def get_admin_session_plan(
+    session_id: str,
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """A session as planned and as asked: budget, difficulty, sources, follow-ups."""
+    audit = await session_plan_audit(db, session_id)
+    if audit is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"success": True, **audit}
+
+
+@router.get("/question-quality")
+async def get_admin_question_quality(
+    include_demo: bool = Query(True, alias="includeDemo"),
+    exclude_email: str | None = Query(None, alias="excludeEmail", max_length=120),
+    since: datetime | None = Query(None),
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Question quality per stage and source across stored sessions."""
+    report = await interview_question_quality_report(
+        db, since=since, include_demo=include_demo, exclude_email_pattern=exclude_email
+    )
+    return {"success": True, **report}
+
