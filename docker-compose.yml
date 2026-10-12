@@ -76,9 +76,14 @@ services:
       # Interviews are Vietnamese-only: never auto-detect the language.
       LIVEKIT_STT_LANGUAGE: "vi"
       VOICE_LAB_STT_LANGUAGE: ${VOICE_LAB_STT_LANGUAGE:-vi}
+      # cartesia: tests speak without ElevenLabs credits, but use LiveKit
+      # Inference credit, which STT shares (Build: $2.50/month).
+      VOICE_LAB_TTS_PROVIDER: ${VOICE_LAB_TTS_PROVIDER:-elevenlabs}
+      # Audio of fixed interviewer lines, reused by every session.
+      VOICE_LAB_TTS_CACHE_DIR: /var/cache/intervia-tts
     working_dir: /app/src/modules
     command: ["python", "interviews/adapters/voice/livekit_agent.py", "start"]
-    volumes: ["./src:/app/src"]
+    volumes: ["./src:/app/src", "voice-tts-cache:/var/cache/intervia-tts"]
     # Docker Desktop's embedded resolver has intermittently failed during live
     # calls. Keep explicit, configurable upstream resolvers for this
     # internet-facing worker; Docker still resolves internal service names.
@@ -136,3 +141,4 @@ services:
 volumes:
   rabbitmq_data:
   pgdata:
+  voice-tts-cache:
