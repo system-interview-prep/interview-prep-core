@@ -4,8 +4,8 @@ Speech recognition ends a "turn" at every short pause, and the interview used
 to treat each fragment ("Yes, that TypeScript.", "That.") as a whole answer,
 so one spoken answer advanced the interview several questions. Interview
 answers are long and full of thinking pauses, so the voice agent buffers the
-fragments of one answer here and submits them to Interview Core only after a
-longer silence, or when the candidate says they are done (or presses "Xong").
+fragments of one answer here and submits them to Interview Core after an
+adaptive silence following the candidate's last fragment.
 
 Pure and synchronous so it can be unit tested without LiveKit.
 """
@@ -21,41 +21,12 @@ from dataclasses import dataclass, field
 # A short buffer waits longer, so a brief real answer ("Chưa ạ.") still goes
 # through while a lone mis-heard word does not end the answer prematurely.
 COMMIT_SILENCE_SECONDS = 2.5
-SHORT_COMMIT_SILENCE_SECONDS = 5.0
+SHORT_COMMIT_SILENCE_SECONDS = 2.5
 SHORT_ANSWER_WORDS = 8
 # Speak a short filler only when Interview Core takes longer than this.
-PROCESSING_FILLER_SECONDS = 2.5
+PROCESSING_FILLER_SECONDS = 1.2
 # Gently re-prompt once per question after this much silence.
 REPROMPT_AFTER_SECONDS = 30.0
-
-_VI_DONE_PHRASES = (
-    "xong",
-    "xong roi",
-    "em xong roi",
-    "em tra loi xong",
-    "em tra loi xong roi",
-    "toi tra loi xong",
-    "minh tra loi xong",
-    "het roi",
-    "het a",
-    "em het roi",
-    "vay thoi",
-    "chi vay thoi",
-)
-# Apostrophes split tokens: "that's all" becomes "that s all".
-_EN_DONE_PHRASES = (
-    "done",
-    "i am done",
-    "i m done",
-    "that is all",
-    "that s all",
-    "that is it",
-    "that s it",
-)
-# "xong" inside a sentence ("deploy xong thì...") is content, not a command:
-# only a short fragment that is, or ends with, a done phrase counts.
-_MAX_DONE_FRAGMENT_WORDS = 6
-
 
 def _env_seconds(name: str, default: float, *, minimum: float, maximum: float) -> float:
     try:
@@ -69,16 +40,6 @@ def _tokens(text: str) -> list[str]:
     folded = unicodedata.normalize("NFKD", text.lower()).replace("đ", "d")
     ascii_text = "".join(char for char in folded if not unicodedata.combining(char))
     return re.findall(r"[a-z0-9]+", ascii_text)
-
-
-def is_done_command(text: str, *, locale: str = "vi-VN") -> bool:
-    """True for a short fragment that hands the floor back ("em trả lời xong ạ")."""
-    tokens = [token for token in _tokens(text) if token not in {"a", "nhe", "nha"}]
-    if not tokens or len(tokens) > _MAX_DONE_FRAGMENT_WORDS:
-        return False
-    phrase = " ".join(tokens)
-    phrases = _VI_DONE_PHRASES if locale.lower().startswith("vi") else _EN_DONE_PHRASES
-    return any(phrase == done or phrase.endswith(f" {done}") for done in phrases)
 
 
 def word_count(text: str) -> int:
@@ -172,18 +133,32 @@ class SubmittedAnswer:
 
 
 def processing_filler(locale: str) -> str:
-    return "Mình đang xem câu trả lời, chờ mình một chút nhé." if locale.lower().startswith("vi") else (
-        "Give me a moment to go through your answer."
+    return "Mình đã ghi nhận. Chờ mình một chút nhé." if locale.lower().startswith("vi") else (
+        "Got it. Give me a moment."
     )
 
 
 def silence_reprompt(locale: str) -> str:
     if locale.lower().startswith("vi"):
         return (
-            "Bạn cứ từ từ suy nghĩ nhé. Muốn nghe lại câu hỏi thì nói “nhắc lại”; "
-            "trả lời xong thì nói “xong” hoặc bấm nút Xong."
+            "Bạn cứ từ từ suy nghĩ nhé. Khi sẵn sàng, hãy trả lời tự nhiên; "
+            "nếu muốn nghe lại, chỉ cần nói “nhắc lại câu hỏi”."
         )
-    return "Take your time. Say “repeat” to hear the question again, or “done” when you have finished."
+    return (
+        "Take your time and answer naturally when you're ready. "
+        "If you want to hear it again, just say “repeat the question”."
+    )
+
+
+def turn_taking_tip(locale: str) -> str:
+    """Briefly invite a natural answer before the opening question."""
+    if locale.lower().startswith("vi"):
+        return (
+            "Bạn cứ trả lời tự nhiên. Nếu cần nghe lại, hãy nói “nhắc lại câu hỏi”."
+        )
+    return (
+        "Answer naturally. If you need to hear a question again, just say “repeat the question”."
+    )
 
 
 def reprompt_after_seconds() -> float:
