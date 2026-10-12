@@ -482,7 +482,7 @@ class TestPersonaBasedSimulations(unittest.IsolatedAsyncioTestCase):
         # Kỳ vọng: Trả về CONFIRM_ABORT để Frontend bật Modal xác nhận
         self.assertEqual(out.action, TurnAction.CONFIRM_ABORT)
         self.assertFalse(out.is_session_finished)
-        self.assertIn("hộp thoại xác nhận kết thúc", out.message_text)
+        self.assertIn("Kết thúc & xem báo cáo", out.message_text)
         self.assertTrue(out.metadata.get("requires_abort_confirmation"))
 
         # TC-26: Khi ứng viên xác nhận trên Modal -> _terminate_session đóng với CANDIDATE_ABORT
