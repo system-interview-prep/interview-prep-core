@@ -24,6 +24,14 @@ from src.modules.interviews.core.language_policy import response_matches_locale
 
 logger = logging.getLogger("InterviewCoreEngine")
 
+
+def _loads_llm_json(raw: str) -> Any:
+    """Parse an LLM JSON reply, tolerating a ```json fence around it."""
+    text = str(raw or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
+    return json.loads(text)
+
 TIME_THRESHOLDS = {
     InterviewStage.WARM_UP: 0.10,     # Chiếm 10% đầu
     InterviewStage.VALIDATE: 0.30,    # Chiếm đến 30% tổng thời gian
@@ -42,6 +50,28 @@ PROHIBITED_LEAK_PATTERNS = [
 
 SAFE_FALLBACK_PROBE_VI = "Vì sao bạn chọn cách đó, và nó có hạn chế gì?"
 SAFE_FALLBACK_PROBE_EN = "Why that approach, and what are its downsides?"
+CODING_FALLBACK_PROBE_VI = (
+    "Giải pháp của bạn đã xử lý được vấn đề. Bạn có thể phân tích đánh đổi giữa việc dùng Lock so với Semaphore "
+    "hoặc cách phòng tránh rủi ro Deadlock nếu có ngoại lệ phát sinh không?"
+)
+CODING_FALLBACK_PROBE_EN = (
+    "Your solution resolved the issue. Can you analyze the trade-offs between Lock vs Semaphore, "
+    "and how you would prevent Deadlocks if an exception is raised?"
+)
+_FIXED_PROBES = frozenset(
+    {SAFE_FALLBACK_PROBE_VI, SAFE_FALLBACK_PROBE_EN, CODING_FALLBACK_PROBE_VI, CODING_FALLBACK_PROBE_EN}
+)
+
+
+def clarify_fallback_text(question_prompt: str, *, is_vi: bool) -> str:
+    """Fixed clarification used when the model reply is missing or rejected."""
+    if is_vi:
+        return (
+            f"Mình hỏi lại ngắn gọn nhé: {question_prompt}"
+        )
+    return (
+        f"Let me put it again briefly: {question_prompt}"
+    )
 
 
 def validate_probe_text(probe_text: str) -> bool:
@@ -105,6 +135,27 @@ def pacing_seconds(default_seconds: int, target_duration_seconds: int) -> int:
     return max(1, min(default_seconds, scaled))
 
 
+# How an LLM line may address the candidate other than "bạn". The room calls the
+# candidate by name, which chat_runtime substitutes for "bạn" only, so "em",
+# "anh", "chị" reached the candidate unchanged ("mình hiểu phần em phụ trách").
+_CANDIDATE_PRONOUN_RE = re.compile(r"\b(anh\s*/\s*chị|anh chị|em|anh|chị)\b", re.IGNORECASE)
+
+
+def normalize_candidate_pronoun(text_value: str, is_vi: bool = True) -> str:
+    """Address the candidate as "bạn" in a Vietnamese LLM line, keeping sentence case."""
+    if not is_vi or not text_value:
+        return text_value
+
+    def _swap(match: re.Match[str]) -> str:
+        # "chị Hiền" is a title before a name, which the name substitution handles.
+        following = match.string[match.end():].lstrip()
+        if following[:1].isupper():
+            return match.group(0)
+        return "Bạn" if match.group(0)[0].isupper() else "bạn"
+
+    return _CANDIDATE_PRONOUN_RE.sub(_swap, text_value)
+
+
 def safe_acknowledgement(raw: Any, is_vi: bool) -> str:
     """Return the evaluator's acknowledgement only if it is a short, neutral line.
 
@@ -124,7 +175,7 @@ def safe_acknowledgement(raw: Any, is_vi: bool) -> str:
         or not response_matches_locale(text_value, is_vi=is_vi)
     ):
         return default
-    return text_value
+    return normalize_candidate_pronoun(text_value, is_vi)
 
 
 # Tập từ khóa CHẮC CHẮN LÀ BỎ CUỘC (Không bao giờ nhầm với Yes/No)
@@ -157,6 +208,19 @@ def is_yes_no_question(question_prompt: str) -> bool:
     return any(re.search(p, q) for p in yes_no_patterns)
 
 
+# Spoken in voice and shown in chat. It names the two buttons every room shows
+# for this choice (room.chat.stopAndReport / room.abort.confirm and
+# room.common.continueInterview), never where they sit: chat puts them in the
+# bubble, the voice room in a dialog.
+ABORT_CONFIRMATION_VI = (
+    "Bạn muốn dừng buổi phỏng vấn phải không? Bạn chọn “Kết thúc & xem báo cáo” để dừng, "
+    "hoặc “Tiếp tục phỏng vấn” để làm tiếp nhé."
+)
+ABORT_CONFIRMATION_EN = (
+    "Do you want to stop the interview? Choose “End & view report” to stop, "
+    "or “Continue interview” to keep going."
+)
+
 # Abort phrases that name the interview itself: unambiguous at any length.
 EXPLICIT_ABORT_PATTERNS = [
     r"(dừng|ngừng|kết thúc|hủy|thôi|rút khỏi)\s*(lại\s*)?(buổi\s*|cuộc\s*)?phỏng vấn",
@@ -177,6 +241,12 @@ SOFT_ABORT_PATTERNS = [
     r"\b(dừng|nghỉ|thôi|out)\b.*?\b(việc\s*(bận|gấp|gia đình|riêng)|bận)",
     # Dừng lại đây / không làm nữa
     r"(dừng\s*(lại\s*)?(đây|ở đây|tại đây|nhé|nha|ạ|thôi)|không\s*(tiếp tục|làm)\s*nữa)",
+    # A bare "dừng" / "dừng lại" said as the whole turn: nothing to grade, and
+    # the dialog lets the candidate take it back.
+    r"^\W*(thôi\W+)?(dừng|ngừng)(\s+lại)?\W*$",
+    # "kết thúc phiên được không": short only, since "kết thúc phiên đăng
+    # nhập" is a technical answer.
+    r"(dừng|ngừng|kết thúc|hủy)\s*(cái\s*)?phiên\b(?!\s*(đăng nhập|login|làm việc|người dùng|của user))",
     r"\b(i|we)\s+(want to|have to|need to|must)\s+(stop|quit|leave|exit|abort)\s*(now|here|early|today)?\s*[.!]*$",
     r"\b(cannot continue|can't continue|stop here)\b",
 ]
@@ -440,26 +510,28 @@ def candidate_question_response(
     current_question: str,
     is_vi: bool,
     duration_minutes: int,
+    spoken: bool = True,
 ) -> str:
-    """Answer a meta question, then explicitly restore the current turn."""
+    """Answer a meta question, then explicitly restore the current turn.
+
+    A voice room repeats the question since the candidate cannot scroll back;
+    the chat room shows it on screen, so repeating it after every aside only
+    filled the transcript.
+    """
     if is_vi:
         if intent == "SCORING":
             answer = (
-                "Rubric là bộ tiêu chí dùng để đánh giá tính đúng, độ sâu và bằng chứng thực tế "
-                "trong câu trả lời. Mình không thể cung cấp tiêu chí chi tiết, trọng số hoặc đáp án "
-                "trong lúc phỏng vấn để bảo đảm công bằng."
+                "Mình chấm theo độ đúng, độ sâu và ví dụ thực tế. "
+                "Chi tiết tiêu chí mình không chia sẻ trong lúc phỏng vấn."
             )
         elif intent == "PROCESS":
             answer = (
                 f"Buổi phỏng vấn dự kiến kéo dài khoảng {duration_minutes} phút và đi lần lượt qua "
-                "các phần trên thanh tiến độ. Bạn có thể yêu cầu nhắc lại, làm rõ, đổi câu hoặc kết "
-                "thúc bất cứ lúc nào."
+                "các giai đoạn hiển thị trong phòng. Bạn cứ đề nghị nếu muốn mình nhắc lại, giải "
+                "thích thêm hay đổi câu; muốn dừng thì bấm “Kết thúc”."
             )
         elif intent == "ROLE_QA":
-            answer = (
-                "Mình đã ghi nhận câu hỏi về công việc hoặc công ty. Mình sẽ trả lời dựa trên thông "
-                "tin trong JD ở phần Hỏi đáp cuối buổi để không làm gián đoạn phần đánh giá hiện tại."
-            )
+            answer = "Câu này mình xin để dành đến phần Hỏi đáp cuối buổi."
         elif intent == "ABOUT_INTERVIEWER":
             answer = (
                 "Mình là người phỏng vấn AI của INTERVIA, giúp bạn luyện phỏng vấn theo CV và JD. "
@@ -468,35 +540,35 @@ def candidate_question_response(
         elif intent == "ANSWER_REQUEST":
             answer = (
                 "Mình không trả lời thay bạn được, vì buổi này là để bạn luyện tập. "
-                "Bạn cứ nói những gì mình biết, chưa chắc chắn cũng được."
+                "Bạn cứ chia sẻ những gì mình biết, chưa chắc chắn cũng được."
             )
         else:
             answer = "Câu này nằm ngoài buổi phỏng vấn nên mình xin phép không trả lời."
+        if not spoken:
+            return f"{answer} Mình quay lại câu hỏi vừa rồi nhé."
         return f"{answer}\n\nQuay lại câu hiện tại: {current_question}"
 
     if intent == "SCORING":
         answer = (
-            "The rubric evaluates correctness, depth, and concrete evidence in your answer. I cannot "
-            "disclose detailed criteria, weights, or model answers during the interview so the "
-            "assessment remains fair."
+            "I grade on correctness, depth and real examples. "
+            "I don't share the detailed criteria during the interview."
         )
     elif intent == "PROCESS":
         answer = (
             f"The interview is expected to take about {duration_minutes} minutes and follows the "
-            "stages in the progress bar. You can ask me to repeat, clarify, skip a question, or end "
-            "the interview at any time."
+            "stages shown in the room. Just ask if you want a question repeated, explained or "
+            "swapped; to stop, press “End”."
         )
     elif intent == "ROLE_QA":
-        answer = (
-            "I have noted your question about the role or company. I will answer it from the job "
-            "description in the final Q&A so we do not interrupt the current assessment section."
-        )
+        answer = "Let's keep that for the Q&A at the end."
     elif intent == "ABOUT_INTERVIEWER":
         answer = "I am INTERVIA's AI interviewer, here to help you practise against your CV and the job."
     elif intent == "ANSWER_REQUEST":
         answer = "I cannot answer for you: this session is your practice. Say what you know, even if unsure."
     else:
         answer = "That is outside this interview, so I will leave it there."
+    if not spoken:
+        return f"{answer} Let's go back to the question."
     return f"{answer}\n\nBack to the current question: {current_question}"
 
 
@@ -540,11 +612,7 @@ class InterviewCoreEngine:
         # thúc tại đây nhé") is the normal ending, not an abort: let the closing
         # handler complete the session instead of recording USER_ENDED.
         if current_stage != InterviewStage.CLOSING and is_abort_request(candidate_text):
-            confirm_msg = (
-                "Mình đã mở hộp thoại xác nhận kết thúc buổi phỏng vấn ngay bên dưới khung chat. Bạn có thể bấm xác nhận để hoàn tất phiên nhé."
-                if is_vi
-                else "I have opened the confirmation dialog to end the interview right below in this chat. Please confirm if you wish to conclude."
-            )
+            confirm_msg = ABORT_CONFIRMATION_VI if is_vi else ABORT_CONFIRMATION_EN
             return InterviewerTurnOutput(
                 session_id=session_id,
                 turn_index=turn_input.turn_index + 1,
@@ -605,11 +673,9 @@ class InterviewCoreEngine:
                 elapsed_seconds=elapsed_seconds,
             )
             timeout_msg = (
-                "Thời lượng buổi phỏng vấn đã hết. Cảm ơn bạn rất nhiều vì đã tham gia. "
-                "Toàn bộ câu trả lời đã được lưu lại để hội đồng đánh giá."
+                "Đã hết thời gian. Cảm ơn bạn, câu trả lời đã được lưu để tạo báo cáo."
                 if is_vi
-                else "The interview session duration has ended. Thank you for your participation. "
-                     "All your answers have been recorded for evaluation."
+                else "Time is up. Thank you, your answers have been saved for the report."
             )
             return self._terminate_session(
                 session_id=session_id,
@@ -623,9 +689,9 @@ class InterviewCoreEngine:
         # =========================================================================
         if is_skip_request(candidate_text):
             skip_ack = (
-                "Được chứ, không sao cả. Chúng ta sẽ chuyển sang một chủ đề khác nhé."
+                "Được, mình chuyển sang câu khác nhé."
                 if is_vi
-                else "No problem at all. Let's move on to another topic."
+                else "Sure, let's move on to another question."
             )
             next_stage, next_question = self._get_next_stage_and_question(session_state)
             if next_stage == InterviewStage.CLOSED or next_question is None:
@@ -682,18 +748,21 @@ class InterviewCoreEngine:
 
         current_question = session_state.get("current_question_context", {})
         question_prompt = current_question.get("main_prompt", "")
+        # After a probe the candidate is looking at the probe, so "repeat",
+        # "explain" and "back to the question" refer to it, not the main question.
+        active_prompt = current_question.get("follow_up_prompt") or question_prompt
 
         # The candidate did not hear the question: ask it again word for word.
         # Not an answer, so it is neither evaluated nor counted against the
         # one clarification each question allows.
-        if question_prompt and is_repeat_request(candidate_text):
+        if active_prompt and is_repeat_request(candidate_text):
             return InterviewerTurnOutput(
                 session_id=session_id,
                 turn_index=turn_input.turn_index + 1,
                 message_text=(
-                    f"Mình nhắc lại câu hỏi nhé: {question_prompt}"
+                    f"Mình nhắc lại câu hỏi nhé: {active_prompt}"
                     if is_vi
-                    else f"Sure, here is the question again: {question_prompt}"
+                    else f"Sure, here is the question again: {active_prompt}"
                 ),
                 action=TurnAction.CLARIFY,
                 current_stage=current_stage,
@@ -718,9 +787,10 @@ class InterviewCoreEngine:
                 turn_index=turn_input.turn_index + 1,
                 message_text=candidate_question_response(
                     candidate_question_intent,
-                    current_question=question_prompt,
+                    current_question=active_prompt,
                     is_vi=is_vi,
                     duration_minutes=int(session_state.get("target_duration_minutes", 25)),
+                    spoken=str(turn_input.modality or "").upper() != "CHAT",
                 ),
                 action=TurnAction.CLARIFY,
                 current_stage=current_stage,
@@ -743,11 +813,7 @@ class InterviewCoreEngine:
 
         # BẢO HIỂM TẦNG 2: Nếu LLM nhận diện ý định xin dừng phỏng vấn -> Kích hoạt Modal xác nhận
         if eval_result.get("intent") == "CANDIDATE_ABORT":
-            confirm_msg = (
-                "Mình đã mở hộp thoại xác nhận kết thúc buổi phỏng vấn ngay bên dưới khung chat. Bạn có thể bấm xác nhận để hoàn tất phiên nhé."
-                if is_vi
-                else "I have opened the confirmation dialog to end the interview right below in this chat. Please confirm if you wish to conclude."
-            )
+            confirm_msg = ABORT_CONFIRMATION_VI if is_vi else ABORT_CONFIRMATION_EN
             return InterviewerTurnOutput(
                 session_id=session_id,
                 turn_index=turn_input.turn_index + 1,
@@ -770,9 +836,10 @@ class InterviewCoreEngine:
                 turn_index=turn_input.turn_index + 1,
                 message_text=candidate_question_response(
                     "OFF_TOPIC",
-                    current_question=question_prompt,
+                    current_question=active_prompt,
                     is_vi=is_vi,
                     duration_minutes=int(session_state.get("target_duration_minutes", 25)),
+                    spoken=str(turn_input.modality or "").upper() != "CHAT",
                 ),
                 action=TurnAction.CLARIFY,
                 current_stage=current_stage,
@@ -807,6 +874,10 @@ class InterviewCoreEngine:
                         "turn_in_question": current_turn_in_question,
                         "clarify_used": True,
                         "sufficiency_status": "AMBIGUOUS",
+                        "generated_by": "fixed_fallback"
+                        if clarify_msg
+                        == clarify_fallback_text(current_question.get("main_prompt", ""), is_vi=is_vi)
+                        else "llm",
                     },
                 )
 
@@ -852,11 +923,10 @@ class InterviewCoreEngine:
             and consecutive_uncooperative >= 2
         ):
             uncoop_msg = (
-                "Cảm ơn bạn. Hệ thống đã ghi nhận đầy đủ các thông tin cần thiết cho vị trí này "
-                "và xin phép kết thúc phiên phỏng vấn tại đây. Báo cáo đánh giá sẽ được gửi tới bạn qua email."
+                "Mình xin dừng buổi phỏng vấn tại đây. "
+                "Cảm ơn bạn, báo cáo sẽ có ngay sau buổi này."
                 if is_vi
-                else "Thank you. We have recorded sufficient insights for this position and will end the interview here. "
-                     "The evaluation report will be emailed to you."
+                else "Let's stop the interview here. Thank you, your report will be ready right after."
             )
             return self._terminate_session(
                 session_id=session_id,
@@ -959,6 +1029,10 @@ class InterviewCoreEngine:
                     "sufficiency_status": sufficiency_status,
                     "hard_answer_timeout": is_hard_answer_timeout,
                     "probe_generated_in_evaluation": probe_from_evaluation,
+                    # Persisted on the PROBE message: an LLM-written follow-up is
+                    # the one interview question that never came from the bank.
+                    "generated_by": "fixed_fallback" if probe_question in _FIXED_PROBES else "llm",
+                    "missing_aspect": str(eval_result.get("missing_aspect") or "")[:300],
                 },
             )
 
@@ -1050,15 +1124,11 @@ class InterviewCoreEngine:
         )
         if has_no_more_q or (not is_demo and time_remaining_seconds <= pacing_seconds(90, session_seconds)):
             farewell = (
-                "Rất cảm ơn bạn đã tham gia buổi phỏng vấn hôm nay cùng INTERVIA! "
-                "Chúc mừng bạn đã hoàn thành trọn vẹn tất cả các phần thi. "
-                "Hệ thống đang tiến hành tổng hợp báo cáo đánh giá toàn diện năng lực của bạn. "
-                "Chúc bạn một ngày làm việc thật nhiều năng lượng và thành công!"
+                "Cảm ơn bạn đã tham gia buổi luyện phỏng vấn hôm nay. "
+                "Báo cáo đánh giá đang được tạo, bạn xem ngay sau đây nhé."
                 if is_vi
-                else "Thank you very much for taking the time to interview with INTERVIA today! "
-                     "Congratulations on completing all sections of the interview. "
-                     "The system is now compiling your comprehensive evaluation report. "
-                     "Wishing you a great day and all the best in your career!"
+                else "Thank you for practising with us today. "
+                     "Your evaluation report is being prepared; you'll see it right after this."
             )
             return self._terminate_session(
                 session_id=session_id,
@@ -1098,13 +1168,15 @@ class InterviewCoreEngine:
                 answer = await self._generate_fn(
                     instructions=system_prompt,
                     input_text=user_content,
-                    max_output_tokens=300,
+                    max_output_tokens=800,
                     temperature=0.4,
                 )
-            answer_text = str(answer).strip()
+            answer_text = normalize_candidate_pronoun(str(answer).strip(), is_vi)
             if not response_matches_locale(answer_text, is_vi=is_vi):
                 raise ValueError("closing response language does not match session locale")
+            answer_generated_by = "llm"
         except Exception as e:
+            answer_generated_by = "fixed_fallback"
             logger.warning(f"Error generating Q&A response in CLOSING stage: {e}")
             answer_text = (
                 "Cảm ơn câu hỏi của bạn. Hiện mình chưa thể trả lời chi tiết nội dung này; "
@@ -1144,6 +1216,7 @@ class InterviewCoreEngine:
             metadata={
                 "is_qna_followup": True,
                 "turn_in_question": 1,
+                "generated_by": answer_generated_by,
             },
         )
 
@@ -1242,7 +1315,7 @@ class InterviewCoreEngine:
   "intent": "ANSWER" | "CANDIDATE_ABORT" | "SKIP_QUESTION" | "GIVE_UP" | "OFF_TOPIC",
   "sufficiency_status": "SUFFICIENT" | "INSUFFICIENT" | "AMBIGUOUS",
   "missing_aspect": "<mô tả ngắn gọn 1-2 khía cạnh cốt lõi mà ứng viên chưa làm rõ hoặc nêu sai, để trống nếu SUFFICIENT>",
-  "acknowledgement": "<1 câu xác nhận ngắn, tự nhiên bằng tiếng Việt khoảng 3-8 từ (ví dụ 'Ok, mình hiểu rồi.'), tuyệt đối không khen ngợi quá mức, không lộ điểm số hay tiêu chí>",
+  "acknowledgement": "<1 câu xác nhận ngắn, tự nhiên bằng tiếng Việt khoảng 3-8 từ (ví dụ 'Ok, mình hiểu rồi.'), xưng 'mình' và gọi ứng viên là 'bạn' (không dùng 'em', 'anh', 'chị'), tuyệt đối không khen ngợi quá mức, không lộ điểm số hay tiêu chí>",
   "probe_question": "<nếu INSUFFICIENT: đúng 1 câu hỏi đào sâu ngắn dưới 20 từ, đúng ngôn ngữ phiên; nếu không thì để trống>",
   "score": <điểm từ 1.0 đến 10.0 (telemetry-only; zero control authority)>
 }
@@ -1272,13 +1345,16 @@ Câu trả lời của ứng viên:
                 raw = await self.llm.generate_text(system_prompt=system_prompt, user_content=user_content)
                 data = json.loads(raw)
             else:
+                # Reasoning models count reasoning tokens in max_output_tokens; 250 cut the
+                # Vietnamese JSON mid-string and every truncation fell back to INSUFFICIENT
+                # (an unwarranted probe).
                 raw = await self._generate_fn(
                     instructions=system_prompt,
                     input_text=user_content,
-                    max_output_tokens=250,
+                    max_output_tokens=1000,
                     temperature=0.1,
                 )
-                data = json.loads(raw)
+                data = _loads_llm_json(raw)
 
             # Tương thích với format {"decision": "PROBE", "reply_text": "..."}
             if isinstance(data, dict) and "decision" in data:
@@ -1359,13 +1435,7 @@ Câu trả lời của ứng viên:
             user_content = f"""Đề bài: {current_question.get('main_prompt', '')}
 Lời giải thích của ứng viên: {candidate_text}
 Hãy đưa ra nhận xét ngắn và 1 câu hỏi phản biện sâu:"""
-            fallback_coding_probe = (
-                "Giải pháp của bạn đã xử lý được vấn đề. Bạn có thể phân tích đánh đổi giữa việc dùng Lock so với Semaphore "
-                "hoặc cách phòng tránh rủi ro Deadlock nếu có ngoại lệ phát sinh không?"
-                if is_vi
-                else "Your solution resolved the issue. Can you analyze the trade-offs between Lock vs Semaphore, "
-                     "and how you would prevent Deadlocks if an exception is raised?"
-            )
+            fallback_coding_probe = CODING_FALLBACK_PROBE_VI if is_vi else CODING_FALLBACK_PROBE_EN
         else:
             system_prompt = (
                 f"Bạn là một Tech Lead {'người Việt Nam' if is_vi else ''} phỏng vấn ứng viên kỹ sư phần mềm.\n"
@@ -1389,7 +1459,7 @@ Hãy đưa ra câu hỏi probe:"""
                 raw_probe = await self._generate_fn(
                     instructions=system_prompt,
                     input_text=user_content,
-                    max_output_tokens=150,
+                    max_output_tokens=500,
                     temperature=0.2,
                 )
             cleaned = str(raw_probe).strip()
@@ -1420,7 +1490,7 @@ Hãy đưa ra câu hỏi probe:"""
             )
             return fallback_coding_probe
 
-        return cleaned if cleaned else fallback_coding_probe
+        return normalize_candidate_pronoun(cleaned, is_vi) if cleaned else fallback_coding_probe
 
     async def _synthesize_interviewer_speech(
         self,
@@ -1443,7 +1513,7 @@ Hãy đưa ra câu hỏi probe:"""
         is_vi: bool = True,
     ) -> str:
         """Giải thích / làm rõ câu hỏi khi ứng viên thắc mắc hoặc chưa hiểu đề, không lộ đáp án/rubric."""
-        question_prompt = current_question.get("main_prompt", "")
+        question_prompt = current_question.get("follow_up_prompt") or current_question.get("main_prompt", "")
         system_prompt = (
             f"Bạn là Phỏng vấn viên kỹ thuật {'người Việt Nam' if is_vi else ''}.\n"
             "Ứng viên chưa hiểu rõ câu hỏi hoặc nhờ làm rõ ý câu hỏi.\n"
@@ -1451,11 +1521,7 @@ Hãy đưa ra câu hỏi probe:"""
             "Giữ thái độ nhã nhặn, khích lệ ứng viên chia sẻ theo hiểu biết thực tế của họ."
         )
         user_content = f"Câu hỏi gốc: {question_prompt}\nThắc mắc của ứng viên: {candidate_text}"
-        fallback = (
-            f"Ý của câu hỏi là muốn tìm hiểu về: \"{question_prompt}\". Bạn hãy chia sẻ dựa trên trải nghiệm và kiến thức thực tế của mình nhé."
-            if is_vi
-            else f"The question is asking about: \"{question_prompt}\". Please feel free to share based on your actual experience."
-        )
+        fallback = clarify_fallback_text(question_prompt, is_vi=is_vi)
         try:
             if hasattr(self.llm, "generate_text"):
                 resp = await self.llm.generate_text(system_prompt=system_prompt, user_content=user_content)
@@ -1463,7 +1529,7 @@ Hãy đưa ra câu hỏi probe:"""
                 resp = await self._generate_fn(
                     instructions=system_prompt,
                     input_text=user_content,
-                    max_output_tokens=150,
+                    max_output_tokens=500,
                     temperature=0.2,
                 )
             cleaned = str(resp).strip()
@@ -1472,7 +1538,7 @@ Hãy đưa ra câu hỏi probe:"""
                 and validate_probe_text(cleaned)
                 and response_matches_locale(cleaned, is_vi=is_vi)
             ):
-                return cleaned
+                return normalize_candidate_pronoun(cleaned, is_vi)
             return fallback
         except Exception as e:
             logger.warning(f"Error generating clarify text: {e}")
@@ -1709,12 +1775,15 @@ Hãy đưa ra câu hỏi probe:"""
                 frozen_closing = pop_from_stage(InterviewStage.CLOSING)
                 if frozen_closing:
                     return InterviewStage.CLOSING, frozen_closing
+                # The limit is said the way an interviewer would; a "(tối đa 2 câu)"
+                # aside was read aloud verbatim in the voice room. The chat room
+                # states the exact limit in its stage tip.
                 prompt = (
-                    f"Mình hỏi xong rồi. Bạn có câu hỏi nào về công việc, team hay công ty không? "
-                    f"(tối đa {MAX_QNA_QUESTIONS} câu)"
+                    "Mình hỏi xong rồi. Bạn có muốn hỏi mình một, hai câu về công việc, "
+                    "team hay công ty không?"
                     if is_vi
-                    else "That's all from me. Any questions about the role, the team or the company? "
-                         f"(up to {MAX_QNA_QUESTIONS})"
+                    else "That's all from me. Would you like to ask me a question or two "
+                         "about the role, the team or the company?"
                 )
                 return InterviewStage.CLOSING, QuestionItem(
                     question_id="closing-candidate-qna",
