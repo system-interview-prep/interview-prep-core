@@ -1,0 +1,807 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>INTERVIA - Bản rút gọn bảo vệ</title>
+  <style>
+    :root {
+      --navy: #13264f;
+      --blue: #2450a6;
+      --paper: #f7f9fd;
+      --ink: #142345;
+      --muted: #5d6f94;
+      --line: #d7e0f0;
+      --orange: #f2a43a;
+      --green: #147a61;
+      --red: #a43d47;
+      --sans: Inter, "Segoe UI", Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: #071329; color: var(--ink); font-family: var(--sans); }
+    body { overflow: hidden; }
+
+    .deck { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; }
+
+    .slide {
+      display: none;
+      position: relative;
+      width: 1280px;
+      height: 720px;
+      overflow: hidden;
+      background: var(--paper);
+      transform-origin: center center;
+      box-shadow: 0 28px 80px rgb(0 0 0 / 36%);
+    }
+    .slide.active { display: block; }
+    .slide.dark { background: var(--navy); color: white; }
+
+    .content { position: absolute; inset: 0; padding: 50px 72px 54px; }
+
+    .eyebrow { margin: 0 0 12px; color: var(--blue); font-size: 14px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+    .dark .eyebrow { color: var(--orange); }
+
+    h1, h2 { margin: 0; font-weight: 800; line-height: 1.12; }
+    h1 { max-width: 1060px; font-size: 56px; }
+    h2 { max-width: 1136px; font-size: 31px; color: var(--navy); }
+    .dark h1, .dark h2 { color: white; }
+
+    .lead { max-width: 1000px; margin: 24px 0 0; color: #c7d2ea; font-size: 23px; line-height: 1.42; }
+
+    .footer {
+      position: absolute; left: 72px; right: 72px; bottom: 20px;
+      display: flex; justify-content: space-between; gap: 24px;
+      color: #7484a5; font-size: 12.5px;
+    }
+    .dark .footer { color: #9fb0d2; }
+
+    /* Agenda on the title slide */
+    .agenda { display: grid; grid-template-columns: repeat(4, 1fr); gap: 22px; margin-top: 60px; }
+    .agenda div { border-top: 3px solid var(--orange); padding-top: 14px; }
+    .agenda strong { display: block; font-size: 19px; margin-bottom: 6px; }
+    .agenda span { color: #c7d2ea; font-size: 15px; line-height: 1.4; }
+
+    /* Step strip */
+    .pipeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 22px; }
+    .pipe { position: relative; padding: 12px 12px; background: white; border: 1px solid var(--line); border-top: 4px solid var(--blue); }
+    .pipe.focus { border-top-color: var(--orange); background: #fff8ec; }
+    .pipe.end { border-top-color: var(--green); }
+    .pipe:not(:last-child)::after { content: ""; position: absolute; right: -15px; top: 50%; width: 15px; height: 2px; background: var(--blue); }
+    .pipe .n { color: var(--blue); font-size: 12px; font-weight: 800; letter-spacing: .08em; }
+    .pipe.focus .n { color: #b8730f; }
+    .pipe strong { display: block; margin: 4px 0 6px; color: var(--navy); font-size: 17px; }
+    .pipe span { display: block; color: var(--muted); font-size: 14px; line-height: 1.4; }
+    .pipe span + span { margin-top: 4px; }
+
+    /* Generic table */
+    table.t { width: 100%; border-collapse: collapse; font-size: 15px; line-height: 1.35; }
+    .t th { padding: 0 10px 7px 0; border-bottom: 2px solid var(--navy); color: var(--navy); font-size: 12.5px; font-weight: 800; letter-spacing: .05em; text-align: left; text-transform: uppercase; }
+    .t td { padding: 7px 10px 7px 0; border-bottom: 1px solid var(--line); color: var(--muted); vertical-align: top; }
+    .t td:first-child { color: var(--navy); font-weight: 700; }
+    .t .c { text-align: center; }
+    .t th.c { text-align: center; }
+    .t .num { font-variant-numeric: tabular-nums; }
+    .t tr.total td { color: var(--navy); font-weight: 800; border-top: 2px solid var(--navy); }
+    .t tr.hl td { background: #edf3ff; }
+    .t .top td:first-child { color: var(--green); }
+    .t .low td:first-child { color: var(--red); }
+    .t.sm { font-size: 14px; }
+    .t.sm td { padding: 5px 8px 5px 0; }
+    .t.nowrap-first td:first-child { white-space: nowrap; }
+    .t code, .mono, .block code, .note code, .pipe code, .qa code { font: 700 13px/1.3 Consolas, monospace; color: var(--navy); }
+    .tag { display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 12px; font-weight: 800; white-space: nowrap; }
+    .tag.code { background: #e3ecfb; color: var(--blue); }
+    .tag.llm { background: #fdeed6; color: #9a5d06; }
+    .tag.ui { background: #dff1ea; color: var(--green); }
+
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 36px; margin-top: 20px; }
+    .grid2.wide-left { grid-template-columns: 1.3fr 1fr; }
+    .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 28px; margin-top: 20px; }
+    .block { border-top: 4px solid var(--blue); padding-top: 10px; }
+    .block.green { border-top-color: var(--green); }
+    .block.orange { border-top-color: var(--orange); }
+    .block h3 { margin: 0 0 8px; color: var(--navy); font-size: 18.5px; line-height: 1.22; }
+    .block h4 { margin: 12px 0 5px; color: var(--blue); font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .block ul, .block ol { margin: 0; padding-left: 19px; color: var(--muted); font-size: 14.5px; line-height: 1.42; }
+    .block li + li { margin-top: 5px; }
+    .block p { margin: 0 0 7px; color: var(--muted); font-size: 14.5px; line-height: 1.42; }
+    .block b, .pipe b, .note b, .qa b { color: var(--navy); }
+
+    .formula { margin-top: 14px; padding: 11px 18px; color: white; background: var(--navy); font-size: 17px; line-height: 1.4; }
+    .formula span { color: #c7d2ea; font-size: 14px; }
+    .formula b { color: white; }
+
+    .note { margin-top: 14px; padding: 9px 16px; border-left: 6px solid var(--blue); background: #edf3ff; color: #284273; font-size: 14.5px; line-height: 1.42; }
+    .note.warn { border-left-color: var(--orange); background: #fff6e8; color: #6b4a12; }
+
+    /* Budget bars */
+    .bars { display: grid; gap: 10px; margin-top: 6px; }
+    .bar-row { display: grid; grid-template-columns: 46px 1fr 112px; gap: 12px; align-items: center; font-size: 13.5px; color: var(--muted); }
+    .bar-row b { color: var(--navy); font-size: 15px; }
+    .bar { display: flex; height: 22px; background: #e9eef8; }
+    .bar i { display: block; height: 100%; }
+    .bar .fix { background: #9db4dd; }
+    .bar .tech { background: var(--blue); }
+    .bar .free { background: repeating-linear-gradient(45deg, #e9eef8 0 6px, #d5dff0 6px 12px); }
+    .legend { display: flex; gap: 16px; margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+    .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; }
+    .legend .l1::before { background: #9db4dd; }
+    .legend .l2::before { background: var(--blue); }
+    .legend .l3::before { background: #d5dff0; }
+
+    /* Stage strip */
+    .stages { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; margin-top: 20px; }
+    .stage { padding: 9px 10px; background: white; border: 1px solid var(--line); border-top: 4px solid var(--blue); }
+    .stage.ch { border-top-color: var(--orange); }
+    .stage.off { border-top-color: #9aa6bf; background: #f0f3f9; }
+    .stage strong { display: block; color: var(--navy); font-size: 14.5px; line-height: 1.25; }
+    .stage span { display: block; margin-top: 3px; color: var(--muted); font-size: 12.5px; line-height: 1.35; }
+    .stage code { font: 700 11.5px/1.3 Consolas, monospace; color: var(--blue); }
+
+    /* Q&A cards */
+    .qa { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 34px; margin-top: 20px; }
+    .qa div { border-left: 4px solid var(--blue); padding: 2px 0 2px 16px; }
+    .qa strong { display: block; color: var(--navy); font-size: 16px; line-height: 1.3; margin-bottom: 4px; }
+    .qa span { color: var(--muted); font-size: 14px; line-height: 1.42; }
+
+    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 22px; margin-top: 24px; }
+    .metric { border-top: 4px solid var(--blue); padding-top: 12px; }
+    .metric:nth-child(2) { border-top-color: var(--green); }
+    .metric:nth-child(3) { border-top-color: var(--orange); }
+    .metric:nth-child(4) { border-top-color: #8057b6; }
+    .metric h3 { margin: 0 0 6px; color: var(--navy); font-size: 17px; }
+    .metric b { display: block; color: var(--blue); font-size: 24px; margin-bottom: 6px; }
+    .metric p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.4; }
+
+    .controls { position: fixed; right: 22px; bottom: 18px; z-index: 10; display: flex; align-items: center; gap: 10px; color: #d5def1; font: 600 13px/1 var(--sans); }
+    .controls button { width: 38px; height: 38px; border: 1px solid #476087; border-radius: 50%; color: white; background: #13264f; cursor: pointer; font-size: 18px; }
+    .progress { position: fixed; left: 0; right: 0; bottom: 0; z-index: 9; height: 4px; background: rgb(255 255 255 / 12%); }
+    .progress span { display: block; height: 100%; background: var(--orange); transition: width .2s ease; }
+
+    @media (max-width: 900px) { .deck { padding: 0; } .controls { right: 10px; bottom: 10px; } }
+
+    @media print {
+      @page { size: 13.333in 7.5in; margin: 0; }
+      body { overflow: visible; background: white; }
+      .deck { position: static; display: block; padding: 0; }
+      .slide { display: block !important; page-break-after: always; transform: none !important; box-shadow: none; }
+      .controls, .progress { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck" aria-live="polite">
+
+    <!-- 01 -->
+    <section class="slide dark active" data-title="Mở đầu">
+      <div class="content">
+        <p class="eyebrow">INTERVIA · BẢN RÚT GỌN CHO HỘI ĐỒNG</p>
+        <h1>Từ điểm đối sánh CV–JD đến kế hoạch câu hỏi, buổi phỏng vấn và báo cáo kết quả</h1>
+        <p class="lead">Bốn khâu nối tiếp nhau. Với mỗi khâu, slide trả lời ba câu: nhận dữ liệu gì, xử lý bằng kỹ thuật gì (kèm hằng số trong code), và trả ra gì cho khâu sau.</p>
+        <div class="agenda">
+          <div><strong>1 · Đối sánh ra điểm</strong><span>Xét từng yêu cầu JD, gộp 5 yếu tố thành điểm 0–1, cổng yêu cầu bắt buộc</span></div>
+          <div><strong>2 · Lập kế hoạch</strong><span>Năng lực nào hỏi trước, bao nhiêu câu, câu nào, rồi khóa bộ câu hỏi</span></div>
+          <div><strong>3 · Phỏng vấn</strong><span>6 giai đoạn, xử lý từng câu trả lời, khi nào hỏi đào sâu, chat và giọng nói</span></div>
+          <div><strong>4 · Chấm điểm và báo cáo</strong><span>Chấm từng câu theo rubric, điểm tổng có trọng số, nội dung báo cáo</span></div>
+        </div>
+        <div class="footer"><span>Khóa luận tốt nghiệp · 12/10/2026</span><span>01</span></div>
+      </div>
+    </section>
+
+    <!-- 02 -->
+    <section class="slide" data-title="Luồng tổng quan">
+      <div class="content">
+        <p class="eyebrow">LUỒNG TỔNG QUAN</p>
+        <h2>Bốn khâu, mỗi khâu nhận đầu ra của khâu trước</h2>
+        <table class="t" style="margin-top:22px">
+          <thead><tr><th style="width:15%">Khâu</th><th style="width:25%">Nhận vào</th><th style="width:36%">Kỹ thuật chính</th><th>Trả ra</th></tr></thead>
+          <tbody>
+            <tr><td>1 · Đối sánh</td><td>Dữ kiện CV và JD đã bóc tách, mỗi dữ kiện kèm câu trích từ tài liệu gốc</td><td>So khớp theo luật cho từng yêu cầu · BM25 · cosine giữa 2 vector embedding · cổng yêu cầu bắt buộc</td><td>Điểm phù hợp 0–1, nhãn phù hợp, trạng thái Đạt / Không đạt / Chưa rõ của từng yêu cầu</td></tr>
+            <tr><td>2 · Lập kế hoạch</td><td>Trạng thái và mức ưu tiên của từng yêu cầu · thời lượng phiên</td><td>Công thức số câu theo thời gian · xếp hạng năng lực · xếp hạng câu hỏi nhiều khóa · băm SHA-256 để khóa</td><td>Bộ câu hỏi đã khóa: câu hỏi, rubric, ý cần có, thời gian từng câu</td></tr>
+            <tr><td>3 · Phỏng vấn</td><td>Bộ câu hỏi đã khóa · câu trả lời qua chat hoặc giọng nói</td><td>Máy trạng thái 6 giai đoạn · luật nhận diện ý định · LLM xét câu trả lời đủ hay thiếu ý · STT/TTS cho giọng nói</td><td>Câu trả lời từng lượt (gồm phần đào sâu), thời điểm, lý do kết thúc phiên</td></tr>
+            <tr><td>4 · Chấm điểm</td><td>Câu trả lời từng lượt · rubric đã khóa</td><td>LLM chấm từng câu 0–10 theo thang 4 mức · trung bình có trọng số theo năng lực · luật độ phủ</td><td>Điểm tổng, xếp loại, điểm từng năng lực, nhận xét từng câu, cảnh báo</td></tr>
+          </tbody>
+        </table>
+        <div class="note warn" style="margin-top:12px"><strong>Điểm 0–1 và nhãn phù hợp không điều khiển kế hoạch:</strong> chúng chỉ được lưu kèm kế hoạch để tham chiếu. Khâu 2 chỉ dùng <b>trạng thái và mức ưu tiên của từng yêu cầu</b>. Ứng viên ở nhãn nào (kể cả "Không đủ điều kiện") vẫn bắt đầu phiên luyện tập được.</div>
+        <div class="note"><strong>Phân vai LLM và code:</strong> LLM chỉ làm việc với ngôn ngữ: xét câu trả lời đủ hay thiếu ý, viết câu đào sâu, chấm điểm và viết nhận xét cho từng câu. Còn điểm đối sánh, số câu, câu nào được hỏi, chuyển giai đoạn, khi nào dừng, điểm tổng và xếp loại đều do công thức cố định trong code tính.</div>
+        <div class="footer"><span>Chat và giọng nói dùng chung lõi phỏng vấn (InterviewCoreEngine); giọng nói chỉ thêm lớp nhận và phát âm thanh</span><span>02</span></div>
+      </div>
+    </section>
+
+    <!-- 03 -->
+    <section class="slide" data-title="Đối sánh: từng yêu cầu">
+      <div class="content">
+        <p class="eyebrow">KHÂU 1 · ĐỐI SÁNH · BƯỚC A</p>
+        <h2>Xét từng yêu cầu trong JD với bằng chứng trong CV, cho ra Đạt, Không đạt hoặc Chưa rõ</h2>
+        <div class="grid3" style="grid-template-columns:1fr 1.15fr .8fr">
+          <div class="block">
+            <h3>Yêu cầu kỹ năng<br><span style="font-weight:600;color:var(--muted);font-size:14.5px">ví dụ: "React, tối thiểu 2 năm"</span></h3>
+            <ul>
+              <li>Đưa tên kỹ năng về <b>mã chuẩn</b> (concept_id) qua bảng bí danh: <code>js</code> → javascript, <code>k8s</code> → kubernetes, <code>postgres</code> → postgresql.</li>
+              <li>So mã kỹ năng của JD và CV: <b>khớp chính xác</b>.</li>
+              <li>So cấp độ theo bậc: cơ bản = 1, khá = 2, nâng cao = 3.</li>
+              <li>So số tháng kinh nghiệm với mức tối thiểu (2 năm = 24 tháng).</li>
+              <li>CV không nhắc tới kỹ năng → <b>Chưa rõ</b>, không bị tính là trượt.</li>
+            </ul>
+          </div>
+          <div class="block green">
+            <h3>Yêu cầu dạng câu chữ<br><span style="font-weight:600;color:var(--muted);font-size:14.5px">ví dụ: "có kinh nghiệm triển khai hệ thống thật"</span></h3>
+            <ul>
+              <li>Chuyển tới bộ kiểm tra riêng theo loại yêu cầu: GPA, bằng cấp, chứng chỉ ngoại ngữ, số năm làm việc, kiến thức chuyên môn.</li>
+              <li>Chấm <b>mức bằng chứng</b> bằng biểu thức chính quy (regex): chỉ nhắc tên = 1 · tự khai = 2 · đã áp dụng = 3 · có kết quả = 4. Nếu JD có chữ "triển khai", "production" hay "kinh nghiệm" thì cần mức ≥ 3.</li>
+              <li>Tìm đoạn CV liên quan: <b>BM25</b> (k1 = 1.5, b = 0.75) kết hợp bảng cụm từ đồng nghĩa: <code>0.7 × cụm từ + 0.3 × BM25</code>. Đạt khi ≥ 0.38 và mức bằng chứng ≥ 3.</li>
+              <li>Số năm kinh nghiệm: gộp các khoảng thời gian làm việc trong CV, bỏ phần chồng lấn.</li>
+            </ul>
+          </div>
+          <div class="block orange">
+            <h3>Kết quả mỗi yêu cầu</h3>
+            <table class="t sm">
+              <thead><tr><th>Trạng thái</th><th>Điểm</th></tr></thead>
+              <tbody>
+                <tr class="top"><td>Đạt</td><td class="num">1.0</td></tr>
+                <tr class="low"><td>Không đạt</td><td class="num">0.0</td></tr>
+                <tr><td>Chưa rõ</td><td>Không tính điểm, làm giảm độ tin cậy</td></tr>
+                <tr><td>Không áp dụng</td><td>Bỏ qua</td></tr>
+              </tbody>
+            </table>
+            <p style="margin-top:10px">Mỗi kết quả kèm <b>độ tin cậy</b> 0–1. Ví dụ: kỹ năng vắng mặt trong CV có độ tin cậy 0.6, vì thiếu tên kỹ năng chưa chắc là không biết.</p>
+          </div>
+        </div>
+        <div class="note">Ở bước A, embedding <b>không</b> được dùng để so từng yêu cầu. Mọi kết luận Đạt / Không đạt đều truy được về dữ kiện cụ thể trong CV.</div>
+        <div class="footer"><span>Nguồn: matching/application/facade.py · evaluation/requirement_evaluators.py · retrieval/bm25.py · retrieval/evidence_retrieval.py</span><span>03</span></div>
+      </div>
+    </section>
+
+    <!-- 04 -->
+    <section class="slide" data-title="Đối sánh: gộp điểm">
+      <div class="content">
+        <p class="eyebrow">KHÂU 1 · ĐỐI SÁNH · BƯỚC B</p>
+        <h2>Gộp 5 yếu tố thành điểm 0–1, có tính đến độ tin cậy, rồi qua cổng yêu cầu bắt buộc</h2>
+        <div class="grid2 wide-left">
+          <div class="block">
+            <h3>Năm yếu tố và trọng số (chính sách balanced-v1)</h3>
+            <table class="t sm">
+              <thead><tr><th>Yếu tố</th><th class="c">Trọng số</th><th>Cách tính</th></tr></thead>
+              <tbody>
+                <tr class="hl"><td>Độ phủ yêu cầu</td><td class="c num">0.60</td><td>Σ (mức quan trọng × điểm) ÷ Σ mức quan trọng. Mức quan trọng: bắt buộc 1.0 · nên có 0.35 · bối cảnh 0.15. Yêu cầu "Chưa rõ" không tính.</td></tr>
+                <tr><td>Kỹ năng</td><td class="c num">0.15</td><td>Trung bình điểm các yêu cầu kỹ năng</td></tr>
+                <tr><td>Kinh nghiệm</td><td class="c num">0.05</td><td>Trung bình điểm các yêu cầu về số năm</td></tr>
+                <tr><td>Ngôn ngữ</td><td class="c num">0.05</td><td>Trung bình điểm các yêu cầu ngoại ngữ</td></tr>
+                <tr><td>Ngữ nghĩa</td><td class="c num">0.15</td><td>So toàn bộ CV với toàn bộ JD: <code>0.6 × cosine + 0.4 × BM25</code>. Vector 1024 chiều từ text-embedding-3-small, cosine kẹp về [0, 1].</td></tr>
+              </tbody>
+            </table>
+            <div class="formula">Điểm = Σ (w × r × s) ÷ Σ (w × r)<br><span>w: trọng số yếu tố · r: độ tin cậy của yếu tố · s: điểm yếu tố. Yếu tố ít bằng chứng có ảnh hưởng nhỏ hơn.</span></div>
+          </div>
+          <div class="block orange">
+            <h3>Cổng bắt buộc và nhãn phù hợp (xét theo thứ tự)</h3>
+            <table class="t sm">
+              <tbody>
+                <tr class="low"><td>1</td><td>Có yêu cầu bắt buộc <b>Không đạt</b> với độ tin cậy ≥ 0.80 → <b>Không đủ điều kiện</b>, không công bố điểm phù hợp</td></tr>
+                <tr><td>2</td><td>Có yêu cầu bắt buộc <b>Chưa rõ</b> → <b>Cần xem lại</b>, hỏi thêm ứng viên</td></tr>
+                <tr><td>3</td><td>Tổng độ tin cậy các yếu tố &lt; 0.60 → <b>Chưa đủ bằng chứng</b></td></tr>
+                <tr class="top"><td>4</td><td>Điểm ≥ 0.80 → <b>Rất phù hợp</b>; còn lại → <b>Phù hợp một phần</b></td></tr>
+              </tbody>
+            </table>
+            <h4>Hỏi bổ sung cho yêu cầu "Chưa rõ"</h4>
+            <p>Hệ thống hỏi ứng viên về đúng yêu cầu đó. Câu trả lời được tách số năm, cấp độ hoặc bậc CEFR bằng regex, ghi thành bằng chứng "tự khai" với độ tin cậy 0.68 (tối đa 0.72), rồi tính lại điểm.</p>
+            <p>Vì 0.68 &lt; 0.80, ứng viên tự trả lời "không có" sẽ không bị loại ngay ở cổng bắt buộc.</p>
+          </div>
+        </div>
+        <div class="footer"><span>Nguồn: facade.py (POLICY_WEIGHTS, _REQUIREMENT_IMPORTANCE, _eligibility, _decision) · clarifications/rescore.py</span><span>04</span></div>
+      </div>
+    </section>
+
+    <!-- 05 -->
+    <section class="slide" data-title="Từ đối sánh sang kế hoạch">
+      <div class="content">
+        <p class="eyebrow">KHÂU 1 → 2 · KẾT QUẢ ĐỐI SÁNH QUYẾT ĐỊNH HỎI GÌ</p>
+        <h2>Năng lực bắt buộc và năng lực còn thiếu hoặc chưa rõ trong CV được hỏi trước</h2>
+        <div class="grid2">
+          <div class="block">
+            <h3>Trọng số của một năng lực khi lập kế hoạch</h3>
+            <div class="formula" style="margin-top:4px">Trọng số = Σ mức ưu tiên × hệ số trạng thái ÷ số khái niệm trong yêu cầu</div>
+            <div class="grid2" style="gap:24px;margin-top:12px">
+              <table class="t sm">
+                <thead><tr><th>Mức ưu tiên</th><th class="c">Giá trị</th></tr></thead>
+                <tbody>
+                  <tr><td>Bắt buộc</td><td class="c num">1.00</td></tr>
+                  <tr><td>Nên có</td><td class="c num">0.45</td></tr>
+                  <tr><td>Bối cảnh</td><td class="c num">0.20</td></tr>
+                </tbody>
+              </table>
+              <table class="t sm">
+                <thead><tr><th>Trạng thái</th><th class="c">Hệ số</th></tr></thead>
+                <tbody>
+                  <tr class="low"><td>Không đạt</td><td class="c num">1.35</td></tr>
+                  <tr><td>Chưa rõ</td><td class="c num">1.20</td></tr>
+                  <tr class="top"><td>Đạt</td><td class="c num">1.00</td></tr>
+                  <tr><td>Không áp dụng</td><td class="c num">0 (bỏ)</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p style="margin-top:10px">Hệ số trạng thái &gt; 1 để <b>chỗ còn thiếu được hỏi nhiều hơn</b>. Bảng này khác bảng mức quan trọng ở khâu đối sánh, vì mục đích ở đây là chọn chỗ cần kiểm tra chứ không phải tính điểm.</p>
+            <p><b>Không dùng ở đây:</b> điểm phù hợp 0–1 và nhãn phù hợp. Số câu chỉ phụ thuộc thời lượng; độ khó chỉ lấy từ JD.</p>
+          </div>
+          <div class="block green">
+            <h3>Xếp hạng và chia số câu</h3>
+            <ol>
+              <li>Sắp xếp: <b>bắt buộc trước</b>, rồi trọng số giảm dần, rồi theo mã khái niệm để lần nào cũng ra cùng một thứ tự.</li>
+              <li>Lấy N năng lực đầu, với N là số câu kỹ thuật (slide sau).</li>
+              <li>Mỗi năng lực được 1 câu. Nếu còn suất, suất đó thuộc năng lực có <b>khoảng thiếu lớn nhất</b>: trọng số chuẩn hóa × N − số câu đã có. Tối đa 3 câu cho một năng lực.</li>
+              <li>Năng lực <b>Đạt</b> được ghi là "điểm mạnh cần kiểm chứng"; <b>Không đạt / Chưa rõ</b> là "lỗ hổng cần kiểm tra".</li>
+            </ol>
+            <h4>Ví dụ</h4>
+            <table class="t sm">
+              <tbody>
+                <tr><td>React · bắt buộc · Chưa rõ</td><td class="num">1.00 × 1.20 = 1.20</td><td>hỏi thứ 1</td></tr>
+                <tr><td>SQL · bắt buộc · Đạt</td><td class="num">1.00 × 1.00 = 1.00</td><td>hỏi thứ 2</td></tr>
+                <tr><td>Docker · nên có · Không đạt</td><td class="num">0.45 × 1.35 = 0.61</td><td>hỏi thứ 3</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="footer"><span>Nguồn: interviews/planning/planner.py (_PRIORITY_WEIGHT, _STATUS_BOOST, _MAX_QUESTIONS_PER_TARGET = 3)</span><span>05</span></div>
+      </div>
+    </section>
+
+    <!-- 06 -->
+    <section class="slide" data-title="Số câu theo thời lượng">
+      <div class="content">
+        <p class="eyebrow">KHÂU 2 · SỐ CÂU THEO THỜI LƯỢNG</p>
+        <h2>Số câu kỹ thuật được tính từ thời lượng phiên; các câu khác cố định</h2>
+        <div class="grid2 wide-left">
+          <div class="block">
+            <h3>Số câu chính theo giai đoạn</h3>
+            <table class="t">
+              <thead><tr><th>Giai đoạn</th><th class="c">Demo 3′</th><th class="c">15′</th><th class="c">25′</th><th class="c">45′</th></tr></thead>
+              <tbody>
+                <tr><td>Khởi động</td><td class="c">1</td><td class="c">1</td><td class="c">1</td><td class="c">1</td></tr>
+                <tr><td>Xác thực CV</td><td class="c">1</td><td class="c">1</td><td class="c">1</td><td class="c">1</td></tr>
+                <tr class="hl"><td>Chuyên môn + Thử thách</td><td class="c">2 <span class="num">(1+1)</span></td><td class="c">1</td><td class="c">4</td><td class="c">8</td></tr>
+                <tr><td>Hành vi (STAR)</td><td class="c">1</td><td class="c">1</td><td class="c">1</td><td class="c">1</td></tr>
+                <tr><td>Hỏi đáp</td><td class="c" colspan="4">Ứng viên hỏi tối đa 2 câu trong 180s, không chấm</td></tr>
+                <tr class="total"><td>Tổng câu chính</td><td class="c">5</td><td class="c">4</td><td class="c">7</td><td class="c">11</td></tr>
+                <tr><td>Câu được chấm</td><td class="c">4</td><td class="c">3</td><td class="c">6</td><td class="c">10</td></tr>
+              </tbody>
+            </table>
+            <p style="margin-top:10px">Câu Khởi động có mặt trong phiên nhưng có trọng số 0 nên không vào điểm. Gói demo không có câu đào sâu.</p>
+          </div>
+          <div class="block orange">
+            <h3>Công thức</h3>
+            <p>Phần cố định: Khởi động 120s + CV 180s + Hành vi 180s + dự phòng kết thúc 60s = <b>540s</b>.</p>
+            <p>Một câu kỹ thuật: suy nghĩ 30s + trả lời 150s + một câu đào sâu 60s = <b>240s</b>.</p>
+            <div class="formula">N = max(1, min(8, ⌊(T × 60 − 540) ÷ 240⌋))<br><span>T: số phút · gói demo (T ≤ 3) cố định N = 2</span></div>
+            <h4>Kiểm tra ngân sách</h4>
+            <div class="bars">
+              <div class="bar-row"><b>15′</b><div class="bar"><i class="fix" style="width:60%"></i><i class="tech" style="width:26.7%"></i><i class="free" style="width:13.3%"></i></div><span>780 / 900s</span></div>
+              <div class="bar-row"><b>25′</b><div class="bar"><i class="fix" style="width:36%"></i><i class="tech" style="width:64%"></i></div><span>1500 / 1500s</span></div>
+              <div class="bar-row"><b>45′</b><div class="bar"><i class="fix" style="width:20%"></i><i class="tech" style="width:71.1%"></i><i class="free" style="width:8.9%"></i></div><span>2460 / 2700s</span></div>
+            </div>
+            <div class="legend"><span class="l1">Cố định 540s</span><span class="l2">N × 240s</span><span class="l3">Dư</span></div>
+          </div>
+        </div>
+        <div class="note"><strong>Lý do bỏ cách cũ:</strong> trước đây số câu cố định (15′ → 2, 25′ → 4, 45′ → 6). Gói 15′ cần khoảng 1080s nhưng chỉ có 900s, nên phiên thường bị ngắt vì hết giờ.</div>
+        <div class="footer"><span>Nguồn: planner.py (_question_budget, _PRESET_EXPECTED_SECONDS, _TECHNICAL_EXPECTED_SECONDS) · core/demo_mode.py</span><span>06</span></div>
+      </div>
+    </section>
+
+    <!-- 07 -->
+    <section class="slide" data-title="Chọn câu và khóa">
+      <div class="content">
+        <p class="eyebrow">KHÂU 2 · CHỌN CÂU CỤ THỂ VÀ KHÓA BỘ CÂU HỎI</p>
+        <h2>Tìm câu theo 4 nguồn, xếp hạng bằng nhiều khóa so lần lượt, rồi khóa bằng SHA-256</h2>
+        <div class="grid3">
+          <div class="block">
+            <h3>Thứ tự tìm nguồn câu hỏi</h3>
+            <ol>
+              <li><b>Đúng kỹ năng</b>, đã được duyệt.</li>
+              <li><b>Kỹ năng cha</b>: đi lên cây kỹ năng tối đa 3 cấp (ví dụ: Next.js → React).</li>
+              <li><b>Theo vị trí công việc</b>: chỉ nhận khi kỹ năng của câu cũng có trong JD.</li>
+              <li><b>Câu do LLM tạo</b> nếu 3 nguồn trên không đủ.</li>
+            </ol>
+            <h4>Độ khó lấy từ JD</h4>
+            <p>Intern/Fresher/Junior → Cơ bản · Mid → Trung bình · Senior/Lead → Nâng cao. JD không ghi cấp độ thì xét tên vị trí ("Engineer II", "Staff"), rồi số năm kinh nghiệm (≤ 1 · &lt; 5 · còn lại), cuối cùng mặc định là Trung bình.</p>
+          </div>
+          <div class="block green">
+            <h3>Xếp hạng câu: so từng khóa, hòa mới xét khóa sau</h3>
+            <ol>
+              <li>Đúng ngôn ngữ của phiên</li>
+              <li>Độ khó gần với độ khó mục tiêu nhất</li>
+              <li>Câu gắn trực tiếp với kỹ năng, trước câu theo vị trí</li>
+              <li>Câu ứng viên <b>chưa từng gặp</b>, hoặc gặp lâu nhất</li>
+              <li>Độ liên quan cao hơn</li>
+              <li><code>MD5(mã phiên : mã câu)</code> để phá hòa</li>
+            </ol>
+            <p style="margin-top:8px">Lấy k câu đầu bảng. Không dùng số ngẫu nhiên: hai phiên khác nhau ra câu khác nhau nhờ khóa 4 và 6, còn chạy lại cùng một phiên thì luôn ra cùng kết quả.</p>
+          </div>
+          <div class="block orange">
+            <h3>Kiểm tra câu do LLM tạo</h3>
+            <ul>
+              <li><b>Cấu trúc</b>: có câu hỏi, mục tiêu và tiêu chí rubric; trọng số tiêu chí được chuẩn hóa về tổng bằng 1.</li>
+              <li><b>Ngôn ngữ</b>: câu tiếng Việt phải có ≥ 3 ký tự có dấu.</li>
+              <li><b>Trùng lặp</b>: độ giống Jaccard trên tập từ ≥ 0.6 so với câu đã có thì loại.</li>
+              <li><b>Phù hợp</b>: một lần gọi LLM khác (nhiệt độ 0) phải xác nhận đủ 5 ý: đúng kỹ năng, đúng độ khó, trả lời bằng lời được, đúng kiến thức, ngắn gọn.</li>
+              <li>Lỗi ở bất kỳ bước nào thì không lưu câu. Câu đạt được gắn nhãn <b>chưa được chuyên gia duyệt</b>.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="note"><strong>Khóa bộ câu hỏi:</strong> mỗi lượt lưu mã phiên bản câu hỏi, mã phiên bản rubric và một <b>bản chụp đầy đủ</b> (câu hỏi, tiêu chí, ý cần có, thời gian). Danh sách lựa chọn được băm SHA-256, kế hoạch chuyển sang trạng thái LOCKED. Trong phiên không thay câu, và lúc chấm dùng đúng rubric đã chụp.</div>
+        <div class="footer"><span>Nguồn: question_selector.py · question_generation.py · plan_structure.py. Chế độ tùy chọn (đang tắt): chia giây theo Hamilton và tìm tập câu có cắt nhánh</span><span>07</span></div>
+      </div>
+    </section>
+
+    <!-- 08 -->
+    <section class="slide" data-title="Phỏng vấn: giai đoạn">
+      <div class="content">
+        <p class="eyebrow">KHÂU 3 · PHỎNG VẤN · LUỒNG GIAI ĐOẠN</p>
+        <h2>Phiên đi qua 6 giai đoạn theo thứ tự cố định; code giữ thời gian cho phần cuối</h2>
+        <div class="stages">
+          <div class="stage"><strong>Khởi động</strong><code>WARM_UP</code><span>Mốc dự kiến ≤ 10% thời gian</span></div>
+          <div class="stage"><strong>Xác thực CV</strong><code>VALIDATE</code><span>≤ 30%. Kiểm chứng nội dung ghi trong CV</span></div>
+          <div class="stage"><strong>Chuyên môn</strong><code>DEEP_DIVE</code><span>≤ 75%. Câu kỹ thuật</span></div>
+          <div class="stage ch"><strong>Thử thách</strong><code>CHALLENGE</code><span>≤ 85%. Câu lập trình hoặc kỹ năng còn thiếu</span></div>
+          <div class="stage"><strong>Hành vi</strong><code>BEHAVIORAL</code><span>≤ 95%. Câu theo mô hình STAR</span></div>
+          <div class="stage"><strong>Hỏi đáp</strong><code>CLOSING</code><span>Ứng viên hỏi, tối đa 2 câu</span></div>
+          <div class="stage off"><strong>Đóng phiên</strong><code>CLOSED</code><span>Ghi lý do kết thúc</span></div>
+        </div>
+        <div class="grid2" style="margin-top:22px">
+          <div class="block">
+            <h3>Luật giữ thời gian (tính theo giây còn lại)</h3>
+            <ul>
+              <li>Còn ≤ 240s (180s Hành vi + 60s kết thúc) mà chưa hỏi Hành vi → <b>nhảy thẳng sang Hành vi</b>.</li>
+              <li>Còn ≤ 90s → không mở câu mới, trừ câu Hành vi bắt buộc.</li>
+              <li>Còn ≤ 30s ở ngoài phần Hỏi đáp → đóng phiên.</li>
+              <li>Phần Hỏi đáp chỉ mở khi đã xong Hành vi và còn ≥ 180s.</li>
+              <li>Phiên dưới 25′: các mốc giây trên được thu nhỏ theo tỉ lệ thời lượng.</li>
+              <li>Gói demo: được thêm 180s và không có câu đào sâu.</li>
+            </ul>
+          </div>
+          <div class="block green">
+            <h3>Lý do kết thúc phiên</h3>
+            <table class="t sm">
+              <tbody>
+                <tr><td><code>NORMAL_COMPLETION</code></td><td>Hỏi hết bộ câu đã khóa</td></tr>
+                <tr><td><code>HARD_TIMEOUT</code></td><td>Hết giờ (còn ≤ 30s)</td></tr>
+                <tr><td><code>FAST_FAIL_TECH</code></td><td>2 lần liên tiếp ứng viên nói "không biết" hoặc bỏ cuộc (đếm từ câu CV trở đi), nhưng chỉ dừng khi đang ở Chuyên môn/Thử thách. Trả lời sai hay thiếu ý thì không đếm.</td></tr>
+                <tr><td><code>CANDIDATE_ABORT</code></td><td>Ứng viên xin dừng và đã xác nhận</td></tr>
+              </tbody>
+            </table>
+            <p style="margin-top:8px">Phiên bị bỏ dở sẽ được tự đóng sau thời lượng + 10 phút.</p>
+          </div>
+        </div>
+        <div class="footer"><span>Máy trạng thái viết bằng Python (core/interview_engine.py). LangGraph chỉ điều phối lệnh và lưu checkpoint vào PostgreSQL, để cùng một tin nhắn gửi lại không bị xử lý 2 lần</span><span>08</span></div>
+      </div>
+    </section>
+
+    <!-- 09 -->
+    <section class="slide" data-title="Phỏng vấn: một câu trả lời">
+      <div class="content">
+        <p class="eyebrow">KHÂU 3 · PHỎNG VẤN · XỬ LÝ MỘT CÂU TRẢ LỜI</p>
+        <h2>Mỗi câu trả lời qua 3 bước: luật nhận diện, LLM xét đủ hay thiếu, code chọn hành động</h2>
+        <div class="pipeline" style="grid-template-columns:1fr 1.1fr 1fr">
+          <div class="pipe"><span class="n">BƯỚC 1 · LUẬT, KHÔNG GỌI LLM</span><strong>Nhận diện yêu cầu đặc biệt</strong>
+            <span>Xin dừng · xin bỏ qua câu · xin nhắc lại · "không biết" (từ khóa, hoặc trả lời ≤ 3 ký tự).</span>
+            <span>Hỏi về điểm, quy trình, lạc đề → trả lời bằng câu soạn sẵn.</span>
+            <span>Xin làm rõ câu hỏi: tối đa 1 lần cho mỗi câu. Nhắc lại hay làm rõ không bị tính là đã trả lời.</span></div>
+          <div class="pipe focus"><span class="n">BƯỚC 2 · LLM, NHIỆT ĐỘ 0.1, TRẢ VỀ JSON</span><strong>Xét câu trả lời so với rubric</strong>
+            <span><b>intent</b>: trả lời / bỏ cuộc / lạc đề ...</span>
+            <span><b>sufficiency</b>: đủ hay thiếu so với các <b>ý cốt lõi</b> của rubric đã khóa · <b>missing_aspect</b>: ý còn thiếu.</span>
+            <span>Một câu ghi nhận ngắn và gợi ý câu đào sâu. Điểm LLM trả về ở bước này chỉ ghi log, không dùng để chấm.</span></div>
+          <div class="pipe end"><span class="n">BƯỚC 3 · CODE</span><strong>Chọn 1 trong 6 hành động</strong>
+            <span><code>PROBE</code> hỏi đào sâu · <code>CLARIFY</code> làm rõ · <code>NEXT_QUESTION</code> sang câu tiếp · <code>WRAP_UP</code> kết thúc giai đoạn · <code>TERMINATE</code> đóng phiên · <code>CONFIRM_ABORT</code> xác nhận dừng.</span></div>
+        </div>
+        <div class="grid2" style="margin-top:20px">
+          <div class="block">
+            <h3>Khi nào hỏi đào sâu (tối đa 1 lần cho mỗi câu chính)</h3>
+            <p><b>Hỏi khi đủ cả 3 điều kiện:</b></p>
+            <ul>
+              <li>Câu trả lời thiếu ý cốt lõi, <i>hoặc</i> quá ngắn (&lt; 15 từ và &lt; 70 ký tự).</li>
+              <li>Câu này chưa được hỏi đào sâu lần nào.</li>
+              <li>Đang ở giai đoạn Xác thực CV, Chuyên môn hoặc Thử thách.</li>
+            </ul>
+          </div>
+          <div class="block orange">
+            <h3>Không hỏi đào sâu khi</h3>
+            <ul>
+              <li>Đang ở gói demo.</li>
+              <li>Đã dùng &gt; 80% thời gian (ở Xác thực CV và Chuyên môn).</li>
+              <li>Câu trả lời đã vượt thời gian tối đa của câu (mặc định 180s).</li>
+              <li>Thời gian còn lại sắp chạm phần giữ cho Hành vi hoặc phần kết thúc.</li>
+            </ul>
+            <p style="margin-top:8px"><b>Kiểm tra đầu ra:</b> câu đào sâu có chữ "điểm", "rubric", "tiêu chí" hoặc sai ngôn ngữ thì bị thay bằng câu dự phòng.</p>
+          </div>
+        </div>
+        <div class="footer"><span>Nguồn: core/interview_engine.py (classify_candidate_intent, _evaluate_candidate_response, PROHIBITED_LEAK_PATTERNS) · core/language_policy.py</span><span>09</span></div>
+      </div>
+    </section>
+
+    <!-- 10 -->
+    <section class="slide" data-title="Phỏng vấn: giọng nói và dữ liệu">
+      <div class="content">
+        <p class="eyebrow">KHÂU 3 · PHỎNG VẤN · GIỌNG NÓI VÀ DỮ LIỆU LƯU LẠI</p>
+        <h2>Giọng nói chỉ thêm lớp âm thanh; câu trả lời vẫn đi vào cùng lõi với chat</h2>
+        <div class="pipeline" style="grid-template-columns:repeat(5,1fr)">
+          <div class="pipe"><span class="n">1 · PHÁT HIỆN GIỌNG</span><strong>Silero VAD</strong><span>Nhận biết lúc người nói bắt đầu và dừng.</span></div>
+          <div class="pipe"><span class="n">2 · CHUYỂN THÀNH CHỮ</span><strong>AssemblyAI universal-3-6-pro</strong><span>Qua LiveKit. Chốt lượt nói sau tối đa 1.8s.</span></div>
+          <div class="pipe"><span class="n">3 · GOM CÂU TRẢ LỜI</span><strong>Cửa sổ trả lời</strong><span>Gom các đoạn nói; im lặng 2.5s mới chốt thành một câu trả lời.</span></div>
+          <div class="pipe"><span class="n">4 · LỌC BẢN GHI</span><strong>Kiểm tra chất lượng</strong><span>Bỏ khi rỗng, độ tin cậy &lt; 0.45, lặp ≥ 75% từ, hoặc nhiễu tiếng Anh trong phiên tiếng Việt.</span></div>
+          <div class="pipe end"><span class="n">5 · LÕI + ĐỌC CÂU HỎI</span><strong>Lõi phỏng vấn → TTS</strong><span>ElevenLabs eleven_flash_v2_5, dự phòng bằng Cartesia sonic-3.</span></div>
+        </div>
+        <div class="grid2" style="margin-top:20px">
+          <div class="block">
+            <h3>Xử lý ngắt lời và im lặng</h3>
+            <ul>
+              <li>Ứng viên nói chen chỉ được tính là ngắt lời khi ≥ 2 từ hoặc ≥ 0.7s.</li>
+              <li>Phần nói chen được phân thành 5 loại: tiếng ồn · tiếng vọng từ loa · "ừ", "vâng" · "chờ chút" · nội dung thật. Gặp tiếng vọng hay "ừ" thì đọc tiếp phần câu hỏi chưa nghe; "chờ chút" thì đợi; nội dung thật thì chuyển vào lõi.</li>
+              <li>Im lặng 30s → nhắc một lần. Xử lý quá 1.2s → phát câu đệm để ứng viên không nghĩ hệ thống bị treo.</li>
+            </ul>
+          </div>
+          <div class="block green">
+            <h3>Dữ liệu lưu cho bước chấm</h3>
+            <table class="t sm">
+              <tbody>
+                <tr><td><code>interview_turns</code></td><td>Câu trả lời, phần đào sâu nối sau nhãn <code>[Follow-up Answer]</code> · thời điểm bắt đầu và kết thúc · mã phiên bản câu hỏi và rubric · bản chụp câu hỏi</td></tr>
+                <tr><td><code>interview_chat_messages</code></td><td>Từng tin nhắn theo thứ tự · với giọng nói: bản ghi STT gốc, các đoạn nói, độ tin cậy STT</td></tr>
+              </tbody>
+            </table>
+            <p style="margin-top:8px">Khi ứng viên xin nhắc lại hoặc làm rõ, câu trả lời đã lưu được giữ nguyên.</p>
+          </div>
+        </div>
+        <div class="footer"><span>Nguồn: adapters/voice/livekit_agent.py · answer_window.py · interruption.py · transcript_quality.py · application/chat_runtime.py</span><span>10</span></div>
+      </div>
+    </section>
+
+    <!-- 11 -->
+    <section class="slide" data-title="Chấm từng câu">
+      <div class="content">
+        <p class="eyebrow">KHÂU 4 · CHẤM TỪNG CÂU</p>
+        <h2>Mỗi câu được chấm 0–10 bằng một lần gọi LLM, theo rubric đã khóa trong phiên</h2>
+        <div class="grid2" style="grid-template-columns:1fr 1.1fr">
+          <div class="block">
+            <h3>Đầu vào, cấu hình, đầu ra</h3>
+            <h4>Đầu vào</h4>
+            <p>Câu hỏi · giai đoạn · năng lực · tiêu chí rubric · danh sách <b>ý cốt lõi</b> và <b>ý cộng thêm</b> · câu trả lời (gồm phần đào sâu) · kênh chat hay giọng nói, kèm độ tin cậy STT.</p>
+            <h4>Cấu hình</h4>
+            <p>Nhiệt độ 0.1 · chấm song song 4 câu · gọi tối đa 2 lần (thử lại 1 lần) nếu JSON thiếu điểm.</p>
+            <h4>Đầu ra (JSON)</h4>
+            <p><code>score</code> 0–10 · <code>star_analysis</code> (chỉ câu CV và Hành vi) · <code>evidence_quotes</code> 1–3 câu trích nguyên văn · <code>feedback</code> · <code>strengths</code> · <code>weaknesses</code></p>
+            <h4>Khi LLM lỗi</h4>
+            <p>Lỗi 2 lần ở một câu có trọng số &gt; 0 thì <b>không tạo báo cáo</b>; phiên được đánh dấu FAILED để chấm lại. Không có điểm giả.</p>
+          </div>
+          <div class="block green">
+            <h3>Thang 4 mức trong prompt chấm</h3>
+            <table class="t sm nowrap-first">
+              <thead><tr><th>Mức</th><th>Câu kỹ thuật</th><th>Câu CV, Hành vi</th></tr></thead>
+              <tbody>
+                <tr class="top"><td class="num">9–10</td><td>Đủ và đúng <b>mọi ý cốt lõi</b>; ý cộng thêm chỉ đẩy điểm lên trong khoảng 9–10</td><td>Đủ ý cốt lõi, có ví dụ hoặc kết quả đo được</td></tr>
+                <tr><td class="num">7–8.9</td><td>Thiếu hoặc sai một ý cốt lõi</td><td>Có trải nghiệm thật, chưa có kết quả cụ thể</td></tr>
+                <tr><td class="num">5–6.9</td><td>Chung chung, thiếu nhiều ý</td><td>Chung chung, vai trò cá nhân chưa rõ</td></tr>
+                <tr class="low"><td class="num">0–4.9</td><td colspan="2">Sai kiến thức cơ bản, né câu hỏi hoặc "không biết". Câu bỏ trống được thay bằng "Ứng viên không trả lời" rồi chấm theo thang.</td></tr>
+              </tbody>
+            </table>
+            <h4>Ví dụ ý cần có · câu hỏi về closure</h4>
+            <table class="t sm">
+              <tbody>
+                <tr><td>Cốt lõi</td><td>Closure giữ <b>tham chiếu</b> tới biến bên ngoài; <code>var</code> có phạm vi hàm nên callback thấy giá trị cuối; sửa bằng <code>let</code> hoặc IIFE</td></tr>
+                <tr><td>Cộng thêm</td><td>Có ví dụ <code>setTimeout</code> trong vòng <code>for</code></td></tr>
+              </tbody>
+            </table>
+            <h4>Quy tắc công bằng</h4>
+            <p>Không trừ điểm khi dùng thuật ngữ tiếng Anh, khi trả lời bằng gạch đầu dòng, hay khi thiếu ý nằm ngoài danh sách. Với giọng nói, chỉ chấm phần lời có trong bản ghi STT.</p>
+          </div>
+        </div>
+        <div class="footer"><span>Nguồn: evaluation/evaluation_engine.py (GRADING_ATTEMPTS = 2, temperature 0.1) · evaluation_service.py · chat_runtime.py (gộp phần đào sâu)</span><span>11</span></div>
+      </div>
+    </section>
+
+    <!-- 12 -->
+    <section class="slide" data-title="Điểm tổng">
+      <div class="content">
+        <p class="eyebrow">KHÂU 4 · TỔNG HỢP ĐIỂM TOÀN PHIÊN</p>
+        <h2>Điểm tổng là trung bình có trọng số theo năng lực, kèm điều kiện về độ phủ</h2>
+        <div class="grid3" style="grid-template-columns:1.05fr 1.15fr .8fr">
+          <div class="block">
+            <h3>Trọng số mỗi lượt</h3>
+            <table class="t sm nowrap-first">
+              <tbody>
+                <tr><td>Khởi động</td><td>0, không vào điểm tổng</td></tr>
+                <tr><td>Xác thực CV</td><td class="num">0.5</td></tr>
+                <tr><td>Hành vi</td><td class="num">0.5</td></tr>
+                <tr><td>Kỹ thuật</td><td>Mức quan trọng của năng lực (lấy từ kế hoạch, chuẩn hóa tổng bằng 1) × số năng lực. Trung bình bằng 1; năng lực bắt buộc hoặc còn thiếu có trọng số cao hơn.</td></tr>
+                <tr><td>Hỏi đáp</td><td>Không chấm</td></tr>
+              </tbody>
+            </table>
+            <p style="margin-top:8px">CV và Hành vi lấy 0.5 vì đây là câu dùng chung, không gắn với yêu cầu riêng của JD.</p>
+          </div>
+          <div class="block green">
+            <h3>Độ phủ và các trường hợp đặc biệt</h3>
+            <div class="formula" style="margin-top:2px;font-size:15px">Độ phủ = số câu đã chấm ÷ (đã chấm + chưa được chấm)</div>
+            <p style="margin-top:8px">"Chưa được chấm" gồm câu chưa kịp hỏi, câu bị bỏ qua, câu đã hỏi nhưng không có trả lời, và năng lực không tìm được câu hỏi.</p>
+            <table class="t sm">
+              <tbody>
+                <tr><td>Độ phủ &lt; 60%</td><td>Kết luận tối đa CONSIDER. Điểm không đổi, chỉ hạ xếp loại.</td></tr>
+                <tr><td>Chưa kịp hỏi, bỏ qua</td><td>Không chấm, không kéo điểm xuống; báo cáo ghi "chỉ đánh giá được x/y lượt".</td></tr>
+                <tr><td>"Không biết"</td><td>Vẫn được chấm theo thang, thường rơi vào mức 0–4.9.</td></tr>
+                <tr><td>Câu chính + đào sâu</td><td>Gộp thành một câu trả lời, chấm ra một điểm.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="block orange">
+            <h3>Xếp loại</h3>
+            <h4>Nội bộ (hội đồng, nhà tuyển dụng)</h4>
+            <table class="t sm">
+              <tbody>
+                <tr class="top"><td class="num">≥ 8.5</td><td>STRONG_PASS</td></tr>
+                <tr><td class="num">≥ 7.0</td><td>PASS</td></tr>
+                <tr><td class="num">≥ 5.0</td><td>CONSIDER</td></tr>
+                <tr class="low"><td class="num">&lt; 5.0</td><td>REJECT</td></tr>
+              </tbody>
+            </table>
+            <h4>Ứng viên thấy</h4>
+            <table class="t sm">
+              <tbody>
+                <tr><td class="num">≥ 7.5</td><td>Tốt</td></tr>
+                <tr><td class="num">≥ 5</td><td>Khá</td></tr>
+                <tr><td class="num">≥ 2.5</td><td>Tạm được</td></tr>
+                <tr><td class="num">&lt; 2.5</td><td>Còn yếu</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="formula">Điểm tổng = Σ (điểm năng lực × trọng số) ÷ Σ trọng số <span>· điểm năng lực = trung bình điểm các câu cùng năng lực</span></div>
+        <div class="footer"><span>Nguồn: evaluation_service.py (_turn_weight, _MIN_COVERAGE_FOR_CONFIDENT_DECISION = 0.6) · evaluation_engine.py (ngưỡng xếp loại)</span><span>12</span></div>
+      </div>
+    </section>
+
+    <!-- 13 -->
+    <section class="slide" data-title="Ví dụ tính điểm">
+      <div class="content">
+        <p class="eyebrow">VÍ DỤ XUYÊN SUỐT · TIẾP TỤC TỪ SLIDE 5 · PHIÊN 25 PHÚT</p>
+        <h2>React, SQL, Docker đi từ kết quả đối sánh tới điểm tổng của một phiên 25′</h2>
+        <div class="grid2 wide-left">
+          <div class="block">
+            <h3>Bảng tính (điểm từng câu là số giả định)</h3>
+            <table class="t">
+              <thead><tr><th>Năng lực</th><th class="c">Số câu</th><th class="c">Điểm từng câu</th><th class="c">Điểm năng lực</th><th class="c">Trọng số</th><th class="c">Tích</th></tr></thead>
+              <tbody>
+                <tr><td>Xác thực CV</td><td class="c">1</td><td class="c num">8</td><td class="c num">8.0</td><td class="c num">0.50</td><td class="c num">4.00</td></tr>
+                <tr><td>React · bắt buộc · Chưa rõ</td><td class="c">2</td><td class="c num">8 · 7</td><td class="c num">7.5</td><td class="c num">1.28</td><td class="c num">9.60</td></tr>
+                <tr><td>SQL · bắt buộc · Đạt</td><td class="c">1</td><td class="c num">7</td><td class="c num">7.0</td><td class="c num">1.07</td><td class="c num">7.49</td></tr>
+                <tr><td>Docker · nên có · Không đạt</td><td class="c">1</td><td class="c num">8</td><td class="c num">8.0</td><td class="c num">0.65</td><td class="c num">5.20</td></tr>
+                <tr><td>Hành vi</td><td class="c">1</td><td class="c num">7</td><td class="c num">7.0</td><td class="c num">0.50</td><td class="c num">3.50</td></tr>
+                <tr class="total"><td>Tổng</td><td class="c">6</td><td></td><td></td><td class="c num">4.00</td><td class="c num">29.79</td></tr>
+              </tbody>
+            </table>
+            <div class="formula">Điểm tổng = 29.79 ÷ 4.00 = <b>7.45</b> <span>· nội bộ PASS · ứng viên thấy mức Khá (&lt; 7.5)</span></div>
+          </div>
+          <div class="block green">
+            <h3>Từng con số đến từ đâu</h3>
+            <ul>
+              <li><b>Trọng số kỹ thuật</b>: lấy trọng số ở slide 5 (1.20 · 1.00 · 0.61, tổng 2.81), chuẩn hóa rồi nhân 3 năng lực: 1.20 ÷ 2.81 × 3 = 1.28 · 1.07 · 0.65. Trung bình bằng 1.</li>
+              <li><b>Số câu</b>: gói 25′ có N = 4. Mỗi năng lực 1 câu, suất thứ 4 thuộc React vì khoảng thiếu lớn nhất: 0.43 × 4 − 1 = 0.71 (SQL 0.42, Docker −0.13).</li>
+              <li><b>Giai đoạn</b>: Docker Không đạt trong CV, không phải câu kỹ thuật đầu tiên → hỏi ở Thử thách.</li>
+              <li>Nếu phiên dừng sau 3 câu (độ phủ 50%), điểm vẫn tính trên các câu đã trả lời, nhưng kết luận bị giới hạn ở CONSIDER.</li>
+              <li>Khởi động không vào điểm tổng, nên lời chào không ảnh hưởng kết quả.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer"><span>Trọng số kỹ thuật = mức quan trọng của năng lực × số năng lực (evaluation_service._turn_weight); mức quan trọng do planner.py ghi vào session_competency_targets</span><span>13</span></div>
+      </div>
+    </section>
+
+    <!-- 14 -->
+    <section class="slide" data-title="Báo cáo chi tiết">
+      <div class="content">
+        <p class="eyebrow">KHÂU 4 · BÁO CÁO KẾT QUẢ CHI TIẾT</p>
+        <h2>Báo cáo có 3 tầng (tổng, năng lực, từng câu); phần số do code tính, phần lời do LLM viết</h2>
+        <table class="t sm" style="margin-top:20px">
+          <thead><tr><th style="width:20%">Phần</th><th>Nội dung</th><th style="width:30%">Tạo bởi</th></tr></thead>
+          <tbody>
+            <tr><td>Tổng quan</td><td>Điểm tổng 0–10 · xếp loại nội bộ · mức ứng viên thấy (Tốt / Khá / Tạm được / Còn yếu)</td><td><span class="tag code">Code</span> công thức slide 12</td></tr>
+            <tr><td>Theo năng lực</td><td>Điểm và trọng số của từng năng lực, hiển thị bằng biểu đồ</td><td><span class="tag code">Code</span></td></tr>
+            <tr><td>Từng câu</td><td>Câu hỏi · điểm · phân tích STAR (câu CV, Hành vi) · câu trích nguyên văn · điểm mạnh · điểm yếu · nhận xét</td><td><span class="tag llm">LLM</span> trong lần chấm câu đó</td></tr>
+            <tr><td>Nhận xét chung</td><td>Lời khuyên cho ứng viên · tóm tắt cho nhà tuyển dụng</td><td><span class="tag llm">LLM</span> 1 lần, nhiệt độ 0.2, đọc tối đa 6 điểm mạnh, 6 điểm yếu, 4 câu trích. Nếu lỗi thì dùng mẫu soạn sẵn.</td></tr>
+            <tr><td>Chủ đề vòng sau</td><td>2–4 chủ đề nên luyện tiếp, thêm các năng lực "(chưa kịp hỏi)" hoặc "(chưa có câu hỏi phù hợp)"</td><td><span class="tag llm">LLM</span> + <span class="tag code">Code</span> thêm phần chưa hỏi</td></tr>
+            <tr><td>Cảnh báo</td><td>"Chỉ đánh giá được x/y lượt" · "N câu do AI tạo, chưa qua kiểm duyệt" · cảnh báo khi STT không có độ tin cậy · dấu hiệu bất thường trong câu trả lời</td><td><span class="tag code">Code</span> cho 3 cảnh báo đầu · <span class="tag llm">LLM</span> cho dấu hiệu bất thường</td></tr>
+            <tr><td>Tự đánh giá</td><td>Ứng viên tự chấm mức của mình, rồi so với mức hệ thống chấm</td><td><span class="tag ui">Giao diện</span></td></tr>
+          </tbody>
+        </table>
+        <div class="note">Giao diện của ứng viên không hiển thị xếp loại tuyển dụng (STRONG_PASS … REJECT), chỉ hiển thị mức Tốt / Khá / Tạm được / Còn yếu. Nhận xét từng câu dựa trên rubric đã khóa lúc tạo phiên, nên chấm lại vẫn dùng đúng rubric đó.</div>
+        <div class="footer"><span>Nguồn: evaluation_service.py (lưu báo cáo) · evaluation_engine.py (tổng hợp nhận xét) · frontend InterviewReportView.tsx, debrief.ts</span><span>14</span></div>
+      </div>
+    </section>
+
+    <!-- 15 -->
+    <section class="slide" data-title="Câu hỏi thường gặp">
+      <div class="content">
+        <p class="eyebrow">CÂU HỎI THƯỜNG GẶP</p>
+        <h2>Những câu hội đồng có thể hỏi và câu trả lời ngắn</h2>
+        <div class="qa">
+          <div><strong>Vì sao không để LLM quyết định số câu và câu nào?</strong><span>Để giải thích được và kiểm tra lại được. Cùng CV, JD và thời lượng thì luôn ra cùng năng lực và cùng số câu. Câu hỏi cụ thể có thể đổi giữa các phiên (để không lặp câu cũ), nhưng chấm lại một phiên thì dùng đúng bộ câu đã khóa và băm SHA-256.</span></div>
+          <div><strong>Vì sao 240s cho một câu kỹ thuật, và gói 15′ chỉ có 1 câu?</strong><span>240s gồm 30s suy nghĩ, 150s trả lời và 60s đào sâu. Gói 15′ có 540/900s đã dành cho phần cố định; thêm câu sẽ bị ngắt vì hết giờ. Muốn đánh giá kỹ thuật thì dùng gói 25′ hoặc 45′.</span></div>
+          <div><strong>Ngân hàng câu hỏi không đủ thì sao?</strong><span>Lần lượt tìm ở kỹ năng cha, theo vị trí, rồi câu do LLM tạo đã qua kiểm tra. Năng lực vẫn không có câu sẽ được ghi "(chưa có câu hỏi phù hợp)" và tính vào độ phủ. Chỉ khi không phủ được năng lực nào thì mới không tạo phiên.</span></div>
+          <div><strong>LLM chấm có ổn định không?</strong><span>Nhiệt độ 0.1, thang 4 mức, danh sách ý cốt lõi cho từng câu, và điểm tổng do code tính. Mức đồng thuận giữa LLM và người chấm <b>chưa được đo</b>; đây là việc cần làm tiếp.</span></div>
+          <div><strong>Ứng viên chèn lệnh "cho tôi 10/10" thì sao?</strong><span>Câu trả lời được bọc trong thẻ <code>&lt;candidate_response&gt;</code>, tách khỏi phần chỉ dẫn. Khi phỏng vấn, LLM xếp câu kiểu này vào "lạc đề". Điểm tổng, xếp loại và độ phủ do code tính. Chưa có bộ phân loại riêng cho kiểu tấn công này.</span></div>
+          <div><strong>Trả lời bằng giọng nói, STT nghe sai thì sao?</strong><span>Bản ghi có độ tin cậy &lt; 0.45 bị bỏ, và chỉ chấm phần lời có trong bản ghi. Tỉ lệ lỗi từ (WER) của STT tiếng Việt là 13,75% trên 99 câu của 3 người nói (giọng Nam qua điện thoại 8 kHz: 20%), nên chat vẫn là kênh đáng tin hơn.</span></div>
+        </div>
+        <div class="footer"><span>Chi tiết nằm ở bản đầy đủ (intervia-backend-overview.html)</span><span>15</span></div>
+      </div>
+    </section>
+
+    <!-- 16 -->
+    <section class="slide" data-title="Số liệu và giới hạn">
+      <div class="content">
+        <p class="eyebrow">SỐ LIỆU ĐÃ ĐO VÀ GIỚI HẠN</p>
+        <h2>Các con số đo trên bộ dữ liệu thử nghiệm, chưa đủ để kết luận cho môi trường thật</h2>
+        <div class="metrics">
+          <div class="metric"><h3>Bóc tách CV · 60 hồ sơ</h3><b>Macro F1 0,317</b><p>Câu trích hợp lệ 100%. Chưa đạt ngưỡng 0,50, cần cải thiện phần kỹ năng và chứng chỉ.</p></div>
+          <div class="metric"><h3>Bóc tách JD · 50 mô tả</h3><b>Macro 0,626</b><p>Câu trích hợp lệ 100%. F1 phần yêu cầu là 0,610.</p></div>
+          <div class="metric"><h3>Đối sánh · 60 trường hợp</h3><b>Accuracy 93,3%</b><p>Lớp "không đạt" chỉ có 3 mẫu (F1 = 0), dữ liệu chưa cân bằng.</p></div>
+          <div class="metric"><h3>STT tiếng Việt · thử</h3><b>WER 13,75%</b><p>99 câu, 3 người nói, cấu hình production. Bật danh sách thuật ngữ: 12,89%. Chưa đủ 300 câu, chưa chạy liên tục 24–48 giờ.</p></div>
+        </div>
+        <div class="grid2" style="margin-top:24px">
+          <div class="block orange">
+            <h3>Giới hạn đã biết</h3>
+            <ul>
+              <li>Chưa đo độ đồng thuận giữa điểm LLM và điểm người chấm.</li>
+              <li>Câu trích trong nhận xét chưa được kiểm tra tự động xem có nằm trong câu trả lời hay không.</li>
+              <li>Trọng số tiêu chí trong rubric (0.35 / 0.35 / 0.30) chưa được dùng để tính điểm; LLM cho một điểm tổng thể cho mỗi câu.</li>
+              <li>Chưa có môi trường chạy mã cách ly cho câu lập trình, chưa giám sát thi qua video.</li>
+            </ul>
+          </div>
+          <div class="block green">
+            <h3>Kết luận</h3>
+            <ul>
+              <li>Điểm đối sánh tính bằng luật và công thức; mỗi kết luận truy được về dữ kiện trong CV.</li>
+              <li>Số câu, thời gian và thứ tự hỏi tính bằng công thức, kiểm tra được bằng số học.</li>
+              <li>Điểm từng câu dựa trên rubric đã khóa; điểm tổng và xếp loại dựa trên trọng số cố định trong code.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer"><span>Khóa luận tốt nghiệp · INTERVIA</span><span>16</span></div>
+      </div>
+    </section>
+  </main>
+
+  <div class="controls" aria-label="Điều khiển slide">
+    <button id="prev" type="button" aria-label="Slide trước">‹</button>
+    <span id="counter">1 / 16</span>
+    <button id="next" type="button" aria-label="Slide tiếp theo">›</button>
+  </div>
+  <div class="progress" aria-hidden="true"><span id="bar"></span></div>
+
+  <script>
+    const slides = [...document.querySelectorAll('.slide')];
+    const counter = document.getElementById('counter');
+    const bar = document.getElementById('bar');
+    let current = Math.max(0, Math.min(slides.length - 1, Number(location.hash.slice(1)) - 1 || 0));
+
+    function fit() {
+      const scale = Math.min((innerWidth - 48) / 1280, (innerHeight - 48) / 720);
+      slides.forEach((slide) => { slide.style.transform = `scale(${Math.max(.2, scale)})`; });
+    }
+
+    function show(index) {
+      current = (index + slides.length) % slides.length;
+      slides.forEach((slide, i) => slide.classList.toggle('active', i === current));
+      counter.textContent = `${current + 1} / ${slides.length}`;
+      bar.style.width = `${((current + 1) / slides.length) * 100}%`;
+      document.title = `${slides[current].dataset.title} · INTERVIA`;
+      history.replaceState(null, '', `#${current + 1}`);
+      fit();
+    }
+
+    document.getElementById('prev').addEventListener('click', () => show(current - 1));
+    document.getElementById('next').addEventListener('click', () => show(current + 1));
+    addEventListener('keydown', (event) => {
+      if (['ArrowRight', 'PageDown', ' '].includes(event.key)) show(current + 1);
+      if (['ArrowLeft', 'PageUp'].includes(event.key)) show(current - 1);
+      if (event.key === 'Home') show(0);
+      if (event.key === 'End') show(slides.length - 1);
+    });
+    addEventListener('resize', fit);
+    show(current);
+  </script>
+</body>
+</html>
