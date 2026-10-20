@@ -694,7 +694,9 @@ def assemble_pipeline(
             last_message=last_message,
             now=now,
         ),
-        "timing": timing(session, now=now),
+        # No message yet: the opening question has not been asked, so the clock
+        # has not started (started_at is still the row's creation time).
+        "timing": timing(session if last_message else {**session, "startedAt": None}, now=now),
         "currentTurnIndex": asked.get("turnIndex") if asked else None,
         "turnCounts": {"total": len(turn_rows), "warmup": warmup, "main": len(turn_rows) - warmup},
         "voice": voice_summary(events),
