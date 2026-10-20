@@ -107,3 +107,70 @@ def test_live_errors_sum_and_list_sessions():
     alert = board.build_alerts(**empty(live_errors=rows))[0]
     assert alert["kind"] == "live_errors" and alert["count"] == 3
     assert [s["candidate"] for s in alert["sessions"]] == ["a@x", "B"]
+
+
+def _live(sid, step, *, errors=0, started="2026-10-20T01:00:00+00:00", name=None, **step_extra):
+    return {
+        "id": sid,
+        "candidateName": name or sid,
+        "candidateEmail": f"{sid}@x.test",
+        "jobTitle": "Backend",
+        "startedAt": started,
+        "errors": errors,
+        "step": {"step": step, **step_extra},
+    }
+
+
+def test_board_page_counts_every_session_and_pages_the_filtered_ones():
+    from datetime import UTC, datetime
+
+    now = datetime(2026, 10, 20, 2, 0, tzinfo=UTC)
+    sessions = [
+        _live("a", "interviewing", state="ai_speaking", since="2026-10-20T01:59:55+00:00"),
+        _live("b", "interviewing", state="candidate_away", since="2026-10-20T01:59:00+00:00"),
+        _live("c", "planning"),
+        _live("d", "grading", errors=2),
+        _live("e", "finished"),
+        _live("f", "interviewing", state="waiting_answer", since="2026-10-20T01:50:00+00:00"),
+    ]
+    page = board.board_page(sessions, limit=2, now=now)
+    assert page["counts"] == {
+        "all": 5,
+        "attention": 3,
+        "interviewing": 3,
+        "preparing": 1,
+        "grading": 1,
+        "finished": 1,
+    }
+    # "all" leaves out the session that ended normally (e).
+    assert page["total"] == 5
+    # Attention first (b, f live rooms before the grading one d), then live, preparing.
+    assert [s["id"] for s in page["sessions"]] == ["b", "f"]
+    rest = board.board_page(sessions, limit=10, offset=2, now=now)
+    assert [s["id"] for s in rest["sessions"]] == ["d", "a", "c"]
+    finished = board.board_page(sessions, group="finished", now=now)
+    assert [s["id"] for s in finished["sessions"]] == ["e"]
+
+    only_live = board.board_page(sessions, group="interviewing", now=now)
+    assert {s["id"] for s in only_live["sessions"]} == {"a", "b", "f"}
+    assert only_live["counts"]["all"] == 5
+
+    searched = board.board_page(sessions, q="C@X", now=now)
+    assert [s["id"] for s in searched["sessions"]] == ["c"]
+
+
+def test_an_abnormal_end_stays_in_all_under_attention():
+    broken = _live("x", "finished", endReason="TECHNICAL_FAILURE", started="2026-10-20T01:00:00+00:00")
+    left = _live("z", "finished", endReason="CANDIDATE_LEFT", started="2026-10-20T01:30:00+00:00")
+    done = _live("y", "finished", endReason="COMPLETED")
+    page = board.board_page([broken, left, done])
+    assert page["counts"]["all"] == 2
+    assert page["counts"]["attention"] == 2
+    assert page["counts"]["finished"] == 3
+    assert [s["id"] for s in page["sessions"]] == ["x", "z"]
+
+
+def test_board_page_clamps_the_page_size():
+    page = board.board_page([_live(str(i), "planning") for i in range(500)], limit=10_000)
+    assert page["limit"] == board.LIVE_PAGE_MAX
+    assert len(page["sessions"]) == board.LIVE_PAGE_MAX
