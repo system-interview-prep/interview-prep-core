@@ -15,7 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
 from src.core.security import bearer_scheme, current_user
+from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
+from src.modules.interviews.adapters.voice.voice_events import VOICE_EVENTS, sanitize_fields
 from src.modules.interviews.api.rate_limit import interview_rate_limiter
 from src.modules.interviews.application.facade import (
     ChatRuntimeError,
@@ -43,6 +45,16 @@ class VoiceRuntimeMessage(BaseModel):
     telemetry: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"populate_by_name": True}
+
+
+class VoiceRuntimeEvent(BaseModel):
+    event: str = Field(min_length=1, max_length=64)
+    at: datetime | None = None
+    fields: dict[str, Any] = Field(default_factory=dict)
+
+
+class VoiceRuntimeEvents(BaseModel):
+    events: list[VoiceRuntimeEvent] = Field(default_factory=list, max_length=50)
 
 
 class LabSpeechRequest(LabSessionRequest):
@@ -256,6 +268,47 @@ async def send_livekit_runtime_message(
     except ChatRuntimeError as exc:
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/livekit/runtime/events", status_code=202)
+async def record_livekit_runtime_events(
+    payload: VoiceRuntimeEvents,
+    claims: dict[str, str] = Depends(_voice_runtime_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Voice-room state and incidents from the LiveKit agent, for the admin view.
+
+    The session comes from the runtime credential, never from the body. Events
+    are attached to the question being asked and stored like any other
+    interview event; unknown names and anything that is not a number, flag or
+    short code are dropped (adapters/voice/voice_events.py).
+    """
+    session_id = claims["session_id"]
+    accepted = [item for item in payload.events if item.event in VOICE_EVENTS]
+    if not accepted:
+        return {"accepted": 0}
+    turn_index = (
+        await db.execute(
+            text(
+                "SELECT turn_index FROM interview_turns WHERE session_id = :sid AND status = 'ASKED' "
+                "ORDER BY turn_index LIMIT 1"
+            ),
+            {"sid": session_id},
+        )
+    ).scalar_one_or_none()
+    for item in accepted:
+        fields = sanitize_fields(item.fields)
+        fields.pop("session_id", None)
+        fields.pop("turn_index", None)
+        trace_event(
+            "voice",
+            item.event,
+            session_id=session_id,
+            turn_index=turn_index,
+            agent_at=item.at.isoformat() if item.at else None,
+            **fields,
+        )
+    return {"accepted": len(accepted)}
 
 
 @router.post("/livekit-token")
