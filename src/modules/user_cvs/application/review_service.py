@@ -1,5 +1,6 @@
 from typing import Protocol
 
+from src.modules.user_cvs.application import run_tracking
 from src.modules.user_cvs.domain.models import CvRecord
 from src.modules.user_cvs.domain.schemas import CanonicalResume, ParserWarning
 
@@ -81,11 +82,20 @@ class CvReviewService:
     async def reparse(self, user_id: str, cv_id: str) -> None:
         if not await self._repository.queue_reparse_owned(user_id, cv_id):
             raise CvReviewNotFoundError
-        try:
-            self._publisher.publish(cv_id)
-        except Exception as exc:
-            await self._repository.mark_dispatch_failed(cv_id, str(exc)[:1000])
-            raise CvReviewConflictError("CV parsing queue is unavailable") from exc
+        with run_tracking.cv_run(cv_id, user_id=user_id):
+            try:
+                self._publisher.publish(cv_id)
+            except Exception as exc:
+                await self._repository.mark_dispatch_failed(cv_id, str(exc)[:1000])
+                run_tracking.emit(
+                    "cv_dispatch_failed",
+                    workflow=run_tracking.UPLOAD_WORKFLOW,
+                    error_type=type(exc).__name__,
+                    reason="dispatch_failed",
+                    reparse=True,
+                )
+                raise CvReviewConflictError("CV parsing queue is unavailable") from exc
+            run_tracking.emit("cv_enqueued", workflow=run_tracking.UPLOAD_WORKFLOW, reparse=True)
 
     async def _record(self, user_id: str, cv_id: str) -> CvRecord:
         record = await self._repository.get_owned(user_id, cv_id)
