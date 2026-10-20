@@ -32,12 +32,15 @@ try:
     from .answer_window import (
         PROCESSING_FILLER_SECONDS,
         AnswerWindow,
+        backchannel_continue_text,
+        core_error_text,
         not_heard_lines,
         processing_filler,
         processing_fillers,
         reprompt_after_seconds,
         silence_reprompt,
         turn_taking_tip,
+        unclear_transcript_text,
     )
     from .health import provider_error_payload, provider_recovered_payload
     from .interruption import (
@@ -61,12 +64,15 @@ except ImportError:  # Executed directly by the API's LiveKit subprocess.
     from answer_window import (  # type: ignore[no-redef]
         PROCESSING_FILLER_SECONDS,
         AnswerWindow,
+        backchannel_continue_text,
+        core_error_text,
         not_heard_lines,
         processing_filler,
         processing_fillers,
         reprompt_after_seconds,
         silence_reprompt,
         turn_taking_tip,
+        unclear_transcript_text,
     )
     from health import provider_error_payload, provider_recovered_payload  # type: ignore[no-redef]
     from interruption import (  # type: ignore[no-redef]
@@ -324,20 +330,10 @@ class VoiceLabAgent(Agent):
         return lines[(self._not_heard_count - 1) % len(lines)]
 
     def _core_error_text(self) -> str:
-        if self._locale.lower().startswith("vi"):
-            return "Hiện tại mình chưa xử lý được câu trả lời. Bạn vui lòng thử lại nhé."
-        return "I could not process that answer. Please try again."
+        return core_error_text(self._locale)
 
     def _unclear_transcript_text(self) -> str:
-        if self._locale.lower().startswith("vi"):
-            return (
-                "Mình nghe chưa đủ rõ nên chưa ghi nhận câu này. "
-                "Bạn vui lòng nói lại chậm và gần micro hơn nhé."
-            )
-        return (
-            "I could not hear that clearly enough to record it. "
-            "Please speak again, a little slower and closer to the microphone."
-        )
+        return unclear_transcript_text(self._locale)
 
     async def _commit_answer(self) -> None:
         """Submit the buffered answer to Interview Core and speak its reply."""
@@ -701,9 +697,7 @@ class VoiceLabAgent(Agent):
                 self._schedule_commit(self._answer.commit_delay())
                 return
             self.speak(
-                "Vâng, bạn cứ tiếp tục nhé."
-                if self._locale.lower().startswith("vi")
-                else "Sure, go ahead.",
+                backchannel_continue_text(self._locale),
                 allow_interruptions=True,
                 add_to_chat_ctx=False,
             )
