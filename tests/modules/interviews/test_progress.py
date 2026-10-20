@@ -314,3 +314,114 @@ def test_calibration_measurements() -> None:
     assert tier_offsets(points) == {}
     gsd, n = grading_sd([[6.0, 7.0, 6.5], [4.0, 4.0]])
     assert n == 2 and gsd is not None and 0 < gsd < 1
+
+
+# --- Tên kỹ năng ứng viên hiểu được (20/10 chiều) -------------------------------
+
+
+def test_skills_use_candidate_names_areas_and_hide_the_greeting() -> None:
+    from src.modules.interviews.application.skill_display import GENERAL_NAME
+
+    sessions = [_session(1)]
+    turns = [
+        TurnRow("s1", "WARM_UP", "warmup", "Giới thiệu & Khởi động", None, 8.0, "ANSWERED"),
+        TurnRow("s1", "VALIDATE", "cv-validation", "Xác thực CV & Dự án", None, 6.0, "ANSWERED"),
+        TurnRow("s1", "BEHAVIORAL", "soft-skill.star", "Kỹ năng mềm & Tình huống (STAR)", None, 7.0,
+                "ANSWERED"),
+        TurnRow("s1", "DEEP_DIVE", "technology.software-engineering.backend", "Backend Engineering", None,
+                5.0, "ANSWERED"),
+        TurnRow("s1", "DEEP_DIVE", "skill-redis", "Redis", None, 6.5, "ANSWERED"),
+        TurnRow("s1", "DEEP_DIVE", "skill-container-orchestrator", "Kubernetes or Docker Swarm", None, 4.0,
+                "ANSWERED"),
+    ]
+    skills = {s["label"]: s for s in build_progress(sessions, turns, now=NOW)["skills"]}
+    assert "Giới thiệu & Khởi động" not in skills
+    assert skills["Kể về dự án trong CV"]["area"] == "project"
+    assert skills["Kể kinh nghiệm làm việc và xử lý tình huống"]["area"] == "teamwork"
+    assert skills[GENERAL_NAME]["area"] == "general"
+    assert skills["Redis"]["area"] == "data"
+    orchestrator = skills["Điều phối container (Kubernetes, Docker Swarm)"]
+    assert orchestrator["area"] == "infra" and orchestrator["taxonomyLabel"] == "Kubernetes or Docker Swarm"
+
+
+def test_each_skill_lists_its_recent_questions_and_missed_points() -> None:
+    sessions = [_session(1), _session(2)]
+    points = [
+        {"importance": "CORE", "status": "COVERED", "description": "Nêu TTL cho key"},
+        {"importance": "CORE", "status": "MISSING", "description": "Xử lý cache stampede"},
+        {"importance": "CORE", "status": "INCORRECT", "description": "Phân biệt write-through và write-back"},
+        {"importance": "BONUS", "status": "MISSING", "description": "Đo hit rate"},
+    ]
+    turns = [
+        TurnRow("s1", "DEEP_DIVE", "skill-redis", "Redis", None, 5.0, "ANSWERED",
+                question="Bạn dùng Redis làm gì?"),
+        TurnRow("s2", "DEEP_DIVE", "skill-redis", "Redis", None, 6.0, "ANSWERED", rubric_points=points,
+                question="Khi cache hết hạn cùng lúc thì sao?"),
+    ]
+    redis = build_progress(sessions, turns, now=NOW)["skills"][0]
+    latest = redis["recentQuestions"][0]
+    assert latest["question"] == "Khi cache hết hạn cùng lúc thì sao?" and latest["sessionId"] == "s2"
+    missed = [m["point"] for m in latest["missing"]]
+    assert missed == ["Xử lý cache stampede", "Phân biệt write-through và write-back"]
+    assert redis["recentQuestions"][1]["missing"] == []
+    assert latest["checked"] is True
+    # No checklist was recorded: the page must not claim every point was covered.
+    assert redis["recentQuestions"][1]["checked"] is False
+
+
+def test_a_story_question_lists_the_star_parts_it_left_out() -> None:
+    turns = [
+        TurnRow("s1", "BEHAVIORAL", "soft-skill.star", "STAR", None, 6.0, "ANSWERED",
+                star={"situation": "dự án gấp", "task": "", "action": "chia việc", "result": ""},
+                question="Kể về lần bạn bất đồng với đồng nghiệp."),
+    ]
+    story = build_progress([_session(1)], turns, now=NOW)["skills"][0]
+    asked = story["recentQuestions"][0]
+    assert asked["checked"] is True
+    assert [m["point"] for m in asked["missing"]] == ["Nhiệm vụ của bạn", "Kết quả (tốt nhất có số liệu)"]
+
+
+def test_gap_notebook_follows_a_point_across_sessions() -> None:
+    def pts(stampede: str, ttl: str) -> list[dict[str, str]]:
+        return [
+            {"importance": "CORE", "status": stampede, "description": "Xử lý cache stampede"},
+            {"importance": "CORE", "status": ttl, "description": "Nêu TTL cho key"},
+        ]
+
+    sessions = [_session(1), _session(2), _session(3)]
+    turns = [
+        TurnRow("s1", "DEEP_DIVE", "skill-redis", "Redis", None, 4.0, "ANSWERED", rubric_points=pts("MISSING", "MISSING")),
+        TurnRow("s2", "DEEP_DIVE", "skill-redis", "Redis", None, 5.0, "ANSWERED", rubric_points=pts("PARTIAL", "COVERED")),
+        TurnRow("s3", "DEEP_DIVE", "skill-redis", "Redis", None, 6.0, "ANSWERED", rubric_points=pts("MISSING", "COVERED"),
+                question="Cache hết hạn cùng lúc thì sao?"),
+        # XML is no longer asked on its own: kept out of the notebook.
+        TurnRow("s3", "DEEP_DIVE", "skill-xml", "XML", None, 1.0, "ANSWERED",
+                rubric_points=[{"importance": "CORE", "status": "MISSING", "description": "XSD"}]),
+    ]
+    progress = build_progress(sessions, turns, now=NOW)
+    gaps = progress["gaps"]
+    assert [g["point"] for g in gaps["open"]] == ["Xử lý cache stampede"]
+    stampede = gaps["open"][0]
+    assert (stampede["timesMissed"], stampede["timesAsked"]) == (3, 3)
+    assert stampede["lastSeen"]["sessionId"] == "s3" and stampede["area"] == "data"
+    assert [g["point"] for g in gaps["fixed"]] == ["Nêu TTL cho key"]
+    assert next(s for s in progress["skills"] if s["conceptId"] == "skill-xml")["minor"] is True
+
+
+def test_readiness_is_shown_by_interview_round() -> None:
+    sessions = [_session(1), _session(2), _session(3)]
+    turns = []
+    for sid, sql, redis in (("s1", 6.0, 5.0), ("s2", 7.5, 5.5), ("s3", 8.0, 6.0)):
+        turns.append(TurnRow(sid, "DEEP_DIVE", "skill-sql", "SQL", None, sql, "ANSWERED"))
+        turns.append(TurnRow(sid, "DEEP_DIVE", "skill-redis", "Redis", None, redis, "ANSWERED"))
+    turns.append(TurnRow("s3", "DEEP_DIVE", "skill-docker", "Docker", None, 4.0, "ANSWERED",
+                         rubric_points=[{"importance": "CORE", "status": "MISSING", "description": "Multi-stage build"}]))
+    turns.append(TurnRow("s3", "DEEP_DIVE", "skill-xml", "XML", None, 0.3, "ANSWERED"))
+    progress = build_progress(sessions, turns, now=NOW)
+    rounds = {r["area"]: r for r in progress["readiness"][0]["rounds"]}
+    # XML is not a round of its own any more; project and teamwork are always listed.
+    assert set(rounds) == {"project", "data", "infra", "teamwork"}
+    assert rounds["data"]["sessions"] == 3 and rounds["data"]["status"] in {"almost", "ready"}
+    assert rounds["infra"]["status"] == "thin"
+    assert rounds["infra"]["topGap"]["point"] == "Multi-stage build"
+    assert rounds["project"]["status"] == "unseen"
