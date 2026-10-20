@@ -679,9 +679,9 @@ def candidate_question_response(
             )
         elif intent == "PROCESS":
             answer = (
-                f"Buổi phỏng vấn dự kiến kéo dài khoảng {duration_minutes} phút và đi lần lượt qua "
-                "các giai đoạn hiển thị trong phòng. Bạn cứ đề nghị nếu muốn mình nhắc lại, giải "
-                "thích thêm hay đổi câu; muốn dừng thì bấm “Kết thúc”."
+                f"Buổi phỏng vấn dự kiến kéo dài khoảng {duration_minutes} phút, lần lượt qua các "
+                "phần: mở đầu, CV, chuyên môn, tình huống, hành vi và hỏi đáp. Bạn cứ đề nghị nếu "
+                "muốn mình nhắc lại, giải thích thêm hay đổi câu; muốn dừng thì bấm “Kết thúc”."
             )
         elif intent == "ROLE_QA":
             answer = "Câu này mình xin để dành đến phần Hỏi đáp cuối buổi."
@@ -712,9 +712,9 @@ def candidate_question_response(
         )
     elif intent == "PROCESS":
         answer = (
-            f"The interview is expected to take about {duration_minutes} minutes and follows the "
-            "stages shown in the room. Just ask if you want a question repeated, explained or "
-            "swapped; to stop, press “End”."
+            f"The interview is expected to take about {duration_minutes} minutes and goes through "
+            "an opening, your CV, technical questions, a scenario, behavioural questions and a Q&A. "
+            "Just ask if you want a question repeated, explained or swapped; to stop, press “End”."
         )
     elif intent == "ROLE_QA":
         answer = "Let's keep that for the Q&A at the end."
