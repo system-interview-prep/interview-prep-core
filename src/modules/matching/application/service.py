@@ -1,7 +1,9 @@
 import time
 
 from src.core.trace_logging import trace_event
+from src.modules.matching.application import run_tracking
 from src.modules.matching.application.facade import get_matching_facade
+from src.modules.matching.application.match_cache import cached_match
 from src.modules.matching.domain.schemas import MatchRequest, MatchResult
 
 
@@ -10,7 +12,8 @@ async def run_match(payload: MatchRequest) -> MatchResult:
     started_at = time.monotonic()
     trace_event("matching", "started", resume_id=payload.resume.resume_id, job_id=payload.job.job_id)
     try:
-        result = await get_matching_facade().match_async(payload)
+        # Same cache as the interview planner, so the page and the plan agree.
+        result = await cached_match(payload, get_matching_facade().match_async)
     except Exception as exc:
         trace_event(
             "matching",
@@ -20,6 +23,7 @@ async def run_match(payload: MatchRequest) -> MatchResult:
             error_type=type(exc).__name__,
             duration_ms=round((time.monotonic() - started_at) * 1000),
         )
+        run_tracking.emit_match_failed(exc)
         raise
     trace_event(
         "matching",
@@ -36,4 +40,5 @@ async def run_match(payload: MatchRequest) -> MatchResult:
         warnings=result.warnings,
         duration_ms=round((time.monotonic() - started_at) * 1000),
     )
+    run_tracking.emit_match_completed(result)
     return result
