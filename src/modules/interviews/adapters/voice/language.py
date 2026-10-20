@@ -156,6 +156,9 @@ def _spoken_layout(text_value: str, locale: str) -> str:
     spoken = re.sub(r"([^\s.!?…:;,])\s*\n+\s*", r"\1. ", spoken)
     spoken = re.sub(r"\s*\n+\s*", " ", spoken)
     spoken = spoken.replace("→", ", ").replace("·", ", ")
+    # Tên nút viết trong “ ” ở kịch bản chung; đọc lên thì bỏ ngoặc, " & " đứng riêng thành "và".
+    spoken = re.sub(r"[“”\"]", "", spoken)
+    spoken = re.sub(r"\s+&\s+", " và " if is_vi else " and ", spoken)
     if is_vi:
         spoken = re.sub(r"(\d)\s*′", r"\1 phút", spoken)
         spoken = re.sub(r"(\d)\s*″", r"\1 giây", spoken)
