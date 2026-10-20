@@ -12,8 +12,19 @@ nhắn), không gọi AI. Nguyên tắc (nghiên cứu ngày 19/10,
     lên mức là một mốc tiến bộ, không phải tụt điểm;
   - **cách trả lời**: tỉ lệ câu đủ ý ngay lần đầu, số lần phải hỏi thêm, số câu
     bỏ qua; không phụ thuộc vị trí.
-* **Chống hiểu nhầm do AI chấm dao động.** Xu hướng chỉ có khi đủ 3 điểm dữ liệu,
-  so trung bình 3 lần gần nhất với 3 lần đầu, chênh dưới 0,5 điểm là "tương đương".
+* **Chống hiểu nhầm do điểm dao động** (nghiên cứu 20/10, PROGRESS_EVIDENCE_RESEARCH).
+  Xu hướng cần đủ 3 điểm; so trung bình tối đa 3 lần gần nhất với 3 lần đầu, và chỉ
+  gọi là "đang tốt lên" khi xác suất thay đổi thật vượt "thay đổi nhỏ nhất có ý
+  nghĩa" từ 80% trở lên, tính từ độ nhiễu đo được (``progress_calibration``). Chỉ so
+  trong cùng mức luyện (hoặc sau khi quy đổi theo độ chênh giữa các mức đã đo) và
+  trong cùng phiên bản cách chấm.
+* **Bằng chứng cụ thể hơn con số.** Mỗi buổi kèm số đếm từ checklist chấm điểm:
+  ý chính đã nêu, câu có ý sai, câu đủ STAR, câu có kết quả đo được, câu phải hỏi
+  thêm và câu bổ sung đủ sau khi được hỏi thêm. Trang so các tỉ lệ này giữa những
+  câu đầu và những câu gần nhất.
+* **Cấp độ có độ trễ.** Mỗi kỹ năng có một đường ước lượng làm mượt (bộ lọc Kalman)
+  và một cấp độ có mô tả; cấp chỉ đổi khi ước lượng vượt ngưỡng một khoảng, để một
+  buổi kém không làm tụt cấp.
 * **Chuỗi theo tuần, không theo ngày.** Một buổi dài khoảng 25 phút, nên chuỗi ngày
   quá nặng và dễ đứt (đứt chuỗi làm mất động lực). Đạt mục tiêu tuần thì chuỗi
   +1 tuần; mỗi tháng có một lần giữ chuỗi khi lỡ một tuần.
@@ -22,6 +33,8 @@ nhắn), không gọi AI. Nguyên tắc (nghiên cứu ngày 19/10,
 from __future__ import annotations
 
 import json
+import math
+import re
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -31,12 +44,13 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.modules.interviews.application.progress_calibration import Calibration, load_calibration
+
 DEFAULT_WEEKLY_GOAL = 2
 WEEKLY_GOAL_RANGE = (1, 7)
 TREND_MIN_POINTS = 3
 TREND_WINDOW = 3
 FLAT_DELTA = 0.5
-SKILL_MILESTONE_SCORE = 7.0
 STREAK_HISTORY_WEEKS = 8
 # Computed on request from raw rows. About 10 graded turns per session, so 1000
 # sessions is about 10k rows: fine today. Past that, keep a per-session summary
@@ -44,6 +58,20 @@ STREAK_HISTORY_WEEKS = 8
 MAX_SESSIONS = 1000
 _TIER_RANK = {"basic": 0, "standard": 1, "challenge": 2}
 _TECHNICAL_STAGES = {"VALIDATE", "DEEP_DIVE", "CHALLENGE"}
+# Experience questions, where a STAR answer (situation, task, action, result) is expected.
+_STAR_STAGES = {"VALIDATE", "BEHAVIORAL"}
+# "Đang tốt lên" only when the chance of a real change beyond the smallest
+# worthwhile change is at least this (Hopkins: 80% for individual decisions).
+TREND_PROBABILITY = 0.8
+# A probed answer counts as recovered when this share of its core points ended up covered.
+RECOVERED_COVERAGE = 0.75
+# Skill levels: lower edges of levels 1..4 on the 0-10 scale; level 0 below the first.
+LEVEL_EDGES = (4.0, 5.5, 7.0, 8.5)
+# The estimate must pass an edge by this much to change level (hysteresis).
+LEVEL_MARGIN = 0.3
+# How much a skill can really change between two sessions (Kalman process noise, SD).
+PROCESS_SD = 0.35
+_NUMBER = re.compile(r"\d")
 
 
 @dataclass
@@ -57,6 +85,7 @@ class SessionRow:
     difficulty: str | None = None
     resume_id: str | None = None
     resume_name: str | None = None
+    grader_version: str | None = None
 
 
 @dataclass
@@ -71,6 +100,10 @@ class TurnRow:
     needed_probe: bool = False
     order: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
+    # Checklist verdicts {key, importance, status, quote}; empty for holistic grading.
+    rubric_points: list[dict[str, Any]] = field(default_factory=list)
+    # STAR analysis of the grader: {situation, task, action, result, is_star_complete}.
+    star: dict[str, Any] = field(default_factory=dict)
 
 
 def _iso(value: datetime) -> str:
@@ -81,8 +114,113 @@ def _round(value: float | None, digits: int = 1) -> float | None:
     return None if value is None else round(float(value), digits)
 
 
+def _phi(x: float) -> float:
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def reliable_trend(values: list[float], calibration: Calibration) -> dict[str, Any]:
+    """Trend of a skill's session scores that accounts for their noise.
+
+    Compares the mean of the latest ``w`` points with the first ``w`` (w = up to
+    3). The change counts as up (down) when the probability that the true change
+    exceeds the smallest worthwhile change is at least ``TREND_PROBABILITY``,
+    given the measured typical error of one session (Hopkins).
+    """
+    if len(values) < TREND_MIN_POINTS:
+        return {"status": "insufficient", "delta": None, "probability": None}
+    window = min(TREND_WINDOW, len(values) // 2 or 1)
+    delta = statistics.mean(values[-window:]) - statistics.mean(values[:window])
+    se = calibration.typical_error * math.sqrt(2.0 / window)
+    swc = calibration.swc
+    p_up = _phi((delta - swc) / se)
+    p_down = _phi((-delta - swc) / se)
+    status = "up" if p_up >= TREND_PROBABILITY else "down" if p_down >= TREND_PROBABILITY else "flat"
+    return {
+        "status": status,
+        "delta": round(delta, 1),
+        "probability": round(p_up if delta >= 0 else p_down, 2),
+    }
+
+
+def kalman_estimates(values: list[float], calibration: Calibration) -> list[tuple[float, float]]:
+    """(estimate, sd) after each point: a local-level filter, started at the first point.
+
+    Observation noise is the typical error of one session; the skill may drift
+    by ``PROCESS_SD`` between sessions. The first point sets the start, so the
+    line is not pulled toward a cohort mean the candidate has never been near.
+    """
+    r = calibration.typical_error**2
+    q = PROCESS_SD**2
+    out: list[tuple[float, float]] = []
+    mean, var = 0.0, 0.0
+    for index, value in enumerate(values):
+        if index == 0:
+            mean, var = value, r
+        else:
+            var += q
+            gain = var / (var + r)
+            mean += gain * (value - mean)
+            var *= 1 - gain
+        out.append((round(mean, 2), round(math.sqrt(var), 2)))
+    return out
+
+
+def _band(value: float) -> int:
+    return sum(1 for edge in LEVEL_EDGES if value >= edge)
+
+
+def skill_levels(estimates: list[float]) -> tuple[int, list[tuple[int, int, int]]]:
+    """Current level and (index, from, to) changes, with hysteresis around the edges."""
+    if not estimates:
+        return 0, []
+    level = _band(estimates[0])
+    changes: list[tuple[int, int, int]] = []
+    for index, value in enumerate(estimates[1:], start=1):
+        new = level
+        while new < len(LEVEL_EDGES) and value >= LEVEL_EDGES[new] + LEVEL_MARGIN:
+            new += 1
+        while new > 0 and value < LEVEL_EDGES[new - 1] - LEVEL_MARGIN:
+            new -= 1
+        if new != level:
+            changes.append((index, level, new))
+            level = new
+    return level, changes
+
+
+def _comparable(points: list[dict[str, Any]], calibration: Calibration) -> list[dict[str, Any]]:
+    """Points that can be compared with the latest one.
+
+    Same practice tier unless tier offsets were measured (then scores are moved
+    onto the at-level scale), and the same grader version (no version recorded
+    means an older evaluation and is kept).
+    """
+    if not points:
+        return []
+    latest = points[-1]
+    versions = [p.get("graderVersion") for p in points if p.get("graderVersion")]
+    current_version = versions[-1] if versions else None
+    out = []
+    for point in points:
+        if current_version and point.get("graderVersion") and point["graderVersion"] != current_version:
+            continue
+        if not calibration.tier_adjusted and point.get("tier") != latest.get("tier"):
+            continue
+        out.append(point)
+    return out
+
+
+def _adjusted(point: dict[str, Any], calibration: Calibration) -> float:
+    if not calibration.tier_adjusted:
+        return float(point["score"])
+    return float(point["score"]) + calibration.offset(point.get("tier") or "standard")
+
+
 def trend(values: list[float]) -> dict[str, Any]:
-    """{status, delta}: up / down / flat, or insufficient below 3 points."""
+    """{status, delta}: up / down / flat, or insufficient below 3 points.
+
+    Fixed 0.5 band, kept for counts and rates (skipped questions, first-time
+    sufficient rate); scores use ``reliable_trend``.
+    """
     if len(values) < TREND_MIN_POINTS:
         return {"status": "insufficient", "delta": None}
     window = min(TREND_WINDOW, len(values) // 2 or 1)
@@ -169,18 +307,55 @@ def skill_key(concept_id: str | None, label: str | None) -> str | None:
     return f"label:{normalized}" if normalized else None
 
 
+def _core_coverage(turn: TurnRow) -> tuple[float, int, bool, bool]:
+    """(covered core points, core points, every core point covered, any point stated wrongly)."""
+    core = [p for p in turn.rubric_points if str(p.get("importance") or "CORE").upper() != "BONUS"]
+    covered = sum(
+        1.0 if p.get("status") == "COVERED" else 0.5 if p.get("status") == "PARTIAL" else 0.0 for p in core
+    )
+    full = bool(core) and all(p.get("status") == "COVERED" for p in core)
+    incorrect = any(p.get("status") == "INCORRECT" for p in turn.rubric_points)
+    return covered, len(core), full, incorrect
+
+
 def _session_behavior(turns: list[TurnRow]) -> dict[str, Any]:
+    """How the candidate answered: counts the progress page turns into before/now rates."""
     technical = [t for t in turns if t.stage in _TECHNICAL_STAGES]
     answered = [t for t in technical if t.outcome == "ANSWERED"]
     skipped = [t for t in technical if t.outcome == "SKIPPED"]
     first_time = [t for t in answered if not t.needed_probe]
+    probed = [t for t in answered if t.needed_probe]
+    assessed = [t for t in turns if t.outcome == "ANSWERED" and t.stage not in {"WARM_UP", "CLOSING", ""}]
+    checklist = [t for t in assessed if t.rubric_points]
+    core_covered, core_total, full_core, incorrect = 0.0, 0, 0, 0
+    for turn in checklist:
+        covered, total, full, wrong = _core_coverage(turn)
+        core_covered += covered
+        core_total += total
+        full_core += int(full)
+        incorrect += int(wrong)
+    recovered = 0
+    for turn in probed:
+        covered, total, _, _ = _core_coverage(turn)
+        if total and covered / total >= RECOVERED_COVERAGE:
+            recovered += 1
+    star_turns = [t for t in assessed if t.stage in _STAR_STAGES and t.star]
     return {
         "technicalTurns": len(technical),
         "answeredTurns": len(answered),
         "firstTimeSufficient": len(first_time),
         "firstTimeSufficientRate": round(len(first_time) / len(answered), 2) if answered else None,
-        "probesNeeded": sum(1 for t in answered if t.needed_probe),
+        "probesNeeded": len(probed),
+        "recoveredAfterProbe": recovered,
         "skipped": len(skipped),
+        "checklistTurns": len(checklist),
+        "coreCovered": round(core_covered, 1),
+        "coreTotal": core_total,
+        "fullCoreTurns": full_core,
+        "incorrectTurns": incorrect,
+        "starTurns": len(star_turns),
+        "starComplete": sum(1 for t in star_turns if t.star.get("is_star_complete")),
+        "measurableResult": sum(1 for t in star_turns if _NUMBER.search(str(t.star.get("result") or ""))),
     }
 
 
@@ -192,8 +367,10 @@ def build_progress(
     tz_offset_minutes: int = 0,
     weekly_goal: int = DEFAULT_WEEKLY_GOAL,
     all_session_starts: list[datetime] | None = None,
+    calibration: Calibration | None = None,
 ) -> dict[str, Any]:
     """``sessions``: evaluated sessions, oldest first. ``turns``: their graded turns."""
+    calibration = calibration or Calibration()
     sessions = sorted(sessions, key=lambda s: s.started_at)
     turns_by_session: dict[str, list[TurnRow]] = defaultdict(list)
     for turn in turns:
@@ -214,6 +391,7 @@ def build_progress(
                 "difficulty": s.difficulty,
                 "resumeId": s.resume_id,
                 "resumeName": s.resume_name,
+                "graderVersion": s.grader_version,
                 "behavior": _session_behavior(turns_by_session.get(s.session_id, [])),
             }
         )
@@ -245,19 +423,11 @@ def build_progress(
                     "tier": s.tier,
                     "jobId": s.job_id,
                     "resumeId": s.resume_id,
+                    "graderVersion": s.grader_version,
                 }
             )
-    skills = [
-        {
-            "conceptId": concept_id,
-            "label": skill_labels.get(concept_id) or concept_id,
-            "points": points,
-            "latest": points[-1]["score"],
-            "best": max(p["score"] for p in points),
-            "trend": trend([p["score"] for p in points]),
-        }
-        for concept_id, points in skill_points.items()
-    ]
+    skills = [_skill_view(concept_id, skill_labels.get(concept_id) or concept_id, points, calibration)
+              for concept_id, points in skill_points.items()]
     skills.sort(key=lambda item: (-len(item["points"]), item["label"].casefold()))
 
     # Jobs: overall score per session of the same job, with the tier.
@@ -285,7 +455,9 @@ def build_progress(
                 "tierChanges": tier_changes,
                 "currentTier": points[-1]["tier"],
                 # A trend is only read within one tier: a harder tier lowers raw scores.
-                "trend": trend([p["score"] for p in points if p["tier"] == points[-1]["tier"]]),
+                "trend": reliable_trend(
+                    [p["score"] for p in points if p["tier"] == points[-1]["tier"]], calibration
+                ),
             }
         )
     jobs.sort(key=lambda item: item["points"][-1]["date"], reverse=True)  # most recently practised first
@@ -327,7 +499,52 @@ def build_progress(
         "jobs": jobs,
         "behavior": behavior,
         "milestones": milestones(session_items, skills),
-        "trendRule": {"minPoints": TREND_MIN_POINTS, "window": TREND_WINDOW, "flatDelta": FLAT_DELTA},
+        "trendRule": {
+            "minPoints": TREND_MIN_POINTS,
+            "window": TREND_WINDOW,
+            "flatDelta": FLAT_DELTA,
+            "probability": TREND_PROBABILITY,
+            "levelEdges": list(LEVEL_EDGES),
+            "levelMargin": LEVEL_MARGIN,
+            "processSd": PROCESS_SD,
+        },
+        "calibration": calibration.to_public(),
+    }
+
+
+def _skill_view(
+    concept_id: str, label: str, points: list[dict[str, Any]], calibration: Calibration
+) -> dict[str, Any]:
+    """A skill's points with its noise-aware trend, smoothed estimate and level."""
+    comparable = _comparable(points, calibration)
+    values = [_adjusted(p, calibration) for p in comparable]
+    estimates = kalman_estimates(values, calibration)
+    level, changes = skill_levels([mean for mean, _ in estimates])
+    by_session = {p["sessionId"]: estimate for p, estimate in zip(comparable, estimates, strict=True)}
+    for point in points:
+        estimate = by_session.get(point["sessionId"])
+        point["estimate"] = estimate[0] if estimate else None
+        point["estimateSd"] = estimate[1] if estimate else None
+    return {
+        "conceptId": concept_id,
+        "label": label,
+        "points": points,
+        "latest": points[-1]["score"],
+        "best": max(p["score"] for p in points),
+        "trend": reliable_trend(values, calibration),
+        "comparablePoints": len(comparable),
+        "estimate": estimates[-1][0] if estimates else None,
+        "estimateSd": estimates[-1][1] if estimates else None,
+        "level": level,
+        "levelEvents": [
+            {
+                "sessionId": comparable[index]["sessionId"],
+                "date": comparable[index]["date"],
+                "from": before,
+                "to": after,
+            }
+            for index, before, after in changes
+        ],
     }
 
 
@@ -367,12 +584,13 @@ def milestones(session_items: list[dict[str, Any]], skills: list[dict[str, Any]]
         if not seen_clean and behavior["technicalTurns"] >= 3 and behavior["skipped"] == 0:
             seen_clean = True
             out.append({"kind": "no_skip_session", "date": item["date"], "sessionId": item["sessionId"]})
+    # A skill's milestone is a level up of its smoothed estimate. A single
+    # session score passing 7/10 is not one: it was often noise (20/10).
     for skill in skills:
-        reached = next((p for p in skill["points"] if p["score"] >= SKILL_MILESTONE_SCORE), None)
-        # Only a real step up: the first session already at 7 is not a milestone.
-        if reached and reached is not skill["points"][0]:
-            out.append({"kind": "skill_reached", "date": reached["date"], "sessionId": reached["sessionId"],
-                        "skill": skill["label"], "score": reached["score"]})
+        for event in skill.get("levelEvents") or []:
+            if event["to"] > event["from"]:
+                out.append({"kind": "skill_level_up", "date": event["date"], "sessionId": event["sessionId"],
+                            "skill": skill["label"], "level": event["to"]})
     out.sort(key=lambda m: m["date"])
     return out
 
@@ -393,6 +611,9 @@ def compare_with_previous(progress: dict[str, Any], session_id: str) -> dict[str
     previous = (same_job or earlier)[-1]
     is_same_job = bool(same_job)
 
+    # One session against one: only a change beyond the typical error of a
+    # session reads as a change (a 0.5 band flagged noise as progress).
+    single_delta = float((progress.get("calibration") or {}).get("typicalError") or FLAT_DELTA)
     improved, focus = [], []
     for skill in progress["skills"]:
         by_session = {p["sessionId"]: p for p in skill["points"]}
@@ -404,9 +625,9 @@ def compare_with_previous(progress: dict[str, Any], session_id: str) -> dict[str
             continue
         delta = now_point["score"] - before[-1]["score"]
         entry = {"skill": skill["label"], "before": before[-1]["score"], "now": now_point["score"], "delta": round(delta, 1)}
-        if delta >= FLAT_DELTA:
+        if delta >= single_delta:
             improved.append(entry)
-        elif delta <= -FLAT_DELTA:
+        elif delta <= -single_delta:
             focus.append(entry)
     improved.sort(key=lambda e: -e["delta"])
     focus.sort(key=lambda e: e["delta"])
@@ -431,9 +652,15 @@ def compare_with_previous(progress: dict[str, Any], session_id: str) -> dict[str
             "delta": round(delta, 1),
             # Different tiers: the raw scores are not comparable.
             "comparable": current["tier"] == previous["tier"],
-            "status": "flat" if abs(delta) < FLAT_DELTA else ("up" if delta > 0 else "down"),
+            "status": "flat" if abs(delta) < single_delta else ("up" if delta > 0 else "down"),
         }
     cur_b, prev_b = current["behavior"], previous["behavior"]
+    level_changes = [
+        {"skill": skill["label"], "from": event["from"], "to": event["to"]}
+        for skill in progress["skills"]
+        for event in skill.get("levelEvents") or []
+        if event["sessionId"] == session_id
+    ]
     return {
         "sessionId": session_id,
         "previousSessionId": previous["sessionId"],
@@ -449,8 +676,42 @@ def compare_with_previous(progress: dict[str, Any], session_id: str) -> dict[str
                 "now": cur_b["firstTimeSufficientRate"],
             },
             "skipped": {"before": prev_b["skipped"], "now": cur_b["skipped"]},
+            "coreCoverage": {"before": _coverage(prev_b), "now": _coverage(cur_b)},
         },
+        "levelChanges": level_changes,
+        "firsts": session_firsts(items, index),
     }
+
+
+def _coverage(behavior: dict[str, Any]) -> float | None:
+    total = behavior.get("coreTotal") or 0
+    return round(behavior.get("coreCovered", 0) / total, 2) if total else None
+
+
+# What a session did for the first time, from its counts (the session recap card).
+_FIRSTS = (
+    ("full_core", "fullCoreTurns"),
+    ("star_complete", "starComplete"),
+    ("measurable_result", "measurableResult"),
+    ("recovered_after_probe", "recoveredAfterProbe"),
+)
+
+
+def session_firsts(items: list[dict[str, Any]], index: int) -> list[str]:
+    """Kinds of answer this session produced for the first time across the candidate's sessions."""
+    if index == 0:
+        return []
+    current = items[index]["behavior"]
+    earlier = [item["behavior"] for item in items[:index]]
+    out = [kind for kind, key in _FIRSTS if current.get(key) and not any(b.get(key) for b in earlier)]
+    if (
+        current.get("checklistTurns", 0) >= 3
+        and not current.get("incorrectTurns")
+        and all(b.get("incorrectTurns") for b in earlier if b.get("checklistTurns", 0) >= 3)
+        and any(b.get("checklistTurns", 0) >= 3 for b in earlier)
+    ):
+        out.append("no_incorrect")
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -506,13 +767,13 @@ async def load_progress(
                        s.resume_id, c.filename AS resume_name,
                        p.source_context->>'practiceTier' AS tier,
                        p.plan_payload->'difficulty'->>'level' AS difficulty,
-                       ev.id AS evaluation_id, ev.overall_score
+                       ev.id AS evaluation_id, ev.overall_score, ev.grader_version
                 FROM interview_sessions s
                 JOIN interview_session_plans p ON p.session_id = s.id
                 LEFT JOIN job_descriptions j ON j.id = s.job_id
                 LEFT JOIN user_cvs c ON c.id = s.resume_id
                 LEFT JOIN LATERAL (
-                    SELECT e.id, e.overall_score
+                    SELECT e.id, e.overall_score, e.grader_version
                     FROM interview_evaluations e
                     WHERE e.session_id = s.id
                     ORDER BY e.evaluated_at DESC
@@ -540,6 +801,7 @@ async def load_progress(
             difficulty=row["difficulty"],
             resume_id=str(row["resume_id"]) if row["resume_id"] else None,
             resume_name=row["resume_name"],
+            grader_version=row.get("grader_version"),
         )
         for row in evaluated
     ]
@@ -550,6 +812,7 @@ async def load_progress(
                 text(
                     """
                     SELECT t.session_id, t.turn_index, t.question_snapshot, te.score, te.outcome,
+                           te.rubric_points, te.star_analysis,
                            EXISTS (
                                SELECT 1 FROM interview_chat_messages m
                                WHERE m.turn_id = t.id AND m.message_type = 'PROBE'
@@ -577,6 +840,8 @@ async def load_progress(
                     outcome=str(row["outcome"] or "ANSWERED"),
                     needed_probe=bool(row["needed_probe"]),
                     order=int(row["turn_index"] or 0),
+                    rubric_points=[p for p in (_json(row.get("rubric_points")) or []) if isinstance(p, dict)],
+                    star=_json(row.get("star_analysis")) or {},
                 )
             )
     return build_progress(
@@ -586,4 +851,5 @@ async def load_progress(
         tz_offset_minutes=tz_offset_minutes,
         weekly_goal=await weekly_goal_for(db, user_id),
         all_session_starts=all_starts,
+        calibration=await load_calibration(db),
     )
