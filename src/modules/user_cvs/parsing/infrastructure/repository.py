@@ -20,7 +20,7 @@ class SqlAlchemyCvParseRepository:
                 # able to take it over, or the CV stays PARSING forever.
                 "WHERE id = :id AND (status IN ('PENDING', 'FAILED') "
                 "OR (status = 'PARSING' AND updated_at < now() - interval '15 minutes')) "
-                "RETURNING id, filename, storage_key, checksum"
+                "RETURNING id, filename, storage_key, checksum, user_id"
             ),
             {"id": cv_id},
         )
@@ -34,6 +34,7 @@ class SqlAlchemyCvParseRepository:
             filename=row["filename"],
             storage_key=row["storage_key"],
             checksum=row["checksum"],
+            user_id=(str(row["user_id"]) if row.get("user_id") else None),
         )
 
     async def complete(
