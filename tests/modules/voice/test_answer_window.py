@@ -55,5 +55,5 @@ def test_processing_filler_rotates_between_answers() -> None:
 
     lines = [processing_filler("vi-VN", i) for i in range(len(processing_fillers("vi-VN")))]
     assert len(set(lines)) == len(lines) >= 3
-    assert processing_filler("vi-VN") == "Mình đã ghi nhận. Chờ mình một chút nhé."
+    assert processing_filler("vi-VN") == "Ừm, chờ mình một chút nhé."
     assert processing_filler("en-US", 1) != processing_filler("en-US", 0)
