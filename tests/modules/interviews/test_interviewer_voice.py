@@ -314,13 +314,18 @@ def test_closing_lines_no_longer_praise_the_candidate() -> None:
     assert not any(is_evaluative(line) for line in CLOSE_COMPLETED_VI)
 
 
-def test_voice_opening_has_a_short_frame_before_the_first_question() -> None:
+def test_voice_opening_matches_the_chat_opening() -> None:
     question = warmup_question(is_vi=True, is_demo=False)
-    spoken = build_opening(
-        is_vi=True, mode="voice", duration_minutes=25, job_title="Backend", call_name="Hiền",
+    kwargs = dict(
+        is_vi=True, duration_minutes=25, job_title="Backend", call_name="Hiền",
         planned_stages=["WARM_UP", "DEEP_DIVE"], first_question=question,
     )
-    assert spoken == f"Chào Hiền. Hôm nay mình luyện phỏng vấn khoảng 25 phút. {question}"
+    spoken = build_opening(mode="voice", **kwargs)
+    assert spoken == build_opening(mode="text", **kwargs)
+    assert spoken == (
+        "Chào Hiền, mình là người phỏng vấn AI của Intervia. Hôm nay mình luyện phỏng vấn vị trí Backend, "
+        f"khoảng 25 phút. Mình sẽ hỏi về chuyên môn. Mình bắt đầu nhé.\n\n{question}"
+    )
 
 
 # --- Vòng 2 (sau đo 17/10): câu ghi nhận ngắn, không tóm tắt bài, không đáp lời chèn lệnh ----
@@ -595,17 +600,22 @@ async def test_lecturing_clarify_falls_back_to_restating_the_question() -> None:
     assert "hãy" not in text and "Kể một lần bạn bất đồng trong team?" in text
 
 
-def test_spoken_abort_confirmation_does_not_read_button_labels() -> None:
+def test_abort_confirmation_names_the_buttons_of_both_rooms() -> None:
+    from src.modules.interviews.adapters.voice.language import speakable_text
     from src.modules.interviews.core.interviewer_voice import abort_confirmation
 
-    spoken = abort_confirmation(True, spoken=True)
+    text = abort_confirmation(True)
+    assert abort_confirmation(True, spoken=True) == abort_confirmation(True, spoken=False) == text
+    assert "“Kết thúc & xem báo cáo”" in text and "“Tiếp tục phỏng vấn”" in text
+    # The voice agent reads it without quote marks and with "và" for "&".
+    spoken = speakable_text(text, locale="vi-VN")
     assert "“" not in spoken and "&" not in spoken
-    assert "“Kết thúc & xem báo cáo”" in abort_confirmation(True, spoken=False)
+    assert "Kết thúc và xem báo cáo" in spoken
 
 
 @pytest.mark.asyncio
-async def test_voice_stop_request_gets_the_spoken_confirmation() -> None:
-    from src.modules.interviews.core.interviewer_voice import ABORT_CONFIRMATION_SPOKEN_VI, ABORT_CONFIRMATION_VI
+async def test_voice_and_chat_stop_requests_get_the_same_confirmation() -> None:
+    from src.modules.interviews.core.interviewer_voice import ABORT_CONFIRMATION_VI
 
     engine = InterviewCoreEngine(llm_client=RecordingLLM({}))
     voice = await engine.handle_turn(
@@ -617,8 +627,7 @@ async def test_voice_stop_request_gets_the_spoken_confirmation() -> None:
         _state(),
     )
     assert voice.action == chat.action == TurnAction.CONFIRM_ABORT
-    assert voice.message_text == ABORT_CONFIRMATION_SPOKEN_VI
-    assert chat.message_text == ABORT_CONFIRMATION_VI
+    assert voice.message_text == chat.message_text == ABORT_CONFIRMATION_VI
 
 
 def test_fallback_acknowledgements_do_not_all_start_with_an_interjection() -> None:
