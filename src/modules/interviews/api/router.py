@@ -9,7 +9,7 @@ import time
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,8 +35,11 @@ from src.modules.interviews.evaluation.evaluation_service import (
     EvaluationServiceError,
     get_session_evaluation,
 )
+from src.modules.interviews.application.progress import compare_with_previous, load_progress, set_weekly_goal
+from src.modules.interviews.planning.entry_gate import InterviewEntryBlocked, entry_policy, evaluate_entry
 from src.modules.interviews.planning.planner import (
     PlannerPolicyConfigurationError,
+    evaluate_session_match,
     read_session_plan,
 )
 from src.modules.interviews.planning.question_selector import (
@@ -235,6 +238,90 @@ async def _validate_context(
         raise HTTPException(status_code=404, detail="Job description not found")
 
 
+def _entry_blocked_http(exc: InterviewEntryBlocked) -> HTTPException:
+    # Same shape as question_bank_insufficient: { errorCode, message, details }.
+    return HTTPException(status_code=409, detail=exc.decision.detail())
+
+
+async def _require_match_threshold(db: AsyncSession, user: dict, resume_id: str, job_id: str) -> None:
+    """Refuse to create a session whose CV–job match is missing or below the threshold.
+
+    The match comes from the same cache as the fit report page, so this is the
+    score the candidate has just seen. No session row is written when blocked.
+    """
+    try:
+        match = await evaluate_session_match(db=db, user=user, resume_id=resume_id, job_id=job_id)
+    except ValueError as exc:
+        # CV or job not parsed yet: there is no score to enter the room with.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "errorCode": "match_score_unavailable",
+                "message": "Chưa chấm được điểm phù hợp giữa CV và vị trí này nên chưa thể vào phòng phỏng vấn.",
+                "details": {"reason": str(exc)},
+            },
+        ) from exc
+    decision = evaluate_entry(match)
+    trace_event(
+        "interviewer",
+        "session_entry_checked",
+        user_id=user.get("sub"),
+        resume_id=resume_id,
+        job_id=job_id,
+        **decision.trace_fields(),
+    )
+    if not decision.allowed:
+        raise _entry_blocked_http(InterviewEntryBlocked(decision))
+
+
+class WeeklyGoalPayload(BaseModel):
+    weekly_goal: int = Field(alias="weeklyGoal", ge=1, le=7)
+
+    model_config = {"populate_by_name": True}
+
+
+def _tz_offset(value: int) -> int:
+    return max(-840, min(840, int(value)))
+
+
+@router.get("/progress")
+async def get_practice_progress(
+    tz_offset_minutes: int = Query(0, alias="tzOffsetMinutes", description="Minutes ahead of UTC (Vietnam: 420)"),
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Progress across interviews: skills, jobs, answer habits, weekly streak, milestones."""
+    return await load_progress(db, user["sub"], tz_offset_minutes=_tz_offset(tz_offset_minutes))
+
+
+@router.put("/progress/weekly-goal")
+async def update_weekly_goal(
+    payload: WeeklyGoalPayload,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return {"weeklyGoal": await set_weekly_goal(db, user["sub"], payload.weekly_goal)}
+
+
+@router.get("/sessions/{session_id}/progress-compare")
+async def get_session_progress_compare(
+    session_id: str,
+    tz_offset_minutes: int = Query(0, alias="tzOffsetMinutes"),
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """"So với lần trước" for the report: null when there is no earlier graded session."""
+    await _owned_session(db, user["sub"], session_id)
+    progress = await load_progress(db, user["sub"], tz_offset_minutes=_tz_offset(tz_offset_minutes))
+    return {"comparison": compare_with_previous(progress, session_id)}
+
+
+@router.get("/entry-policy")
+async def get_interview_entry_policy(user: dict = Depends(current_user)) -> dict:
+    """The match threshold for entering an interview room, for the UI to show."""
+    return entry_policy().to_payload()
+
+
 @router.post("/sessions", status_code=status.HTTP_201_CREATED)
 async def create_interview_session(
     payload: CreateInterviewSession,
@@ -259,6 +346,7 @@ async def create_interview_session(
                 ),
             )
         await _validate_context(db, user, payload.resume_id, payload.job_id)
+        await _require_match_threshold(db, user, payload.resume_id, payload.job_id)
 
         session_id = str(uuid4())
         plan_id = str(uuid4())
@@ -458,6 +546,17 @@ async def build_interview_plan(
             duration_ms=round((time.monotonic() - started_at) * 1000),
         )
         return result
+    except InterviewEntryBlocked as exc:
+        trace_event(
+            "interviewer",
+            "plan_failed",
+            session_id=session_id,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        await db.rollback()
+        raise _entry_blocked_http(exc) from exc
     except PlannerPolicyConfigurationError as exc:
         # A deployment-level misconfiguration, not a conflict on this session.
         # Keep the offending setting name out of the client response.
