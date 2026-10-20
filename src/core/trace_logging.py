@@ -15,16 +15,23 @@ from pathlib import Path
 from typing import Any
 
 from src.core.config import get_settings
+from src.core.pipeline_events import record_event
 
 logger = logging.getLogger(__name__)
 
 _WORKFLOW_DIRECTORIES = {
     "cv_parser": "cv",
+    "cv_upload": "cv",
     "jd_parser": "jd",
     "matching": "matching",
     "clarification": "hoilai",
     "interviewer": "interview",
     "interview": "interview",
+    # One record per interviewer turn, with the spoken text, for the live
+    # monitor (scripts/watch_interviewer.py). Development only, like every trace.
+    "naturalness": "naturalness",
+    # Voice-room state changes and incidents reported by the LiveKit agent.
+    "voice": "voice",
 }
 
 
@@ -53,7 +60,12 @@ def _echo_to_console(workflow: str, event: str, fields: dict[str, Any]) -> None:
 
 
 def trace_event(workflow: str, event: str, **fields: Any) -> None:
-    """Append one local-development trace event without interrupting work."""
+    """Append one local-development trace event without interrupting work.
+
+    Interview events that name a session are also stored for the admin
+    pipeline view in every environment (src/core/pipeline_events.py).
+    """
+    record_event(workflow, event, fields)
     settings = get_settings()
     enabled = settings.trace_logs_enabled
     if enabled is None:
