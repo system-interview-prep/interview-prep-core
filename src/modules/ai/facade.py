@@ -5,6 +5,11 @@ from functools import lru_cache
 from fastapi.concurrency import run_in_threadpool
 
 from src.core.config import get_settings
+from src.core.pipeline_events import ai_call_timer, caller_purpose
+
+# Models that answered "temperature is not supported" once. Every later call
+# skips the parameter instead of paying for a rejected request first.
+_NO_TEMPERATURE_MODELS: set[str] = set()
 
 
 @lru_cache
@@ -22,9 +27,16 @@ def _client():
 
 
 async def generate_text(
-    *, instructions: str, input_text: str, max_output_tokens: int = 1200, temperature: float | None = None
+    *,
+    instructions: str,
+    input_text: str,
+    max_output_tokens: int = 1200,
+    temperature: float | None = None,
+    purpose: str | None = None,
 ) -> str:
+    """One model call. Logged to ai_call_logs (purpose defaults to the caller)."""
     settings = get_settings()
+    purpose = purpose or caller_purpose()
 
     def call() -> str:
         options = {
@@ -34,21 +46,26 @@ async def generate_text(
             "max_output_tokens": max_output_tokens,
             "store": False,
         }
-        if temperature is not None:
+        if temperature is not None and settings.llm_model not in _NO_TEMPERATURE_MODELS:
             options["temperature"] = temperature
-        try:
-            response = _client().responses.create(
-                **options,
-            )
-        except Exception as exc:
-            if "temperature" in str(exc).lower() and "temperature" in options:
-                options.pop("temperature", None)
+        timer = ai_call_timer(purpose, provider="openai", model=settings.llm_model, input_text=input_text)
+        with timer as call:
+            try:
                 response = _client().responses.create(
                     **options,
                 )
-            else:
-                raise
-        return str(response.output_text or "").strip()
+            except Exception as exc:
+                if "temperature" in str(exc).lower() and "temperature" in options:
+                    _NO_TEMPERATURE_MODELS.add(settings.llm_model)
+                    options.pop("temperature", None)
+                    response = _client().responses.create(
+                        **options,
+                    )
+                else:
+                    raise
+            output = str(response.output_text or "").strip()
+            call.done(output, getattr(response, "usage", None))
+        return output
 
     return await run_in_threadpool(call)
 
