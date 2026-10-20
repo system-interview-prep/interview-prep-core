@@ -21,6 +21,7 @@ from src.modules.interviews.evaluation.evaluation_engine import (
     EvaluationGradingError,
     InterviewEvaluationEngine,
     NoGradableTurnsError,
+    grader_version,
 )
 from src.modules.interviews.evaluation.evaluation_types import (
     DecisionRecommendation,
@@ -543,10 +544,12 @@ async def evaluate_closed_session(
             """
             INSERT INTO interview_evaluations
             (id, session_id, overall_score, decision_recommendation, competency_scores,
-             recruiter_summary, candidate_feedback, next_round_topics, red_flags, evaluated_at, created_at)
+             recruiter_summary, candidate_feedback, next_round_topics, red_flags, evaluated_at, created_at,
+             grader_version)
             VALUES
             (:id, :sid, :overall_score, :decision, CAST(:comp_scores AS jsonb),
-             :recruiter_summary, :candidate_feedback, :next_round_topics, :red_flags, :evaluated_at, now())
+             :recruiter_summary, :candidate_feedback, :next_round_topics, :red_flags, :evaluated_at, now(),
+             :grader_version)
             """
         ),
         {
@@ -560,6 +563,7 @@ async def evaluate_closed_session(
             "next_round_topics": result.next_round_topics,
             "red_flags": result.red_flags,
             "evaluated_at": now,
+            "grader_version": grader_version(),
         },
     )
 
