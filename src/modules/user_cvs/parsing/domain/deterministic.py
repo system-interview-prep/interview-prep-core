@@ -68,6 +68,31 @@ _LANGUAGE_RE = re.compile(
 )
 
 
+_NAME_WORD_RE = re.compile(r"[A-Za-zÀ-ỹĐđ'.-]+")
+
+
+def _looks_like_person_name(value: str) -> bool:
+    words = value.split()
+    return (
+        2 <= len(words) <= 5
+        and all(_NAME_WORD_RE.fullmatch(word) for word in words)
+        and not _NAME_TITLE_WORDS.intersection(word.casefold() for word in words)
+    )
+
+
+def candidate_name_from_text(text: str) -> str | None:
+    """The candidate's name from CV text: a "Họ tên:" label, else a name line at the top.
+
+    Same rules as the parser's identity extraction. The canonical resume is
+    PII-free, so callers that must address the candidate read it from raw text.
+    """
+    labelled = _NAME_RE.search(text or "")
+    if labelled:
+        return labelled.group("value").strip() or None
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return next((line for line in lines[:5] if _looks_like_person_name(line)), None)
+
+
 def _evidence_id(kind: str, start: int, end: int) -> str:
     digest = sha1(f"{kind}:{start}:{end}".encode(), usedforsecurity=False).hexdigest()[:12]
     return f"ev-{kind}-{digest}"
@@ -286,13 +311,7 @@ class RegexIdentityExtractor:
     def _top_of_document_name(source: SourceDocument) -> IdentityValue | None:
         for block in source.blocks[:5]:
             value = block.text.strip()
-            words = value.split()
-            if (
-                block.page == 1
-                and 2 <= len(words) <= 5
-                and all(re.fullmatch(r"[A-Za-zÀ-ỹĐđ'.-]+", word) for word in words)
-                and not _NAME_TITLE_WORDS.intersection(word.casefold() for word in words)
-            ):
+            if block.page == 1 and _looks_like_person_name(value):
                 return IdentityValue(value=value, charStart=block.char_start, charEnd=block.char_end)
         return None
 
