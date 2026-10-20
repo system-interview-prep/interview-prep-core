@@ -16,6 +16,7 @@ from src.modules.interviews.application.chat_runtime import (
     start_chat_session,
 )
 from src.modules.interviews.core.interview_engine import InterviewCoreEngine
+from src.modules.interviews.core.interviewer_voice import EARLY_STOP_VI, FAREWELL_VI, PROBE_FALLBACK_VI, TIMEOUT_VI
 
 
 class MockResult:
@@ -39,6 +40,7 @@ class MockChatSession:
         self.messages = [dict(m) for m in (messages or [])]
         self.job_title = "AI Engineer"
         self.candidate_name: str | None = None
+        self.cv_text: str | None = None
 
     async def scalar(self, statement: Any, params: dict[str, Any] | None = None):
         sql = str(statement).strip()
@@ -54,6 +56,8 @@ class MockChatSession:
             return len([m for m in self.messages if m["session_id"] == params.get("sid")])
         if "SELECT title FROM job_descriptions" in sql:
             return self.job_title
+        if "JOIN user_cvs c ON c.id = s.resume_id" in sql:
+            return self.cv_text
         if "JOIN users u ON u.id = s.user_id" in sql:
             return self.candidate_name
         if "SELECT status FROM interview_sessions" in sql:
@@ -299,6 +303,48 @@ async def test_opening_greets_by_call_name_and_keeps_it(mock_session_data):
     assert "bạn" not in opening.casefold()
 
 
+@pytest.mark.asyncio
+async def test_opening_uses_the_name_on_the_cv_not_the_account(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    db.candidate_name = "Nguyễn Thị Thanh Hiền"  # account owner running a demo CV
+    db.cv_text = "NGUYỄN MINH KHOA\nBackend Developer (Node.js / TypeScript)\nEmail: khoa@example.com"
+
+    runtime = await start_chat_session(db, session_row)
+
+    opening = runtime["messages"][0]["content"]
+    assert opening.startswith("Chào Khoa")
+    assert "Hiền" not in opening
+
+
+@pytest.mark.asyncio
+async def test_account_name_is_the_fallback_when_the_cv_has_no_name(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    db.candidate_name = "Nguyễn Văn Nam"
+    db.cv_text = "Backend Developer\nKinh nghiệm 3 năm Node.js"
+
+    runtime = await start_chat_session(db, session_row)
+
+    assert runtime["messages"][0]["content"].startswith("Chào Nam")
+
+
+@pytest.mark.parametrize(
+    ("cv_text", "expected"),
+    [
+        ("NGUYỄN MINH KHOA\nBackend Developer", "NGUYỄN MINH KHOA"),
+        ("Họ và tên: Trần Thị Lan\nSĐT: 0901", "Trần Thị Lan"),
+        ("Nguyen Thi Thanh Hien\nSoftware Engineer", "Nguyen Thi Thanh Hien"),
+        ("Backend Developer\nKinh nghiệm 3 năm", None),
+        ("", None),
+    ],
+)
+def test_candidate_name_from_cv_text(cv_text, expected) -> None:
+    from src.modules.user_cvs.facade import candidate_name_from_text
+
+    assert candidate_name_from_text(cv_text) == expected
+
+
 def test_subsequent_messages_use_only_the_last_name_word() -> None:
     assert _candidate_name_parts("  Nguyễn   Minh Anh  ") == ("Nguyễn Minh Anh", "Anh")
     assert _personalize_candidate_address(
@@ -436,7 +482,7 @@ async def test_probe_post_validator_safe_fallback(mock_session_data):
         )
 
         # Validator triggers safe fallback template
-        assert res["assistantResponse"]["content"] == SAFE_FALLBACK_PROBE_VI
+        assert res["assistantResponse"]["content"].split("\n\n")[-1] in PROBE_FALLBACK_VI
         assert "7/10" not in res["assistantResponse"]["content"]
 
 
@@ -524,7 +570,7 @@ async def test_two_consecutive_give_up_messages_trigger_early_exit(mock_session_
     assert res2["sessionStatus"] == "CLOSED"
     assert res2["assistantResponse"]["messageType"] == "WRAP_UP"
     assert res2["endReason"] == "FAST_FAIL_TECH"
-    assert "dừng buổi phỏng vấn tại đây" in res2["assistantResponse"]["content"]
+    assert res2["assistantResponse"]["content"] in EARLY_STOP_VI
     assert db.session_row["status"] == "CLOSED"
     assert db.session_row["end_reason"] == "FAST_FAIL_TECH"
 
@@ -655,7 +701,7 @@ async def test_closing_reverse_qna_flow(mock_session_data):
         content="Dạ mình nắm rõ rồi, mình không còn câu hỏi nào nữa. Cảm ơn bạn rất nhiều!",
     )
     assert res3["sessionStatus"] == "CLOSED"
-    assert "Báo cáo đánh giá đang được tạo" in res3["assistantResponse"]["content"]
+    assert res3["assistantResponse"]["content"] in FAREWELL_VI
     assert db.session_row["status"] == "CLOSED"
 
 
@@ -1910,7 +1956,7 @@ async def test_pacing_cutoff_closes_session_instead_of_dead_ending():
     assert len(wrap_ups) == 1
     # The transcript must not claim a full agenda was covered.
     assert "hoàn thành tất cả" not in wrap_ups[0]["content"]
-    assert "hết thời gian" in wrap_ups[0]["content"]
+    assert wrap_ups[0]["content"] in TIMEOUT_VI
     assert db.turns["t-deep"]["status"] == "ANSWERED"
 
 
