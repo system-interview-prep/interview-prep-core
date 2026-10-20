@@ -78,6 +78,8 @@ EndReason = Literal[
     "TECHNICAL_FAILURE",
     "HARD_TIMEOUT",
     "FAST_FAIL_TECH",
+    # Voice/video: the candidate left the room and did not come back (session reaper).
+    "CANDIDATE_LEFT",
 ]
 
 # Client-Initiated Completion Reason: only user-driven reasons allowed in client requests
