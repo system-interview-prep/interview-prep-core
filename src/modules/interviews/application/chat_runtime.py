@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -21,10 +22,25 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.pipeline_events import current_session_id
 from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
-from src.modules.interviews.core.opening_script import build_opening
+from src.modules.interviews.core.opening_script import build_opening, warmup_question
 from src.modules.interviews.core.demo_mode import is_demo_duration
+from src.modules.interviews.core.interviewer_voice import (
+    CLOSE_COMPLETED_EN,
+    CLOSE_COMPLETED_VI,
+    USER_ENDED_EN,
+    USER_ENDED_VI,
+    WRAP_ENDED_EARLY_PARTIAL_EN,
+    WRAP_ENDED_EARLY_PARTIAL_VI,
+    WRAP_TIMEOUT_PARTIAL_EN,
+    WRAP_TIMEOUT_PARTIAL_VI,
+    compose_speech,
+    first_paragraph,
+    last_paragraph,
+    pick_variant,
+)
 from src.modules.interviews.core.interview_engine import (
     SAFE_FALLBACK_PROBE_EN,
     SAFE_FALLBACK_PROBE_VI,
@@ -39,6 +55,7 @@ from src.modules.interviews.core.interview_types import (
     SessionExitReason,
     TurnAction,
 )
+from src.modules.user_cvs.facade import candidate_name_from_text
 
 _validate_probe_text = validate_probe_text
 
@@ -112,9 +129,24 @@ def _candidate_name_parts(raw_name: Any) -> tuple[str | None, str | None]:
 async def _candidate_names(
     db: AsyncSession, session_id: str
 ) -> tuple[str | None, str | None]:
-    # Matching deliberately receives a PII-free CanonicalResume. Addressing is
-    # therefore sourced from the authenticated user's profile, not copied into
-    # matching payloads, plans, prompts, or evaluation evidence.
+    # The candidate is addressed by the name on the CV being interviewed, so a
+    # demo account interviewing a demo CV is not called by the account owner's
+    # name. Matching still receives a PII-free CanonicalResume: the name is read
+    # from the CV's raw text here, only to address the candidate. The account
+    # name is the fallback when the CV has no recognisable name.
+    cv_text = await db.scalar(
+        text(
+            "SELECT c.raw_text FROM interview_sessions s "
+            "JOIN user_cvs c ON c.id = s.resume_id WHERE s.id = :sid"
+        ),
+        {"sid": session_id},
+    )
+    cv_name = candidate_name_from_text(cv_text) if isinstance(cv_text, str) else None
+    if cv_name and cv_name.isupper():
+        cv_name = " ".join(word.capitalize() for word in cv_name.split())
+    full_name, short_name = _candidate_name_parts(cv_name)
+    if full_name:
+        return full_name, short_name
     raw_name = await db.scalar(
         text(
             "SELECT NULLIF(BTRIM(u.name), '') FROM interview_sessions s "
@@ -184,6 +216,10 @@ def _provenance_metadata(core_output: Any) -> dict[str, str]:
         out["generatedBy"] = str(raw["generated_by"])
     if raw.get("missing_aspect"):
         out["missingAspect"] = str(raw["missing_aspect"])
+    # gap (answer missed something) or deepen (challenge tier, answer was complete):
+    # the progress view counts only gap probes as "needed a follow-up".
+    if raw.get("probe_kind"):
+        out["probeKind"] = str(raw["probe_kind"])
     return out
 
 
@@ -208,6 +244,91 @@ async def _displayed_question_text(
             return _personalize_opening(question, short_name, short_name)
         return _personalize_candidate_address(question, short_name)
     return _personalize_candidate_address(question, short_name)
+
+
+async def _recent_interviewer_lines(db: AsyncSession, session_id: str, limit: int = 4) -> list[str]:
+    """The opening sentence of the interviewer's last few messages, newest last.
+
+    Passed to the core so it neither asks the model for, nor falls back to, a
+    line it has just said. Best effort: a read failure only loses variety.
+    """
+    try:
+        result = await db.execute(
+            text(
+                """
+                SELECT content FROM interview_chat_messages
+                WHERE session_id = :sid AND role = 'assistant'
+                ORDER BY sequence DESC
+                LIMIT :limit
+                """
+            ),
+            {"sid": session_id, "limit": limit},
+        )
+        rows = result.mappings().all()
+    except Exception:
+        return []
+    lines: list[str] = []
+    for row in reversed(list(rows)[:limit]):
+        content = row.get("content") if hasattr(row, "get") else None
+        if isinstance(content, str) and content.strip():
+            lines.append(first_paragraph(content))
+    return lines
+
+
+def _trace_spoken_turn(
+    *,
+    session_id: str,
+    turn_index: int,
+    candidate_text: str,
+    modality: str,
+    core_output: Any,
+    recent_lines: list[str],
+    core_ms: int,
+) -> None:
+    """One record per interviewer turn for the live naturalness monitor.
+
+    Holds the candidate's words and the interviewer's reply (truncated), so,
+    like every trace, it is written only when local trace logs are enabled.
+    """
+    meta = core_output.metadata or {}
+    message = str(core_output.message_text or "")
+    ack = str(meta.get("acknowledgement") or "") or (first_paragraph(message) if "\n\n" in message else "")
+    action = core_output.action.value if hasattr(core_output.action, "value") else str(core_output.action)
+    stage = (
+        core_output.current_stage.value
+        if hasattr(core_output.current_stage, "value")
+        else str(core_output.current_stage)
+    )
+    trace_event(
+        "naturalness",
+        "turn_spoken",
+        session_id=str(session_id),
+        turn_index=turn_index,
+        modality=str(modality or "CHAT"),
+        action=action,
+        stage=stage,
+        competency=core_output.current_competency,
+        candidate=candidate_text[:300],
+        interviewer=message[:500],
+        acknowledgement=ack[:200] or None,
+        ack_source=meta.get("ack_source"),
+        ack_reason=meta.get("ack_reason"),
+        ack_raw=meta.get("ack_raw"),
+        probe_kind=meta.get("probe_kind"),
+        generated_by=meta.get("generated_by"),
+        # The engine's reading of the answer, for the admin pipeline view.
+        intent=meta.get("intent")
+        or meta.get("candidate_question_intent")
+        or ("CANDIDATE_ABORT" if meta.get("candidate_abort_intent") else None)
+        or ("CLARIFY_REQUEST" if meta.get("clarify_used") else None),
+        sufficiency=meta.get("sufficiency_status"),
+        missing_aspect=str(meta.get("missing_aspect") or "")[:300] or None,
+        pre_score=meta.get("pre_score"),
+        hard_answer_timeout=meta.get("hard_answer_timeout"),
+        answer_chars=len(candidate_text),
+        repeats_recent=bool(ack) and any(ack.strip() == str(line).strip() for line in recent_lines),
+        core_ms=core_ms,
+    )
 
 
 def _turn_stage(turn: dict[str, Any]) -> str:
@@ -587,11 +708,7 @@ async def start_chat_session(
     q_text = (
         q_snapshot.get("questionText")
         or q_snapshot.get("question_text")
-        or (
-            f"Để bắt đầu và giúp bạn thoải mái hơn, bạn hãy giới thiệu đôi nét về bản thân và kinh nghiệm làm việc gần đây của mình nhé?"
-            if is_vi
-            else "To help you get comfortable, please give a brief introduction of yourself and your recent experience."
-        )
+        or warmup_question(is_vi=is_vi, is_demo=False)
     )
 
     if re.match(r"^\s*(Chào|Hi|Hello)\b", q_text, flags=re.IGNORECASE):
@@ -721,6 +838,7 @@ def build_session_state_from_db(
             "competency": comp,
             "stage": t_stage,
             "main_prompt": prompt,
+            "spoken_prompt": t_snap.get("spokenText") or None,
             "rubric_criteria": _format_rubric_criteria((t_snap.get("rubric") or {}).get("criteria", "")),
         })
 
@@ -796,6 +914,9 @@ def build_session_state_from_db(
         "target_duration_minutes": target_duration_minutes,
         # Demo sessions are turn-driven (see core.demo_mode).
         "is_demo": is_demo_duration(target_duration_minutes),
+        # basic | standard | challenge, frozen on each technical turn from the
+        # CV–job match (planning.entry_gate). Challenge also probes good answers.
+        "practice_tier": snap.get("practiceTier") or "standard",
         "started_at": session_row.get("started_at"),
         # The session clock, surfaced at the top level because that is where the
         # core engine reads it. Previously only `working_memory` carried it, so
@@ -816,6 +937,8 @@ def build_session_state_from_db(
         "current_question_context": {
             "question_id": str(current_turn.get("question_version_id") or current_turn["id"]) if current_turn else "",
             "main_prompt": q_text,
+            "spoken_prompt": snap.get("spokenText") or None,
+            "competency": working_memory["current_competency"],
             "rubric_criteria": rubric_criteria,
             "hard_answer_seconds": (snap.get("hardAnswerSeconds") or 180),
         } if current_turn else {},
@@ -1137,6 +1260,9 @@ async def process_candidate_message(
     validate_turn_ids = {t["id"] for t in turns if (t.get("question_snapshot") or {}).get("stage") == "VALIDATE"}
     cv_followup_used = 1 if any(m["turn_id"] in validate_turn_ids and m["message_type"] == "PROBE" for m in all_probe_msgs) else 0
 
+    # Engine events without a session id (guardrail fallbacks, model calls)
+    # belong to this interview in the admin pipeline view.
+    current_session_id.set(str(session_id))
     # Call Modality-Agnostic Core Engine
     engine = core_engine or InterviewCoreEngine(ai_generator=generate_text)
     session_state = build_session_state_from_db(
@@ -1155,7 +1281,11 @@ async def process_candidate_message(
         if m["turn_id"] == current_turn_id and m["message_type"] == "PROBE" and m.get("content")
     ]
     if current_turn_probe_texts and session_state.get("current_question_context"):
-        session_state["current_question_context"]["follow_up_prompt"] = current_turn_probe_texts[-1]
+        # A probe message is "acknowledgement\n\nfollow-up"; the question is the last paragraph.
+        session_state["current_question_context"]["follow_up_prompt"] = (
+            last_paragraph(current_turn_probe_texts[-1]) or current_turn_probe_texts[-1]
+        )
+    session_state["recent_interviewer_lines"] = await _recent_interviewer_lines(db, session_id)
     if _turn_stage(current_turn) == "CLOSING":
         session_state["job_context"] = await _get_job_context(db, session_row.get("job_id"))
         # Questions the candidate has sent on this closing turn, including this one.
@@ -1186,6 +1316,7 @@ async def process_candidate_message(
         telemetry=telemetry or {},
     )
 
+    core_started = perf_counter()
     try:
         core_output = await engine.handle_turn(turn_input, session_state)
     except Exception as exc:
@@ -1204,6 +1335,16 @@ async def process_candidate_message(
         core_output.message_text = _personalize_candidate_address(
             core_output.message_text, candidate_short_name
         )
+
+    _trace_spoken_turn(
+        session_id=session_id,
+        turn_index=current_turn_index,
+        candidate_text=cleaned_content,
+        modality=modality,
+        core_output=core_output,
+        recent_lines=session_state.get("recent_interviewer_lines") or [],
+        core_ms=round((perf_counter() - core_started) * 1000),
+    )
 
     trace_event(
         "interviewer",
@@ -1667,25 +1808,27 @@ async def process_candidate_message(
             {"turn_id": next_turn["id"]},
         )
         next_snap = next_turn.get("question_snapshot") or {}
+        # The question as it is said aloud, falling back to the written one.
         next_q_text = (
-            next_snap.get("questionText")
+            next_snap.get("spokenText")
+            or next_snap.get("questionText")
             or next_snap.get("question_text")
-            or "Câu hỏi tiếp theo dành cho bạn."
+            or ("Câu hỏi tiếp theo dành cho bạn." if is_vi else "Here is your next question.")
         )
         if is_vi:
+            # core_output.message_text is already personalised, so compare like with like.
             next_q_text = _personalize_candidate_address(next_q_text, candidate_short_name)
 
-        # Bridge Transition: natural acknowledgment + next main question
+        # Bridge: the core already said "acknowledgement\n\n[transition] question".
         next_content = core_output.message_text
         if not next_content:
             next_content = next_q_text
         elif next_q_text not in next_content:
-            parts = next_content.split("\n\n")
-            ack = parts[0] if parts else ""
-            if is_vi:
-                next_content = f"{ack}\n\nChúng ta hãy cùng chuyển sang câu hỏi tiếp theo nhé:\n\n{next_q_text}"
-            else:
-                next_content = f"{ack}\n\nLet's move on to the next question:\n\n{next_q_text}"
+            # The core asked a different question than the one the turn queue
+            # opens (e.g. a reordered stage): keep its acknowledgement and ask
+            # the queued question. This used to insert a stock "Chúng ta hãy
+            # cùng chuyển sang câu hỏi tiếp theo nhé:" paragraph.
+            next_content = compose_speech(first_paragraph(next_content), next_q_text)
         if is_vi:
             next_content = _personalize_candidate_address(next_content, candidate_short_name)
 
@@ -1812,37 +1955,17 @@ async def process_candidate_message(
     if not wrap_text:
         if downgraded_from_completed and ran_out_of_time:
             # Never claim full coverage for a session that stopped early.
-            wrap_text = (
-                "Cảm ơn bạn đã tham gia buổi phỏng vấn hôm nay! Thời lượng của phiên đã hết "
-                "nên chúng ta chưa kịp đi qua toàn bộ chủ đề theo kế hoạch. Những phần đã trao đổi "
-                "đều được ghi nhận đầy đủ trong báo cáo đánh giá."
-                if is_vi
-                else "Thank you for joining today's interview! The session ran out of time before we "
-                     "could cover every planned topic. Everything we did discuss has been recorded "
-                     "in full for the evaluation report."
+            wrap_text = pick_variant(
+                WRAP_TIMEOUT_PARTIAL_VI if is_vi else WRAP_TIMEOUT_PARTIAL_EN, f"{session_id}:wrap"
             )
         elif downgraded_from_completed:
             # Stopped early for a reason other than time; do not blame the clock.
-            wrap_text = (
-                "Cảm ơn bạn đã tham gia buổi phỏng vấn hôm nay! Phiên phải kết thúc sớm nên chúng ta "
-                "chưa đi qua hết các chủ đề theo kế hoạch. Những phần đã trao đổi đều được ghi nhận "
-                "đầy đủ trong báo cáo đánh giá."
-                if is_vi
-                else "Thank you for joining today's interview! The session had to end before we could "
-                     "cover every planned topic. Everything we did discuss has been recorded in full "
-                     "for the evaluation report."
-            )
-        elif is_vi:
-            wrap_text = (
-                "Cảm ơn bạn đã tham gia buổi phỏng vấn hôm nay! Chúng ta đã hoàn thành tất cả các chủ đề "
-                "chuyên môn theo kế hoạch. Báo cáo đánh giá của bạn sẽ có ngay sau đây. "
-                "Chúc bạn luôn gặt hái nhiều thành công!"
+            wrap_text = pick_variant(
+                WRAP_ENDED_EARLY_PARTIAL_VI if is_vi else WRAP_ENDED_EARLY_PARTIAL_EN, f"{session_id}:wrap"
             )
         else:
-            wrap_text = (
-                "Thank you for participating in today's interview! We have completed all the planned "
-                "topics. Your evaluation report will be ready right after this. "
-                "Wishing you great success!"
+            wrap_text = pick_variant(
+                CLOSE_COMPLETED_VI if is_vi else CLOSE_COMPLETED_EN, f"{session_id}:wrap"
             )
     if is_vi:
         wrap_text = _personalize_candidate_address(wrap_text, candidate_short_name)
@@ -2002,12 +2125,7 @@ async def complete_chat_session(
             {"sid": session_id},
         )
         asst_seq = int(max_seq or 0) + 1
-        wrap_text = (
-            "Phiên phỏng vấn đã kết thúc theo yêu cầu của bạn. "
-            "Cảm ơn bạn đã dành thời gian tham gia!"
-            if is_vi
-            else "The interview session has been concluded per your request. Thank you for your time!"
-        )
+        wrap_text = pick_variant(USER_ENDED_VI if is_vi else USER_ENDED_EN, f"{session_id}:user_ended")
         if is_vi:
             wrap_text = _personalize_candidate_address(wrap_text, candidate_short_name)
         await db.execute(
