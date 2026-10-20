@@ -357,11 +357,24 @@ async def list_rubrics(
     rows = await db.execute(
         text(
             "SELECT r.id, r.stable_key, rv.id AS version_id, rv.version, rv.approved_at, "
-            "count(rc.id) AS criteria_count, coalesce(sum(rc.weight), 0) AS total_weight "
+            "count(rc.id) AS criteria_count, coalesce(sum(rc.weight), 0) AS total_weight, "
+            "owner.question_id, owner.question_stable_key, owner.question_version "
             "FROM rubrics r LEFT JOIN rubric_versions rv ON rv.id = r.current_version_id "
-            "LEFT JOIN rubric_criteria rc ON rc.rubric_version_id = rv.id"
+            "LEFT JOIN rubric_criteria rc ON rc.rubric_version_id = rv.id "
+            # Rubrics are authored on a question version (key `<question>@<version>`)
+            # and may be reused by imports; the owner is the question whose key
+            # matches, else the earliest linked question version.
+            "LEFT JOIN LATERAL (SELECT qv.question_id, q.stable_key AS question_stable_key, "
+            "qv.version AS question_version FROM rubric_versions orv "
+            "JOIN question_version_rubrics qvr ON qvr.rubric_version_id = orv.id "
+            "JOIN interview_question_versions qv ON qv.id = qvr.question_version_id "
+            "JOIN interview_questions q ON q.id = qv.question_id "
+            "WHERE orv.rubric_id = r.id "
+            "ORDER BY (q.stable_key || '@' || qv.version = r.stable_key) DESC, qv.created_at "
+            "LIMIT 1) owner ON true"
             + where
-            + " GROUP BY r.id, r.stable_key, rv.id, rv.version, rv.approved_at ORDER BY r.stable_key"
+            + " GROUP BY r.id, r.stable_key, rv.id, rv.version, rv.approved_at, "
+            "owner.question_id, owner.question_stable_key, owner.question_version ORDER BY r.stable_key"
         ),
         params,
     )
@@ -370,6 +383,9 @@ async def list_rubrics(
             {
                 "rubricId": str(row["id"]),
                 "stableKey": row["stable_key"],
+                "questionId": None if row["question_id"] is None else str(row["question_id"]),
+                "questionStableKey": row["question_stable_key"],
+                "questionVersion": row["question_version"],
                 "currentVersion": None
                 if row["version_id"] is None
                 else {
