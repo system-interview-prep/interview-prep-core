@@ -1,7 +1,11 @@
 """Re-evaluate a match after candidate clarification answers."""
 
+import time
+from collections import Counter
+
 from fastapi.concurrency import run_in_threadpool
 
+from src.core.trace_logging import trace_event
 from src.modules.matching.application.facade import get_matching_facade
 from src.modules.matching.clarifications.answer_evidence import (
     build_candidate_answer_evidence,
@@ -27,6 +31,7 @@ async def rescore_match_with_clarification_answers(
     payload: MatchClarificationRescoreRequest,
 ) -> MatchClarificationRescoreResult:
     """Re-run matching with requirement-scoped, explicitly self-reported evidence."""
+    started = time.perf_counter()
     request = payload.match_request
     facade = get_matching_facade()
     # Never trust the client-returned scores or requirement statuses. Recompute
@@ -155,6 +160,24 @@ async def rescore_match_with_clarification_answers(
         )
         for answer in payload.answers
     ]
+    initial_statuses = {item.requirement_id: item.status for item in initial.requirement_results}
+    transitions = Counter(
+        f"{initial_statuses.get(answer.requirement_id)}->{final_statuses[answer.requirement_id]}"
+        for answer in payload.answers
+    )
+    trace_event(
+        "clarification",
+        "rescore_completed",
+        answers_count=len(payload.answers),
+        transitions=dict(transitions),
+        suitability_before=initial.suitability_score,
+        suitability_after=final_match.suitability_score,
+        fit_band_before=initial.fit_band,
+        fit_band_after=final_match.fit_band,
+        passes=3,
+        self_report_used=used_self_report,
+        duration_ms=int((time.perf_counter() - started) * 1000),
+    )
     return MatchClarificationRescoreResult(
         initialMatchResult=initial,
         finalMatchResult=final_match,
