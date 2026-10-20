@@ -1232,6 +1232,10 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
         except asyncio.CancelledError:
             return
         if not _candidate_present():
+            # Tell Core first (the client closes with the session): the reaper
+            # closes the interview as CANDIDATE_LEFT unless the candidate rejoins.
+            with contextlib.suppress(Exception):
+                await runtime_client.post("/ai/voice-lab/livekit/runtime/left", timeout=5.0)
             release_session("candidate left the room", delay=0.0)
 
     @ctx.room.on("participant_disconnected")
