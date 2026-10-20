@@ -19,6 +19,7 @@ from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
 from src.modules.interviews.api.rate_limit import interview_rate_limiter
 from src.modules.interviews.application.agent_runtime import database_operations, run_interview_command
+from src.modules.interviews.application.session_reaper import CANDIDATE_LEFT_GRACE_MINUTES
 from src.modules.interviews.application.chat_runtime import (
     ChatRuntimeError,
     get_chat_runtime,
@@ -64,6 +65,8 @@ SessionEndReason = Literal[
     "TECHNICAL_FAILURE",
     "HARD_TIMEOUT",
     "FAST_FAIL_TECH",
+    # Voice/video: the candidate left the room and did not come back (session reaper).
+    "CANDIDATE_LEFT",
 ]
 EndReason = SessionEndReason  # Backward compatibility alias
 
@@ -105,6 +108,12 @@ class CloseInterviewSession(BaseModel):
     reason: Literal["USER_ENDED", "TECHNICAL_FAILURE"] = Field(default="USER_ENDED")
 
     model_config = {"populate_by_name": True}
+
+
+class ChatPresence(BaseModel):
+    """Chat room presence: a heartbeat while the page is open, "left" when it closes."""
+
+    state: Literal["here", "left"] = "here"
 
 
 class SendVideoTranscript(BaseModel):
@@ -1045,6 +1054,52 @@ async def send_video_transcript(
     except ChatRuntimeError as exc:
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/chat/presence")
+async def chat_presence(
+    session_id: str,
+    payload: ChatPresence,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Whether the candidate still has the chat room open.
+
+    "here" (on open and every minute) records ``candidate_seen_at`` and clears
+    a "left" mark, returning since when they were away; "left" (page closed)
+    marks ``candidate_left_at``. The session reaper closes a chat whose
+    candidate left, or stopped sending heartbeats, more than
+    CANDIDATE_LEFT_GRACE_MINUTES ago, with CANDIDATE_LEFT.
+    """
+    session = await _owned_session(db, user["sub"], session_id)
+    _require_runtime_mode(session, mode="text", experience_type="interview_chat")
+    if str(session.get("status") or "").upper() != "OPEN":
+        return {"open": False, "awaySince": None, "graceMinutes": CANDIDATE_LEFT_GRACE_MINUTES}
+    if payload.state == "left":
+        await db.execute(
+            text(
+                "UPDATE interview_sessions SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), "
+                "'{candidate_left_at}', to_jsonb(now()::text)) "
+                "WHERE id = :sid AND status = 'OPEN' AND metadata->>'candidate_left_at' IS NULL"
+            ),
+            {"sid": session_id},
+        )
+        await db.commit()
+        return {"open": True, "awaySince": None, "graceMinutes": CANDIDATE_LEFT_GRACE_MINUTES}
+    away = (
+        await db.execute(
+            text(
+                "UPDATE interview_sessions s "
+                "SET metadata = (COALESCE(s.metadata, '{}'::jsonb) - 'candidate_left_at') "
+                "|| jsonb_build_object('candidate_seen_at', now()::text) "
+                "FROM interview_sessions old WHERE s.id = :sid AND old.id = s.id AND s.status = 'OPEN' "
+                "RETURNING old.metadata->>'candidate_left_at' AS left_at"
+            ),
+            {"sid": session_id},
+        )
+    ).scalar_one_or_none()
+    await db.commit()
+    return {"open": True, "awaySince": away, "graceMinutes": CANDIDATE_LEFT_GRACE_MINUTES}
 
 
 @router.post("/sessions/{session_id}/chat/complete")
