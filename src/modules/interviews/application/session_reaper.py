@@ -27,7 +27,9 @@ async def reap_abandoned_sessions(session_factory: async_sessionmaker[AsyncSessi
                 UPDATE interview_sessions
                 SET status = 'CLOSED',
                     end_reason = CASE
-                        WHEN started_at IS NULL THEN 'TECHNICAL_FAILURE'
+                        WHEN started_at IS NULL OR NOT EXISTS (
+                            SELECT 1 FROM interview_chat_messages m WHERE m.session_id = interview_sessions.id
+                        ) THEN 'TECHNICAL_FAILURE'
                         WHEN metadata->>'candidate_left_at' IS NOT NULL THEN 'CANDIDATE_LEFT'
                         WHEN mode = 'text' AND metadata->>'candidate_seen_at' IS NOT NULL
                              AND CAST(metadata->>'candidate_seen_at' AS TIMESTAMPTZ)
@@ -38,10 +40,18 @@ async def reap_abandoned_sessions(session_factory: async_sessionmaker[AsyncSessi
                     updated_at = now()
                 WHERE status = 'OPEN'
                   AND (
+                    -- The budget counts from the opening question: started_at is
+                    -- the creation time until then (column default), so a session
+                    -- still in its lobby must not be closed as "out of time".
                     (started_at IS NOT NULL AND
+                     EXISTS (
+                        SELECT 1 FROM interview_chat_messages m WHERE m.session_id = interview_sessions.id
+                     ) AND
                      started_at + make_interval(mins => duration_minutes) + interval '10 minutes' < now())
                     OR
-                    (started_at IS NULL AND updated_at < now() - interval '2 hours')
+                    ((started_at IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM interview_chat_messages m WHERE m.session_id = interview_sessions.id
+                     )) AND updated_at < now() - interval '2 hours')
                     OR
                     (metadata->>'candidate_left_at' IS NOT NULL AND
                      CAST(metadata->>'candidate_left_at' AS TIMESTAMPTZ)
