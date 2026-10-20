@@ -6,6 +6,7 @@ available during migration, but new product flows should create sessions here.
 
 import json
 import time
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -37,6 +38,12 @@ from src.modules.interviews.evaluation.evaluation_service import (
     get_session_evaluation,
 )
 from src.modules.interviews.application.progress import compare_with_previous, load_progress, set_weekly_goal
+from src.modules.interviews.application.real_interviews import (
+    delete_report,
+    list_reports,
+    readiness_snapshot,
+    save_report,
+)
 from src.modules.interviews.planning.entry_gate import InterviewEntryBlocked, entry_policy, evaluate_entry
 from src.modules.interviews.planning.planner import (
     PlannerPolicyConfigurationError,
@@ -137,6 +144,11 @@ class CreateInterviewSession(BaseModel):
     experience_type: ExperienceType = Field(default="interview_chat", alias="experienceType")
     locale: str = Field(default="vi-VN", min_length=2, max_length=35)
     duration_minutes: int = Field(default=25, alias="durationMinutes", ge=2, le=120)
+    # "Luyện vòng này" on the progress page: half of the technical questions
+    # come from this round (interview_rounds.FOCUSABLE_AREAS).
+    focus_area: Literal["language", "framework", "data", "api", "infra", "ai"] | None = Field(
+        default=None, alias="focusArea"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -289,6 +301,20 @@ class WeeklyGoalPayload(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class RealInterviewPayload(BaseModel):
+    """A real interview the candidate reports (application/real_interviews.py)."""
+
+    job_id: str | None = Field(default=None, alias="jobId", max_length=36)
+    company: str | None = Field(default=None, max_length=160)
+    interview_date: date = Field(alias="date")
+    stage: Literal["screening", "technical", "final", "other"]
+    result: Literal["passed", "failed", "waiting"]
+    asked_areas: list[str] = Field(default_factory=list, alias="askedAreas", max_length=10)
+    hard_parts: str | None = Field(default=None, alias="hardParts", max_length=2000)
+
+    model_config = {"populate_by_name": True}
+
+
 def _tz_offset(value: int) -> int:
     return max(-840, min(840, int(value)))
 
@@ -310,6 +336,64 @@ async def update_weekly_goal(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     return {"weeklyGoal": await set_weekly_goal(db, user["sub"], payload.weekly_goal)}
+
+
+@router.get("/progress/real-interviews")
+async def get_real_interviews(user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)) -> dict:
+    return {"reports": await list_reports(db, user["sub"])}
+
+
+async def _store_real_interview(
+    db: AsyncSession, user: dict, payload: RealInterviewPayload, report_id: str | None
+) -> dict:
+    if payload.interview_date > datetime.now(UTC).date() + timedelta(days=1):
+        raise HTTPException(status_code=422, detail="date is in the future")
+    readiness: dict[str, Any] = {}
+    if report_id is None:
+        readiness = readiness_snapshot(await load_progress(db, user["sub"]), payload.job_id)
+    try:
+        report = await save_report(
+            db,
+            user["sub"],
+            report_id=report_id,
+            job_id=payload.job_id,
+            company=payload.company,
+            interview_date=payload.interview_date,
+            stage=payload.stage,
+            result=payload.result,
+            asked_areas=payload.asked_areas,
+            hard_parts=payload.hard_parts,
+            readiness=readiness,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Report not found") from exc
+    return {"report": report}
+
+
+@router.post("/progress/real-interviews", status_code=status.HTTP_201_CREATED)
+async def add_real_interview(
+    payload: RealInterviewPayload, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
+) -> dict:
+    return await _store_real_interview(db, user, payload, None)
+
+
+@router.put("/progress/real-interviews/{report_id}")
+async def update_real_interview(
+    report_id: str,
+    payload: RealInterviewPayload,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return await _store_real_interview(db, user, payload, report_id)
+
+
+@router.delete("/progress/real-interviews/{report_id}")
+async def remove_real_interview(
+    report_id: str, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
+) -> dict:
+    if not await delete_report(db, user["sub"], report_id):
+        raise HTTPException(status_code=404, detail="Report not found")
+    return {"deleted": True}
 
 
 @router.get("/sessions/{session_id}/progress-compare")
@@ -395,6 +479,7 @@ async def create_interview_session(
                         "resumeId": payload.resume_id,
                         "jobId": payload.job_id,
                         "source": "p0-session-context",
+                        "focusArea": payload.focus_area,
                     }
                 ),
             },
