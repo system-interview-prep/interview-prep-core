@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.config import get_settings
 from src.core.trace_logging import trace_event
 from src.modules.interviews.core.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
+from src.modules.interviews.core.interview_rounds import FOCUSABLE_AREAS, area_of, is_minor, spread_key
 from src.modules.interviews.planning.plan_structure import (
     build_evaluation_targets,
     build_sections,
@@ -141,10 +142,66 @@ def _demo_targets(
     if len(selected) < 2:
         return selected
     if not any(_is_gap_target(item) for item in selected):
-        best_gap = next((item for item in ranked[len(selected):] if _is_gap_target(item)), None)
+        best_gap = next((item for item in ranked if item not in selected and _is_gap_target(item)), None)
         if best_gap is not None:
             selected = [*selected[:-1], best_gap]
     return sorted(selected, key=_is_gap_target)
+
+
+def _rank_index(ranked: list["_CandidateTarget"]) -> dict[int, int]:
+    return {id(item): index for index, item in enumerate(ranked)}
+
+
+def _select_across_rounds(
+    ranked: list["_CandidateTarget"], budget: int, *, focus_area: str | None = None
+) -> list["_CandidateTarget"]:
+    """Pick technical topics like a real interview: different rounds first.
+
+    Pass 1 takes the best must-have of each round (databases, infrastructure,
+    language...), pass 2 the best remaining topic of each round not yet
+    covered, pass 3 fills by rank. The result keeps the ranked order, so a
+    must-have still comes before a nice-to-have.
+
+    ``focus_area`` ("Luyện vòng này" on the progress page): up to half of the
+    budget (at least one) goes to that round first; the rest is spread as usual.
+    """
+    focused = [item for item in ranked if focus_area and area_of(item.concept.concept_id) == focus_area]
+    if budget >= len(ranked) and not focused:
+        return list(ranked)
+    chosen: list[_CandidateTarget] = focused[: max(1, budget // 2)] if focused else []
+    seen: set[str] = {spread_key(item.concept.concept_id) for item in chosen}
+    for must_only in (True, False):
+        for item in ranked:
+            if len(chosen) >= budget:
+                break
+            if must_only and "must_have" not in item.priorities:
+                continue
+            key = spread_key(item.concept.concept_id)
+            if item in chosen or key in seen:
+                continue
+            chosen.append(item)
+            seen.add(key)
+    for item in ranked:
+        if len(chosen) >= budget:
+            break
+        if item not in chosen:
+            chosen.append(item)
+    order = _rank_index(ranked)
+    return sorted(chosen, key=lambda item: (item not in focused, order[id(item)]))
+
+
+def _split_minor(
+    candidates: list["_CandidateTarget"],
+) -> tuple[list["_CandidateTarget"], list["_CandidateTarget"]]:
+    """Keep data formats and everyday tools (JSON, XML, Git) out of the plan.
+
+    They stay in the plan only when the job has nothing else to ask about.
+    """
+    major = [item for item in candidates if not is_minor(item.concept.concept_id)]
+    minor = [item for item in candidates if is_minor(item.concept.concept_id)]
+    if not major:
+        return minor, []
+    return major, minor
 
 
 def _requirement_concepts(requirement: Any) -> list[TaxonomyRef]:
@@ -213,8 +270,11 @@ def _derive_competency_plan_legacy(
     match: MatchResult,
     duration_minutes: int,
     listing: Mapping[str, Any] | None = None,
+    focus_area: str | None = None,
 ) -> dict[str, Any]:
     """Legacy fixed question budget algorithm (interview-planner-v1)."""
+    if focus_area not in FOCUSABLE_AREAS:
+        focus_area = None
     result_by_id = {item.requirement_id: item for item in match.requirement_results}
     candidates: dict[tuple[str, str], _CandidateTarget] = {}
     non_competency_requirement_ids: list[str] = []
@@ -273,8 +333,9 @@ def _derive_competency_plan_legacy(
         raise ValueError("No applicable taxonomy-backed interview competencies could be derived from the job")
 
     budget = _question_budget(duration_minutes)
+    askable, folded = _split_minor(list(candidates.values()))
     ranked = sorted(
-        candidates.values(),
+        askable,
         key=lambda item: (
             0 if "must_have" in item.priorities else 1,
             -item.raw_weight,
@@ -282,7 +343,7 @@ def _derive_competency_plan_legacy(
             item.concept.concept_id,
         ),
     )
-    selected = ranked[: min(len(ranked), budget)]
+    selected = _select_across_rounds(ranked, budget, focus_area=focus_area)
     if is_demo_duration(duration_minutes):
         selected = _demo_targets(ranked, selected)
     raw_weights = [max(item.raw_weight, 0.0001) for item in selected]
@@ -338,6 +399,13 @@ def _derive_competency_plan_legacy(
         "candidateMatrix": {
             "strengthsToVerify": strengths_to_verify,
             "gapCompetencies": gap_competencies,
+        },
+        # Rounds-aware selection (research 20/10): which job keywords were not
+        # asked as their own topic.
+        "selection": {
+            "policy": "rounds-v1",
+            "minorConceptIds": sorted(item.concept.concept_id for item in folded),
+            "focusArea": focus_area,
         },
     }
     canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -841,6 +909,7 @@ def derive_competency_plan(
     duration_minutes: int,
     policy_config: PlannerPolicyConfig | None = None,
     listing: Mapping[str, Any] | None = None,
+    focus_area: str | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic competency agenda from canonical requirements.
 
@@ -857,6 +926,7 @@ def derive_competency_plan(
             match=match,
             duration_minutes=duration_minutes,
             listing=listing,
+            focus_area=focus_area,
         )
     return _derive_competency_plan_dynamic(
         job=job,
@@ -963,6 +1033,17 @@ async def _load_job_listing_hints(db: AsyncSession, *, job_id: str) -> dict[str,
     return dict(row) if row else {}
 
 
+async def _focus_area(db: AsyncSession, *, plan_id: str) -> str | None:
+    """The round the candidate chose to practise, stored when the session was created."""
+    value = (
+        await db.execute(
+            text("SELECT source_context->>'focusArea' FROM interview_session_plans WHERE id = :id"),
+            {"id": plan_id},
+        )
+    ).scalar_one_or_none()
+    return value if value in FOCUSABLE_AREAS else None
+
+
 async def evaluate_session_match(
     *,
     db: AsyncSession,
@@ -1027,6 +1108,7 @@ async def build_and_persist_session_plan(
         duration_minutes=session_row["duration_minutes"],
         policy_config=configured_planner_policy(),
         listing=await _load_job_listing_hints(db, job_id=session_row["job_id"]),
+        focus_area=await _focus_area(db, plan_id=str(plan_id)),
     )
     # Practice tier from the match score (entry_gate): basic is one level
     # easier than the job, challenge one level harder and probes sufficient
