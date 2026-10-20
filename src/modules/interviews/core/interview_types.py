@@ -66,6 +66,9 @@ class QuestionItem(BaseModel):
     competency: str
     stage: InterviewStage = InterviewStage.DEEP_DIVE
     main_prompt: str
+    # The question as it is said aloud (written once at freeze time); grading
+    # and every decision keep using ``main_prompt``.
+    spoken_prompt: Optional[str] = None
     rubric_criteria: Optional[Any] = ""
     difficulty: str = "intermediate"  # foundational | intermediate | advanced
 
