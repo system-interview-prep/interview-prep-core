@@ -78,11 +78,25 @@ def build_opening(
     more detailed introduction for reading.
     """
     is_voice = str(mode or "").lower() in {"voice", "video"}
-    if is_voice:
-        greeting = f"Chào {call_name or 'bạn'}." if is_vi else f"Hi {call_name or 'there'}."
-        return f"{greeting} {first_question}"
-
     is_demo = bool(duration_minutes) and int(duration_minutes) <= 3
+    if is_voice:
+        # A greeting, one short sentence that sets the frame, then the question.
+        # Greeting straight into the question sounded abrupt when spoken.
+        greeting = f"Chào {call_name or 'bạn'}." if is_vi else f"Hi {call_name or 'there'}."
+        if is_vi:
+            frame = (
+                "Mình hỏi nhanh vài câu thôi."
+                if is_demo or not duration_minutes
+                else f"Hôm nay mình luyện phỏng vấn khoảng {duration_minutes} phút."
+            )
+        else:
+            frame = (
+                "I'll ask a few quick questions."
+                if is_demo or not duration_minutes
+                else f"We'll practise for about {duration_minutes} minutes today."
+            )
+        return f"{greeting} {frame} {first_question}"
+
     agenda = _agenda(planned_stages, is_vi=is_vi)
 
     # The chat room already shows the question, the suggestions and the report
