@@ -21,6 +21,16 @@ from src.modules.interviews.core.interview_types import (
     TurnAction,
 )
 from src.modules.interviews.core.language_policy import response_matches_locale
+from src.modules.interviews.core.interviewer_script import (
+    CLARIFY_FALLBACK_EN,
+    CLARIFY_FALLBACK_VI,
+    CODING_FALLBACK_PROBE_EN,
+    CODING_FALLBACK_PROBE_VI,
+    QUESTION_RESPONSES_EN,
+    QUESTION_RESPONSES_VI,
+    QUESTION_RETURN_EN,
+    QUESTION_RETURN_VI,
+)
 from src.modules.interviews.core.interviewer_voice import (
     ACK_FALLBACK_EN,
     ACK_FALLBACK_VI,
@@ -95,14 +105,6 @@ PROHIBITED_LEAK_PATTERNS = [
 # The first variant of each pool, kept as the name older callers and tests use.
 SAFE_FALLBACK_PROBE_VI = PROBE_FALLBACK_VI[0]
 SAFE_FALLBACK_PROBE_EN = PROBE_FALLBACK_EN[0]
-CODING_FALLBACK_PROBE_VI = (
-    "Giải pháp của bạn đã xử lý được vấn đề. Bạn có thể phân tích đánh đổi giữa việc dùng Lock so với Semaphore "
-    "hoặc cách phòng tránh rủi ro Deadlock nếu có ngoại lệ phát sinh không?"
-)
-CODING_FALLBACK_PROBE_EN = (
-    "Your solution resolved the issue. Can you analyze the trade-offs between Lock vs Semaphore, "
-    "and how you would prevent Deadlocks if an exception is raised?"
-)
 _FIXED_PROBES = frozenset(
     {*PROBE_FALLBACK_VI, *PROBE_FALLBACK_EN, CODING_FALLBACK_PROBE_VI, CODING_FALLBACK_PROBE_EN}
 )
@@ -174,13 +176,7 @@ def clarify_rejection_reason(text_value: str, *, is_vi: bool) -> Optional[str]:
 
 def clarify_fallback_text(question_prompt: str, *, is_vi: bool) -> str:
     """Fixed clarification used when the model reply is missing or rejected."""
-    if is_vi:
-        return (
-            f"Mình hỏi lại ngắn gọn nhé: {question_prompt}"
-        )
-    return (
-        f"Let me put it again briefly: {question_prompt}"
-    )
+    return (CLARIFY_FALLBACK_VI if is_vi else CLARIFY_FALLBACK_EN).format(question=question_prompt)
 
 
 def validate_probe_text(probe_text: str) -> bool:
@@ -362,7 +358,7 @@ def is_yes_no_question(question_prompt: str) -> bool:
 # for this choice (room.chat.stopAndReport / room.abort.confirm and
 # room.common.continueInterview), never where they sit: chat puts them in the
 # bubble, the voice room in a dialog.
-# ABORT_CONFIRMATION_VI/EN (bản chữ) và bản nói: interviewer_voice.abort_confirmation.
+# ABORT_CONFIRMATION_VI/EN: interviewer_script, một câu cho mọi kênh.
 
 # Abort phrases that name the interview itself: unambiguous at any length.
 EXPLICIT_ABORT_PATTERNS = [
@@ -665,70 +661,17 @@ def candidate_question_response(
     duration_minutes: int,
     spoken: bool = True,
 ) -> str:
-    """Answer a meta question, then explicitly restore the current turn.
+    """Answer a meta question, then repeat the current question.
 
-    A voice room repeats the question since the candidate cannot scroll back;
-    the chat room shows it on screen, so repeating it after every aside only
-    filled the transcript.
+    Every room repeats it: after an aside the candidate should not have to
+    scroll back (chat) or remember it (voice). ``spoken`` is kept for older
+    callers and no longer changes the wording.
     """
-    if is_vi:
-        if intent == "SCORING":
-            answer = (
-                "Mình chấm theo độ đúng, độ sâu và ví dụ thực tế. "
-                "Chi tiết tiêu chí mình không chia sẻ trong lúc phỏng vấn."
-            )
-        elif intent == "PROCESS":
-            answer = (
-                f"Buổi phỏng vấn dự kiến kéo dài khoảng {duration_minutes} phút, lần lượt qua các "
-                "phần: mở đầu, CV, chuyên môn, tình huống, hành vi và hỏi đáp. Bạn cứ đề nghị nếu "
-                "muốn mình nhắc lại, giải thích thêm hay đổi câu; muốn dừng thì bấm “Kết thúc”."
-            )
-        elif intent == "ROLE_QA":
-            answer = "Câu này mình xin để dành đến phần Hỏi đáp cuối buổi."
-        elif intent == "ABOUT_INTERVIEWER":
-            answer = (
-                "Mình là người phỏng vấn AI của INTERVIA, giúp bạn luyện phỏng vấn theo CV và JD. "
-                "Kết quả buổi này chỉ để bạn luyện tập."
-            )
-        elif intent == "ANSWER_REQUEST":
-            answer = (
-                "Mình không trả lời thay bạn được, vì buổi này là để bạn luyện tập. "
-                "Bạn cứ chia sẻ những gì mình biết, chưa chắc chắn cũng được."
-            )
-        elif intent == "OFF_TOPIC_REPLY":
-            # Buổi thật 17/10: lời đáp lạc đề bị trả lời "Câu này nằm ngoài buổi
-            # phỏng vấn nên mình xin phép không trả lời", dù ứng viên không hỏi gì.
-            answer = "Hình như mình chưa nghe ra ý bạn cho câu này."
-        else:
-            answer = "Câu này nằm ngoài buổi phỏng vấn nên mình xin phép không trả lời."
-        if not spoken:
-            return f"{answer} Mình quay lại câu hỏi vừa rồi nhé."
-        return f"{answer}\n\nMình hỏi lại nhé: {current_question}"
-
-    if intent == "SCORING":
-        answer = (
-            "I grade on correctness, depth and real examples. "
-            "I don't share the detailed criteria during the interview."
-        )
-    elif intent == "PROCESS":
-        answer = (
-            f"The interview is expected to take about {duration_minutes} minutes and goes through "
-            "an opening, your CV, technical questions, a scenario, behavioural questions and a Q&A. "
-            "Just ask if you want a question repeated, explained or swapped; to stop, press “End”."
-        )
-    elif intent == "ROLE_QA":
-        answer = "Let's keep that for the Q&A at the end."
-    elif intent == "ABOUT_INTERVIEWER":
-        answer = "I am INTERVIA's AI interviewer, here to help you practise against your CV and the job."
-    elif intent == "ANSWER_REQUEST":
-        answer = "I cannot answer for you: this session is your practice. Say what you know, even if unsure."
-    elif intent == "OFF_TOPIC_REPLY":
-        answer = "I'm not sure I caught your answer to this one."
-    else:
-        answer = "That is outside this interview, so I will leave it there."
-    if not spoken:
-        return f"{answer} Let's go back to the question."
-    return f"{answer}\n\nLet me ask again: {current_question}"
+    del spoken
+    responses = QUESTION_RESPONSES_VI if is_vi else QUESTION_RESPONSES_EN
+    answer = responses.get(str(intent), responses["OFF_TOPIC"]).format(minutes=duration_minutes)
+    back = (QUESTION_RETURN_VI if is_vi else QUESTION_RETURN_EN).format(question=current_question)
+    return f"{answer}\n\n{back}"
 
 
 class InterviewCoreEngine:
@@ -775,7 +718,7 @@ class InterviewCoreEngine:
         # thúc tại đây nhé") is the normal ending, not an abort: let the closing
         # handler complete the session instead of recording USER_ENDED.
         if current_stage != InterviewStage.CLOSING and is_abort_request(candidate_text):
-            confirm_msg = abort_confirmation(is_vi, spoken=str(turn_input.modality or "").upper() != "CHAT")
+            confirm_msg = abort_confirmation(is_vi)
             return InterviewerTurnOutput(
                 session_id=session_id,
                 turn_index=turn_input.turn_index + 1,
@@ -946,7 +889,6 @@ class InterviewCoreEngine:
                     current_question=active_prompt,
                     is_vi=is_vi,
                     duration_minutes=int(session_state.get("target_duration_minutes", 25)),
-                    spoken=str(turn_input.modality or "").upper() != "CHAT",
                 ),
                 action=TurnAction.CLARIFY,
                 current_stage=current_stage,
@@ -971,7 +913,7 @@ class InterviewCoreEngine:
 
         # BẢO HIỂM TẦNG 2: Nếu LLM nhận diện ý định xin dừng phỏng vấn -> Kích hoạt Modal xác nhận
         if eval_result.get("intent") == "CANDIDATE_ABORT":
-            confirm_msg = abort_confirmation(is_vi, spoken=str(turn_input.modality or "").upper() != "CHAT")
+            confirm_msg = abort_confirmation(is_vi)
             return InterviewerTurnOutput(
                 session_id=session_id,
                 turn_index=turn_input.turn_index + 1,
@@ -997,7 +939,6 @@ class InterviewCoreEngine:
                     current_question=active_prompt,
                     is_vi=is_vi,
                     duration_minutes=int(session_state.get("target_duration_minutes", 25)),
-                    spoken=str(turn_input.modality or "").upper() != "CHAT",
                 ),
                 action=TurnAction.CLARIFY,
                 current_stage=current_stage,
