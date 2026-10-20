@@ -1,13 +1,25 @@
+import json
 from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import require_admin
 from src.infrastructure.database import get_db
-from src.modules.interviews.facade import interview_question_quality_report, session_plan_audit
+from src.modules.admin import cv_parsing_runs, matching_runs, room_observer
+from src.modules.interviews.facade import (
+    ai_call_view,
+    interview_ai_alerts,
+    interview_ai_health,
+    interview_question_quality_report,
+    live_interview_sessions,
+    session_pipeline,
+    session_plan_audit,
+    summarize_ai_calls,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -251,6 +263,195 @@ async def list_admin_sessions(
     }
 
 
+@router.get("/sessions/live")
+async def get_admin_live_sessions(
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Interviews running now (in progress, being prepared or graded), with their step."""
+    return {"success": True, **await live_interview_sessions(db)}
+
+
+@router.post("/sessions/{session_id}/observe")
+async def observe_interview_room(
+    session_id: str,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """A hidden, listen-only LiveKit seat in a running voice/video interview; every seat is logged."""
+    from src.core.config import get_settings
+
+    row = (
+        await db.execute(
+            text("SELECT id, mode, status FROM interview_sessions WHERE CAST(id AS TEXT) = :sid"),
+            {"sid": session_id},
+        )
+    ).mappings().one_or_none()
+    refusal = room_observer.observe_refusal(dict(row) if row else None)
+    if refusal is not None:
+        raise HTTPException(status_code=refusal[0], detail=refusal[1])
+    settings = get_settings()
+    if not settings.livekit_url or not settings.livekit_api_key or not settings.livekit_api_secret:
+        raise HTTPException(status_code=503, detail="livekit_not_configured")
+    try:
+        from livekit import api
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="livekit_not_installed") from exc
+    running = await room_observer.room_is_running(
+        api,
+        url=settings.livekit_url,
+        key=settings.livekit_api_key,
+        secret=settings.livekit_api_secret,
+        session_id=session_id,
+    )
+    if running is None:
+        raise HTTPException(status_code=503, detail="livekit_unreachable")
+    if not running:
+        raise HTTPException(status_code=409, detail="room_not_started")
+    try:
+        await db.execute(
+            text(
+                "INSERT INTO admin_access_logs "
+                "(admin_user_id, admin_email, action, session_id, target_id, detail) "
+                "VALUES (:uid, :email, 'OBSERVE_INTERVIEW_ROOM', :sid, :room, CAST(:detail AS JSONB))"
+            ),
+            {
+                "uid": admin["sub"],
+                "email": admin.get("email"),
+                "sid": session_id,
+                "room": room_observer.room_name(session_id),
+                "detail": json.dumps({"mode": row["mode"]}),
+            },
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="Access log is not migrated (0030)") from exc
+    token = room_observer.observer_token(
+        api,
+        key=settings.livekit_api_key,
+        secret=settings.livekit_api_secret,
+        session_id=session_id,
+        admin_id=str(admin["sub"]),
+        admin_name=admin.get("name") or admin.get("email"),
+    )
+    return {
+        "success": True,
+        "serverUrl": settings.livekit_url,
+        "participantToken": token,
+        "roomName": room_observer.room_name(session_id),
+        "mode": row["mode"],
+        "logged": True,
+    }
+
+
+# A candidate's own words, shown only on request and logged (admin_access_logs).
+_ANSWER_PREVIEW_CHARS = 1500
+
+
+@router.get("/sessions/{session_id}/turns/{turn_id}/answers")
+async def get_admin_turn_answers(
+    session_id: str,
+    turn_id: str,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The candidate's answers to one question, shortened; every read is logged.
+
+    Refuses (503) when the access log cannot be written: candidate data is never
+    shown without an audit record.
+    """
+    rows = (
+        await db.execute(
+            text(
+                "SELECT m.message_type, m.content, m.created_at FROM interview_chat_messages m "
+                "JOIN interview_turns t ON t.id = m.turn_id "
+                "WHERE m.session_id = :sid AND t.session_id = :sid AND CAST(m.turn_id AS TEXT) = :tid "
+                "AND m.role = 'user' ORDER BY m.sequence"
+            ),
+            {"sid": session_id, "tid": turn_id},
+        )
+    ).mappings().all()
+    try:
+        await db.execute(
+            text(
+                "INSERT INTO admin_access_logs "
+                "(admin_user_id, admin_email, action, session_id, target_id, detail) "
+                "VALUES (:uid, :email, 'VIEW_CANDIDATE_ANSWER', :sid, :tid, CAST(:detail AS JSONB))"
+            ),
+            {
+                "uid": admin["sub"],
+                "email": admin.get("email"),
+                "sid": session_id,
+                "tid": turn_id,
+                "detail": json.dumps({"answers": len(rows)}),
+            },
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="Access log is not migrated (0030)") from exc
+    answers = []
+    for row in rows:
+        content = str(row["content"] or "")
+        answers.append(
+            {
+                "type": row["message_type"],
+                "at": row["created_at"].isoformat() if row["created_at"] else None,
+                "text": content[:_ANSWER_PREVIEW_CHARS],
+                "truncated": len(content) > _ANSWER_PREVIEW_CHARS,
+                "chars": len(content),
+            }
+        )
+    return {"success": True, "answers": answers, "logged": True}
+
+
+@router.get("/access-logs")
+async def list_admin_access_logs(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Who read candidate data, newest first."""
+    try:
+        rows = (
+            await db.execute(
+                text(
+                    "SELECT l.id, l.admin_email, l.action, l.session_id, l.target_id, l.detail, "
+                    "l.created_at, "
+                    "u.name AS candidate_name, u.email AS candidate_email "
+                    "FROM admin_access_logs l "
+                    "LEFT JOIN interview_sessions s ON s.id = l.session_id "
+                    "LEFT JOIN users u ON u.id = s.user_id "
+                    "ORDER BY l.created_at DESC, l.id DESC LIMIT :limit OFFSET :offset"
+                ),
+                {"limit": limit, "offset": offset},
+            )
+        ).mappings().all()
+        total = int((await db.execute(text("SELECT COUNT(*) FROM admin_access_logs"))).scalar() or 0)
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="Access log is not migrated (0030)") from exc
+    return {
+        "success": True,
+        "total": total,
+        "logs": [
+            {
+                "id": row["id"],
+                "adminEmail": row["admin_email"],
+                "action": row["action"],
+                "sessionId": row["session_id"],
+                "targetId": row["target_id"],
+                "detail": row["detail"] or {},
+                "candidate": row["candidate_name"] or row["candidate_email"],
+                "at": row["created_at"].isoformat() if row["created_at"] else None,
+            }
+            for row in rows
+        ],
+    }
+
+
 @router.get("/sessions/{session_id}/plan")
 async def get_admin_session_plan(
     session_id: str,
@@ -262,6 +463,197 @@ async def get_admin_session_plan(
     if audit is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"success": True, **audit}
+
+
+@router.get("/sessions/{session_id}/pipeline")
+async def get_admin_session_pipeline(
+    session_id: str,
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """What the AI did for one interview, stage by stage (polled while it runs)."""
+    pipeline = await session_pipeline(db, session_id)
+    if pipeline is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"success": True, **pipeline}
+
+
+@router.get("/ai/alerts")
+async def get_admin_ai_alerts(
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Problems to act on now: failed or stuck grading, live errors, high fallback rates."""
+    return {"success": True, **await interview_ai_alerts(db)}
+
+
+@router.get("/ai/health")
+async def get_admin_ai_health(
+    days: int = Query(7, ge=1, le=90),
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Fallback rates, latencies, failures and stuck sessions over a window."""
+    try:
+        health = await interview_ai_health(db, days=days)
+    except Exception as exc:  # tables missing until migration 0029 is applied
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="AI observability tables are not migrated") from exc
+    return {"success": True, **health}
+
+
+_AI_CALL_COLUMNS = (
+    "id, session_id, purpose, provider, model, status, duration_ms, input_tokens, output_tokens, "
+    "input_chars, output_chars, error_type, error_message, created_at"
+)
+
+
+@router.get("/ai/calls")
+async def list_admin_ai_calls(
+    purpose: str | None = Query(None, max_length=160),
+    status: Literal["ok", "error"] | None = Query(None),
+    session_id: str | None = Query(None, alias="sessionId", max_length=36),
+    days: int = Query(7, ge=1, le=90),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Model calls, newest first, with a summary over the same filters."""
+    clauses = ["created_at >= now() - make_interval(days => :days)"]
+    params: dict = {"days": days}
+    if purpose:
+        clauses.append("purpose ILIKE :purpose")
+        params["purpose"] = f"%{purpose}%"
+    if status:
+        clauses.append("status = :status")
+        params["status"] = status
+    if session_id:
+        clauses.append("session_id = :session_id")
+        params["session_id"] = session_id
+    where = " AND ".join(clauses)
+    try:
+        rows = (
+            await db.execute(
+                text(
+                    f"SELECT {_AI_CALL_COLUMNS} FROM ai_call_logs WHERE {where} "
+                    "ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset"
+                ),
+                {**params, "limit": limit, "offset": offset},
+            )
+        ).mappings().all()
+        total = int(
+            (await db.execute(text(f"SELECT COUNT(*) FROM ai_call_logs WHERE {where}"), params)).scalar() or 0
+        )
+        sample = (
+            await db.execute(
+                text(
+                    "SELECT purpose, status, duration_ms, input_tokens, output_tokens FROM ai_call_logs "
+                    f"WHERE {where} ORDER BY created_at DESC LIMIT 5000"
+                ),
+                params,
+            )
+        ).mappings().all()
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="AI observability tables are not migrated") from exc
+    return {
+        "success": True,
+        "total": total,
+        # Summary over the latest 5000 matching calls.
+        "summary": summarize_ai_calls([dict(r) for r in sample]),
+        "calls": [ai_call_view(dict(r)) for r in rows],
+    }
+
+
+@router.get("/ai/calls/{call_id}")
+async def get_admin_ai_call(
+    call_id: int,
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        row = (
+            await db.execute(text("SELECT * FROM ai_call_logs WHERE id = :id"), {"id": call_id})
+        ).mappings().one_or_none()
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="AI observability tables are not migrated") from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="AI call not found")
+    return {"success": True, "call": ai_call_view(dict(row))}
+
+
+@router.get("/matching/runs")
+async def list_admin_matching_runs(
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    status: Literal["all", "running", "completed", "failed"] = Query("all"),
+    days: int = Query(7, ge=1, le=90),
+    q: str | None = Query(None, max_length=120),
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """CV-JD matching runs, newest first (polled while runs are in progress)."""
+    try:
+        return await matching_runs.list_runs(db, limit=limit, offset=offset, status=status, days=days, q=q)
+    except SQLAlchemyError as exc:  # table missing until migration 0032 is applied
+        await db.rollback()
+        raise HTTPException(status_code=503, detail=matching_runs.NOT_MIGRATED) from exc
+
+
+@router.get("/matching/runs/{run_id}")
+async def get_admin_matching_run(
+    run_id: str,
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """One matching run step by step: requirements, scoring, clarification, AI calls."""
+    try:
+        detail = await matching_runs.load_run_detail(db, run_id[:36])
+    except SQLAlchemyError as exc:  # table missing until migration 0032 is applied
+        await db.rollback()
+        raise HTTPException(status_code=503, detail=matching_runs.NOT_MIGRATED) from exc
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Matching run not found")
+    return detail
+
+
+@router.get("/cv-parsing/runs")
+async def list_admin_cv_parsing_runs(
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    status: Literal["all", "running", "completed", "review", "failed"] = Query("all"),
+    days: int = Query(7, ge=1, le=90),
+    q: str | None = Query(None, max_length=120),
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Uploaded CVs and how far their parsing got, newest first (polled while CVs are parsing)."""
+    try:
+        return await cv_parsing_runs.list_cv_runs(
+            db, limit=limit, offset=offset, status=status, days=days, q=q
+        )
+    except SQLAlchemyError as exc:  # tables missing until migration 0033 is applied
+        await db.rollback()
+        raise HTTPException(status_code=503, detail=cv_parsing_runs.NOT_MIGRATED) from exc
+
+
+@router.get("/cv-parsing/runs/{cv_id}")
+async def get_admin_cv_parsing_run(
+    cv_id: str,
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """One CV step by step: upload, queue, extraction, parse, quality gate, save, AI calls."""
+    try:
+        detail = await cv_parsing_runs.load_cv_detail(db, cv_id[:36])
+    except SQLAlchemyError as exc:  # tables missing until migration 0033 is applied
+        await db.rollback()
+        raise HTTPException(status_code=503, detail=cv_parsing_runs.NOT_MIGRATED) from exc
+    if detail is None:
+        raise HTTPException(status_code=404, detail="CV not found")
+    return detail
 
 
 @router.get("/question-quality")
