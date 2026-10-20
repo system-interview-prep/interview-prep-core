@@ -12,10 +12,14 @@ Pure and synchronous so it can be unit tested without LiveKit.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
+import sys
 import unicodedata
 from dataclasses import dataclass, field
+from pathlib import Path
+from types import ModuleType
 
 # Silence (seconds) after the last fragment before an answer is submitted.
 # A short buffer waits longer, so a brief real answer ("Chưa ạ.") still goes
@@ -132,39 +136,46 @@ class SubmittedAnswer:
     confidence: float | None
 
 
-# Said while Interview Core works on an answer. Rotated per answer so the same
-# sentence is not heard after every question.
-PROCESSING_FILLERS_VI: tuple[str, ...] = (
-    "Mình đã ghi nhận. Chờ mình một chút nhé.",
-    "Ừm, để mình xem lại ý bạn vừa nói nhé.",
-    "Ok, bạn chờ mình vài giây nhé.",
-    "Mình đang xem câu trả lời của bạn, chờ chút nhé.",
-)
-PROCESSING_FILLERS_EN: tuple[str, ...] = (
-    "Got it. Give me a moment.",
-    "Okay, let me think about that for a second.",
-    "Right, one moment please.",
-)
+def _load_script() -> ModuleType:
+    """The shared interviewer script (core/interviewer_script.py).
+
+    The LiveKit worker runs this folder as plain scripts, without the ``src``
+    package, so the data-only script file is loaded by its path. Loading it
+    the same way inside the API avoids importing the whole core package (and
+    its engine) from a transport adapter.
+    """
+    cached = sys.modules.get("interviewer_script")
+    if cached is not None:
+        return cached
+    path = Path(__file__).resolve().parents[2] / "core" / "interviewer_script.py"
+    spec = importlib.util.spec_from_file_location("interviewer_script", path)
+    if spec is None or spec.loader is None:  # pragma: no cover - the file ships with the repo
+        raise ImportError(f"interviewer script not found at {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["interviewer_script"] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-# Khi không nghe được câu trả lời (bản ghi rỗng hoặc quá nhiễu).
-NOT_HEARD_VI: tuple[str, ...] = (
-    "Mình chưa nghe rõ câu trả lời. Bạn vui lòng nói lại nhé.",
-    "Hình như mình nghe chưa rõ, bạn nói lại giúp mình nhé.",
-    "Tiếng hơi nhỏ, bạn nói lại câu trả lời được không?",
-)
-NOT_HEARD_EN: tuple[str, ...] = (
-    "I didn't catch that. Could you say it again?",
-    "Sorry, I missed that. Could you repeat it?",
-)
+SCRIPT = _load_script()
+
+# Câu chỉ có ở kênh nói. Câu chữ nằm ở core/interviewer_script.py.
+PROCESSING_FILLERS_VI: tuple[str, ...] = SCRIPT.PROCESSING_FILLERS_VI
+PROCESSING_FILLERS_EN: tuple[str, ...] = SCRIPT.PROCESSING_FILLERS_EN
+NOT_HEARD_VI: tuple[str, ...] = SCRIPT.NOT_HEARD_VI
+NOT_HEARD_EN: tuple[str, ...] = SCRIPT.NOT_HEARD_EN
+
+
+def _is_vi(locale: str) -> bool:
+    return str(locale or "").lower().startswith("vi")
 
 
 def not_heard_lines(locale: str) -> tuple[str, ...]:
-    return NOT_HEARD_VI if locale.lower().startswith("vi") else NOT_HEARD_EN
+    return NOT_HEARD_VI if _is_vi(locale) else NOT_HEARD_EN
 
 
 def processing_fillers(locale: str) -> tuple[str, ...]:
-    return PROCESSING_FILLERS_VI if locale.lower().startswith("vi") else PROCESSING_FILLERS_EN
+    return PROCESSING_FILLERS_VI if _is_vi(locale) else PROCESSING_FILLERS_EN
 
 
 def processing_filler(locale: str, index: int = 0) -> str:
@@ -173,26 +184,24 @@ def processing_filler(locale: str, index: int = 0) -> str:
 
 
 def silence_reprompt(locale: str) -> str:
-    if locale.lower().startswith("vi"):
-        return (
-            "Bạn cứ từ từ suy nghĩ nhé. Khi sẵn sàng, hãy trả lời tự nhiên; "
-            "nếu muốn nghe lại, chỉ cần nói “nhắc lại câu hỏi”."
-        )
-    return (
-        "Take your time and answer naturally when you're ready. "
-        "If you want to hear it again, just say “repeat the question”."
-    )
+    return SCRIPT.SILENCE_REPROMPT_VI if _is_vi(locale) else SCRIPT.SILENCE_REPROMPT_EN
 
 
 def turn_taking_tip(locale: str) -> str:
     """Briefly invite a natural answer before the opening question."""
-    if locale.lower().startswith("vi"):
-        return (
-            "Bạn cứ trả lời tự nhiên. Nếu cần nghe lại, hãy nói “nhắc lại câu hỏi”."
-        )
-    return (
-        "Answer naturally. If you need to hear a question again, just say “repeat the question”."
-    )
+    return SCRIPT.TURN_TAKING_TIP_VI if _is_vi(locale) else SCRIPT.TURN_TAKING_TIP_EN
+
+
+def unclear_transcript_text(locale: str) -> str:
+    return SCRIPT.UNCLEAR_TRANSCRIPT_VI if _is_vi(locale) else SCRIPT.UNCLEAR_TRANSCRIPT_EN
+
+
+def core_error_text(locale: str) -> str:
+    return SCRIPT.CORE_ERROR_VI if _is_vi(locale) else SCRIPT.CORE_ERROR_EN
+
+
+def backchannel_continue_text(locale: str) -> str:
+    return SCRIPT.BACKCHANNEL_CONTINUE_VI if _is_vi(locale) else SCRIPT.BACKCHANNEL_CONTINUE_EN
 
 
 def reprompt_after_seconds() -> float:
