@@ -29,6 +29,11 @@ from src.modules.interviews.planning.planner_config import (
     PlannerPolicyConfig,
     resolve_strict_hands_on_precedence,
 )
+from src.modules.interviews.planning.entry_gate import (
+    InterviewEntryBlocked,
+    evaluate_entry,
+    fit_adjusted_difficulty,
+)
 from src.modules.interviews.planning.project_evidence import extract_project_evidences
 from src.modules.job_descriptions.schemas import CanonicalJobDescription
 from src.modules.matching.facade import canonical_job_from_description, evaluate_match
@@ -958,6 +963,26 @@ async def _load_job_listing_hints(db: AsyncSession, *, job_id: str) -> dict[str,
     return dict(row) if row else {}
 
 
+async def evaluate_session_match(
+    *,
+    db: AsyncSession,
+    user: dict,
+    resume_id: str,
+    job_id: str,
+) -> MatchResult:
+    """Match the CV against the job exactly as the plan does (same cache)."""
+    resume, _checksum = await _load_resume(db, user_id=user["sub"], resume_id=resume_id)
+    job = await _load_job(db, user=user, job_id=job_id)
+    return await evaluate_match(
+        MatchRequest(
+            schemaVersion="2.1",
+            resume=resume,
+            job=job,
+            asyncProcessing=False,
+        )
+    )
+
+
 async def build_and_persist_session_plan(
     *,
     db: AsyncSession,
@@ -985,6 +1010,17 @@ async def build_and_persist_session_plan(
             asyncProcessing=False,
         )
     )
+    # Checked again here, not only when the session is created: a session made
+    # before the threshold existed, or before it was raised, must not open.
+    entry = evaluate_entry(match)
+    if not entry.allowed:
+        trace_event(
+            "interviewer",
+            "plan_blocked_by_match_threshold",
+            session_id=session_row.get("id"),
+            **entry.trace_fields(),
+        )
+        raise InterviewEntryBlocked(entry)
     plan = derive_competency_plan(
         job=job,
         match=match,
@@ -992,12 +1028,23 @@ async def build_and_persist_session_plan(
         policy_config=configured_planner_policy(),
         listing=await _load_job_listing_hints(db, job_id=session_row["job_id"]),
     )
+    # Practice tier from the match score (entry_gate): basic is one level
+    # easier than the job, challenge one level harder and probes sufficient
+    # answers too. Everyone practises; the score decides the level.
+    plan["difficulty"] = fit_adjusted_difficulty(plan.get("difficulty") or {}, entry)
+    plan["practiceTier"] = entry.tier
+    plan.pop("fingerprint", None)
+    canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    plan["fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     difficulty = plan.get("difficulty") or {}
     trace_event(
         "interviewer",
         "plan_derived",
         difficulty_level=difficulty.get("level"),
         difficulty_source=difficulty.get("source"),
+        difficulty_job_level=difficulty.get("jobLevel"),
+        entry_warnings=list(entry.warnings),
+        practice_tier=entry.tier,
         session_id=session_row.get("id"),
         resume_id=session_row.get("resume_id"),
         job_id=session_row.get("job_id"),
@@ -1037,6 +1084,9 @@ async def build_and_persist_session_plan(
         "matchingDecision": match.decision,
         "eligibility": match.eligibility,
         "fitBand": match.fit_band,
+        "matchPercent": entry.percentage,
+        "entryWarnings": list(entry.warnings),
+        "practiceTier": entry.tier,
         "plannerPolicyVersion": plan["policyVersion"],
         "questionBudget": plan.get("questionBudget"),
         "nonCompetencyRequirementIds": plan["nonCompetencyRequirementIds"],
