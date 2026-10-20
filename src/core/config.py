@@ -14,6 +14,14 @@ class Settings(BaseSettings):
     # None enables traces only in local/development environments.
     trace_logs_enabled: bool | None = None
     trace_logs_dir: str = "trace-logs"
+    # Admin pipeline view (interview_pipeline_events, ai_call_logs). Unlike the
+    # JSONL traces these are kept in every environment. None: on, except
+    # under pytest.
+    pipeline_events_enabled: bool | None = None
+    pipeline_events_retention_days: int = Field(default=90, ge=1, le=3650)
+    # Store truncated model inputs/outputs in ai_call_logs. They contain CV
+    # and answer text, so this is off unless an operator turns it on.
+    ai_call_log_capture_text: bool = False
     # Seeds the curated Question Bank (approved questions, rubrics and taxonomy
     # mappings). Interviews fail closed with question_bank_insufficient on an
     # empty bank, so a demo deployment must turn this on explicitly.
