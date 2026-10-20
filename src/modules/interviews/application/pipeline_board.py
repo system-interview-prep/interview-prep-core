@@ -27,7 +27,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 LIVE_WINDOW_MINUTES = 120
 # A session that ended this recently stays on the board as "finished".
 RECENTLY_ENDED_MINUTES = 15
-LIVE_LIMIT = 50
+# Sessions scanned for the board (counts cover all of them); one page is sent.
+LIVE_LIMIT = 5000
+LIVE_PAGE_DEFAULT = 30
+LIVE_PAGE_MAX = 200
+BOARD_GROUPS = ("all", "attention", "interviewing", "preparing", "grading", "finished")
+# A room state that has lasted this long needs a look (kept in step with the admin page).
+PROCESSING_SLOW_MS = 15_000
+WAITING_LONG_MS = 90_000
+# Ended sessions stay under "Cần chú ý" when they ended like this.
+ABNORMAL_END_REASONS = frozenset({"TECHNICAL_FAILURE", "CANDIDATE_LEFT"})
 
 # Alert thresholds (last hour unless stated).
 ALERT_WINDOW_MINUTES = 60
@@ -107,7 +116,120 @@ def board_step(
     }
 
 
-async def load_live_sessions(db: AsyncSession) -> dict[str, Any]:
+def board_group(step: dict[str, Any]) -> str:
+    """interviewing | preparing | grading | finished, for the board's filter."""
+    name = step.get("step")
+    if name == "interviewing":
+        return "interviewing"
+    if name in {"planning", "selecting", "not_started"}:
+        return "preparing"
+    if name in {"grading", "grading_failed"}:
+        return "grading"
+    return "finished"
+
+
+def _ms_since(value: Any, now: datetime) -> int | None:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return int((now - value).total_seconds() * 1000)
+
+
+def needs_attention(session: dict[str, Any], now: datetime) -> bool:
+    """Errors, failed grading, a candidate who left, or a room state that has lasted too long."""
+    step = session.get("step") or {}
+    if int(session.get("errors") or 0) > 0 or step.get("step") == "grading_failed":
+        return True
+    if step.get("step") == "finished":
+        return str(step.get("endReason") or "").upper() in ABNORMAL_END_REASONS
+    if step.get("step") != "interviewing":
+        return False
+    state = step.get("state")
+    if state == "candidate_away":
+        return True
+    since = _ms_since(step.get("since"), now)
+    if since is None:
+        return False
+    return (state == "processing" and since > PROCESSING_SLOW_MS) or (
+        state == "waiting_answer" and since > WAITING_LONG_MS
+    )
+
+
+_GROUP_ORDER = {"interviewing": 1, "preparing": 2, "grading": 3, "finished": 4}
+
+
+def board_page(
+    sessions: list[dict[str, Any]],
+    *,
+    group: str = "all",
+    q: str | None = None,
+    limit: int = LIVE_PAGE_DEFAULT,
+    offset: int = 0,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Counts per group over every session, then one filtered, sorted page.
+
+    "all" is what still needs watching: every session that has not ended, plus
+    ended ones that need attention; the others are only under "finished".
+    Order: sessions that need attention, then live rooms, preparing, grading,
+    finished; oldest start first inside a group (the longest-running on top).
+    """
+    now = now or datetime.now(UTC)
+    keyed = []
+    counts = {key: 0 for key in BOARD_GROUPS}
+    for session in sessions:
+        grp = board_group(session.get("step") or {})
+        attention = needs_attention(session, now)
+        session = {**session, "group": grp, "attention": attention}
+        keyed.append(session)
+        counts["all"] += int(grp != "finished" or attention)
+        counts[grp] += 1
+        counts["attention"] += int(attention)
+    needle = (q or "").strip().casefold()
+    selected = [
+        s
+        for s in keyed
+        if (
+            (s["group"] != "finished" or s["attention"])
+            if group == "all"
+            else (s["attention"] if group == "attention" else s["group"] == group)
+        )
+        and (
+            not needle
+            or any(
+                needle in str(s.get(field) or "").casefold()
+                for field in ("candidateName", "candidateEmail", "jobTitle")
+            )
+        )
+    ]
+    selected.sort(
+        key=lambda s: (not s["attention"], _GROUP_ORDER.get(s["group"], 9), str(s.get("startedAt") or ""))
+    )
+    limit = max(1, min(int(limit or LIVE_PAGE_DEFAULT), LIVE_PAGE_MAX))
+    offset = max(0, int(offset or 0))
+    return {
+        "sessions": selected[offset : offset + limit],
+        "total": len(selected),
+        "counts": counts,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+async def load_live_sessions(
+    db: AsyncSession,
+    *,
+    group: str = "all",
+    q: str | None = None,
+    limit: int = LIVE_PAGE_DEFAULT,
+    offset: int = 0,
+) -> dict[str, Any]:
     rows = await _all(
         db,
         f"""
@@ -132,7 +254,10 @@ async def load_live_sessions(db: AsyncSession) -> dict[str, Any]:
     )
     ids = [str(row["id"]) for row in rows]
     if not ids:
-        return {"sessions": [], "generatedAt": datetime.now(UTC).isoformat()}
+        return {
+            **board_page([], group=group, q=q, limit=limit, offset=offset),
+            "generatedAt": datetime.now(UTC).isoformat(),
+        }
     params = {"ids": ids}
     turns = {
         str(r["session_id"]): r
@@ -261,7 +386,10 @@ async def load_live_sessions(db: AsyncSession) -> dict[str, Any]:
                 "lastEventAt": _iso(p.get("last_event_at")),
             }
         )
-    return {"sessions": sessions, "generatedAt": now.isoformat()}
+    return {
+        **board_page(sessions, group=group, q=q, limit=limit, offset=offset, now=now),
+        "generatedAt": now.isoformat(),
+    }
 
 
 # --------------------------------------------------------------------------- alerts
