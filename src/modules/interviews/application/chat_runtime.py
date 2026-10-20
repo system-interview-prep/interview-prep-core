@@ -523,6 +523,12 @@ async def get_chat_runtime(
     target_sec = int(session_row.get("duration_minutes") or 25) * 60
     elapsed_sec = max(0, int((datetime.now(UTC) - started_dt).total_seconds()))
     remaining_sec = max(0, target_sec - elapsed_sec)
+    # interview_sessions.started_at defaults to the row's creation time; the
+    # interview clock really starts with the opening question (start_chat_session
+    # resets started_at then). Before that, nothing has been spent.
+    has_started = bool(messages)
+    if not has_started:
+        remaining_sec = target_sec
 
     is_awaiting = False
     if session_row["status"] == "OPEN" and messages:
@@ -585,7 +591,11 @@ async def get_chat_runtime(
         "messages": messages,
         "isAwaitingCandidate": is_awaiting,
         "durationMinutes": int(session_row.get("duration_minutes") or 25),
-        "startedAt": session_row.get("started_at").isoformat() if session_row.get("started_at") else None,
+        "startedAt": (
+            session_row.get("started_at").isoformat()
+            if has_started and isinstance(session_row.get("started_at"), datetime)
+            else None
+        ),
         "sessionProbeCount": session_probe_count,
         "cvFollowupUsed": bool(cv_followup_used > 0),
         "workingMemory": {
