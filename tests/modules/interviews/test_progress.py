@@ -12,8 +12,19 @@ from src.modules.interviews.application.progress import (
     TurnRow,
     build_progress,
     compare_with_previous,
+    kalman_estimates,
+    reliable_trend,
+    skill_levels,
     trend,
     weekly_streak,
+)
+from src.modules.interviews.application.progress_calibration import (
+    Calibration,
+    SkillSessionPoint,
+    between_person_sd,
+    grading_sd,
+    tier_offsets,
+    typical_error,
 )
 
 NOW = datetime(2026, 10, 19, 4, 0, tzinfo=UTC)  # Monday 11:00 in Vietnam
@@ -74,10 +85,11 @@ def test_answer_habits_do_not_count_deepening_probes() -> None:
         _turn("s1", None, 8, stage="BEHAVIORAL"),
     ]
     behavior = build_progress(sessions, turns, now=NOW)["sessions"][0]["behavior"]
-    assert behavior == {
+    expected = {
         "technicalTurns": 3, "answeredTurns": 2, "firstTimeSufficient": 1,
         "firstTimeSufficientRate": 0.5, "probesNeeded": 1, "skipped": 1,
     }
+    assert {key: behavior[key] for key in expected} == expected
 
 
 def test_weekly_streak_counts_weeks_and_saves_one_missed_week_a_month() -> None:
@@ -164,3 +176,141 @@ def test_many_skills_across_cvs_and_jobs_stay_filterable() -> None:
         {"resumeId": "cv-2", "name": "CV Data.pdf", "sessions": 1},
     ]
     assert {j["jobId"] for j in progress["jobs"]} == {"job-be", "job-data"}
+
+
+# --- Bằng chứng tiến bộ (nghiên cứu 20/10) ------------------------------------
+
+
+def _checklist(*statuses: str) -> list[dict]:
+    return [{"key": f"p{i}", "importance": "CORE", "status": status} for i, status in enumerate(statuses)]
+
+
+def test_reliable_trend_needs_a_change_beyond_the_noise() -> None:
+    default = Calibration()  # typical error 1.2, worthwhile change 0.3
+    # The old 0.5 band called this progress; with session noise it is not.
+    assert reliable_trend([5.0, 5.2, 5.0, 5.8, 5.9, 5.7], default)["status"] == "flat"
+    clear = reliable_trend([4.0, 4.5, 4.2, 6.0, 6.4, 6.6], default)
+    assert clear["status"] == "up" and clear["probability"] >= 0.8
+    assert reliable_trend([7.0, 7.2, 7.1, 5.0, 4.8, 5.2], default)["status"] == "down"
+    assert reliable_trend([5.0, 6.0], default)["status"] == "insufficient"
+    # A quieter system (measured) can call a smaller change.
+    quiet = Calibration(typical_error=0.4, between_sd=1.0)
+    assert reliable_trend([5.0, 5.2, 5.0, 5.8, 5.9, 5.7], quiet)["status"] == "up"
+
+
+def test_kalman_estimate_smooths_and_narrows() -> None:
+    estimates = kalman_estimates([5.0, 8.0, 5.0, 8.0], Calibration())
+    means = [mean for mean, _ in estimates]
+    sds = [sd for _, sd in estimates]
+    assert means[0] == 5.0
+    # A jump of 3 points moves the estimate only part of the way.
+    assert 5.0 < means[1] < 8.0
+    assert sds[0] > sds[-1]
+
+
+def test_skill_level_changes_only_past_the_margin() -> None:
+    level, changes = skill_levels([5.6, 7.1, 7.4, 6.9, 6.75])
+    # 7.1 is within the 0.3 margin above 7.0: still "Đạt yêu cầu" (2); 7.4 moves up;
+    # 6.9 and 6.75 stay within the margin below 7.0.
+    assert changes == [(2, 2, 3)]
+    assert level == 3
+    level, changes = skill_levels([7.5, 6.5])
+    assert changes == [(1, 3, 2)] and level == 2
+
+
+def test_session_behavior_counts_checklist_evidence() -> None:
+    sessions = [_session(1)]
+    turns = [
+        TurnRow("s1", "DEEP_DIVE", "skill-a", "A", None, 9.0, "ANSWERED",
+                rubric_points=_checklist("COVERED", "COVERED")),
+        TurnRow("s1", "DEEP_DIVE", "skill-b", "B", None, 5.0, "ANSWERED", needed_probe=True,
+                rubric_points=_checklist("COVERED", "COVERED", "COVERED", "PARTIAL")),
+        TurnRow("s1", "CHALLENGE", "skill-c", "C", None, 3.0, "ANSWERED", needed_probe=True,
+                rubric_points=_checklist("INCORRECT", "MISSING")),
+        TurnRow("s1", "BEHAVIORAL", None, None, None, 7.0, "ANSWERED",
+                star={"is_star_complete": True, "result": "giảm thời gian phản hồi 40%"}),
+        TurnRow("s1", "VALIDATE", "skill-d", "D", None, 6.0, "ANSWERED",
+                star={"is_star_complete": False, "result": "mọi người hài lòng"},
+                rubric_points=_checklist("COVERED")),
+    ]
+    behavior = build_progress(sessions, turns, now=NOW)["sessions"][0]["behavior"]
+    assert behavior["checklistTurns"] == 4
+    assert behavior["coreTotal"] == 9 and behavior["coreCovered"] == 6.5
+    assert behavior["fullCoreTurns"] == 2
+    assert behavior["incorrectTurns"] == 1
+    assert behavior["probesNeeded"] == 2 and behavior["recoveredAfterProbe"] == 1
+    assert behavior["starTurns"] == 2 and behavior["starComplete"] == 1 and behavior["measurableResult"] == 1
+
+
+def test_skill_view_has_estimate_level_and_compares_within_tier() -> None:
+    sessions = [_session(1), _session(2), _session(3), _session(4, tier="challenge")]
+    turns = [
+        _turn("s1", "skill-redis", 4.0), _turn("s2", "skill-redis", 5.5),
+        _turn("s3", "skill-redis", 7.0), _turn("s4", "skill-redis", 5.0),
+    ]
+    redis = build_progress(sessions, turns, now=NOW)["skills"][0]
+    # Only the challenge point is comparable with the latest (challenge) one.
+    assert redis["comparablePoints"] == 1
+    assert redis["points"][0]["estimate"] is None and redis["points"][-1]["estimate"] == 5.0
+    # With measured tier offsets every point is moved onto one scale.
+    calibrated = Calibration(tier_offsets={"standard": 0.0, "challenge": 1.5}, measured_at=NOW)
+    redis = build_progress(sessions, turns, now=NOW, calibration=calibrated)["skills"][0]
+    assert redis["comparablePoints"] == 4
+    assert redis["trend"]["status"] == "up"
+    public = build_progress(sessions, turns, now=NOW, calibration=calibrated)["calibration"]
+    assert public["tierAdjusted"] is True
+
+
+def test_trend_is_read_within_one_grader_version() -> None:
+    sessions = [_session(i) for i in range(1, 5)]
+    for s, version in zip(sessions, ["m1|v1", "m1|v1", "m2|v1", "m2|v1"], strict=True):
+        s.grader_version = version
+    scores = [3.0, 3.5, 7.0, 7.5]
+    turns = [_turn(f"s{i}", "skill-a", score) for i, score in zip(range(1, 5), scores, strict=True)]
+    skill = build_progress(sessions, turns, now=NOW)["skills"][0]
+    # The jump came with a grader change: not shown as progress.
+    assert skill["comparablePoints"] == 2
+    assert skill["trend"]["status"] == "insufficient"
+
+
+def test_session_recap_lists_firsts_and_level_changes() -> None:
+    sessions = [_session(1), _session(2), _session(3)]
+    turns = [
+        TurnRow("s1", "DEEP_DIVE", "skill-a", "A", None, 4.0, "ANSWERED",
+                rubric_points=_checklist("COVERED", "MISSING")),
+        TurnRow("s2", "DEEP_DIVE", "skill-a", "A", None, 5.6, "ANSWERED",
+                rubric_points=_checklist("COVERED", "PARTIAL")),
+        TurnRow("s3", "DEEP_DIVE", "skill-a", "A", None, 9.5, "ANSWERED",
+                rubric_points=_checklist("COVERED", "COVERED")),
+        TurnRow("s3", "BEHAVIORAL", None, None, None, 8.0, "ANSWERED",
+                star={"is_star_complete": True, "result": "tăng 20%"}),
+    ]
+    progress = build_progress(sessions, turns, now=NOW)
+    comparison = compare_with_previous(progress, "s3")
+    assert set(comparison["firsts"]) >= {"full_core", "star_complete", "measurable_result"}
+    assert comparison["levelChanges"] and comparison["levelChanges"][0]["skill"] == "A"
+    assert comparison["behavior"]["coreCoverage"] == {"before": 0.75, "now": 1.0}
+    assert any(m["kind"] == "skill_level_up" for m in progress["milestones"])
+
+
+def test_calibration_measurements() -> None:
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    points = []
+    for user in range(6):
+        for k in range(4):
+            noise = 0.8 if k % 2 else -0.8
+            moment = start + timedelta(days=3 * k)
+            points.append(SkillSessionPoint(f"u{user}", "redis", "standard", moment, 5 + user * 0.5 + noise))
+    te, pairs = typical_error(points)
+    import statistics
+
+    diffs = [1.6, -1.6, 1.6] * 6
+    assert pairs == 18 and te is not None and abs(te - statistics.pstdev(diffs) / 2**0.5) < 0.01
+    bsd, people = between_person_sd(points)
+    assert people == 6 and bsd is not None and bsd > 0.8
+    challenge = [SkillSessionPoint(f"c{i}", "redis", "challenge", start, 4.0) for i in range(25)]
+    offsets = tier_offsets(points + challenge)
+    assert offsets["standard"] == 0.0 and offsets["challenge"] > 1.5
+    assert tier_offsets(points) == {}
+    gsd, n = grading_sd([[6.0, 7.0, 6.5], [4.0, 4.0]])
+    assert n == 2 and gsd is not None and 0 < gsd < 1
