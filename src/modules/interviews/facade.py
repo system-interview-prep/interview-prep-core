@@ -5,6 +5,11 @@ pre-generate questions for a job's must-have skills and to read coverage; the
 admin API reads a session's plan and question quality through it.
 """
 
+from src.modules.interviews.application.pipeline_board import load_alerts as interview_ai_alerts
+from src.modules.interviews.application.pipeline_board import load_live_sessions as live_interview_sessions
+from src.modules.interviews.application.pipeline_health import load_health as interview_ai_health
+from src.modules.interviews.application.pipeline_view import ai_call_view, summarize_ai_calls
+from src.modules.interviews.application.pipeline_view import load_pipeline as session_pipeline
 from src.modules.interviews.evaluation.question_quality import (
     question_quality_report as interview_question_quality_report,
 )
@@ -16,6 +21,12 @@ from src.modules.interviews.planning.question_coverage import (
 )
 
 __all__ = [
+    "ai_call_view",
+    "interview_ai_alerts",
+    "interview_ai_health",
+    "live_interview_sessions",
+    "session_pipeline",
+    "summarize_ai_calls",
     "enqueue_question_coverage",
     "interview_question_quality_report",
     "prepare_job_question_coverage",
