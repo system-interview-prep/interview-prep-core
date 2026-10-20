@@ -119,6 +119,9 @@ async def test_planner_persists_grounded_competency_agenda(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(planner_module, "evaluate_match", fake_run_match)
+    # This match has no score (review required); the entry threshold is tested
+    # in test_entry_gate.py, here only plan persistence is under test.
+    monkeypatch.setenv("INTERVIEW_REQUIRE_MATCH_SCORE", "0")
 
     async with SessionFactory() as db:
         try:
