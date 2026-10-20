@@ -267,9 +267,21 @@ async def list_admin_sessions(
 async def get_admin_live_sessions(
     _: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
+    group: Literal[
+        "all", "attention", "interviewing", "preparing", "grading", "finished"
+    ] = Query(default="all"),
+    q: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=30, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ) -> dict:
-    """Interviews running now (in progress, being prepared or graded), with their step."""
-    return {"success": True, **await live_interview_sessions(db)}
+    """Interviews running now (in progress, being prepared or graded), with their step.
+
+    ``counts`` covers every live session; ``sessions`` is one filtered page of them.
+    """
+    return {
+        "success": True,
+        **await live_interview_sessions(db, group=group, q=q, limit=limit, offset=offset),
+    }
 
 
 @router.post("/sessions/{session_id}/observe")
