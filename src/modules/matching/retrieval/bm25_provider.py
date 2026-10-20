@@ -12,6 +12,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Protocol, runtime_checkable
 
 from sqlalchemy import text
@@ -21,6 +24,27 @@ from src.modules.matching.retrieval.bm25 import bm25_similarity, tokenize_text
 logger = logging.getLogger(__name__)
 
 DEFAULT_SATURATION_K = 15.0
+
+# Which provider actually produced the last sparse score (for the admin matching
+# view). A shared dict, so a score computed inside asyncio.run still reaches it.
+_provider_used: ContextVar[dict[str, str] | None] = ContextVar("bm25_provider_used", default=None)
+
+
+def _note_provider(name: str) -> None:
+    holder = _provider_used.get()
+    if holder is not None:
+        holder["provider"] = name
+
+
+@contextmanager
+def track_bm25_provider() -> Iterator[dict[str, str]]:
+    """``with track_bm25_provider() as used: ...; used.get("provider")``."""
+    holder: dict[str, str] = {}
+    token = _provider_used.set(holder)
+    try:
+        yield holder
+    finally:
+        _provider_used.reset(token)
 
 
 @runtime_checkable
@@ -41,6 +65,7 @@ class InMemoryBm25Provider:
 
     def score(self, query_text: str, doc_text: str, doc_id: str | None = None) -> float:
         del doc_id  # Unused in purely in-memory evaluation
+        _note_provider("in_memory")
         return bm25_similarity(query_text, doc_text)
 
     async def score_async(self, query_text: str, doc_text: str, doc_id: str | None = None) -> float:
@@ -81,10 +106,13 @@ class ParadeDbBm25Provider:
     async def score_async(self, query_text: str, doc_text: str, doc_id: str | None = None) -> float:
         """Asynchronously query ParadeDB BM25 score from user_cvs table."""
         if not doc_id:
-            return self.fallback.score(query_text, doc_text, doc_id)
+            score = self.fallback.score(query_text, doc_text, doc_id)
+            _note_provider("in_memory_fallback")
+            return score
 
         clean_query = self.sanitize_query(query_text)
         if not clean_query:
+            _note_provider("paradedb")
             return 0.0
 
         if self.session_factory is None:
@@ -106,6 +134,7 @@ class ParadeDbBm25Provider:
             async with session_factory() as session:
                 result = await session.execute(sql, {"cv_id": doc_id, "query": clean_query})
                 row = result.mappings().one_or_none()
+                _note_provider("paradedb")
                 if row is None or row.get("bm25_score") is None:
                     # Document did not match query keywords in ParadeDB
                     return 0.0
@@ -119,7 +148,9 @@ class ParadeDbBm25Provider:
                 doc_id,
                 exc,
             )
-            return self.fallback.score(query_text, doc_text, doc_id)
+            score = self.fallback.score(query_text, doc_text, doc_id)
+            _note_provider("in_memory_fallback")
+            return score
 
     def score(self, query_text: str, doc_text: str, doc_id: str | None = None) -> float:
         """Compatibility wrapper for synchronous callers outside an event loop.
@@ -148,7 +179,9 @@ class ParadeDbBm25Provider:
             return asyncio.run(provider.score_async(query_text, doc_text, doc_id))
         except Exception as exc:
             logger.warning("ParadeDB runner failed; falling back to in-memory: %s", exc)
-            return self.fallback.score(query_text, doc_text, doc_id)
+            score = self.fallback.score(query_text, doc_text, doc_id)
+            _note_provider("in_memory_fallback")
+            return score
 
 
 def get_bm25_provider(mode: str = "auto") -> Bm25Provider:
