@@ -235,12 +235,47 @@ async def start_livekit_runtime(
     )
     if not opening:
         raise HTTPException(status_code=409, detail="Interview runtime has no opening question")
+    # The candidate is (back) in the room: the session reaper must not close it as abandoned.
+    await _set_candidate_left(db, str(session["id"]), left=False)
     return {
         "sessionId": session["id"],
         "openingMessage": opening,
         "sessionStatus": runtime["sessionStatus"],
         "locale": session.get("locale") or "vi-VN",
     }
+
+
+async def _set_candidate_left(db: AsyncSession, session_id: str, *, left: bool) -> bool:
+    """Mark (or clear) that the candidate left the room; the reaper closes it as CANDIDATE_LEFT later."""
+    sql = (
+        "UPDATE interview_sessions SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), "
+        "'{candidate_left_at}', to_jsonb(now()::text)), updated_at = now() "
+        "WHERE id = :sid AND status = 'OPEN' AND metadata->>'candidate_left_at' IS NULL"
+        if left
+        else "UPDATE interview_sessions SET metadata = metadata - 'candidate_left_at' "
+        "WHERE id = :sid AND metadata->>'candidate_left_at' IS NOT NULL"
+    )
+    try:
+        result = await db.execute(text(sql), {"sid": session_id})
+        await db.commit()
+        return bool(result.rowcount)
+    except Exception:  # noqa: BLE001 - never fail the room over this marker
+        await db.rollback()
+        return False
+
+
+@router.post("/livekit/runtime/left")
+async def mark_livekit_candidate_left(
+    claims: dict[str, str] = Depends(_voice_runtime_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The agent saw the candidate leave and not come back within its grace period.
+
+    The session stays OPEN so the candidate can still rejoin (that clears the
+    mark); the session reaper closes it with CANDIDATE_LEFT if they do not.
+    """
+    marked = await _set_candidate_left(db, claims["session_id"], left=True)
+    return {"marked": marked}
 
 
 @router.post("/livekit/runtime/message")
