@@ -132,10 +132,44 @@ class SubmittedAnswer:
     confidence: float | None
 
 
-def processing_filler(locale: str) -> str:
-    return "Mình đã ghi nhận. Chờ mình một chút nhé." if locale.lower().startswith("vi") else (
-        "Got it. Give me a moment."
-    )
+# Said while Interview Core works on an answer. Rotated per answer so the same
+# sentence is not heard after every question.
+PROCESSING_FILLERS_VI: tuple[str, ...] = (
+    "Mình đã ghi nhận. Chờ mình một chút nhé.",
+    "Ừm, để mình xem lại ý bạn vừa nói nhé.",
+    "Ok, bạn chờ mình vài giây nhé.",
+    "Mình đang xem câu trả lời của bạn, chờ chút nhé.",
+)
+PROCESSING_FILLERS_EN: tuple[str, ...] = (
+    "Got it. Give me a moment.",
+    "Okay, let me think about that for a second.",
+    "Right, one moment please.",
+)
+
+
+# Khi không nghe được câu trả lời (bản ghi rỗng hoặc quá nhiễu).
+NOT_HEARD_VI: tuple[str, ...] = (
+    "Mình chưa nghe rõ câu trả lời. Bạn vui lòng nói lại nhé.",
+    "Hình như mình nghe chưa rõ, bạn nói lại giúp mình nhé.",
+    "Tiếng hơi nhỏ, bạn nói lại câu trả lời được không?",
+)
+NOT_HEARD_EN: tuple[str, ...] = (
+    "I didn't catch that. Could you say it again?",
+    "Sorry, I missed that. Could you repeat it?",
+)
+
+
+def not_heard_lines(locale: str) -> tuple[str, ...]:
+    return NOT_HEARD_VI if locale.lower().startswith("vi") else NOT_HEARD_EN
+
+
+def processing_fillers(locale: str) -> tuple[str, ...]:
+    return PROCESSING_FILLERS_VI if locale.lower().startswith("vi") else PROCESSING_FILLERS_EN
+
+
+def processing_filler(locale: str, index: int = 0) -> str:
+    pool = processing_fillers(locale)
+    return pool[index % len(pool)]
 
 
 def silence_reprompt(locale: str) -> str:
