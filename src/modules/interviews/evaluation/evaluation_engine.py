@@ -44,6 +44,15 @@ logger = logging.getLogger("InterviewEvaluationEngine")
 GRADER_PROMPT_VERSION = "checklist-v1"
 
 
+def grader_version() -> str:
+    """Model and prompt that produce the scores, stored on each evaluation.
+
+    A change of either can shift every score at once; the progress page only
+    reads a trend within one version (see application/progress.py).
+    """
+    return f"{get_settings().llm_model}|{GRADER_PROMPT_VERSION}"
+
+
 class VerdictCache(Protocol):
     """Stores the grader's validated raw output by content, so the same answer
     to the same question always gets the same verdict."""
