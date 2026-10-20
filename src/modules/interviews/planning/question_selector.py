@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.trace_logging import trace_event
 from src.modules.interviews.core.demo_mode import is_demo_duration
 from src.modules.interviews.core.opening_script import warmup_question
+from src.modules.interviews.planning.spoken_questions import add_spoken_versions
 from src.modules.interviews.planning.project_evidence import (
     build_project_validation_question,
     extract_project_evidences,
@@ -1643,6 +1644,11 @@ async def select_and_freeze_questions(
                 selection_rank=turn_index,
                 stage=stage,
             )
+        # The engine reads the practice tier from the turn it is asking
+        # (challenge: probe sufficient answers too); see planning.entry_gate.
+        practice_tier = payload.get("practiceTier") if isinstance(payload, dict) else None
+        if practice_tier in ("basic", "standard", "challenge"):
+            snapshot["practiceTier"] = practice_tier
         await db.execute(
             text(
                 """
@@ -1745,6 +1751,10 @@ async def select_and_freeze_questions(
         },
     )
     await db.commit()
+    # Spoken versions of the frozen questions, written after the lock is
+    # committed (no row lock held during the model call). Best effort: on any
+    # failure the session simply asks the written questions.
+    await add_spoken_versions(db=db, session_id=session_row["id"], locale=locale)
     return {
         "sessionId": session_row["id"],
         "planId": plan_id,
