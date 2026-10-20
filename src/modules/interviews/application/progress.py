@@ -45,6 +45,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.modules.interviews.application.progress_calibration import Calibration, load_calibration
+from src.modules.interviews.application.skill_display import area_of, display_name, is_tracked
+from src.modules.interviews.core.interview_rounds import AREAS, is_minor
 
 DEFAULT_WEEKLY_GOAL = 2
 WEEKLY_GOAL_RANGE = (1, 7)
@@ -104,6 +106,7 @@ class TurnRow:
     rubric_points: list[dict[str, Any]] = field(default_factory=list)
     # STAR analysis of the grader: {situation, task, action, result, is_star_complete}.
     star: dict[str, Any] = field(default_factory=dict)
+    question: str = ""
 
 
 def _iso(value: datetime) -> str:
@@ -318,6 +321,210 @@ def _core_coverage(turn: TurnRow) -> tuple[float, int, bool, bool]:
     return covered, len(core), full, incorrect
 
 
+# Questions listed under each skill, and missed points listed per question.
+RECENT_QUESTIONS = 3
+MISSING_POINTS = 3
+
+
+_STAR_PARTS = (
+    ("situation", "Bối cảnh (chuyện xảy ra ở đâu, khi nào)"),
+    ("task", "Nhiệm vụ của bạn"),
+    ("action", "Bạn đã làm gì cụ thể"),
+    ("result", "Kết quả (tốt nhất có số liệu)"),
+)
+
+
+GAP_OPEN_LIMIT = 12
+GAP_FIXED_LIMIT = 6
+
+
+def _point_states(turn: TurnRow) -> list[tuple[str, str]]:
+    """(point, status) for every core point the grader judged on this answer."""
+    if not turn.rubric_points and turn.star:
+        return [
+            (name, "COVERED" if str(turn.star.get(key) or "").strip() else "MISSING") for key, name in _STAR_PARTS
+        ]
+    out = []
+    for point in turn.rubric_points:
+        if str(point.get("importance") or "CORE").upper() == "BONUS" or not point.get("description"):
+            continue
+        out.append((str(point["description"])[:200], str(point.get("status") or "MISSING")))
+    return out
+
+
+def gap_notebook(
+    sessions: list[SessionRow],
+    turns_by_session: dict[str, list[TurnRow]],
+    names: dict[str, str],
+    *,
+    limited: bool = True,
+) -> dict[str, list[dict[str, Any]]]:
+    """Key points the candidate keeps leaving out, and the ones they fixed.
+
+    The research (20/10) found the question candidates ask before a real
+    interview is "what will they ask and where am I still weak", which a 0-10
+    score per keyword does not answer. A point is followed across sessions by
+    its text within one skill (the same question, or STAR part, asked again):
+
+    * ``open``: missed or partly covered the last time it was judged.
+    * ``fixed``: missed at least once before and covered the last time.
+
+    Job keywords that are no longer asked on their own (JSON, XML) are left
+    out; so are the greeting and the closing Q&A.
+    """
+    state: dict[tuple[str, str], dict[str, Any]] = {}
+    for s in sorted(sessions, key=lambda item: item.started_at):
+        for t in turns_by_session.get(s.session_id, []):
+            key = skill_key(t.concept_id, t.label)
+            if not key or t.outcome != "ANSWERED" or is_minor(t.concept_id):
+                continue
+            if not is_tracked(t.concept_id, t.stage):
+                continue
+            for point, status in _point_states(t):
+                entry = state.setdefault(
+                    (key, point.casefold()),
+                    {
+                        "skill": names.get(key) or key,
+                        "skillKey": key,
+                        "area": area_of(t.concept_id),
+                        "point": point,
+                        "timesAsked": 0,
+                        "timesMissed": 0,
+                    },
+                )
+                entry["timesAsked"] += 1
+                entry["status"] = status
+                entry["lastSeen"] = {
+                    "sessionId": s.session_id,
+                    "date": _iso(s.started_at),
+                    "question": t.question[:240],
+                    "jobId": s.job_id,
+                    "resumeId": s.resume_id,
+                }
+                if status != "COVERED":
+                    entry["timesMissed"] += 1
+    items = list(state.values())
+    still_open = [item for item in items if item["status"] != "COVERED"]
+    fixed = [item for item in items if item["status"] == "COVERED" and item["timesMissed"] > 0]
+    # Most often missed first; among equals, the most recent (stable sorts).
+    still_open.sort(key=lambda item: item["lastSeen"]["date"], reverse=True)
+    still_open.sort(key=lambda item: -item["timesMissed"])
+    fixed.sort(key=lambda item: item["lastSeen"]["date"], reverse=True)
+    if not limited:
+        return {"open": still_open, "fixed": fixed}
+    return {"open": still_open[:GAP_OPEN_LIMIT], "fixed": fixed[:GAP_FIXED_LIMIT]}
+
+
+# A round is "ready" when the smoothed level is at Vững (LEVEL_EDGES[2]) and
+# rests on more than one session: one interview says little (interviewing.io:
+# only about a quarter of people perform consistently between interviews).
+ROUND_READY = 7.0
+ROUND_ALMOST = 5.5
+ROUND_MIN_SESSIONS = 2
+# Asked in every session (VALIDATE and BEHAVIORAL presets).
+ALWAYS_ASKED = ("project", "teamwork")
+
+
+def round_readiness(
+    skills: list[dict[str, Any]], gaps: list[dict[str, Any]], job_id: str
+) -> list[dict[str, Any]]:
+    """Readiness for one position, by interview round (interview_rounds.AREAS).
+
+    Per round: the mean smoothed level of its skills as asked for this job,
+    the number of sessions behind it, a status (ready / almost / practice /
+    thin = one session only / unseen), and the point missed most often there.
+    """
+    per_area: dict[str, dict[str, Any]] = {}
+    for skill in skills:
+        if skill.get("minor"):
+            continue
+        points = [p for p in skill["points"] if p.get("jobId") == job_id]
+        if not points:
+            continue
+        last = points[-1]
+        level = last.get("estimate") if last.get("estimate") is not None else last["score"]
+        entry = per_area.setdefault(skill["area"], {"skills": [], "sessions": set()})
+        entry["skills"].append(
+            {"conceptId": skill["conceptId"], "label": skill["label"], "estimate": round(level, 1)}
+        )
+        entry["sessions"].update(p["sessionId"] for p in points)
+    rounds = []
+    for area in AREAS:
+        entry = per_area.get(area)
+        if entry is None and area not in ALWAYS_ASKED:
+            continue
+        top_gap = next(
+            (g for g in gaps if g["area"] == area and g["lastSeen"].get("jobId") == job_id), None
+        )
+        if entry is None:
+            rounds.append(
+                {
+                    "area": area,
+                    "status": "unseen",
+                    "estimate": None,
+                    "sessions": 0,
+                    "skills": [],
+                    "topGap": None,
+                }
+            )
+            continue
+        estimate = round(statistics.mean(item["estimate"] for item in entry["skills"]), 1)
+        sessions = len(entry["sessions"])
+        if sessions < ROUND_MIN_SESSIONS:
+            status = "thin"
+        elif estimate >= ROUND_READY:
+            status = "ready"
+        elif estimate >= ROUND_ALMOST:
+            status = "almost"
+        else:
+            status = "practice"
+        rounds.append(
+            {
+                "area": area,
+                "status": status,
+                "estimate": estimate,
+                "sessions": sessions,
+                "skills": sorted(entry["skills"], key=lambda item: item["estimate"]),
+                "topGap": (
+                    {
+                        "point": top_gap["point"],
+                        "skill": top_gap["skill"],
+                        "timesMissed": top_gap["timesMissed"],
+                    }
+                    if top_gap
+                    else None
+                ),
+            }
+        )
+    return rounds
+
+
+def _checked(turn: TurnRow) -> bool:
+    """The grader recorded what the answer covered: a checklist or a STAR analysis."""
+    return bool(turn.rubric_points) or bool(turn.star)
+
+
+def _missing_points(turn: TurnRow) -> list[dict[str, str]]:
+    """Core points the answer did not cover, or stated wrongly: what to add next time.
+
+    A story question has no checklist; its missing STAR parts are listed instead.
+    """
+    if not turn.rubric_points and turn.star:
+        return [
+            {"point": name, "status": "MISSING"}
+            for key, name in _STAR_PARTS
+            if not str(turn.star.get(key) or "").strip()
+        ][:MISSING_POINTS + 1]
+    out = []
+    for point in turn.rubric_points:
+        if str(point.get("importance") or "CORE").upper() == "BONUS":
+            continue
+        status = point.get("status")
+        if status in {"MISSING", "PARTIAL", "INCORRECT"} and point.get("description"):
+            out.append({"point": str(point["description"])[:200], "status": str(status)})
+    return out[:MISSING_POINTS]
+
+
 def _session_behavior(turns: list[TurnRow]) -> dict[str, Any]:
     """How the candidate answered: counts the progress page turns into before/now rates."""
     technical = [t for t in turns if t.stage in _TECHNICAL_STAGES]
@@ -402,17 +609,33 @@ def build_progress(
     # without a concept id is keyed by its normalized label, not dropped.
     skill_points: dict[str, list[dict[str, Any]]] = defaultdict(list)
     skill_labels: dict[str, str] = {}
+    skill_concepts: dict[str, str | None] = {}
+    # The questions behind each skill, newest last: what was asked, the score,
+    # and the key points the answer missed (from the grading checklist).
+    skill_questions: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for s in sessions:
         per_concept: dict[str, list[float]] = defaultdict(list)
         difficulty: dict[str, str | None] = {}
         for t in turns_by_session.get(s.session_id, []):
             key = skill_key(t.concept_id, t.label)
-            if not key or t.score is None or t.outcome != "ANSWERED":
+            # The greeting and the closing Q&A are part of the interview, not skills.
+            if not key or t.score is None or t.outcome != "ANSWERED" or not is_tracked(t.concept_id, t.stage):
                 continue
             per_concept[key].append(float(t.score))
             difficulty.setdefault(key, t.difficulty)
+            skill_concepts[key] = t.concept_id
             if t.label:
                 skill_labels[key] = t.label  # latest label wins
+            skill_questions[key].append(
+                {
+                    "sessionId": s.session_id,
+                    "date": _iso(s.started_at),
+                    "question": t.question[:240],
+                    "score": round(float(t.score), 1),
+                    "missing": _missing_points(t),
+                    "checked": _checked(t),
+                }
+            )
         for concept_id, scores in per_concept.items():
             skill_points[concept_id].append(
                 {
@@ -426,8 +649,16 @@ def build_progress(
                     "graderVersion": s.grader_version,
                 }
             )
-    skills = [_skill_view(concept_id, skill_labels.get(concept_id) or concept_id, points, calibration)
-              for concept_id, points in skill_points.items()]
+    skills = []
+    for key, points in skill_points.items():
+        name = display_name(skill_concepts.get(key), skill_labels.get(key) or key)
+        view = _skill_view(key, name, points, calibration)
+        view["area"] = area_of(skill_concepts.get(key))
+        view["taxonomyLabel"] = skill_labels.get(key)
+        view["recentQuestions"] = list(reversed(skill_questions[key][-RECENT_QUESTIONS:]))
+        # No longer asked as a topic of its own (interview_rounds.MINOR_CONCEPTS).
+        view["minor"] = is_minor(skill_concepts.get(key))
+        skills.append(view)
     skills.sort(key=lambda item: (-len(item["points"]), item["label"].casefold()))
 
     # Jobs: overall score per session of the same job, with the tier.
@@ -461,6 +692,11 @@ def build_progress(
             }
         )
     jobs.sort(key=lambda item: item["points"][-1]["date"], reverse=True)  # most recently practised first
+
+    # Gaps across every session, kept long enough for the readiness rounds.
+    names = {s["conceptId"]: s["label"] for s in skills}
+    all_gaps = gap_notebook(sessions, turns_by_session, names, limited=False)
+    gaps = {"open": all_gaps["open"][:GAP_OPEN_LIMIT], "fixed": all_gaps["fixed"][:GAP_FIXED_LIMIT]}
 
     rates = [i["behavior"]["firstTimeSufficientRate"] for i in session_items if i["behavior"]["firstTimeSufficientRate"] is not None]
     behavior = {
@@ -496,6 +732,16 @@ def build_progress(
         "streak": streak,
         "sessions": session_items,
         "skills": skills,
+        "gaps": gaps,
+        "readiness": [
+            {
+                "jobId": job["jobId"],
+                "jobTitle": job["jobTitle"],
+                "sessions": len(job["points"]),
+                "rounds": round_readiness(skills, all_gaps["open"], job["jobId"]),
+            }
+            for job in jobs
+        ],
         "jobs": jobs,
         "behavior": behavior,
         "milestones": milestones(session_items, skills),
@@ -842,6 +1088,7 @@ async def load_progress(
                     order=int(row["turn_index"] or 0),
                     rubric_points=[p for p in (_json(row.get("rubric_points")) or []) if isinstance(p, dict)],
                     star=_json(row.get("star_analysis")) or {},
+                    question=str(snap.get("questionText") or snap.get("question_text") or ""),
                 )
             )
     return build_progress(
