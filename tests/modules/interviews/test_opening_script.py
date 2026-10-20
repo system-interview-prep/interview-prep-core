@@ -36,9 +36,13 @@ def test_how_to_answer_names_only_controls_the_room_has():
         spoken = _opening(mode=mode)
         assert "nói “xong”" not in spoken
         assert "bấm “Trả lời xong”" not in spoken
-        greeting, _, first_question = spoken.partition(". ")
-        assert len(greeting.split()) <= 3
-        assert first_question == warmup_question(is_vi=True, is_demo=False)
+        # A greeting and one short framing sentence, then the question.
+        question = warmup_question(is_vi=True, is_demo=False)
+        assert spoken.endswith(question)
+        preamble = spoken[: -len(question)].strip()
+        assert preamble.startswith("Chào Hiền.")
+        assert preamble.count(".") == 2
+        assert len(preamble.split()) <= 14
     chat = _opening(mode="text")
     assert "gợi ý" not in chat
 
