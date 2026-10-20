@@ -48,3 +48,12 @@ def test_voice_guidance_is_hands_free(locale: str) -> None:
     assert "button" not in guidance
     assert "bấm" not in guidance
     assert "press" not in guidance
+
+
+def test_processing_filler_rotates_between_answers() -> None:
+    from src.modules.interviews.adapters.voice.answer_window import processing_filler, processing_fillers
+
+    lines = [processing_filler("vi-VN", i) for i in range(len(processing_fillers("vi-VN")))]
+    assert len(set(lines)) == len(lines) >= 3
+    assert processing_filler("vi-VN") == "Mình đã ghi nhận. Chờ mình một chút nhé."
+    assert processing_filler("en-US", 1) != processing_filler("en-US", 0)
