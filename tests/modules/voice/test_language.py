@@ -119,7 +119,7 @@ async def test_english_clarification_is_replaced_in_vietnamese_session() -> None
         "Bạn giải thích lại giúp mình?",
         is_vi=True,
     )
-    assert result.startswith("Mình hỏi lại ngắn gọn nhé:")
+    assert result.startswith("Mình hỏi theo cách khác nhé:")
 
 
 def test_interviewer_speech_reads_numbers_units_and_layout_aloud() -> None:
