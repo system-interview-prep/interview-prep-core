@@ -362,3 +362,82 @@ def test_question_budget_fits_the_session_time() -> None:
     for minutes in (20, 25, 30, 45, 60):
         expected = _PRESET_EXPECTED_SECONDS + _question_budget(minutes) * _TECHNICAL_EXPECTED_SECONDS
         assert expected <= minutes * 60
+
+
+def _skill(requirement_id: str, concept_id: str, label: str, priority: str = "must_have") -> SkillRequirement:
+    return SkillRequirement(
+        requirementId=requirement_id,
+        priority=priority,
+        sourceEvidenceRef=f"jd-ev-{requirement_id}",
+        type="skill",
+        skill=_concept(concept_id, label),
+    )
+
+
+def test_planner_does_not_ask_json_or_xml_as_their_own_topic() -> None:
+    """Research 20/10: interviewers ask JSON inside API design, not as a topic."""
+    requirements = [
+        _skill("req-json", "skill-json", "JSON"),
+        _skill("req-xml", "skill-xml", "XML"),
+        _skill("req-sql", "skill-sql", "SQL"),
+        _skill("req-python", "skill-python", "Python"),
+    ]
+    plan = derive_competency_plan(
+        job=_job(*requirements),
+        match=_match([_result(r.requirement_id, "unknown") for r in requirements]),
+        duration_minutes=25,
+    )
+    asked = {item["conceptId"] for item in plan["targets"]}
+    assert asked == {"skill-sql", "skill-python"}
+    assert plan["targetQuestionCount"] == plan["questionBudget"]
+    assert plan["selection"]["minorConceptIds"] == ["skill-json", "skill-xml"]
+    # The CV is still checked against every requirement.
+    assert {t["requirementId"] for t in plan["evaluationTargets"]} >= {"req-json", "req-xml"}
+
+
+def test_planner_keeps_a_minor_keyword_when_the_job_has_nothing_else() -> None:
+    requirement = _skill("req-json", "skill-json", "JSON")
+    plan = derive_competency_plan(
+        job=_job(requirement), match=_match([_result("req-json", "unknown")]), duration_minutes=25
+    )
+    assert [item["conceptId"] for item in plan["targets"]] == ["skill-json"]
+
+
+def test_planner_spreads_questions_over_rounds_before_repeating_one() -> None:
+    """Four database skills and one infrastructure skill: infrastructure is asked too."""
+    requirements = [
+        _skill("req-pg", "skill-postgresql", "PostgreSQL"),
+        _skill("req-mysql", "skill-mysql", "MySQL"),
+        _skill("req-redis", "skill-redis", "Redis"),
+        _skill("req-mongo", "skill-mongodb", "MongoDB"),
+        _skill("req-docker", "skill-docker", "Docker", priority="nice_to_have"),
+    ]
+    plan = derive_competency_plan(
+        job=_job(*requirements),
+        match=_match([_result(r.requirement_id, "met") for r in requirements]),
+        duration_minutes=20,
+    )
+    budget = plan["questionBudget"]
+    assert budget < len(requirements)
+    asked = [item["conceptId"] for item in plan["targets"]]
+    assert "skill-docker" in asked
+    # Must-haves still come first.
+    assert asked[-1] == "skill-docker"
+
+
+def test_planner_gives_half_the_questions_to_the_round_the_candidate_chose() -> None:
+    requirements = [
+        _skill("req-python", "skill-python", "Python"),
+        _skill("req-docker", "skill-docker", "Docker"),
+        _skill("req-k8s", "skill-kubernetes", "Kubernetes", priority="nice_to_have"),
+        _skill("req-pg", "skill-postgresql", "PostgreSQL"),
+        _skill("req-redis", "skill-redis", "Redis", priority="nice_to_have"),
+    ]
+    results = _match([_result(r.requirement_id, "met") for r in requirements])
+    plan = derive_competency_plan(job=_job(*requirements), match=results, duration_minutes=25, focus_area="data")
+    asked = [item["conceptId"] for item in plan["targets"]]
+    assert asked[:2] == ["skill-postgresql", "skill-redis"]
+    assert plan["selection"]["focusArea"] == "data"
+    # An unknown or non-technical round is ignored.
+    plain = derive_competency_plan(job=_job(*requirements), match=results, duration_minutes=25, focus_area="teamwork")
+    assert plain["selection"]["focusArea"] is None
