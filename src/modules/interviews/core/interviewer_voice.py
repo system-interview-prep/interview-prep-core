@@ -6,8 +6,9 @@ Module này chỉ lo phần lời nói:
 * ``INTERVIEWER_STYLE_*``: một bộ văn phong dùng chung cho mọi prompt sinh lời
   nói với ứng viên (câu ghi nhận, câu hỏi thêm, câu giải thích), để giọng nhất
   quán và không mang giọng "chuyên gia phân tích" của phần chấm.
-* Các nhóm câu dự phòng nhiều biến thể và ``pick_variant``: chọn theo mã buổi,
-  tránh câu vừa dùng, để cùng một câu không lặp nguyên văn trong một buổi.
+* ``pick_variant``: chọn một câu trong nhóm câu soạn sẵn theo mã buổi, tránh câu
+  vừa dùng. Câu chữ của mọi nhóm nằm ở ``interviewer_script.py`` (một kịch bản
+  chung cho chat, voice và video); module này import lại để giữ tên cũ.
 * ``transition_line``: câu chuyển khi đổi kỹ năng hoặc giai đoạn.
 * ``compose_speech``: ghép câu ghi nhận, câu chuyển và câu hỏi.
 
@@ -25,25 +26,68 @@ import re
 import unicodedata
 from collections.abc import Iterable, Sequence
 
+# Câu chữ nằm ở interviewer_script.py; tên cũ được giữ để code khác import từ đây.
+from src.modules.interviews.core.interviewer_script import (  # noqa: F401
+    ABORT_CONFIRMATION_EN,
+    ABORT_CONFIRMATION_VI,
+    ACK_FALLBACK_EN,
+    ACK_FALLBACK_VI,
+    CLOSE_COMPLETED_EN,
+    CLOSE_COMPLETED_VI,
+    EARLY_STOP_EN,
+    EARLY_STOP_VI,
+    FAREWELL_EN,
+    FAREWELL_VI,
+    GIVE_UP_ACK_EN,
+    GIVE_UP_ACK_VI,
+    INTRO_ACK_EN,
+    INTRO_ACK_VI,
+    LAST_QNA_CLOSING_EN,
+    LAST_QNA_CLOSING_VI,
+    NON_ANSWER_ACK_EN,
+    NON_ANSWER_ACK_VI,
+    PROBE_FALLBACK_EN,
+    PROBE_FALLBACK_VI,
+    REPEAT_PREFIX_EN,
+    REPEAT_PREFIX_VI,
+    SKIP_ACK_EN,
+    SKIP_ACK_VI,
+    TIMEOUT_EN,
+    TIMEOUT_VI,
+    TRANSITION_SKILL_EN,
+    TRANSITION_SKILL_VI,
+    TRANSITION_STAGE_EN,
+    TRANSITION_STAGE_SOFT_EN,
+    TRANSITION_STAGE_VI,
+    USER_ENDED_EN,
+    USER_ENDED_VI,
+    WRAP_ENDED_EARLY_PARTIAL_EN,
+    WRAP_ENDED_EARLY_PARTIAL_VI,
+    WRAP_TIMEOUT_PARTIAL_EN,
+    WRAP_TIMEOUT_PARTIAL_VI,
+)
+
 # --------------------------------------------------------------------------- #
 # Văn phong dùng chung
 # --------------------------------------------------------------------------- #
 
 INTERVIEWER_STYLE_VI = """NHÂN VẬT VÀ VĂN PHONG (áp dụng cho mọi câu ứng viên sẽ đọc hoặc nghe):
 - Bạn là một kỹ sư senior đang phỏng vấn trực tiếp: điềm tĩnh, thân thiện, nói như nói chuyện, không đọc văn bản.
-- Xưng "mình", gọi ứng viên là "bạn". Không dùng "em", "anh", "chị", "quý vị".
+- Xưng "mình", gọi ứng viên là "bạn". Không dùng "em", "anh", "chị", "quý vị". "Mình" luôn là người phỏng vấn, không dùng để chỉ ứng viên.
 - Mỗi câu dưới 25 từ. Không gạch đầu dòng, không ngoặc, không ký hiệu, không liệt kê bằng dấu hai chấm.
 - Giữ thuật ngữ IT bằng tiếng Anh (cache, index, deadlock, API); không dịch thô.
 - Không khen, không chê, không nói đúng hay sai, không nhắc điểm, tiêu chí hay barem.
 - Không mở đầu bằng "Cảm ơn", "Câu hỏi tiếp theo là" hay "Chúng ta hãy".
-- Không mở đầu câu hỏi bằng khuôn "Bạn … giúp mình … nhé"; không thêm "nhé" sau mỗi câu."""
+- Không mở đầu câu hỏi bằng khuôn "Bạn … giúp mình … nhé"; không thêm "nhé" sau mỗi câu.
+- Không dùng "hãy", "vui lòng", "ghi nhận". Lời này dùng chung cho phỏng vấn chat, voice và video nên không dùng "nghe", "đọc", "gõ"."""
 
 INTERVIEWER_STYLE_EN = """PERSONA AND STYLE (applies to every line the candidate will read or hear):
 - You are a senior engineer interviewing in person: calm, friendly, conversational, never reading out a document.
 - Address the candidate as "you". Sentences under 25 words. No bullet points, brackets, symbols or colon lists.
 - Keep technical terms as they are (cache, index, deadlock, API).
 - Never praise, criticise or say right or wrong; never mention scores, criteria or rubrics.
-- Do not start with "Thank you", "The next question is" or "Let's"."""
+- Do not start with "Thank you", "The next question is" or "Let's".
+- The same words are used in chat, voice and video interviews, so avoid "hear", "read" and "type"."""
 
 # Câu ghi nhận mẫu, tốt và xấu. Đo ngày 17/10 cho thấy câu ghi nhận kiểu "Bạn mô
 # tả được…", "Bạn phân biệt…" bị chấm là máy móc: đó là giọng tóm tắt bài làm.
@@ -145,39 +189,6 @@ def is_judgmental(text_value: str) -> bool:
 # Nhóm câu dự phòng và cách chọn
 # --------------------------------------------------------------------------- #
 
-# Câu đáp ngắn trung tính: dùng khi câu AI viết bị loại, và cho những lượt không
-# phải câu trả lời thật (quá ngắn, "không biết", lời chèn lệnh).
-# Buổi thật 17/10: câu nào cũng mở bằng "Ừ/À/Ok" nghe thành khuôn, nên một nửa
-# nhóm nói thẳng vào ý. Không nói "cách làm": câu trả lời có thể không có cách làm.
-ACK_FALLBACK_VI: tuple[str, ...] = (
-    "Ừm, mình hiểu ý bạn.",
-    "Mình nắm được ý đó rồi.",
-    "À, mình nắm được rồi.",
-    "Mình hiểu rồi, cảm ơn bạn.",
-    "Vâng, mình nắm ý rồi.",
-    "Vậy là mình hình dung được rồi.",
-    "Ok, rõ ý bạn rồi.",
-    "Mình theo kịp ý bạn rồi.",
-)
-ACK_FALLBACK_EN: tuple[str, ...] = (
-    "Okay, I follow you.",
-    "Mm, I see what you mean.",
-    "Right, that makes sense to me.",
-    "Okay, got it.",
-    "I see, thanks for explaining.",
-)
-
-# Sau lời tự giới thiệu (giai đoạn khởi động).
-INTRO_ACK_VI: tuple[str, ...] = (
-    "Cảm ơn bạn đã giới thiệu.",
-    "Mình nắm sơ qua về bạn rồi.",
-    "Vậy là mình biết sơ qua về bạn rồi.",
-)
-INTRO_ACK_EN: tuple[str, ...] = (
-    "Thanks for the introduction.",
-    "Great, I have a picture of your background now.",
-)
-
 ACK_MAX_WORDS = 10
 # Câu ghi nhận dưới 4 từ ("Ok.", "À, dùng k6.") bị chấm là cụt.
 ACK_MIN_WORDS = 4
@@ -260,164 +271,8 @@ def looks_like_injection(text_value: str) -> bool:
     return bool(_INJECTION_RE.search(str(text_value or "")))
 
 
-# Cho lượt không phải câu trả lời: lời chèn lệnh, hỏi chuyện khác, xin dừng.
-# Không nói "hiểu cách làm", vì ứng viên không nói cách làm nào.
-# Không dùng "mình ghi nhận": buổi thật 17/10 cho thấy nghe như đang ghi điểm.
-NON_ANSWER_ACK_VI: tuple[str, ...] = (
-    "Ừm, mình nghe rồi.",
-    "Mình nghe bạn rồi.",
-    "Vâng, mình nghe rồi.",
-)
-NON_ANSWER_ACK_EN: tuple[str, ...] = (
-    "Okay, I hear you.",
-    "Noted.",
-    "Alright, I hear you.",
-)
-
-# Khi ứng viên nói "không biết": an ủi nhẹ, không "ghi nhận", không nói đúng sai.
-GIVE_UP_ACK_VI: tuple[str, ...] = (
-    "Không sao đâu, câu đó không dễ.",
-    "Không sao, phần này mình tạm để đó nhé.",
-    "Được, không sao cả.",
-)
-GIVE_UP_ACK_EN: tuple[str, ...] = (
-    "No problem, I've noted that.",
-    "That's fine, let's leave this one.",
-)
-
-# Câu hỏi thêm dự phòng, mỗi câu một kiểu: vì sao, cách khác, ví dụ thực tế,
-# khi lỗi hoặc tải lớn, đánh đổi, kiểm chứng. Câu đầu giữ nguyên câu cũ.
-PROBE_FALLBACK_VI: tuple[str, ...] = (
-    "Vì sao bạn chọn cách đó, và nó có hạn chế gì?",
-    "Nếu làm lại, bạn có cân nhắc cách nào khác không?",
-    "Bạn kể một tình huống thực tế bạn đã áp dụng cách này được không?",
-    "Khi lỗi xảy ra hoặc tải tăng gấp mười, cách này sẽ ra sao?",
-    "Đánh đổi lớn nhất của cách làm đó là gì?",
-    "Bạn kiểm tra cách làm đó chạy đúng bằng cách nào?",
-)
-PROBE_FALLBACK_EN: tuple[str, ...] = (
-    "Why that approach, and what are its downsides?",
-    "If you did it again, would you consider another approach?",
-    "Can you walk me through a real case where you used this?",
-    "What happens to this approach when something fails or load grows tenfold?",
-    "What is the biggest trade-off of doing it that way?",
-    "How would you verify that it works as intended?",
-)
-
-SKIP_ACK_VI: tuple[str, ...] = (
-    "Được, mình chuyển sang câu khác nhé.",
-    "Không sao, mình qua câu tiếp nhé.",
-    "Ok, mình để câu này lại, sang câu khác nhé.",
-)
-SKIP_ACK_EN: tuple[str, ...] = (
-    "Sure, let's move on to another question.",
-    "No problem, let's take the next one.",
-)
-
-REPEAT_PREFIX_VI: tuple[str, ...] = (
-    "Mình nhắc lại câu hỏi nhé:",
-    "Ừ, mình hỏi lại nhé:",
-    "Không sao, câu hỏi là:",
-)
-REPEAT_PREFIX_EN: tuple[str, ...] = (
-    "Sure, here is the question again:",
-    "Of course, the question was:",
-)
-
-CLOSE_COMPLETED_VI: tuple[str, ...] = (
-    "Vậy là mình đã đi hết các phần rồi. Cảm ơn bạn đã dành thời gian, báo cáo đang được tổng hợp.",
-    "Mình hỏi đủ các phần rồi. Cảm ơn bạn nhé, báo cáo đánh giá sẽ có ngay sau đây.",
-    "Buổi hôm nay đến đây là xong. Cảm ơn bạn, mình đang tổng hợp báo cáo cho bạn.",
-)
-CLOSE_COMPLETED_EN: tuple[str, ...] = (
-    "That covers everything I wanted to ask. Thanks for your time, your report is being prepared.",
-    "We've gone through all the parts. Thank you, your evaluation report will be ready shortly.",
-)
-
-TIMEOUT_VI: tuple[str, ...] = (
-    "Mình hết giờ rồi. Cảm ơn bạn, các câu trả lời đã được lưu để làm báo cáo.",
-    "Thời gian buổi hôm nay đã hết. Cảm ơn bạn nhé, báo cáo sẽ có ngay sau đây.",
-)
-TIMEOUT_EN: tuple[str, ...] = (
-    "We're out of time. Thank you, your answers have been saved for the report.",
-    "That's all the time we have today. Thanks, your report will be ready shortly.",
-)
-
-EARLY_STOP_VI: tuple[str, ...] = (
-    "Mình dừng buổi phỏng vấn ở đây nhé. Cảm ơn bạn, báo cáo sẽ có ngay sau buổi này.",
-    "Hôm nay mình tạm dừng ở đây. Cảm ơn bạn, bạn xem báo cáo ngay sau đây nhé.",
-)
-EARLY_STOP_EN: tuple[str, ...] = (
-    "Let's stop the interview here. Thank you, your report will be ready right after.",
-    "We'll pause here for today. Thanks, you'll see your report right after this.",
-)
-
-FAREWELL_VI: tuple[str, ...] = (
-    "Cảm ơn bạn đã tham gia buổi luyện phỏng vấn hôm nay. Báo cáo đánh giá đang được tạo, bạn xem ngay sau đây nhé.",
-    "Vậy mình kết thúc ở đây nhé. Cảm ơn bạn, báo cáo sẽ hiện ngay sau buổi này.",
-    "Buổi hôm nay đến đây thôi. Cảm ơn bạn đã dành thời gian, mình đang chuẩn bị báo cáo.",
-)
-FAREWELL_EN: tuple[str, ...] = (
-    "Thank you for practising with us today. Your evaluation report is being prepared; you'll see it right after this.",
-    "Let's wrap up here. Thanks, your report will appear right after this session.",
-)
-
-# Kết thúc khi chưa đi hết kế hoạch (chat_runtime hạ trạng thái "hoàn thành").
-# Không được nói "đã hoàn thành tất cả" cho buổi dừng sớm.
-WRAP_TIMEOUT_PARTIAL_VI: tuple[str, ...] = (
-    "Mình hết giờ rồi nên chưa kịp đi hết các phần theo kế hoạch. Cảm ơn bạn, những gì mình đã trao đổi đều có trong báo cáo.",
-)
-WRAP_TIMEOUT_PARTIAL_EN: tuple[str, ...] = (
-    "We're out of time, so we didn't get through every planned topic. Thanks, everything we discussed is in your report.",
-)
-WRAP_ENDED_EARLY_PARTIAL_VI: tuple[str, ...] = (
-    "Buổi hôm nay phải kết thúc sớm nên mình chưa đi hết các phần. Cảm ơn bạn, những gì đã trao đổi đều có trong báo cáo.",
-)
-WRAP_ENDED_EARLY_PARTIAL_EN: tuple[str, ...] = (
-    "The session had to end early, so we didn't cover every topic. Thanks, everything we discussed is in your report.",
-)
-# Ứng viên bấm dừng.
-USER_ENDED_VI: tuple[str, ...] = (
-    "Mình dừng buổi phỏng vấn ở đây theo ý bạn nhé. Cảm ơn bạn đã dành thời gian.",
-)
-USER_ENDED_EN: tuple[str, ...] = (
-    "We'll stop the interview here as you asked. Thank you for your time.",
-)
-
-LAST_QNA_CLOSING_VI: tuple[str, ...] = (
-    "Cảm ơn bạn đã dành thời gian cho buổi phỏng vấn hôm nay. Mình đang tổng hợp báo cáo đánh giá, chúc bạn một ngày tốt lành!",
-    "Mình kết thúc buổi ở đây nhé. Báo cáo của bạn đang được tổng hợp, chúc bạn một ngày tốt lành!",
-)
-LAST_QNA_CLOSING_EN: tuple[str, ...] = (
-    "Thank you for your time today. The system is now compiling your evaluation report. Have a great day!",
-    "Let's end here. Your report is being compiled. Have a great day!",
-)
-
-# Câu đệm lúc chờ, "chưa nghe rõ" và câu nhắc khi im lặng chỉ có ở giọng nói, nên
-# nằm ở adapters/voice/answer_window.py: voice agent chạy riêng, không import core.
-
-# Xin dừng. Bản chữ nêu đúng tên hai nút trong khung chat; bản nói không đọc tên
-# nút trong ngoặc (nghe rất máy), chỉ nói hai lựa chọn như người thật.
-ABORT_CONFIRMATION_VI = (
-    "Bạn muốn dừng buổi phỏng vấn phải không? Bạn chọn “Kết thúc & xem báo cáo” để dừng, "
-    "hoặc “Tiếp tục phỏng vấn” để làm tiếp nhé."
-)
-ABORT_CONFIRMATION_EN = (
-    "Do you want to stop the interview? Choose “End & view report” to stop, "
-    "or “Continue interview” to keep going."
-)
-ABORT_CONFIRMATION_SPOKEN_VI = (
-    "Bạn muốn dừng ở đây phải không? Nếu dừng, bạn bấm kết thúc để xem báo cáo; "
-    "còn muốn làm tiếp thì bấm tiếp tục."
-)
-ABORT_CONFIRMATION_SPOKEN_EN = (
-    "Would you like to stop here? If so, press end to see your report, or press continue to keep going."
-)
-
-
-def abort_confirmation(is_vi: bool, *, spoken: bool) -> str:
-    if spoken:
-        return ABORT_CONFIRMATION_SPOKEN_VI if is_vi else ABORT_CONFIRMATION_SPOKEN_EN
+def abort_confirmation(is_vi: bool, *, spoken: bool = False) -> str:
+    """Câu xin xác nhận dừng: một câu cho mọi kênh (``spoken`` giữ cho code cũ)."""
     return ABORT_CONFIRMATION_VI if is_vi else ABORT_CONFIRMATION_EN
 
 
@@ -461,44 +316,8 @@ def last_paragraph(text_value: str) -> str:
 # Câu chuyển và ghép lời nói
 # --------------------------------------------------------------------------- #
 
-_TRANSITION_SKILL_VI: tuple[str, ...] = (
-    "Giờ mình chuyển sang {next} nhé.",
-    "Mình đổi chủ đề một chút, sang {next}.",
-    "Tiếp theo mình muốn nghe về {next}.",
-    "Mình qua phần {next} một chút nhé.",
-)
-_TRANSITION_SKILL_EN: tuple[str, ...] = (
-    "Let's switch to {next} now.",
-    "Changing topics a little, on to {next}.",
-    "Next, I'd like to hear about {next}.",
-)
-_TRANSITION_STAGE_VI: dict[str, tuple[str, ...]] = {
-    "VALIDATE": (
-        "Mình muốn nghe thêm về dự án trong CV của bạn.",
-        "Giờ mình nói về dự án bạn đã làm nhé.",
-    ),
-    "DEEP_DIVE": (
-        "Giờ mình đi vào phần kỹ thuật nhé.",
-        "Mình chuyển sang vài câu kỹ thuật nhé.",
-    ),
-    "CHALLENGE": (
-        "Mình thử một tình huống khó hơn một chút nhé.",
-        "Giờ mình đưa ra một tình huống thực tế nhé.",
-    ),
-    "BEHAVIORAL": (
-        "Phần cuối, mình hỏi về cách bạn làm việc nhóm nhé.",
-        "Giờ mình nói một chút về cách bạn làm việc với mọi người nhé.",
-    ),
-}
-_TRANSITION_STAGE_EN: dict[str, tuple[str, ...]] = {
-    "VALIDATE": ("I'd like to hear more about a project from your CV.",),
-    "DEEP_DIVE": ("Let's get into some technical questions.",),
-    "CHALLENGE": ("Let me try a slightly harder scenario.",),
-    "BEHAVIORAL": ("Lastly, a bit about how you work with a team.",),
-}
 # Sau lượt ứng viên nói "không biết" hoặc xin qua câu: không báo "khó hơn".
 _HARDER_RE = re.compile(r"khó hơn|harder", re.IGNORECASE)
-_TRANSITION_STAGE_SOFT_EN: dict[str, tuple[str, ...]] = {"CHALLENGE": ("Let's look at a practical scenario.",)}
 
 # Nhãn kỹ năng mặc định hoặc dạng mã máy thì không đọc lên được.
 _GENERIC_COMPETENCIES = {"", "chuyên môn", "expertise", "hỏi đáp & văn hóa doanh nghiệp", "hỏi đáp & tổng kết"}
@@ -533,12 +352,12 @@ def transition_line(
     """
     prev_stage = str(previous_stage or "").upper()
     nxt_stage = str(next_stage or "").upper()
-    stage_pools = _TRANSITION_STAGE_VI if is_vi else _TRANSITION_STAGE_EN
+    stage_pools = TRANSITION_STAGE_VI if is_vi else TRANSITION_STAGE_EN
     if nxt_stage and nxt_stage != prev_stage and nxt_stage in stage_pools:
         pool = stage_pools[nxt_stage]
         if after_struggle:
             pool = tuple(line for line in pool if not _HARDER_RE.search(line)) or (
-                _TRANSITION_STAGE_SOFT_EN.get(nxt_stage, ()) if not is_vi else ()
+                TRANSITION_STAGE_SOFT_EN.get(nxt_stage, ()) if not is_vi else ()
             )
             if not pool:
                 return ""
@@ -546,7 +365,7 @@ def transition_line(
     nxt_label = _speakable_label(next_competency)
     prev_label = _speakable_label(previous_competency)
     if nxt_label and prev_label and nxt_label.casefold() != prev_label.casefold():
-        pool = _TRANSITION_SKILL_VI if is_vi else _TRANSITION_SKILL_EN
+        pool = TRANSITION_SKILL_VI if is_vi else TRANSITION_SKILL_EN
         return pick_variant(pool, f"{seed}:skill:{nxt_label}").format(next=nxt_label)
     return ""
 
