@@ -872,8 +872,8 @@ async def test_candidate_rubric_question_is_answered_without_advancing_turn(mock
     assert res["action"] == "CLARIFY"
     assert res["userMessage"]["messageType"] == "CANDIDATE_QUESTION"
     assert "Chi tiết tiêu chí mình không chia sẻ" in res["message"]
-    # The chat room shows the question on screen; it is not pasted again.
-    assert "Mình quay lại câu hỏi vừa rồi nhé." in res["message"]
+    # Same wording as the voice room: the question is asked again after the aside.
+    assert "\n\nMình hỏi lại nhé: " in res["message"]
     assert db.turns[current_turn_id]["status"] == "ASKED"
     assert db.turns[current_turn_id]["answer_text"] is None
 
