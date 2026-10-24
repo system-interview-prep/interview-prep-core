@@ -7,7 +7,7 @@ It does not select questions and it does not ask an LLM to invent competencies.
 import hashlib
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -153,7 +153,11 @@ def _rank_index(ranked: list["_CandidateTarget"]) -> dict[int, int]:
 
 
 def _select_across_rounds(
-    ranked: list["_CandidateTarget"], budget: int, *, focus_area: str | None = None
+    ranked: list["_CandidateTarget"],
+    budget: int,
+    *,
+    focus_area: str | None = None,
+    reask: Sequence[str] = (),
 ) -> list["_CandidateTarget"]:
     """Pick technical topics like a real interview: different rounds first.
 
@@ -164,11 +168,19 @@ def _select_across_rounds(
 
     ``focus_area`` ("Luyện vòng này" on the progress page): up to half of the
     budget (at least one) goes to that round first; the rest is spread as usual.
+
+    ``reask``: skills with a missed point due for practice again (spaced
+    re-ask, research 24/10). The first one the job asks about always gets a
+    slot; the selector then prefers a question the candidate has not seen.
     """
     focused = [item for item in ranked if focus_area and area_of(item.concept.concept_id) == focus_area]
+    again = [item for item in ranked if item.concept.concept_id in set(reask)][:1]
     if budget >= len(ranked) and not focused:
         return list(ranked)
-    chosen: list[_CandidateTarget] = focused[: max(1, budget // 2)] if focused else []
+    chosen: list[_CandidateTarget] = list(again[:budget])
+    for item in focused[: max(1, budget // 2)]:
+        if item not in chosen and len(chosen) < budget:
+            chosen.append(item)
     seen: set[str] = {spread_key(item.concept.concept_id) for item in chosen}
     for must_only in (True, False):
         for item in ranked:
@@ -271,8 +283,13 @@ def _derive_competency_plan_legacy(
     duration_minutes: int,
     listing: Mapping[str, Any] | None = None,
     focus_area: str | None = None,
+    reask: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    """Legacy fixed question budget algorithm (interview-planner-v1)."""
+    """Legacy fixed question budget algorithm (interview-planner-v1).
+
+    ``reask``: ``{"conceptId", "points"}`` for skills with a missed point due
+    for practice again (``_due_reask``).
+    """
     if focus_area not in FOCUSABLE_AREAS:
         focus_area = None
     result_by_id = {item.requirement_id: item for item in match.requirement_results}
@@ -343,7 +360,8 @@ def _derive_competency_plan_legacy(
             item.concept.concept_id,
         ),
     )
-    selected = _select_across_rounds(ranked, budget, focus_area=focus_area)
+    reask_ids = [str(item.get("conceptId")) for item in reask if item.get("conceptId")]
+    selected = _select_across_rounds(ranked, budget, focus_area=focus_area, reask=reask_ids)
     if is_demo_duration(duration_minutes):
         selected = _demo_targets(ranked, selected)
     raw_weights = [max(item.raw_weight, 0.0001) for item in selected]
@@ -406,6 +424,12 @@ def _derive_competency_plan_legacy(
             "policy": "rounds-v1",
             "minorConceptIds": sorted(item.concept.concept_id for item in folded),
             "focusArea": focus_area,
+            # Spaced re-ask: the skill asked again and the points due (research 24/10).
+            "reask": [
+                {"conceptId": str(item["conceptId"]), "points": list(item.get("points") or [])[:3]}
+                for item in reask
+                if item.get("conceptId") in {target.concept.concept_id for target in selected}
+            ][:1],
         },
     }
     canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -910,6 +934,7 @@ def derive_competency_plan(
     policy_config: PlannerPolicyConfig | None = None,
     listing: Mapping[str, Any] | None = None,
     focus_area: str | None = None,
+    reask: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Build a deterministic competency agenda from canonical requirements.
 
@@ -927,6 +952,7 @@ def derive_competency_plan(
             duration_minutes=duration_minutes,
             listing=listing,
             focus_area=focus_area,
+            reask=reask,
         )
     return _derive_competency_plan_dynamic(
         job=job,
@@ -1044,6 +1070,47 @@ async def _focus_area(db: AsyncSession, *, plan_id: str) -> str | None:
     return value if value in FOCUSABLE_AREAS else None
 
 
+async def _requested_reask(db: AsyncSession, *, plan_id: str) -> list[dict[str, Any]]:
+    """The skill the candidate chose with "Luyện lại ý này", stored when the session was created."""
+    try:
+        value = (
+            await db.execute(
+                text("SELECT source_context->>'reaskConceptId' FROM interview_session_plans WHERE id = :id"),
+                {"id": plan_id},
+            )
+        ).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 - a hint for the plan, never a blocker
+        await db.rollback()
+        return []
+    return [{"conceptId": str(value), "points": []}] if value else []
+
+
+async def _due_reask(db: AsyncSession, *, user_id: str, job_id: str) -> list[dict[str, Any]]:
+    """Skills of this position with a missed point due for practice again.
+
+    From the progress Sổ ôn tập (``progress.gap_notebook``: 7, 14, then 30 days
+    after the point was last asked). Most often missed first. Never blocks a
+    plan: on any error the session is planned without a re-ask.
+    """
+    try:
+        from src.modules.interviews.application.progress import load_progress
+
+        progress = await load_progress(db, user_id)
+    except Exception:  # noqa: BLE001 - progress is a hint for the plan, not a requirement
+        await db.rollback()
+        return []
+    by_concept: dict[str, dict[str, Any]] = {}
+    for gap in (progress.get("gaps") or {}).get("open") or []:
+        key = str(gap.get("skillKey") or "")
+        if not gap.get("due") or key.startswith("label:") or gap["lastSeen"].get("jobId") != job_id:
+            continue
+        entry = by_concept.setdefault(key, {"conceptId": key, "points": [], "missed": 0})
+        entry["points"].append(gap["point"])
+        entry["missed"] = max(entry["missed"], int(gap.get("timesMissed") or 0))
+    ranked = sorted(by_concept.values(), key=lambda item: -item["missed"])
+    return [{"conceptId": item["conceptId"], "points": item["points"]} for item in ranked]
+
+
 async def evaluate_session_match(
     *,
     db: AsyncSession,
@@ -1109,6 +1176,8 @@ async def build_and_persist_session_plan(
         policy_config=configured_planner_policy(),
         listing=await _load_job_listing_hints(db, job_id=session_row["job_id"]),
         focus_area=await _focus_area(db, plan_id=str(plan_id)),
+        reask=await _requested_reask(db, plan_id=str(plan_id))
+        + await _due_reask(db, user_id=str(user["sub"]), job_id=str(session_row["job_id"])),
     )
     # Practice tier from the match score (entry_gate): basic is one level
     # easier than the job, challenge one level harder and probes sufficient
