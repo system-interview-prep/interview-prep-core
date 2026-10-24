@@ -16,6 +16,8 @@ from src.modules.interviews.application.progress import (
     reliable_trend,
     skill_levels,
     trend,
+    baseline_label,
+    round_ladder,
     weekly_streak,
 )
 from src.modules.interviews.application.progress_calibration import (
@@ -118,7 +120,9 @@ def test_weekly_streak_uses_the_candidates_local_day() -> None:
     sunday_evening_utc = datetime(2026, 10, 18, 18, 0, tzinfo=UTC)
     progress = build_progress([], [], now=NOW, tz_offset_minutes=420, weekly_goal=1,
                               all_session_starts=[sunday_evening_utc])
-    assert progress["streak"]["thisWeekCount"] == 1
+    # Started this week, but no answers: it does not count toward the streak.
+    assert progress["streak"]["startedThisWeek"] == 1
+    assert progress["streak"]["thisWeekCount"] == 0
 
 
 def test_compare_with_previous_same_job() -> None:
@@ -425,3 +429,162 @@ def test_readiness_is_shown_by_interview_round() -> None:
     assert rounds["infra"]["status"] == "thin"
     assert rounds["infra"]["topGap"]["point"] == "Multi-stage build"
     assert rounds["project"]["status"] == "unseen"
+
+
+def _answers(session: str, n: int, concept: str = "skill-sql") -> list[TurnRow]:
+    return [TurnRow(session, "DEEP_DIVE", concept, "SQL", None, 6.0, "ANSWERED", order=i) for i in range(n)]
+
+
+def test_only_sessions_with_real_answers_keep_the_streak() -> None:
+    """Research 24/10: an effort floor (3 answered main questions), not a score floor."""
+    monday = datetime(2026, 10, 19, 9, 0, tzinfo=UTC)
+    sessions = [
+        SessionRow("ok", "job-be", "Backend", monday, 3.0, "challenge"),
+        SessionRow("thin", "job-be", "Backend", monday + timedelta(hours=2), 8.0, "standard"),
+    ]
+    turns = _answers("ok", 3) + _answers("thin", 2)
+    turns.append(TurnRow("thin", "WARM_UP", "warmup", "Chào", None, 9.0, "ANSWERED"))
+    progress = build_progress(sessions, turns, now=monday + timedelta(hours=5), weekly_goal=2)
+    assert [s["valid"] for s in progress["sessions"]] == [True, False]
+    assert progress["streak"]["thisWeekCount"] == 1
+
+
+def test_a_missed_week_can_be_earned_back_the_week_after() -> None:
+    # Goal 2. Sep 21 met; Sep 28 missed (September's freeze); Oct 5 met;
+    # Oct 12 missed (October's freeze); Oct 19 (last week) missed again.
+    days = [date(2026, 9, 21)] * 2 + [date(2026, 10, 5)] * 2
+    today = date(2026, 10, 28)  # week of Oct 26
+    pending = weekly_streak(days + [date(2026, 10, 26)], today=today, goal=2)
+    assert pending["earnBack"] == {"weekStart": "2026-10-19", "remaining": 2}
+    assert pending["weeks"] == 0
+    # Goal + 1 = 3 sessions this week repair last week; the chain holds.
+    repaired = weekly_streak(days + [date(2026, 10, 26)] * 3, today=today, goal=2)
+    assert repaired["earnBack"] is None
+    by_week = {w["weekStart"]: w for w in repaired["history"]}
+    assert by_week["2026-10-19"]["repaired"] is True and by_week["2026-10-12"]["frozen"] is True
+    assert repaired["weeks"] == 4  # Sep 21, Oct 5, Oct 19 (repaired), this week
+
+
+def test_wins_and_progress_weeks_come_from_points_fixed_in_a_new_question() -> None:
+    def point(status: str) -> list[dict[str, str]]:
+        return [{"importance": "CORE", "status": status, "description": "Xử lý cache stampede"}]
+
+    sessions = [_session(1), _session(2), _session(3)]
+    turns = [
+        TurnRow("s1", "DEEP_DIVE", "skill-redis", "Redis", None, 4.0, "ANSWERED",
+                rubric_points=point("MISSING"), question="Cache hết hạn cùng lúc thì sao?"),
+        # Same question again, now covered: may be memory, not a win.
+        TurnRow("s2", "DEEP_DIVE", "skill-redis", "Redis", None, 6.0, "ANSWERED",
+                rubric_points=point("COVERED"), question="Cache hết hạn cùng lúc thì sao?"),
+        TurnRow("s2", "DEEP_DIVE", "skill-redis", "Redis", None, 4.0, "ANSWERED", rubric_points=[
+            {"importance": "CORE", "status": "MISSING", "description": "TTL ngẫu nhiên"}], question="Thiết kế cache?"),
+        TurnRow("s3", "DEEP_DIVE", "skill-redis", "Redis", None, 7.0, "ANSWERED", rubric_points=[
+            {"importance": "CORE", "status": "COVERED", "description": "TTL ngẫu nhiên"}], question="Hot key?"),
+    ]
+    progress = build_progress(sessions, turns, now=NOW)
+    fixed_wins = [w for w in progress["wins"] if w["kind"] == "fixed"]
+    assert [w["point"] for w in fixed_wins] == ["TTL ngẫu nhiên"]
+    assert any(w["progress"] for w in progress["streak"]["history"])
+    assert progress["activity"]["days"][-1]["fixed"] >= 1
+
+
+def test_a_missed_point_is_due_for_practice_after_a_week() -> None:
+    turns = [TurnRow("s1", "DEEP_DIVE", "skill-redis", "Redis", None, 4.0, "ANSWERED", rubric_points=[
+        {"importance": "CORE", "status": "MISSING", "description": "TTL"}])]
+    asked = _session(1, days_ago=8)
+    gap = build_progress([asked], turns, now=NOW)["gaps"]["open"][0]
+    assert gap["due"] is True
+    fresh = build_progress([_session(1, days_ago=2)], turns, now=NOW)["gaps"]["open"][0]
+    assert fresh["due"] is False
+
+
+def test_before_and_now_when_a_skill_is_asked_again() -> None:
+    def pts(*statuses: str) -> list[dict[str, str]]:
+        names = ["Index ghép", "EXPLAIN ANALYZE"]
+        return [{"importance": "CORE", "status": st, "description": n} for st, n in zip(statuses, names, strict=True)]
+
+    sessions = [_session(1), _session(2), _session(3)]
+    turns = [
+        TurnRow("s1", "DEEP_DIVE", "skill-postgresql", "PostgreSQL", None, 4.0, "ANSWERED",
+                rubric_points=pts("MISSING", "MISSING"), question="Truy vấn chậm?"),
+        TurnRow("s2", "DEEP_DIVE", "skill-postgresql", "PostgreSQL", None, 6.0, "ANSWERED",
+                rubric_points=pts("COVERED", "MISSING"), question="Truy vấn chậm?"),
+        TurnRow("s3", "DEEP_DIVE", "skill-postgresql", "PostgreSQL", None, 7.0, "ANSWERED",
+                rubric_points=pts("COVERED", "COVERED"), question="Thiết kế index cho bảng log?"),
+    ]
+    progress = build_progress(sessions, turns, now=NOW)
+    same = progress["retries"]["s2"][0]
+    assert same["sameQuestion"] is True and same["fixedPoints"] == ["Index ghép"]
+    other = compare_with_previous(progress, "s3")["retries"][0]
+    assert other["sameQuestion"] is False and other["fixedPoints"] == []
+    assert (other["now"]["covered"], other["now"]["total"]) == (2, 2)
+    assert [m["point"] for m in other["before"]["missing"]] == ["EXPLAIN ANALYZE"]
+
+
+def test_each_round_shows_where_it_started() -> None:
+    sessions = [_session(i) for i in range(1, 5)]
+    turns = []
+    for i, score in zip(range(1, 5), (4.0, 5.0, 6.5, 7.5), strict=True):
+        turns.append(TurnRow(f"s{i}", "DEEP_DIVE", "skill-redis", "Redis", None, score, "ANSWERED"))
+    rounds = {r["area"]: r for r in build_progress(sessions, turns, now=NOW)["readiness"][0]["rounds"]}
+    assert rounds["data"]["first"] == 4.0
+    assert rounds["data"]["trend"]["status"] in {"up", "flat"}
+
+
+def _series(*scores: float, tier: str = "standard") -> list[dict]:
+    return [
+        {"sessionId": f"s{i}", "date": f"2026-09-{i + 10:02d}T08:00:00+00:00", "tier": tier, "score": sc}
+        for i, sc in enumerate(scores)
+    ]
+
+
+def test_round_ladder_follows_written_rules() -> None:
+    """Research 24/10 (Khan mastery): levels move on whole sessions with explicit rules."""
+    assert round_ladder([])["level"] == 0
+    assert round_ladder(_series(4.0))["next"] == {"kind": "reach", "score": 5.5, "have": 0, "need": 1}
+    basic = round_ladder(_series(6.0, 7.2))
+    assert basic["level"] == 1 and basic["next"]["kind"] == "run" and basic["next"]["have"] == 1
+    solid = round_ladder(_series(6.0, 7.2, 7.5))
+    assert solid["level"] == 2 and [e["to"] for e in solid["levelEvents"]] == [1, 2]
+    # The top level needs a solid session at the challenge tier.
+    top = round_ladder(_series(6.0, 7.2, 7.5) + [
+        {"sessionId": "c", "date": "2026-10-01T08:00:00+00:00", "tier": "challenge", "score": 7.1}])
+    assert top["level"] == 3
+    # One weak session does not move a level; two in a row do.
+    one_low = round_ladder(_series(6.0, 7.2, 7.5, 4.0))
+    assert one_low["level"] == 2 and one_low["atRisk"] is True
+    assert round_ladder(_series(6.0, 7.2, 7.5, 4.0, 4.5))["level"] == 1
+
+
+def test_a_session_is_compared_with_the_usual_level_only_with_enough_sessions() -> None:
+    assert baseline_label(7.0, [6.0, 6.2], 0.6) is None
+    assert baseline_label(7.5, [6.0, 6.2, 6.4, 6.1], 0.6) == "above"
+    assert baseline_label(6.3, [6.0, 6.2, 6.4, 6.1], 0.6) == "within"
+    assert baseline_label(5.0, [6.0, 6.2, 6.4, 6.1], 0.6) == "below"
+
+
+def test_readiness_timeline_and_week_tell_what_changed() -> None:
+    now = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
+    sessions, turns = [], []
+    for i, score in enumerate((6.0, 7.2, 7.6)):
+        sid = f"s{i}"
+        sessions.append(SessionRow(sid, "job-be", "Backend", now - timedelta(days=14 - 6 * i), score, "standard"))
+        for n in range(3):
+            turns.append(TurnRow(sid, "DEEP_DIVE", "skill-python", "Python", None, score, "ANSWERED", order=n,
+                                 question=f"q{i}", rubric_points=[
+                                     {"importance": "CORE", "status": "COVERED", "description": "A"},
+                                     {"importance": "CORE", "status": "MISSING" if i < 2 else "COVERED",
+                                      "description": "B"}]))
+    progress = build_progress(sessions, turns, now=now)
+    job = progress["readiness"][0]
+    language = next(r for r in job["rounds"] if r["area"] == "language")
+    assert language["level"] == 2 and job["readyCount"] == 1
+    assert [w["ready"] for w in job["readyHistory"]][-1] == 1
+    history = language["skills"][0]["history"]
+    assert [(h["covered"], h["total"]) for h in history][-1] == (2, 2)
+    latest = progress["timeline"][0]
+    assert latest["sessionId"] == "s2"
+    assert latest["levelChanges"] == [{"area": "language", "from": 1, "to": 2}]
+    assert progress["week"]["status"] == "improving"
+    assert progress["week"]["levelUps"][0]["area"] == "language"
+    assert compare_with_previous(progress, "s2")["after"]["levelChanges"][0]["to"] == 2
