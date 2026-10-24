@@ -53,7 +53,12 @@ WEEKLY_GOAL_RANGE = (1, 7)
 TREND_MIN_POINTS = 3
 TREND_WINDOW = 3
 FLAT_DELTA = 0.5
-STREAK_HISTORY_WEEKS = 8
+STREAK_HISTORY_WEEKS = 12
+# A session counts toward the streak with this many answered main questions
+# (not the greeting or the closing Q&A). An effort floor, not a score floor:
+# a score floor would punish practising the hard rounds (research 24/10).
+VALID_MIN_ANSWERS = 3
+ACTIVITY_WEEKS = 12
 # Computed on request from raw rows. About 10 graded turns per session, so 1000
 # sessions is about 10k rows: fine today. Past that, keep a per-session summary
 # row written when the evaluation is saved (see PRACTICE_PROGRESS doc, section 7).
@@ -248,54 +253,134 @@ def _week_start(day: date) -> date:
 
 
 def weekly_streak(
-    session_days: list[date], *, today: date, goal: int
+    session_days: list[date],
+    *,
+    today: date,
+    goal: int,
+    progress_days: list[date] | None = None,
 ) -> dict[str, Any]:
     """Tuần liên tiếp đạt mục tiêu, tính đến tuần này.
 
+    ``session_days``: ngày của các **buổi hợp lệ** (``valid_session``), không
+    phải mọi buổi đã bắt đầu: chuỗi đếm mọi buổi thì sinh ra buổi "giữ chuỗi"
+    rỗng (nghiên cứu 24/10, PROGRESS_VISIBLE_STREAK_RESEARCH).
+
     Tuần này chưa đạt thì chưa tính là đứt (tuần chưa hết). Một tuần đã qua không
-    đạt được "giữ chuỗi" nếu tháng của tuần đó chưa dùng lượt giữ nào; khi đó
-    chuỗi không đứt nhưng cũng không cộng thêm tuần đó.
+    đạt được "giữ chuỗi" nếu tháng của tuần đó chưa dùng lượt giữ nào. Hết lượt
+    giữ thì vẫn **gỡ lại** được: tuần ngay sau có ít nhất mục tiêu + 1 buổi hợp
+    lệ (mỗi tháng một lần). Tuần vừa qua còn đang chờ gỡ thì ``earnBack`` cho
+    biết tuần này cần thêm mấy buổi. ``progress`` đánh dấu tuần có ít nhất một ý
+    trong Sổ ôn tập được khắc phục; nó không ảnh hưởng chuỗi.
+
+    Các tuần được xét theo thứ tự thời gian (tuần lỡ đầu tiên của tháng dùng
+    lượt giữ), nên ``history`` luôn đủ ``STREAK_HISTORY_WEEKS`` tuần gần nhất.
     """
     counts: dict[date, int] = defaultdict(int)
     for day in session_days:
         counts[_week_start(day)] += 1
+    progress_weeks = {_week_start(day) for day in progress_days or []}
     current = _week_start(today)
     this_week = counts.get(current, 0)
-    streak = 1 if this_week >= goal else 0
+    last_week = current - timedelta(days=7)
+
+    # Chronological pass over finished weeks: the first missed week of a month
+    # uses the month's freeze, a later one can be repaired by the week after.
     freezes_used: set[tuple[int, int]] = set()
-    history: list[dict[str, Any]] = [
-        {"weekStart": current.isoformat(), "count": this_week, "met": this_week >= goal, "frozen": False, "current": True}
-    ]
-    week = current - timedelta(days=7)
-    first_week = min(counts) if counts else current
-    broken = False
-    while week >= first_week:
+    repairs_used: set[tuple[int, int]] = set()
+    states: dict[date, str] = {}
+    chain = 0
+    earn_back: dict[str, Any] | None = None
+    week = min(counts) if counts else current
+    while week <= last_week:
+        month = (week.year, week.month)
         count = counts.get(week, 0)
-        met = count >= goal
-        frozen = False
-        if not broken:
-            if met:
-                streak += 1
-            elif (week.year, week.month) not in freezes_used:
-                freezes_used.add((week.year, week.month))
-                frozen = True
-            else:
-                broken = True
-        if len(history) < STREAK_HISTORY_WEEKS:
-            history.append(
-                {"weekStart": week.isoformat(), "count": count, "met": met, "frozen": frozen, "current": False}
-            )
-        if broken and len(history) >= STREAK_HISTORY_WEEKS:
-            break
-        week -= timedelta(days=7)
+        following = counts.get(week + timedelta(days=7), 0)
+        if count >= goal:
+            states[week] = "met"
+            chain += 1
+        elif month not in freezes_used:
+            freezes_used.add(month)
+            states[week] = "frozen"
+        elif following >= goal + 1 and month not in repairs_used:
+            repairs_used.add(month)
+            states[week] = "repaired"
+            chain += 1
+        else:
+            states[week] = "missed"
+            chain = 0
+            if week == last_week and month not in repairs_used:
+                earn_back = {"weekStart": week.isoformat(), "remaining": max(1, goal + 1 - this_week)}
+        week += timedelta(days=7)
+    streak = chain + (1 if this_week >= goal else 0)
+
+    history: list[dict[str, Any]] = []
+    for offset in range(STREAK_HISTORY_WEEKS - 1, -1, -1):
+        week = current - timedelta(days=7 * offset)
+        count = counts.get(week, 0)
+        history.append(
+            {
+                "weekStart": week.isoformat(),
+                "count": count,
+                "met": count >= goal,
+                "frozen": states.get(week) == "frozen",
+                "repaired": states.get(week) == "repaired",
+                "progress": week in progress_weeks,
+                "current": week == current,
+            }
+        )
     return {
         "weeks": streak,
         "goal": goal,
         "thisWeekCount": this_week,
         "thisWeekRemaining": max(0, goal - this_week),
         "freezeAvailableThisMonth": (today.year, today.month) not in freezes_used,
-        "history": list(reversed(history)),
+        "earnBack": earn_back,
+        "history": history,
     }
+
+
+def activity_days(
+    started: list[date], valid: list[date], fixed: list[date], *, today: date, weeks: int = ACTIVITY_WEEKS
+) -> dict[str, Any]:
+    """Days of the last ``weeks`` weeks with practice, for the calendar.
+
+    A day is shaded by valid sessions (not by how many sessions were started)
+    and outlined when a missed point was fixed that day (research 24/10).
+    """
+    start = _week_start(today) - timedelta(days=7 * (weeks - 1))
+    days: dict[date, dict[str, int]] = {}
+    for key, values in (("started", started), ("valid", valid), ("fixed", fixed)):
+        for day in values:
+            if start <= day <= today:
+                days.setdefault(day, {"started": 0, "valid": 0, "fixed": 0})[key] += 1
+    return {
+        "from": start.isoformat(),
+        "to": today.isoformat(),
+        "days": [{"date": day.isoformat(), **counts} for day, counts in sorted(days.items())],
+    }
+
+
+def small_wins(session_items: list[dict[str, Any]], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """"Ghi nhận nhỏ": concrete things done for the first time, newest first.
+
+    A missed point covered in a *different* question of the same skill, and the
+    first answer of a kind (all key points, STAR complete, a measurable
+    result, completing after a follow-up). The progress principle (Amabile &
+    Kramer): a specific small win motivates more than a score (research 24/10).
+    A point covered again in the same question is left out: it can be memory.
+    """
+    out: list[dict[str, Any]] = [
+        {"kind": "fixed", "date": e["date"], "sessionId": e["sessionId"], "point": e["point"],
+         "skill": e["skill"], "area": e["area"], "jobId": e.get("jobId")}
+        for e in events
+        if e["newQuestion"]
+    ]
+    for index, item in enumerate(session_items):
+        for kind in session_firsts(session_items, index):
+            out.append({"kind": f"first_{kind}", "date": item["date"], "sessionId": item["sessionId"],
+                        "jobId": item["jobId"]})
+    out.sort(key=lambda win: win["date"], reverse=True)
+    return out[:WINS_LIMIT]
 
 
 # --------------------------------------------------------------------------- #
@@ -336,6 +421,14 @@ _STAR_PARTS = (
 
 GAP_OPEN_LIMIT = 12
 GAP_FIXED_LIMIT = 6
+# Spaced re-ask of a missed point (research 24/10): days after it was last
+# asked, by how many times it has been asked.
+REASK_AFTER_DAYS = {1: 7, 2: 14}
+REASK_AFTER_DAYS_LATER = 30
+
+
+def reask_after_days(times_asked: int) -> int:
+    return REASK_AFTER_DAYS.get(times_asked, REASK_AFTER_DAYS_LATER)
 
 
 def _point_states(turn: TurnRow) -> list[tuple[str, str]]:
@@ -358,6 +451,7 @@ def gap_notebook(
     names: dict[str, str],
     *,
     limited: bool = True,
+    now: datetime | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Key points the candidate keeps leaving out, and the ones they fixed.
 
@@ -366,13 +460,20 @@ def gap_notebook(
     score per keyword does not answer. A point is followed across sessions by
     its text within one skill (the same question, or STAR part, asked again):
 
-    * ``open``: missed or partly covered the last time it was judged.
+    * ``open``: missed or partly covered the last time it was judged. With
+      ``now``, ``dueAt``/``due`` say when it is time to practise it again
+      (7, 14, then 30 days after it was last asked).
     * ``fixed``: missed at least once before and covered the last time.
+    * ``events``: each time a missed point is covered, oldest first, with
+      ``newQuestion`` when it was covered in a different question than the one
+      it was last missed in. A point covered again in the very same question
+      can be memory of that question (retest effect, research 24/10).
 
     Job keywords that are no longer asked on their own (JSON, XML) are left
     out; so are the greeting and the closing Q&A.
     """
     state: dict[tuple[str, str], dict[str, Any]] = {}
+    events: list[dict[str, Any]] = []
     for s in sorted(sessions, key=lambda item: item.started_at):
         for t in turns_by_session.get(s.session_id, []):
             key = skill_key(t.concept_id, t.label)
@@ -393,6 +494,23 @@ def gap_notebook(
                     },
                 )
                 entry["timesAsked"] += 1
+                question = t.question[:240]
+                was_missed = entry.get("status") not in (None, "COVERED")
+                if status == "COVERED" and was_missed:
+                    events.append(
+                        {
+                            "date": _iso(s.started_at),
+                            "sessionId": s.session_id,
+                            "jobId": s.job_id,
+                            "skill": entry["skill"],
+                            "skillKey": key,
+                            "area": entry["area"],
+                            "point": entry["point"],
+                            "newQuestion": question != entry.get("lastMissedQuestion"),
+                        }
+                    )
+                if status != "COVERED":
+                    entry["lastMissedQuestion"] = question
                 entry["status"] = status
                 entry["lastSeen"] = {
                     "sessionId": s.session_id,
@@ -404,15 +522,23 @@ def gap_notebook(
                 if status != "COVERED":
                     entry["timesMissed"] += 1
     items = list(state.values())
+    for item in items:
+        item.pop("lastMissedQuestion", None)
     still_open = [item for item in items if item["status"] != "COVERED"]
+    if now is not None:
+        for item in still_open:
+            last = datetime.fromisoformat(item["lastSeen"]["date"])
+            due_at = last + timedelta(days=reask_after_days(item["timesAsked"]))
+            item["dueAt"] = _iso(due_at)
+            item["due"] = now >= due_at
     fixed = [item for item in items if item["status"] == "COVERED" and item["timesMissed"] > 0]
     # Most often missed first; among equals, the most recent (stable sorts).
     still_open.sort(key=lambda item: item["lastSeen"]["date"], reverse=True)
     still_open.sort(key=lambda item: -item["timesMissed"])
     fixed.sort(key=lambda item: item["lastSeen"]["date"], reverse=True)
     if not limited:
-        return {"open": still_open, "fixed": fixed}
-    return {"open": still_open[:GAP_OPEN_LIMIT], "fixed": fixed[:GAP_FIXED_LIMIT]}
+        return {"open": still_open, "fixed": fixed, "events": events}
+    return {"open": still_open[:GAP_OPEN_LIMIT], "fixed": fixed[:GAP_FIXED_LIMIT], "events": events}
 
 
 # A round is "ready" when the smoothed level is at Vững (LEVEL_EDGES[2]) and
@@ -425,15 +551,126 @@ ROUND_MIN_SESSIONS = 2
 ALWAYS_ASKED = ("project", "teamwork")
 
 
+# Levels of a round (research 24/10, PROGRESS_TRACKING_PATTERNS_RESEARCH:
+# Khan Academy's mastery ladder with written rules). Bắt đầu, Cơ bản, Vững,
+# Thành thạo. A level moves on whole sessions, never on one answer, and a
+# round counts as "ready" from Vững up.
+LEVEL_NAMES = ("start", "basic", "solid", "mastered")
+LADDER_BASIC = 5.5  # one session at or above this: Cơ bản
+LADDER_SOLID = 7.0  # this many sessions in a row at or above it: Vững
+LADDER_SOLID_RUN = 2
+LADDER_DOWN_RUN = 2  # sessions in a row below the level's floor: one level down
+READY_LEVEL_INDEX = 2
+
+
+def round_ladder(series: list[dict[str, Any]]) -> dict[str, Any]:
+    """The level of one round from its session means, oldest first, with the rules.
+
+    * Bắt đầu → Cơ bản: one session with a mean of ``LADDER_BASIC`` or more.
+    * Cơ bản → Vững: ``LADDER_SOLID_RUN`` sessions in a row at ``LADDER_SOLID``.
+    * Vững → Thành thạo: one session at ``LADDER_SOLID`` at the challenge tier
+      (Khan: the top level only through a harder, mixed test).
+    * One level down after ``LADDER_DOWN_RUN`` sessions in a row below the
+      level's floor (``LADDER_BASIC`` for Cơ bản/Vững, ``LADDER_SOLID`` for
+      Thành thạo): one weak session never moves a level.
+
+    ``next`` says what moves the round up, with the progress already made;
+    ``events`` are the level changes with their session.
+    """
+    level = 0
+    solid_run = 0
+    low_run = 0
+    events: list[dict[str, Any]] = []
+    for point in series:
+        score = float(point["score"])
+        before = level
+        good = score >= LADDER_SOLID
+        if level == 0 and score >= LADDER_BASIC:
+            level = 1
+        elif level == 2 and good and point.get("tier") == "challenge":
+            level = 3
+        if level == 1:
+            solid_run = solid_run + 1 if good else 0
+            if solid_run >= LADDER_SOLID_RUN:
+                level, solid_run = 2, 0
+        if level == before and level >= 1:
+            floor = LADDER_SOLID if level == 3 else LADDER_BASIC
+            low_run = low_run + 1 if score < floor else 0
+            if low_run >= LADDER_DOWN_RUN:
+                level, low_run, solid_run = level - 1, 0, 0
+        else:
+            low_run = 0
+        if level != before:
+            events.append(
+                {"sessionId": point["sessionId"], "date": point["date"], "from": before, "to": level}
+            )
+    if level == 0:
+        nxt = {"kind": "reach", "score": LADDER_BASIC, "have": 0, "need": 1}
+    elif level == 1:
+        nxt = {"kind": "run", "score": LADDER_SOLID, "have": solid_run, "need": LADDER_SOLID_RUN}
+    elif level == 2:
+        nxt = {"kind": "challenge", "score": LADDER_SOLID, "have": 0, "need": 1}
+    else:
+        nxt = {"kind": "top", "score": LADDER_SOLID, "have": 0, "need": 0}
+    return {
+        "level": level,
+        "levelName": LEVEL_NAMES[level],
+        "next": nxt,
+        # One more session below the floor would move the round down.
+        "atRisk": low_run == LADDER_DOWN_RUN - 1 and level >= 1,
+        "levelEvents": events,
+    }
+
+
+def level_at(events: list[dict[str, Any]], moment: str) -> int:
+    """A round's level at an ISO date (its last change on or before it)."""
+    level = 0
+    for event in events:
+        if event["date"] <= moment:
+            level = event["to"]
+    return level
+
+
+READY_HISTORY_WEEKS = 8
+
+
+def ready_history(
+    rounds: list[dict[str, Any]], *, today: date, tz_offset_minutes: int = 0
+) -> list[dict[str, Any]]:
+    """Rounds at Vững or above at the end of each of the last weeks (the staircase).
+
+    The count only moves when a round changes level, so it does not follow the
+    noise of single sessions (research 24/10).
+    """
+    out = []
+    current = _week_start(today)
+    for offset in range(READY_HISTORY_WEEKS - 1, -1, -1):
+        week = current - timedelta(days=7 * offset)
+        end = datetime.combine(week + timedelta(days=7), datetime.min.time(), tzinfo=UTC) - timedelta(
+            minutes=tz_offset_minutes
+        )
+        moment = _iso(end)
+        count = sum(1 for r in rounds if level_at(r.get("levelEvents") or [], moment) >= READY_LEVEL_INDEX)
+        out.append({"weekStart": week.isoformat(), "ready": count})
+    return out
+
+
 def round_readiness(
-    skills: list[dict[str, Any]], gaps: list[dict[str, Any]], job_id: str
+    skills: list[dict[str, Any]],
+    gaps: list[dict[str, Any]],
+    job_id: str,
+    calibration: Calibration | None = None,
 ) -> list[dict[str, Any]]:
     """Readiness for one position, by interview round (interview_rounds.AREAS).
 
     Per round: the mean smoothed level of its skills as asked for this job,
     the number of sessions behind it, a status (ready / almost / practice /
     thin = one session only / unseen), and the point missed most often there.
+    ``first`` is the round's mean score in its first session and ``trend``
+    the noise-aware trend of its per-session means (research 24/10: "lần đầu
+    → hiện tại" per round, drawn faint when the change is within the noise).
     """
+    calibration = calibration or Calibration()
     per_area: dict[str, dict[str, Any]] = {}
     for skill in skills:
         if skill.get("minor"):
@@ -443,11 +680,16 @@ def round_readiness(
             continue
         last = points[-1]
         level = last.get("estimate") if last.get("estimate") is not None else last["score"]
-        entry = per_area.setdefault(skill["area"], {"skills": [], "sessions": set()})
+        entry = per_area.setdefault(skill["area"], {"skills": [], "sessions": set(), "by_session": {}})
         entry["skills"].append(
             {"conceptId": skill["conceptId"], "label": skill["label"], "estimate": round(level, 1)}
         )
         entry["sessions"].update(p["sessionId"] for p in points)
+        for p in points:
+            bucket = entry["by_session"].setdefault(
+                p["sessionId"], {"date": p["date"], "scores": [], "tier": p.get("tier") or "standard"}
+            )
+            bucket["scores"].append(p["score"])
     rounds = []
     for area in AREAS:
         entry = per_area.get(area)
@@ -465,9 +707,23 @@ def round_readiness(
                     "sessions": 0,
                     "skills": [],
                     "topGap": None,
+                    "first": None,
+                    "trend": None,
+                    "series": [],
+                    **round_ladder([]),
                 }
             )
             continue
+        round_series = [
+            {
+                "sessionId": sid,
+                "date": bucket["date"],
+                "tier": bucket["tier"],
+                "score": round(statistics.mean(bucket["scores"]), 1),
+            }
+            for sid, bucket in sorted(entry["by_session"].items(), key=lambda item: item[1]["date"])
+        ]
+        series = [item["score"] for item in round_series]
         estimate = round(statistics.mean(item["estimate"] for item in entry["skills"]), 1)
         sessions = len(entry["sessions"])
         if sessions < ROUND_MIN_SESSIONS:
@@ -494,6 +750,10 @@ def round_readiness(
                     if top_gap
                     else None
                 ),
+                "first": round(series[0], 1),
+                "trend": reliable_trend(series, calibration) if len(series) >= 2 else None,
+                "series": round_series,
+                **round_ladder(round_series),
             }
         )
     return rounds
@@ -566,6 +826,232 @@ def _session_behavior(turns: list[TurnRow]) -> dict[str, Any]:
     }
 
 
+def valid_session(turns: list[TurnRow]) -> bool:
+    """A session that counts toward the weekly streak: enough real answers.
+
+    At least ``VALID_MIN_ANSWERS`` main questions answered (the greeting and
+    the closing Q&A do not count). Abandoned or empty sessions do not keep a
+    streak alive (GitHub's streak counter produced one-contribution days to
+    keep a streak; research 24/10).
+    """
+    answered = [t for t in turns if t.outcome == "ANSWERED" and is_tracked(t.concept_id, t.stage) and t.stage]
+    return len(answered) >= VALID_MIN_ANSWERS
+
+
+RETRY_SESSIONS = 30
+WINS_LIMIT = 10
+
+
+def retries_by_session(
+    skill_questions: dict[str, list[dict[str, Any]]], names: dict[str, str], areas: dict[str, str]
+) -> dict[str, list[dict[str, Any]]]:
+    """"Lần trước – Lần này": a skill asked again after an answer that missed points.
+
+    For each answer whose skill was asked before in another session with key
+    points missing: the earlier question and what it missed, this question and
+    how much of its checklist it covered. ``sameQuestion`` tells whether it is
+    the very same question (then ``fixedPoints`` lists the earlier misses now
+    covered); a different question of the same skill is the fairer evidence
+    (retest effect, research 24/10), and its points are not matched one by one.
+    """
+    out: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for key, records in skill_questions.items():
+        for index, record in enumerate(records):
+            earlier = [r for r in records[:index] if r["sessionId"] != record["sessionId"]]
+            if not earlier or not earlier[-1]["missing"]:
+                continue
+            if any(r["skillKey"] == key for r in out.get(record["sessionId"], [])):
+                continue  # one card per skill and session: its first question
+            before = earlier[-1]
+            same = bool(record["question"]) and record["question"] == before["question"]
+            now_missing = {m["point"] for m in record["missing"]}
+            out[record["sessionId"]].append(
+                {
+                    "skill": names.get(key) or key,
+                    "skillKey": key,
+                    "area": areas.get(key, "other"),
+                    "sameQuestion": same,
+                    "before": {k: before[k] for k in ("sessionId", "date", "question", "score", "missing")},
+                    "now": {k: record[k] for k in ("question", "score", "missing", "covered", "total", "checked")},
+                    "fixedPoints": [
+                        m["point"] for m in before["missing"] if same and m["point"] not in now_missing
+                    ],
+                }
+            )
+    keep = sorted(out, key=lambda sid: max(r["before"]["date"] for r in out[sid]))[-RETRY_SESSIONS:]
+    return {sid: out[sid] for sid in keep}
+
+
+BASELINE_SESSIONS = 4
+BASELINE_MIN = 3
+MATCHED_POINTS = 10
+RECORDS_LIMIT = 3
+
+
+def baseline_label(score: float | None, earlier: list[float], tolerance: float) -> str | None:
+    """A session against the candidate's usual level (Oura/WHOOP: against your own baseline).
+
+    The usual level is the median of up to ``BASELINE_SESSIONS`` earlier sessions
+    at the same tier; with fewer than ``BASELINE_MIN`` there is no label (no
+    verdict on little data, research 24/10).
+    """
+    recent = earlier[-BASELINE_SESSIONS:]
+    if score is None or len(recent) < BASELINE_MIN:
+        return None
+    usual = statistics.median(recent)
+    if score > usual + tolerance:
+        return "above"
+    if score < usual - tolerance:
+        return "below"
+    return "within"
+
+
+def session_timeline(
+    session_items: list[dict[str, Any]],
+    readiness: list[dict[str, Any]],
+    turns_by_session: dict[str, list[TurnRow]],
+    calibration: Calibration,
+) -> list[dict[str, Any]]:
+    """What changed after each session, newest first (Khan: up / same / down after each quiz).
+
+    Per session: the overall score against the usual level, the rounds that
+    moved a level, how many kept theirs, and records: things done for the
+    first time and a round's best mean at a tier. A measurable STAR result is
+    quoted as the evidence.
+    """
+    rounds_by_job = {job["jobId"]: job["rounds"] for job in readiness}
+    tolerance = max(0.3, calibration.typical_error / 2)
+    out = []
+    for index, item in enumerate(session_items):
+        rounds = rounds_by_job.get(item["jobId"] or "", [])
+        changes, kept = [], 0
+        records: list[dict[str, Any]] = []
+        for r in rounds:
+            series = r.get("series") or []
+            positions = [i for i, p in enumerate(series) if p["sessionId"] == item["sessionId"]]
+            if not positions:
+                continue
+            moved = [e for e in r.get("levelEvents") or [] if e["sessionId"] == item["sessionId"]]
+            if moved:
+                changes.append({"area": r["area"], "from": moved[0]["from"], "to": moved[-1]["to"]})
+            else:
+                kept += 1
+            point = r["series"][positions[0]]
+            before = [p["score"] for p in r["series"][: positions[0]] if p["tier"] == point["tier"]]
+            if len(before) >= 2 and point["score"] > max(before):
+                records.append(
+                    {"kind": "best_round", "area": r["area"], "score": point["score"], "tier": point["tier"]}
+                )
+        for kind in session_firsts(session_items, index):
+            record: dict[str, Any] = {"kind": f"first_{kind}"}
+            if kind in ("measurable_result", "star_complete"):
+                quote = next(
+                    (
+                        str(t.star.get("result") or "")[:160]
+                        for t in turns_by_session.get(item["sessionId"], [])
+                        if t.star and _NUMBER.search(str(t.star.get("result") or ""))
+                    ),
+                    "",
+                )
+                if quote:
+                    record["quote"] = quote
+            records.insert(0, record)
+        same_tier = [
+            s["overallScore"]
+            for s in session_items[:index]
+            if s["tier"] == item["tier"] and s["overallScore"] is not None
+        ]
+        out.append(
+            {
+                "sessionId": item["sessionId"],
+                "date": item["date"],
+                "jobId": item["jobId"],
+                "tier": item["tier"],
+                "score": item["overallScore"],
+                "baseline": baseline_label(item["overallScore"], same_tier, tolerance),
+                "levelChanges": changes,
+                "kept": kept,
+                "records": records,
+            }
+        )
+    out.reverse()
+    return out
+
+
+def week_summary(
+    timeline: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    streak: dict[str, Any],
+    *,
+    today: date,
+    tz_offset_minutes: int,
+) -> dict[str, Any]:
+    """"Tuần này" (Garmin training status: one state, one sentence, one advice).
+
+    ``status``: improving (a round moved up or a missed point was made in a
+    new question this week), start (no counted session yet), keep_going
+    (sessions but no change yet). The page adds the advice from the readiness.
+    """
+    start = _week_start(today)
+
+    def this_week(iso: str) -> bool:
+        return _week_start(_local_day(datetime.fromisoformat(iso), tz_offset_minutes)) == start
+
+    ups = [
+        {"area": c["area"], "to": c["to"], "sessionId": t["sessionId"], "jobId": t["jobId"]}
+        for t in timeline
+        if this_week(t["date"])
+        for c in t["levelChanges"]
+        if c["to"] > c["from"]
+    ]
+    fixed = [
+        {"point": e["point"], "skill": e["skill"], "jobId": e.get("jobId")}
+        for e in events
+        if e.get("newQuestion") and this_week(e["date"])
+    ]
+    if ups or fixed:
+        status = "improving"
+    elif streak["thisWeekCount"] == 0:
+        status = "start"
+    else:
+        status = "keep_going"
+    return {
+        "status": status,
+        "levelUps": ups,
+        "fixed": fixed[:3],
+        "sessions": streak["thisWeekCount"],
+        "goal": streak["goal"],
+        "streakWeeks": streak["weeks"],
+    }
+
+
+def matched_history(
+    records: list[dict[str, Any]], tiers: dict[str, str], job_id: str
+) -> list[dict[str, Any]]:
+    """One skill at one tier over time (Strava matched runs): key points covered per answer.
+
+    The tier is the one of the latest answer for this job; only answers with a
+    checklist count.
+    """
+    mine = [r for r in records if r.get("jobId") == job_id and r.get("total")]
+    if not mine:
+        return []
+    tier = tiers.get(mine[-1]["sessionId"], "standard")
+    same = [r for r in mine if tiers.get(r["sessionId"]) == tier][-MATCHED_POINTS:]
+    return [
+        {
+            "sessionId": r["sessionId"],
+            "date": r["date"],
+            "covered": r["covered"],
+            "total": r["total"],
+            "score": r["score"],
+            "tier": tier,
+            "sameQuestion": index > 0 and r["question"] == same[index - 1]["question"],
+        }
+        for index, r in enumerate(same)
+    ]
+
+
 def build_progress(
     sessions: list[SessionRow],
     turns: list[TurnRow],
@@ -600,6 +1086,7 @@ def build_progress(
                 "resumeName": s.resume_name,
                 "graderVersion": s.grader_version,
                 "behavior": _session_behavior(turns_by_session.get(s.session_id, [])),
+                "valid": valid_session(turns_by_session.get(s.session_id, [])),
             }
         )
 
@@ -626,6 +1113,7 @@ def build_progress(
             skill_concepts[key] = t.concept_id
             if t.label:
                 skill_labels[key] = t.label  # latest label wins
+            states = _point_states(t)
             skill_questions[key].append(
                 {
                     "sessionId": s.session_id,
@@ -634,6 +1122,9 @@ def build_progress(
                     "score": round(float(t.score), 1),
                     "missing": _missing_points(t),
                     "checked": _checked(t),
+                    "covered": sum(1 for _, status in states if status == "COVERED"),
+                    "total": len(states),
+                    "jobId": s.job_id,
                 }
             )
         for concept_id, scores in per_concept.items():
@@ -695,8 +1186,14 @@ def build_progress(
 
     # Gaps across every session, kept long enough for the readiness rounds.
     names = {s["conceptId"]: s["label"] for s in skills}
-    all_gaps = gap_notebook(sessions, turns_by_session, names, limited=False)
-    gaps = {"open": all_gaps["open"][:GAP_OPEN_LIMIT], "fixed": all_gaps["fixed"][:GAP_FIXED_LIMIT]}
+    all_gaps = gap_notebook(sessions, turns_by_session, names, limited=False, now=now)
+    # Points due for practice first, then the most often missed.
+    open_sorted = sorted(all_gaps["open"], key=lambda item: not item.get("due"))
+    gaps = {"open": open_sorted[:GAP_OPEN_LIMIT], "fixed": all_gaps["fixed"][:GAP_FIXED_LIMIT]}
+    retries = retries_by_session(
+        skill_questions, names, {key: area_of(skill_concepts.get(key)) for key in skill_questions}
+    )
+    wins = small_wins(session_items, all_gaps["events"])
 
     rates = [i["behavior"]["firstTimeSufficientRate"] for i in session_items if i["behavior"]["firstTimeSufficientRate"] is not None]
     behavior = {
@@ -712,11 +1209,19 @@ def build_progress(
     }
 
     starts = all_session_starts if all_session_starts is not None else [s.started_at for s in sessions]
-    streak = weekly_streak(
-        [_local_day(moment, tz_offset_minutes) for moment in starts],
-        today=_local_day(now, tz_offset_minutes),
-        goal=weekly_goal,
-    )
+    today = _local_day(now, tz_offset_minutes)
+    valid_days = [
+        _local_day(s.started_at, tz_offset_minutes)
+        for s, item in zip(sessions, session_items, strict=True)
+        if item["valid"]
+    ]
+    fixed_days = [
+        _local_day(datetime.fromisoformat(e["date"]), tz_offset_minutes) for e in all_gaps["events"]
+    ]
+    streak = weekly_streak(valid_days, today=today, goal=weekly_goal, progress_days=fixed_days)
+    started_days = [_local_day(moment, tz_offset_minutes) for moment in starts]
+    streak["startedThisWeek"] = sum(1 for day in started_days if _week_start(day) == _week_start(today))
+    streak["validMinAnswers"] = VALID_MIN_ANSWERS
 
     resumes: dict[str, dict[str, Any]] = {}
     for item in session_items:
@@ -725,23 +1230,44 @@ def build_progress(
             entry["sessions"] += 1
             entry["name"] = item["resumeName"] or entry["name"]
 
+    # Readiness per position by round, with the level ladder (research 24/10).
+    tiers = {item["sessionId"]: item["tier"] for item in session_items}
+    readiness = []
+    for job in jobs:
+        rounds = round_readiness(skills, all_gaps["open"], job["jobId"], calibration)
+        for r in rounds:
+            for skill in r["skills"]:
+                answers = skill_questions.get(skill["conceptId"], [])
+                skill["history"] = matched_history(answers, tiers, job["jobId"])
+        readiness.append(
+            {
+                "jobId": job["jobId"],
+                "jobTitle": job["jobTitle"],
+                "sessions": len(job["points"]),
+                "rounds": rounds,
+                "readyCount": sum(1 for r in rounds if r["level"] >= READY_LEVEL_INDEX),
+                "readyHistory": ready_history(rounds, today=today, tz_offset_minutes=tz_offset_minutes),
+                "currentTier": job["currentTier"],
+            }
+        )
+    timeline = session_timeline(session_items, readiness, turns_by_session, calibration)
+
     return {
         "generatedAt": _iso(now),
         "weeklyGoal": weekly_goal,
         "resumes": sorted(resumes.values(), key=lambda r: -r["sessions"]),
         "streak": streak,
+        "activity": activity_days(started_days, valid_days, fixed_days, today=today),
+        "wins": wins,
+        "retries": retries,
         "sessions": session_items,
         "skills": skills,
         "gaps": gaps,
-        "readiness": [
-            {
-                "jobId": job["jobId"],
-                "jobTitle": job["jobTitle"],
-                "sessions": len(job["points"]),
-                "rounds": round_readiness(skills, all_gaps["open"], job["jobId"]),
-            }
-            for job in jobs
-        ],
+        "readiness": readiness,
+        "timeline": timeline,
+        "week": week_summary(
+            timeline, all_gaps["events"], streak, today=today, tz_offset_minutes=tz_offset_minutes
+        ),
         "jobs": jobs,
         "behavior": behavior,
         "milestones": milestones(session_items, skills),
@@ -926,6 +1452,10 @@ def compare_with_previous(progress: dict[str, Any], session_id: str) -> dict[str
         },
         "levelChanges": level_changes,
         "firsts": session_firsts(items, index),
+        # "Lần trước – Lần này": skills asked again after an answer that missed points.
+        "retries": (progress.get("retries") or {}).get(session_id, [])[:3],
+        # "Sau buổi này": rounds that moved a level, usual level, records.
+        "after": next((t for t in progress.get("timeline") or [] if t["sessionId"] == session_id), None),
     }
 
 
