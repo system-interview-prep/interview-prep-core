@@ -441,3 +441,29 @@ def test_planner_gives_half_the_questions_to_the_round_the_candidate_chose() -> 
     # An unknown or non-technical round is ignored.
     plain = derive_competency_plan(job=_job(*requirements), match=results, duration_minutes=25, focus_area="teamwork")
     assert plain["selection"]["focusArea"] is None
+
+
+def test_planner_asks_again_a_skill_with_a_point_due_for_practice() -> None:
+    """Spaced re-ask (research 24/10): the due skill gets a slot even when ranked low."""
+    requirements = [
+        _skill("req-python", "skill-python", "Python"),
+        _skill("req-docker", "skill-docker", "Docker"),
+        _skill("req-pg", "skill-postgresql", "PostgreSQL"),
+        _skill("req-redis", "skill-redis", "Redis", priority="nice_to_have"),
+    ]
+    results = _match([_result(r.requirement_id, "met") for r in requirements])
+    plan = derive_competency_plan(
+        job=_job(*requirements),
+        match=results,
+        duration_minutes=20,
+        reask=[{"conceptId": "skill-redis", "points": ["TTL ngẫu nhiên", "Hot key"]}],
+    )
+    asked = [item["conceptId"] for item in plan["targets"]]
+    assert plan["questionBudget"] == 2 and "skill-redis" in asked
+    reask = plan["selection"]["reask"]
+    assert reask == [{"conceptId": "skill-redis", "points": ["TTL ngẫu nhiên", "Hot key"]}]
+    # A due skill the job does not ask about is ignored.
+    other = derive_competency_plan(
+        job=_job(*requirements), match=results, duration_minutes=20, reask=[{"conceptId": "skill-kafka"}]
+    )
+    assert other["selection"]["reask"] == []
