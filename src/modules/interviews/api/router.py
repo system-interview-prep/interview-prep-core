@@ -149,6 +149,9 @@ class CreateInterviewSession(BaseModel):
     focus_area: Literal["language", "framework", "data", "api", "infra", "ai"] | None = Field(
         default=None, alias="focusArea"
     )
+    # "Luyện lại ý này": a skill (concept id) to ask again in this session,
+    # with a question the candidate has not seen (planner._due_reask).
+    reask_concept_id: str | None = Field(default=None, alias="reaskConceptId", max_length=120)
 
     model_config = {"populate_by_name": True}
 
@@ -480,6 +483,7 @@ async def create_interview_session(
                         "jobId": payload.job_id,
                         "source": "p0-session-context",
                         "focusArea": payload.focus_area,
+                        "reaskConceptId": payload.reask_concept_id,
                     }
                 ),
             },
