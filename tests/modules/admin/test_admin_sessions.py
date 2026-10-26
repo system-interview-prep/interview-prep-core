@@ -33,6 +33,8 @@ def _row(**overrides) -> dict:
         "candidate_name": "Nguyễn An",
         "candidate_email": "an@example.com",
         "ai_score": 7.4,
+        "user_id": "u-1",
+        "end_reason": "COMPLETED",
     }
     row.update(overrides)
     return row
@@ -46,7 +48,7 @@ async def test_stats_come_from_the_aggregate_not_the_page() -> None:
     )
 
     assert body["total"] == 137
-    assert body["stats"] == {"active": 12, "completed": 125, "avgScore": 68}
+    assert body["stats"] == {"active": 12, "completed": 125, "ungraded": 0, "avgScore": 68}
     page_sql, page_params = db.statements[0]
     assert page_params["limit"] == 10 and page_params["offset"] == 20
     # The latest evaluation only, so re-graded sessions don't duplicate rows.
@@ -70,3 +72,29 @@ async def test_rows_use_real_job_title_and_mode() -> None:
     page_sql, page_params = db.statements[0]
     assert "COALESCE(s.mode, s.type, 'text')" in page_sql and "= 'voice'" in page_sql
     assert page_params["kw"] == "%an%"
+
+
+async def test_closed_sessions_without_a_report_need_action() -> None:
+    db = _Db(
+        [_row(ai_score=None, end_reason="CANDIDATE_LEFT"), _row(id="ses-2")],
+        {"total": 2, "active": 0, "completed": 2, "ungraded": 1, "avg_score": 7.4},
+    )
+
+    body = await admin_router.list_admin_sessions(
+        mode="all", search=None, report="missing", limit=10, offset=0, _={"sub": "admin"}, db=db
+    )
+
+    first, second = body["sessions"]
+    assert first["status"] == "action_needed" and first["endReason"] == "CANDIDATE_LEFT"
+    assert second["status"] == "completed" and second["userId"] == "u-1"
+    assert body["stats"]["ungraded"] == 1
+    page_sql, _ = db.statements[0]
+    assert "ev.overall_score IS NULL" in page_sql
+
+
+def test_access_log_kinds_split_reads_from_changes() -> None:
+    assert admin_router._access_log_filter("all") == ("", {})
+    reads, params = admin_router._access_log_filter("reads")
+    assert reads == "WHERE l.action = ANY(:actions)" and "VIEW_USER_ACTIVITY" in params["actions"]
+    changes, _ = admin_router._access_log_filter("changes")
+    assert changes.startswith("WHERE NOT")

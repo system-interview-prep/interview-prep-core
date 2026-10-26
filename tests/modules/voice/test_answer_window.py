@@ -57,3 +57,30 @@ def test_processing_filler_rotates_between_answers() -> None:
     assert len(set(lines)) == len(lines) >= 3
     assert processing_filler("vi-VN") == "Ừm, chờ mình một chút nhé."
     assert processing_filler("en-US", 1) != processing_filler("en-US", 0)
+
+
+def test_filler_varies_by_session_and_the_reply_does_not_repeat_its_interjection() -> None:
+    from src.modules.interviews.adapters.voice.answer_window import (
+        PROCESSING_FILLERS_VI,
+        pick_processing_filler,
+        without_leading_interjection,
+    )
+
+    picks = {pick_processing_filler("vi-VN", f"session-{i}:1") for i in range(40)}
+    assert len(picks) >= 4  # not always the same first line
+    for i in range(20):
+        last = pick_processing_filler("vi-VN", f"s:{i}")
+        assert pick_processing_filler("vi-VN", f"s:{i}", avoid=last) != last
+    assert sum(not line.startswith(("Ừm", "Ok", "À")) for line in PROCESSING_FILLERS_VI) >= 4
+    assert without_leading_interjection("Ừm, mình hiểu ý bạn.\n\nCâu hỏi?") == "Mình hiểu ý bạn.\n\nCâu hỏi?"
+    assert without_leading_interjection("Ok.") == "Ok."
+    assert without_leading_interjection("Giờ mình qua Docker.") == "Giờ mình qua Docker."
+
+
+def test_room_lines_follow_the_voice_dialect_and_acknowledgements_are_cached(monkeypatch) -> None:
+    from src.modules.interviews.adapters.voice.answer_window import localize_particles, scripted_reply_lines
+    from src.modules.interviews.core import interviewer_script as script
+
+    assert set(script.ACK_FALLBACK_VI) <= set(scripted_reply_lines("vi-VN"))
+    monkeypatch.setenv("INTERVIEWER_VOICE_DIALECT", "nam")
+    assert localize_particles("Ừm, chờ mình một chút nhé.") == "Ừm, chờ mình một chút nha."

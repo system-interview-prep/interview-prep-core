@@ -11,10 +11,17 @@ Governing contract:
   4. Outcomes, measurement & baseline.
 """
 
-from dataclasses import dataclass, field
 import re
+from dataclasses import dataclass, field
 from typing import Any
 
+from src.modules.interviews.core.interviewer_script import (
+    PROJECT_QUESTION_EN,
+    PROJECT_QUESTION_UNNAMED_EN,
+    PROJECT_QUESTION_UNNAMED_VI,
+    PROJECT_QUESTION_VI,
+)
+from src.modules.interviews.core.interviewer_voice import speech_v2_enabled
 
 _COMMON_TECH_TOKENS = {
     "python", "java", "typescript", "javascript", "golang", "go", "c++", "c#", "rust",
@@ -316,6 +323,39 @@ def select_best_project(
     return ranked[0]
 
 
+# A CV "name" that is really a description: a sentence, a list, an English verb phrase.
+_PROJECT_NAME_MAX_WORDS = 8
+_DESCRIPTION_START_RE = re.compile(
+    r"^(operating|building|built|developing|developed|designing|designed|creating|created|implementing|"
+    r"implemented|working|worked|responsible|helping|managing|managed|"
+    r"xây dựng|phát triển|thiết kế|tham gia)\b",
+    re.IGNORECASE,
+)
+
+
+def spoken_project_name(name: str | None) -> str | None:
+    """The project name as it can be said aloud, or None when it is not a name.
+
+    Buổi thật 20/10: "dự án 'operating with real users and generating revenue.'".
+    Quotes are dropped (TTS reads them); a name longer than eight words, ending
+    with a full stop, or starting like a description is not used.
+    """
+    value = " ".join(str(name or "").split()).strip(" '\"“”‘’")
+    if not value or len(value.split()) > _PROJECT_NAME_MAX_WORDS or value.endswith((".", ";", ":")):
+        return None
+    if _DESCRIPTION_START_RE.match(value) or re.search(r"\b(and|và)\b.*\b(and|và)\b", value, re.IGNORECASE):
+        return None
+    return value
+
+
+def spoken_project_question(name: str | None, *, is_vi: bool) -> str:
+    """The VALIDATE question from the shared script, with a sayable project name."""
+    spoken = spoken_project_name(name)
+    if spoken:
+        return (PROJECT_QUESTION_VI if is_vi else PROJECT_QUESTION_EN).format(project=spoken)
+    return PROJECT_QUESTION_UNNAMED_VI if is_vi else PROJECT_QUESTION_UNNAMED_EN
+
+
 def build_project_validation_question(
     project: StructuredProjectEvidence,
     job_title: str = "ứng viên",
@@ -330,6 +370,8 @@ def build_project_validation_question(
     whichever technology came first, so they are left to the follow-up probe.
     """
     is_vi = (locale or "vi").lower().startswith("vi")
+    if speech_v2_enabled():
+        return spoken_project_question(project.name, is_vi=is_vi)
     has_role = project.role_status == "present" and bool(project.role)
 
     if is_vi:

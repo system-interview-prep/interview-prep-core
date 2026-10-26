@@ -215,7 +215,8 @@ class TestCVPersonalizationScenarios(unittest.IsolatedAsyncioTestCase):
         turn_1_snap = json.loads(inserted_turns[1]["snapshot"])
         self.assertEqual(turn_1_snap["stage"], "VALIDATE")
         self.assertIn("E-commerce Microservices", turn_1_snap["questionText"])
-        self.assertIn("CV chưa ghi rõ vai trò", turn_1_snap["questionText"])
+        # Speech v2 (25/10): asks what they did, no "CV chưa ghi rõ vai trò".
+        self.assertIn("trực tiếp làm phần nào", turn_1_snap["questionText"])
 
     async def test_scenario_2_cv_with_skills_fallback(self):
         """Kịch bản 2: CV không có dự án riêng nhưng có kỹ năng -> Turn 1 hỏi về top 3 công nghệ."""

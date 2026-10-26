@@ -15,6 +15,7 @@ only runs the queries.
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
@@ -22,6 +23,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core import llm_tracing
 from src.modules.interviews.evaluation.question_quality import session_plan_audit
 from src.modules.interviews.planning.entry_gate import entry_policy
 
@@ -254,6 +256,18 @@ def _exchange_view(event: dict[str, Any]) -> dict[str, Any]:
         "interviewer": p.get("interviewer"),
         "coreMs": event.get("duration_ms"),
         "modality": p.get("modality"),
+        # Speech control (core/speech_checks.py): the AI's rejected or edited
+        # drafts with the reason, where each part of the reply came from, and
+        # terms the AI brought in that neither the question nor the answer had.
+        "ackRaw": p.get("ack_raw"),
+        "speechPlan": [step for step in p.get("speech_plan") or [] if isinstance(step, dict)],
+        "speechChecks": [check for check in p.get("speech_checks") or [] if isinstance(check, dict)],
+        "newTerms": [str(term) for term in p.get("new_terms") or []],
+        "transition": p.get("transition"),
+        # LLM monitoring: why the engine acted, rule flags, and the Langfuse trace.
+        "decisionRule": p.get("decision_rule"),
+        "flags": [str(flag) for flag in p.get("flags") or []],
+        "langfuseTraceId": p.get("langfuse_trace_id"),
     }
 
 
@@ -682,6 +696,14 @@ def assemble_pipeline(
         if e["stage"] in {"interview", "questions", "plan"} and e["status"] in {"warning", "error"}
     ]
     warmup = sum(1 for t in turn_rows if str(t.get("stage") or "").upper() == "WARM_UP")
+    # Answered main questions: what the grader scores (admin_actions refuses
+    # to grade a session with none).
+    gradable = sum(
+        1
+        for t in turn_rows
+        if str(t.get("status") or "").upper() == "ANSWERED"
+        and str(t.get("stage") or "").upper() not in {"", "WARM_UP", "CLOSING"}
+    )
     return {
         "session": session,
         "live": running,
@@ -698,7 +720,12 @@ def assemble_pipeline(
         # has not started (started_at is still the row's creation time).
         "timing": timing(session if last_message else {**session, "startedAt": None}, now=now),
         "currentTurnIndex": asked.get("turnIndex") if asked else None,
-        "turnCounts": {"total": len(turn_rows), "warmup": warmup, "main": len(turn_rows) - warmup},
+        "turnCounts": {
+            "total": len(turn_rows),
+            "warmup": warmup,
+            "main": len(turn_rows) - warmup,
+            "gradable": gradable,
+        },
         "voice": voice_summary(events),
         "stages": stages,
         "entry": _entry_section(context, plan, events),
@@ -801,7 +828,7 @@ async def load_pipeline(db: AsyncSession, session_id: str) -> dict[str, Any] | N
         "WHERE session_id = :sid ORDER BY sequence DESC LIMIT 1",
         params,
     )
-    return assemble_pipeline(
+    view = assemble_pipeline(
         audit=audit,
         context=context,
         events=events,
@@ -812,3 +839,18 @@ async def load_pipeline(db: AsyncSession, session_id: str) -> dict[str, Any] | N
         turn_times=turn_times,
         last_message=last_messages[0] if last_messages else None,
     )
+    view["langfuse"] = await langfuse_links(session_id)
+    return view
+
+
+async def langfuse_links(session_id: str | None = None) -> dict[str, str] | None:
+    """Links to this session (and its turn traces) in Langfuse; None when Langfuse is off."""
+    if not llm_tracing.enabled():
+        return None
+    project = await asyncio.to_thread(llm_tracing.project_url)
+    if not project:
+        return None
+    links = {"projectUrl": project}
+    if session_id:
+        links["sessionUrl"] = f"{project}/sessions/{session_id}"
+    return links

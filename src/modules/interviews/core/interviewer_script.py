@@ -91,6 +91,15 @@ ACK_FALLBACK_VI: tuple[str, ...] = (
     "Vậy là mình hình dung được rồi.",
     "Ok, rõ ý bạn rồi.",
     "Mình theo kịp ý bạn rồi.",
+    # 25/10: nhóm 7 câu lặp 3 lần trong 40 lượt (đo vòng 5). Viết thêm rồi duyệt
+    # qua test kịch bản; lúc chạy vẫn là câu soạn sẵn.
+    "Ừ, mình hiểu hướng của bạn.",
+    "Vậy là mình nắm được hướng làm.",
+    "À, mình hiểu bạn đang nói tới chỗ nào.",
+    "Mình hình dung ra rồi.",
+    "Ok, mình theo được ý đó.",
+    "Ừm, vậy là rõ hướng của bạn rồi.",
+    "Được, mình nắm được ý chính.",
 )
 ACK_FALLBACK_EN: tuple[str, ...] = (
     "Okay, I follow you.",
@@ -105,6 +114,9 @@ INTRO_ACK_VI: tuple[str, ...] = (
     "Mình nắm sơ qua về bạn rồi.",
     "Vậy là mình biết sơ qua về bạn rồi.",
     "Ok, mình hình dung được bạn đang làm gì rồi.",
+    "À, mình biết sơ qua về công việc của bạn rồi.",
+    "Vậy là mình có chút hình dung về bạn.",
+    "Ừm, mình nắm được bạn đang làm gì rồi.",
 )
 INTRO_ACK_EN: tuple[str, ...] = (
     "Thanks for the introduction.",
@@ -116,6 +128,9 @@ NON_ANSWER_ACK_VI: tuple[str, ...] = (
     "Ừm, mình hiểu rồi.",
     "Vâng, mình nắm rồi.",
     "Ok, mình hiểu.",
+    "Ừ, mình hiểu.",
+    "Được, mình nắm rồi.",
+    "Ok, mình hiểu rồi.",
 )
 NON_ANSWER_ACK_EN: tuple[str, ...] = (
     "Okay, understood.",
@@ -128,6 +143,9 @@ GIVE_UP_ACK_VI: tuple[str, ...] = (
     "Không sao đâu, câu đó không dễ.",
     "Không sao, phần này mình tạm để đó.",
     "Được, không sao cả.",
+    "Ừm, không sao đâu.",
+    "Không sao, mình qua phần khác.",
+    "Được, phần này không sao cả.",
 )
 GIVE_UP_ACK_EN: tuple[str, ...] = (
     "No problem, I've noted that.",
@@ -139,11 +157,83 @@ SKIP_ACK_VI: tuple[str, ...] = (
     "Được, mình chuyển sang câu khác nhé.",
     "Không sao, mình qua câu tiếp.",
     "Ok, mình để câu này lại, sang câu khác nhé.",
+    "Ừ, mình đổi câu khác nhé.",
+    "Được, mình hỏi câu khác.",
 )
 SKIP_ACK_EN: tuple[str, ...] = (
     "Sure, let's move on to another question.",
     "No problem, let's take the next one.",
 )
+# Xin qua câu khi ngay sau đó có câu chuyển phần: câu chuyển đã nói "qua phần…",
+# nên câu này không nói "chuyển, qua, sang" nữa. Buổi thật 20/10: "Ok, mình để câu
+# này lại, sang câu khác nhé. Mình chuyển sang vài câu kỹ thuật nhé."
+SKIP_ACK_SHORT_VI: tuple[str, ...] = (
+    "Được, không sao.",
+    "Ok, mình để câu đó lại.",
+    "Không sao cả.",
+    "Ừ, không sao.",
+    "Được, mình để câu đó.",
+)
+SKIP_ACK_SHORT_EN: tuple[str, ...] = (
+    "Sure, no problem.",
+    "Okay, let's leave that one.",
+    "No problem at all.",
+)
+
+# Trước câu hỏi thêm: không nói "mình hình dung được rồi" rồi lại hỏi tiếp.
+PROBE_ACK_VI: tuple[str, ...] = (
+    "Mình muốn hỏi thêm một chút.",
+    "Ừm, mình hỏi kỹ hơn chỗ này.",
+    "Để mình hỏi sâu thêm một ý.",
+    "À, mình muốn tìm hiểu thêm chỗ này.",
+    "Mình hỏi thêm một ý nữa.",
+    "Ừ, chỗ này mình muốn hỏi kỹ hơn.",
+)
+# Câu ghi nhận dạng khung (INTERVIEWER_ACK_MODE=topic): AI chỉ trả về một cụm
+# chủ đề lấy từ câu trả lời, code ráp vào khung. Không động từ hay tính từ do AI
+# viết nên không còn chỗ cho lời khen chê lọt vào (nghiên cứu 24/10, mục 5.2).
+ACK_TOPIC_FRAMES_VI: tuple[str, ...] = (
+    "À, vậy là {topic}.",
+    "Ừ, tức là {topic}.",
+    "À, ra là {topic}.",
+    "Vậy là {topic}.",
+)
+ACK_TOPIC_FRAMES_EN: tuple[str, ...] = (
+    "Ah, so {topic}.",
+    "Right, {topic}.",
+    "I see, {topic}.",
+)
+PROBE_ACK_EN: tuple[str, ...] = (
+    "Let me ask a bit more about that.",
+    "I'd like to dig into that a little.",
+    "One more thing on that.",
+)
+
+# Lời giới thiệu chỉ là một câu chào ("xin chào", "dạ"): đáp ngắn rồi vào phần
+# chính. Buổi thật 20/10, AI viết "Mình đang chờ phần giới thiệu của bạn." rồi
+# chuyển luôn sang câu dự án.
+WARMUP_SHORT_ACK_VI: tuple[str, ...] = (
+    "Ok, mình vào phần chính luôn.",
+    "Được, mình bắt đầu phần chính.",
+    "Vậy mình đi vào nội dung chính.",
+)
+WARMUP_SHORT_ACK_EN: tuple[str, ...] = (
+    "Okay, let's get into the main part.",
+    "Alright, let's start with the main questions.",
+)
+
+# --------------------------------------------------------------------------- #
+# Câu hỏi về dự án trong CV (giai đoạn VALIDATE)
+# --------------------------------------------------------------------------- #
+
+# Tên dự án đọc lên không có dấu nháy. Buổi thật 20/10, "tên dự án" lấy từ CV là
+# một câu mô tả ("operating with real users and generating revenue."), nên tên
+# không đọc được thì hỏi về dự án nói chung. Không còn vế "CV chưa ghi rõ vai
+# trò…": câu hỏi "bạn trực tiếp làm phần nào" đã hỏi đúng điều đó.
+PROJECT_QUESTION_VI = "Trong dự án {project}, bạn trực tiếp làm phần nào, và quyết định kỹ thuật khó nhất là gì?"
+PROJECT_QUESTION_EN = "In the {project} project, which parts did you build yourself, and what was the hardest technical decision?"
+PROJECT_QUESTION_UNNAMED_VI = "Trong dự án bạn ghi trong CV, bạn trực tiếp làm phần nào, và quyết định kỹ thuật khó nhất là gì?"
+PROJECT_QUESTION_UNNAMED_EN = "In the project on your CV, which parts did you build yourself, and what was the hardest technical decision?"
 
 # --------------------------------------------------------------------------- #
 # Hỏi lại, giải thích lại, hỏi thêm
@@ -182,6 +272,14 @@ PROBE_FALLBACK_EN: tuple[str, ...] = (
     "How would you verify that it works as intended?",
 )
 
+# Lượt nộp code: kết quả test là điều ứng viên đã thấy trên màn hình, nói lại
+# bằng văn nói rồi chuyển sang hỏi về cách làm (trước 25/10 nằm thẳng trong engine:
+# "Mã nguồn hiện tại chưa vượt qua toàn bộ test cases.").
+CODING_PASSED_ACK_VI = "Code của bạn đã qua hết test case. Mình hỏi thêm một chút về cách làm nhé."
+CODING_PASSED_ACK_EN = "Your code passes all the test cases. Let me ask a bit about your approach."
+CODING_FAILED_ACK_VI = "Code hiện vẫn còn test case chưa qua. Mình hỏi thêm về cách bạn đang làm nhé."
+CODING_FAILED_ACK_EN = "Some test cases still fail. Let me ask about the approach you're taking."
+
 # Bài code: không khen lời giải, không gắn vào một kỹ thuật cụ thể.
 CODING_FALLBACK_PROBE_VI = (
     "Cách làm này đánh đổi điều gì, và nếu có ngoại lệ xảy ra giữa chừng thì nó xử lý ra sao?"
@@ -209,18 +307,22 @@ TRANSITION_STAGE_VI: dict[str, tuple[str, ...]] = {
     "VALIDATE": (
         "Mình muốn tìm hiểu thêm về dự án trong CV của bạn.",
         "Giờ mình qua dự án bạn đã làm nhé.",
+        "Mình nói về dự án trong CV của bạn một chút.",
     ),
     "DEEP_DIVE": (
         "Giờ mình đi vào phần kỹ thuật nhé.",
         "Mình chuyển sang vài câu kỹ thuật nhé.",
+        "Giờ mình vào phần kỹ thuật.",
     ),
     "CHALLENGE": (
         "Mình thử một tình huống khó hơn một chút nhé.",
         "Giờ mình đưa ra một tình huống thực tế nhé.",
+        "Mình đưa ra một tình huống thực tế.",
     ),
     "BEHAVIORAL": (
         "Phần cuối, mình hỏi về cách bạn làm việc nhóm nhé.",
         "Giờ mình qua cách bạn làm việc với mọi người nhé.",
+        "Phần cuối là về cách bạn làm việc với mọi người.",
     ),
 }
 TRANSITION_STAGE_EN: dict[str, tuple[str, ...]] = {
@@ -356,6 +458,25 @@ USER_ENDED_EN: tuple[str, ...] = (
     "We'll stop the interview here as you asked. Thank you for your time.",
 )
 
+# Phần hỏi đáp cuối buổi: câu mời hỏi tiếp do code nối (trước đây để AI tự viết),
+# và câu dự phòng khi câu trả lời AI viết bị loại hoặc lỗi.
+QNA_MORE_VI: tuple[str, ...] = (
+    "Bạn còn câu hỏi nào khác không?",
+    "Bạn muốn hỏi thêm gì nữa không?",
+)
+QNA_MORE_EN: tuple[str, ...] = (
+    "Do you have any other questions?",
+    "Anything else you'd like to ask?",
+)
+QNA_FALLBACK_VI: tuple[str, ...] = (
+    "Phần này mô tả công việc chưa nhắc tới, bộ phận tuyển dụng sẽ trao đổi thêm với bạn.",
+    "Mô tả công việc chưa nói rõ chỗ này, bên tuyển dụng sẽ trao đổi thêm với bạn sau buổi.",
+)
+QNA_FALLBACK_EN: tuple[str, ...] = (
+    "The job description doesn't cover that, so the recruiting team will follow up with you.",
+    "That isn't in the job description; the recruiting team can tell you more after this session.",
+)
+
 LAST_QNA_CLOSING_VI: tuple[str, ...] = (
     "Cảm ơn bạn đã dành thời gian cho buổi phỏng vấn hôm nay. Mình đang tổng hợp báo cáo đánh giá, chúc bạn một ngày tốt lành!",
     "Mình kết thúc buổi ở đây nhé. Báo cáo của bạn đang được tổng hợp, chúc bạn một ngày tốt lành!",
@@ -370,11 +491,17 @@ LAST_QNA_CLOSING_EN: tuple[str, ...] = (
 # --------------------------------------------------------------------------- #
 
 # Nói khi Interview Core xử lý lâu; xoay vòng để không lặp sau mỗi câu.
+# Từ 25/10: chọn theo mã buổi, tránh câu đệm lần trước; nửa nhóm không mở bằng
+# tiếng đệm, và tiếng đệm đầu câu ghi nhận ngay sau đó bị bỏ (không "Ừm… Ừm…").
 PROCESSING_FILLERS_VI: tuple[str, ...] = (
     "Ừm, chờ mình một chút nhé.",
     "Ừm, để mình xem lại ý bạn vừa nói.",
     "Ok, bạn chờ mình vài giây nhé.",
     "Mình đang xem câu trả lời của bạn, chờ chút nhé.",
+    "Để mình xem lại ý bạn một chút.",
+    "Bạn chờ mình vài giây.",
+    "Mình xem lại câu trả lời một chút nhé.",
+    "À, chờ mình chút.",
 )
 PROCESSING_FILLERS_EN: tuple[str, ...] = (
     "Got it. Give me a moment.",

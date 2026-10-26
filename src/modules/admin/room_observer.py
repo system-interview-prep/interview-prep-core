@@ -65,6 +65,34 @@ async def room_is_running(api: Any, *, url: str, key: str, secret: str, session_
             pass
 
 
+async def close_room(api: Any, *, url: str, key: str, secret: str, session_id: str) -> bool | None:
+    """Delete the interview room, which disconnects the candidate and the voice agent.
+
+    Used when an admin closes a session: without it the room stays up and the
+    agent keeps talking into a session that is already CLOSED. True when a
+    room was deleted, False when there was none, None when LiveKit cannot be
+    asked. Never raises: closing the session must not depend on LiveKit.
+    """
+    try:
+        client = api.LiveKitAPI(url, key, secret)
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        name = room_name(session_id)
+        response = await client.room.list_rooms(api.ListRoomsRequest(names=[name]))
+        if not list(getattr(response, "rooms", []) or []):
+            return False
+        await client.room.delete_room(api.DeleteRoomRequest(room=name))
+        return True
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        try:
+            await client.aclose()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def observer_grants(api: Any, session_id: str) -> Any:
     """Listen-only, hidden grants (``api`` is ``livekit.api``)."""
     return api.VideoGrants(

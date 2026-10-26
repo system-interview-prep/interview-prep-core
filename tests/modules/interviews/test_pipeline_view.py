@@ -377,7 +377,8 @@ def test_turn_times_and_warm_up_counts():
     turn0 = result["turns"][0]
     assert turn0["askedAt"] == T0.isoformat() and turn0["answerCount"] == 1
     assert result["turns"][1]["askedAt"] is None
-    assert result["turnCounts"] == {"total": 3, "warmup": 1, "main": 2}
+    # The answered turn is the greeting: nothing the grader can score yet.
+    assert result["turnCounts"] == {"total": 3, "warmup": 1, "main": 2, "gradable": 0}
 
 
 def test_live_state_is_none_before_anything_runs():

@@ -139,3 +139,22 @@ def test_interviewer_speech_reads_numbers_units_and_layout_aloud() -> None:
     # Numbers that are part of a name are read as the name.
     assert speakable_text("S3, HTTP2, v2.5 hay Python 3.12", locale="vi-VN") == "S3, HTTP2, v2.5 hay Python 3.12"
     assert speakable_text("Còn 25′.\n\nTiếp", locale="en-US") == "Còn 25 minutes. Tiếp"
+
+
+def test_notation_heard_in_the_20_10_sessions_is_read_as_words(monkeypatch) -> None:
+    """Speech v2 (25/10): quotes, brackets, "vd", HTTP codes, units and paths."""
+    assert speakable_text("Trong dự án 'Hệ thống quản lý đơn hàng', bạn làm phần nào?", locale="vi-VN") == (
+        "Trong dự án Hệ thống quản lý đơn hàng, bạn làm phần nào?"
+    )
+    assert "ví dụ SOAP" in speakable_text("Đối tác gửi XML, vd SOAP hoặc hóa đơn.", locale="vi-VN")
+    spoken = speakable_text("API trả về HTTP 404 (Not Found) khi gọi /users/{id}, p95 200ms.", locale="vi-VN")
+    assert "HTTP bốn không bốn" in spoken and "(" not in spoken and "{id}" not in spoken
+    assert "hai trăm mi li giây" in spoken
+    assert speakable_text("Bạn nói don't repeat yourself.", locale="vi-VN") == "Bạn nói don't repeat yourself."
+    monkeypatch.setenv("INTERVIEWER_SPEECH_V2", "0")
+    assert "(Not Found)" in speakable_text("HTTP 404 (Not Found).", locale="vi-VN")
+
+
+def test_pronunciation_file_applies_to_speech_only() -> None:
+    spoken = speakable_text("Deploy lên k8s, vs Docker Swarm, latency ~200ms -> 50ms, e.g. Redis.", locale="vi-VN")
+    assert "Kubernetes" in spoken and "so với" in spoken and "khoảng hai trăm" in spoken and "ví dụ Redis" in spoken

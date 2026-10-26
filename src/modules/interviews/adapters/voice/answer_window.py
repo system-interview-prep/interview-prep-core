@@ -183,6 +183,82 @@ def processing_filler(locale: str, index: int = 0) -> str:
     return pool[index % len(pool)]
 
 
+def speech_v2_enabled() -> bool:
+    """Same switch as core.interviewer_voice.speech_v2_enabled (the agent cannot import src)."""
+    return os.getenv("INTERVIEWER_SPEECH_V2", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def pick_processing_filler(locale: str, seed: str, avoid: str | None = None) -> str:
+    """A filler chosen by session and turn, never the one said last (speech v2).
+
+    The old rotation (``filler_count % 4``) said the same four lines in the same
+    order every session.
+    """
+    import hashlib
+
+    pool = processing_fillers(locale)
+    start = int(hashlib.sha256(seed.encode("utf-8")).hexdigest(), 16) % len(pool)
+    for offset in range(len(pool)):
+        line = pool[(start + offset) % len(pool)]
+        if line != avoid:
+            return line
+    return pool[start]
+
+
+def voice_dialect() -> str:
+    """Same as core.interviewer_voice.voice_dialect (INTERVIEWER_VOICE_DIALECT=bac|nam)."""
+    value = os.getenv("INTERVIEWER_VOICE_DIALECT", "bac").strip().casefold()
+    return "nam" if value in {"nam", "south", "southern", "mien nam", "miền nam"} else "bac"
+
+
+def localize_particles(text: str) -> str:
+    """Southern voice: "nhé" → "nha", "nhỉ" → "hen" for the lines only the room says (fillers…)."""
+    value = str(text or "")
+    if not speech_v2_enabled() or voice_dialect() != "nam":
+        return value
+    value = re.sub(r"(?<!\w)nhé(?!\w)", "nha", value)
+    return re.sub(r"(?<!\w)nhỉ(?!\w)", "hen", value)
+
+
+_SCRIPTED_REPLY_POOLS = (
+    "ACK_FALLBACK", "INTRO_ACK", "NON_ANSWER_ACK", "GIVE_UP_ACK", "SKIP_ACK", "SKIP_ACK_SHORT",
+    "PROBE_ACK", "WARMUP_SHORT_ACK",
+)
+
+
+def scripted_reply_lines(locale: str) -> tuple[str, ...]:
+    """Scripted acknowledgements Core may send as the first paragraph of a turn.
+
+    Since 25/10 the room synthesizes a turn paragraph by paragraph, so these
+    lines are cached on disk like the fillers: same audio every session, no
+    synthesis wait for the first words of a reply.
+    """
+    suffix = "_VI" if _is_vi(locale) else "_EN"
+    lines: list[str] = []
+    for name in _SCRIPTED_REPLY_POOLS:
+        lines += [localize_particles(line) for line in getattr(SCRIPT, name + suffix, ())]
+    return tuple(lines)
+
+
+_LEADING_INTERJECTION_RE = re.compile(
+    r"^\W*(?:à|ừ|ừm|ok|okay|vâng|dạ|ồ|oh|ah|mm|right)\b[\s,.!…-]*", re.IGNORECASE
+)
+
+
+def without_leading_interjection(content: str) -> str:
+    """After a filler ("Ừm, chờ mình…"), drop the interjection that opens the reply.
+
+    Only the first paragraph's opening word changes: "Ừm, mình hiểu ý bạn.\n\nCâu
+    hỏi…" → "Mình hiểu ý bạn.\n\nCâu hỏi…". A reply that is only "Ok." stays.
+    """
+    value = str(content or "")
+    head, sep, tail = value.partition("\n\n")
+    rest = _LEADING_INTERJECTION_RE.sub("", head.lstrip(), count=1)
+    if not rest.strip() or rest == head.lstrip():
+        return value
+    return rest[0].upper() + rest[1:] + sep + tail
+
+
 def silence_reprompt(locale: str) -> str:
     return SCRIPT.SILENCE_REPROMPT_VI if _is_vi(locale) else SCRIPT.SILENCE_REPROMPT_EN
 

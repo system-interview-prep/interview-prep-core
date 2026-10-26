@@ -34,13 +34,18 @@ try:
         AnswerWindow,
         backchannel_continue_text,
         core_error_text,
+        localize_particles,
         not_heard_lines,
+        pick_processing_filler,
         processing_filler,
         processing_fillers,
         reprompt_after_seconds,
+        scripted_reply_lines,
         silence_reprompt,
+        speech_v2_enabled,
         turn_taking_tip,
         unclear_transcript_text,
+        without_leading_interjection,
     )
     from .health import provider_error_payload, provider_recovered_payload
     from .interruption import (
@@ -66,13 +71,18 @@ except ImportError:  # Executed directly by the API's LiveKit subprocess.
         AnswerWindow,
         backchannel_continue_text,
         core_error_text,
+        localize_particles,
         not_heard_lines,
+        pick_processing_filler,
         processing_filler,
         processing_fillers,
         reprompt_after_seconds,
+        scripted_reply_lines,
         silence_reprompt,
+        speech_v2_enabled,
         turn_taking_tip,
         unclear_transcript_text,
+        without_leading_interjection,
     )
     from health import provider_error_payload, provider_recovered_payload  # type: ignore[no-redef]
     from interruption import (  # type: ignore[no-redef]
@@ -359,16 +369,24 @@ class VoiceLabAgent(Agent):
         )
         self._publish_turn_state("processing")
 
+        filler_spoken = False
+
         async def filler() -> None:
+            nonlocal filler_spoken
             await asyncio.sleep(PROCESSING_FILLER_SECONDS)
             self._filler_count = getattr(self, "_filler_count", 0) + 1
             self.report("voice_processing_filler", after_s=PROCESSING_FILLER_SECONDS)
-            self.speak(
-                processing_filler(self._locale, self._filler_count - 1),
-                allow_interruptions=True,
-                add_to_chat_ctx=False,
-                kind="filler",
-            )
+            if speech_v2_enabled():
+                line = pick_processing_filler(
+                    self._locale,
+                    f"{self._session_id}:{self._filler_count}",
+                    getattr(self, "_last_filler", None),
+                )
+            else:
+                line = processing_filler(self._locale, self._filler_count - 1)
+            self._last_filler = line
+            filler_spoken = True
+            self.speak(line, allow_interruptions=True, add_to_chat_ctx=False, kind="filler")
 
         filler_task = asyncio.create_task(filler())
         core_started = perf_counter()
@@ -457,6 +475,10 @@ class VoiceLabAgent(Agent):
                     reliable=True,
                     topic="intervia.session",
                 )
+        if filler_spoken and speech_v2_enabled():
+            # "Ừm, chờ mình một chút nhé." then "Ừm, mình hiểu ý bạn.": say the
+            # interjection once. Only the spoken line changes; the transcript keeps Core's text.
+            content = without_leading_interjection(content)
         speech = self.speak(
             content,
             allow_interruptions=not is_terminal,
@@ -494,6 +516,7 @@ class VoiceLabAgent(Agent):
                 self._core_error_text(),
                 *self._not_heard_lines(),
                 turn_taking_tip(self._locale),
+                *(scripted_reply_lines(self._locale) if speech_v2_enabled() else ()),
             }
         )
 
@@ -507,6 +530,20 @@ class VoiceLabAgent(Agent):
         stored half-spoken.
         """
         full_text = "".join([chunk async for chunk in text])
+        paragraphs = [part.strip() for part in full_text.split("\n\n") if part.strip()]
+        if speech_v2_enabled() and len(paragraphs) > 1:
+            # Paragraph by paragraph (speech v2): the scripted acknowledgement that
+            # opens most turns plays from the disk cache at once, and the question
+            # paragraph is cached for a replay. One speech handle, so interruptions
+            # behave as before.
+            for paragraph in paragraphs:
+                async for frame in self._synthesize_or_replay(paragraph, model_settings):
+                    yield frame
+            return
+        async for frame in self._synthesize_or_replay(full_text, model_settings):
+            yield frame
+
+    async def _synthesize_or_replay(self, full_text: str, model_settings):
         cache = self._speech_cache
         clip = cache.get(full_text) if cache else None
         if clip is not None:
@@ -553,6 +590,7 @@ class VoiceLabAgent(Agent):
         kind: str | None = None,
     ):
         # question | closing | filler | reprompt | replay | notice (admin view).
+        text = localize_particles(text)
         self._active_speech_kind = kind or ("question" if add_to_chat_ctx else "notice")
         handle = self.session.say(
             text,

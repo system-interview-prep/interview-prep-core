@@ -161,8 +161,9 @@ def test_question_grounds_on_cv_claims_without_hallucination():
     )
 
     q_vi = build_project_validation_question(project, job_title="AI Engineer", locale="vi")
+    # Speech v2 (25/10): the name is said without quotes.
     assert q_vi == (
-        "Trong dự án 'Career Assistant X', bạn trực tiếp làm phần nào, "
+        "Trong dự án Career Assistant X, bạn trực tiếp làm phần nào, "
         "và quyết định kỹ thuật khó nhất là gì?"
     )
     # Check that no imaginary facts were introduced
@@ -178,7 +179,7 @@ def test_question_grounds_on_cv_claims_without_hallucination():
 # 5. Missing CV data asks for verification instead of asserting
 # ============================================================================
 
-def test_missing_cv_fields_prompts_verification_not_assertion():
+def test_missing_cv_fields_prompts_verification_not_assertion(monkeypatch):
     """Requirement 5: When the role is missing in the CV, the question says so instead of asserting one."""
     project = StructuredProjectEvidence(
         project_id="sparse-proj",
@@ -192,15 +193,32 @@ def test_missing_cv_fields_prompts_verification_not_assertion():
     )
 
     q_vi = build_project_validation_question(project, job_title="Software Engineer", locale="vi")
-    # Must NOT assert candidate was Lead or created a specific metric
+    # Must NOT assert candidate was Lead or created a specific metric. Speech v2
+    # asks what they did instead of reading out "CV chưa ghi rõ vai trò…".
     assert "Lead" not in q_vi
-    assert q_vi.startswith("CV chưa ghi rõ vai trò của bạn trong dự án 'Internal Tool'.")
+    assert q_vi.startswith("Trong dự án Internal Tool, bạn trực tiếp làm phần nào")
+    assert "CV chưa ghi rõ" not in q_vi
     assert "Kết quả" not in q_vi
     assert q_vi.count("?") == 1
 
     q_en = build_project_validation_question(project, job_title="Software Engineer", locale="en")
-    assert q_en.startswith("Your CV does not state your role")
     assert "measured" not in q_en
+    monkeypatch.setenv("INTERVIEWER_SPEECH_V2", "0")
+    assert build_project_validation_question(project, locale="vi").startswith(
+        "CV chưa ghi rõ vai trò của bạn trong dự án 'Internal Tool'."
+    )
+    assert build_project_validation_question(project, locale="en").startswith("Your CV does not state your role")
+
+
+def test_a_description_is_not_read_out_as_the_project_name():
+    from src.modules.interviews.planning.project_evidence import spoken_project_name, spoken_project_question
+
+    # Buổi thật 20/10.
+    assert spoken_project_name("operating with real users and generating revenue.") is None
+    assert spoken_project_name("'Hệ thống quản lý đơn hàng đa kênh'") == "Hệ thống quản lý đơn hàng đa kênh"
+    assert spoken_project_name("Xây dựng hệ thống đặt vé cho rạp chiếu phim toàn quốc của công ty") is None
+    assert spoken_project_question(None, is_vi=True).startswith("Trong dự án bạn ghi trong CV,")
+    assert "'" not in spoken_project_question("Career Assistant X", is_vi=True)
 
 
 def test_validation_question_is_one_short_spoken_question():

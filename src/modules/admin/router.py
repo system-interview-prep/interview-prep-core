@@ -1,25 +1,49 @@
+import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.admin_audit import record_admin_action
 from src.core.security import require_admin
 from src.infrastructure.database import get_db
-from src.modules.admin import cv_parsing_runs, matching_runs, room_observer
+from src.modules.admin import (
+    ai_overview,
+    cv_parsing_runs,
+    langfuse_view,
+    matching_runs,
+    practice_stats,
+    room_observer,
+    system_config,
+    system_health,
+    user_activity,
+)
 from src.modules.interviews.facade import (
+    InterviewAdminActionError,
+    admin_batch_grading_state,
+    admin_close_interview_session,
+    admin_count_gradable_sessions,
+    admin_grade_interview_session,
+    admin_grade_pending_sessions,
     ai_call_view,
     interview_ai_alerts,
     interview_ai_health,
+    interview_langfuse_links,
     interview_question_quality_report,
+    interview_speech_control,
+    interviewer_playbook,
     live_interview_sessions,
+    review_interview_speech_check,
     session_pipeline,
     session_plan_audit,
     summarize_ai_calls,
 )
+from src.modules.user_cvs.facade import CvAdminReparseError, reparse_cv_as_admin
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -52,17 +76,21 @@ async def get_admin_overview(
     # 2. Total Sessions & Active / Closed
     sess_stats = await db.execute(
         text(
-            """
-            SELECT 
+            f"""
+            SELECT
                 COUNT(*) AS total,
-                COUNT(*) FILTER (WHERE UPPER(status) = 'OPEN') AS active,
-                COUNT(*) FILTER (WHERE UPPER(status) = 'CLOSED') AS closed,
-                COUNT(*) FILTER (WHERE UPPER(type) = 'CHAT') AS chat_count,
-                COUNT(*) FILTER (WHERE UPPER(type) = 'VOICE') AS voice_count,
-                COUNT(*) FILTER (WHERE UPPER(type) IN ('CALL', 'VIDEO')) AS video_count,
-                AVG(CASE WHEN ended_at IS NOT NULL AND started_at IS NOT NULL 
-                    THEN EXTRACT(EPOCH FROM (ended_at - started_at)) / 60.0 ELSE NULL END) AS avg_duration
-            FROM interview_sessions
+                COUNT(*) FILTER (WHERE UPPER(COALESCE(s.status, '')) <> 'CLOSED') AS active,
+                COUNT(*) FILTER (WHERE UPPER(COALESCE(s.status, '')) = 'CLOSED') AS closed,
+                COUNT(*) FILTER (
+                    WHERE UPPER(COALESCE(s.status, '')) = 'CLOSED'
+                      AND EXISTS (SELECT 1 FROM interview_evaluations e WHERE e.session_id = s.id)
+                ) AS graded,
+                COUNT(*) FILTER (WHERE {_EFFECTIVE_MODE} IN ('text', 'chat')) AS chat_count,
+                COUNT(*) FILTER (WHERE {_EFFECTIVE_MODE} = 'voice') AS voice_count,
+                COUNT(*) FILTER (WHERE {_EFFECTIVE_MODE} IN ('call', 'video')) AS video_count,
+                AVG(CASE WHEN s.ended_at IS NOT NULL AND s.started_at IS NOT NULL
+                    THEN EXTRACT(EPOCH FROM (s.ended_at - s.started_at)) / 60.0 ELSE NULL END) AS avg_duration
+            FROM interview_sessions s
             """
         )
     )
@@ -70,6 +98,7 @@ async def get_admin_overview(
     total_sessions = s_row.get("total") or 0
     active_sessions = s_row.get("active") or 0
     closed_sessions = s_row.get("closed") or 0
+    graded_sessions = s_row.get("graded") or 0
     chat_count = s_row.get("chat_count") or 0
     voice_count = s_row.get("voice_count") or 0
     video_count = s_row.get("video_count") or 0
@@ -118,6 +147,8 @@ async def get_admin_overview(
             "totalSessions": total_sessions,
             "activeSessions": active_sessions,
             "completedSessions": closed_sessions,
+            # Closed sessions with a report; the rest ended (finished, left, timed out) without one.
+            "gradedSessions": graded_sessions,
             "averageScore": avg_score,
             "averageTurnaround": avg_turnaround,
             "sentimentScore": sentiment_ratio,
@@ -143,9 +174,16 @@ _MODE_FILTERS = {
 }
 
 
-def _session_filters(mode: str, search: str | None) -> tuple[str, dict]:
+_REPORT_FILTERS = {
+    "graded": "AND ev.overall_score IS NOT NULL",
+    "missing": "AND UPPER(COALESCE(s.status, '')) = 'CLOSED' AND ev.overall_score IS NULL",
+    "open": "AND UPPER(COALESCE(s.status, '')) <> 'CLOSED'",
+}
+
+
+def _session_filters(mode: str, search: str | None, report: str = "all") -> tuple[str, dict]:
     """WHERE clause shared by the page query, the total and the stats."""
-    clause = "WHERE 1=1 " + _MODE_FILTERS.get(mode, "")
+    clause = "WHERE 1=1 " + _MODE_FILTERS.get(mode, "") + " " + _REPORT_FILTERS.get(report, "")
     params: dict = {}
     if search and search.strip():
         clause += " AND (LOWER(u.name) LIKE :kw OR LOWER(u.email) LIKE :kw)"
@@ -169,12 +207,13 @@ _LATEST_EVALUATION = """
 async def list_admin_sessions(
     mode: str = Query("all", description="Mode filter: all, video, chat, voice"),
     search: str | None = Query(None, description="Search candidate name or email"),
+    report: str = Query("all", description="Report filter: all, graded, missing, open"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     _: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    where, filter_params = _session_filters(mode, search)
+    where, filter_params = _session_filters(mode, search, report)
     base = (
         "FROM interview_sessions s LEFT JOIN users u ON s.user_id = u.id "
         "LEFT JOIN job_descriptions j ON j.id = s.job_id " + _LATEST_EVALUATION + where
@@ -184,7 +223,7 @@ async def list_admin_sessions(
         await db.execute(
             text(
                 f"""
-                SELECT s.id, s.status, s.started_at, s.locale, s.language,
+                SELECT s.id, s.status, s.started_at, s.locale, s.language, s.user_id, s.end_reason,
                        {_EFFECTIVE_MODE} AS effective_mode,
                        j.title AS job_title,
                        COALESCE(u.name, 'Ứng viên chưa đặt tên') AS candidate_name,
@@ -206,6 +245,9 @@ async def list_admin_sessions(
                 SELECT COUNT(*) AS total,
                        COUNT(*) FILTER (WHERE UPPER(COALESCE(s.status, '')) <> 'CLOSED') AS active,
                        COUNT(*) FILTER (WHERE UPPER(COALESCE(s.status, '')) = 'CLOSED') AS completed,
+                       COUNT(*) FILTER (
+                           WHERE UPPER(COALESCE(s.status, '')) = 'CLOSED' AND ev.overall_score IS NULL
+                       ) AS ungraded,
                        AVG(ev.overall_score) AS avg_score
                 {base}
                 """
@@ -244,7 +286,12 @@ async def list_admin_sessions(
                 "aiScore": final_score,
                 "dateLabel": date_label,
                 "timeLabel": time_label,
-                "status": "completed" if is_closed else "scheduled",
+                # completed: closed with a report; action_needed: closed without one.
+                "status": ("completed" if score_val is not None else "action_needed")
+                if is_closed
+                else "scheduled",
+                "userId": str(r["user_id"]) if r.get("user_id") else None,
+                "endReason": r.get("end_reason"),
                 "actionLabel": "admin.interviews.action.viewDetailedReport" if is_closed else "admin.interviews.action.manageBooking",
             }
         )
@@ -256,6 +303,7 @@ async def list_admin_sessions(
         "stats": {
             "active": int(summary["active"] or 0),
             "completed": int(summary["completed"] or 0),
+            "ungraded": int(summary.get("ungraded") or 0),
             # Percentage like aiScore; null when nothing has been graded yet.
             "avgScore": round(float(avg_score) * 10) if avg_score is not None else None,
         },
@@ -418,14 +466,28 @@ async def get_admin_turn_answers(
     return {"success": True, "answers": answers, "logged": True}
 
 
+# Reads of candidate data; every other action is a change.
+READ_ACTIONS = ("OBSERVE_INTERVIEW_ROOM", "VIEW_CANDIDATE_ANSWER", "VIEW_USER_ACTIVITY", "VIEW_AI_TRACE")
+
+
+def _access_log_filter(kind: str) -> tuple[str, dict]:
+    if kind == "reads":
+        return "WHERE l.action = ANY(:actions)", {"actions": list(READ_ACTIONS)}
+    if kind == "changes":
+        return "WHERE NOT (l.action = ANY(:actions))", {"actions": list(READ_ACTIONS)}
+    return "", {}
+
+
 @router.get("/access-logs")
 async def list_admin_access_logs(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    kind: Literal["all", "reads", "changes"] = Query("all"),
     _: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Who read candidate data, newest first."""
+    """Who read candidate data and who changed what, newest first."""
+    where, params = _access_log_filter(kind)
     try:
         rows = (
             await db.execute(
@@ -435,13 +497,15 @@ async def list_admin_access_logs(
                     "u.name AS candidate_name, u.email AS candidate_email "
                     "FROM admin_access_logs l "
                     "LEFT JOIN interview_sessions s ON s.id = l.session_id "
-                    "LEFT JOIN users u ON u.id = s.user_id "
-                    "ORDER BY l.created_at DESC, l.id DESC LIMIT :limit OFFSET :offset"
+                    "LEFT JOIN users u ON u.id = COALESCE(s.user_id, "
+                    "CASE WHEN l.action = 'VIEW_USER_ACTIVITY' THEN l.target_id END) "
+                    f"{where} ORDER BY l.created_at DESC, l.id DESC LIMIT :limit OFFSET :offset"
                 ),
-                {"limit": limit, "offset": offset},
+                {**params, "limit": limit, "offset": offset},
             )
         ).mappings().all()
-        total = int((await db.execute(text("SELECT COUNT(*) FROM admin_access_logs"))).scalar() or 0)
+        count_sql = text(f"SELECT COUNT(*) FROM admin_access_logs l {where}")
+        total = int((await db.execute(count_sql, params)).scalar() or 0)
     except Exception as exc:
         await db.rollback()
         raise HTTPException(status_code=503, detail="Access log is not migrated (0030)") from exc
@@ -511,7 +575,252 @@ async def get_admin_ai_health(
     except Exception as exc:  # tables missing until migration 0029 is applied
         await db.rollback()
         raise HTTPException(status_code=503, detail="AI observability tables are not migrated") from exc
-    return {"success": True, **health}
+    return {"success": True, **health, "langfuse": await interview_langfuse_links()}
+
+
+@router.get("/ai/models")
+async def get_admin_ai_models(
+    days: int = Query(30, ge=1, le=90),
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Provider and model of each AI feature: configured, and seen in ai_call_logs."""
+    return {"success": True, **await ai_overview.models_view(db, days=days)}
+
+
+# --------------------------------------------------------------------------- Langfuse in the console
+
+
+@router.get("/langfuse/traces/{trace_id}")
+async def get_langfuse_trace(
+    trace_id: str,
+    session_id: str | None = Query(None, alias="sessionId", max_length=36),
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """One turn's model calls and scores, read back from Langfuse."""
+    view = await langfuse_view.trace_view(trace_id[:64])
+    # Sampled turns carry the candidate's (masked) answer: reading it is logged
+    # like "Xem câu trả lời".
+    if view.get("connected") and any(o.get("input") for o in view.get("observations") or []):
+        await _log_admin_action(db, admin, "VIEW_AI_TRACE", session_id=session_id, target_id=trace_id[:64])
+    return {"success": True, **view}
+
+
+class TraceReviewRequest(BaseModel):
+    name: str = Field(max_length=64)
+    value: bool
+    comment: str | None = Field(default=None, max_length=500)
+    sessionId: str | None = Field(default=None, max_length=36)
+
+
+@router.post("/langfuse/traces/{trace_id}/reviews", status_code=201)
+async def review_langfuse_trace(
+    trace_id: str,
+    payload: TraceReviewRequest,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """A reviewer's verdict on a turn, written to Langfuse as a ``human.*`` score."""
+    try:
+        await langfuse_view.record_review(trace_id[:64], payload.name, payload.value, payload.comment)
+    except langfuse_view.ReviewScoreError as exc:
+        raise HTTPException(status_code=422 if str(exc) == "unknown_score" else 503, detail=str(exc)) from exc
+    await _log_admin_action(
+        db,
+        admin,
+        "REVIEW_AI_TURN",
+        session_id=payload.sessionId,
+        target_id=trace_id[:64],
+        detail={"score": payload.name, "value": payload.value, "note": payload.comment},
+    )
+    return {"success": True}
+
+
+@router.get("/sessions/{session_id}/langfuse")
+async def get_session_langfuse(session_id: str, _: dict = Depends(require_admin)) -> dict:
+    """Every Langfuse trace of one interview (turns and grading) with totals and session scores."""
+    return {"success": True, **await langfuse_view.session_view(session_id[:36])}
+
+
+@router.get("/langfuse/flagged")
+async def get_flagged_turns(
+    days: int = Query(7, ge=1, le=90),
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The latest turns a rule flagged, with the interview and turn they belong to."""
+    view = await langfuse_view.flagged_turns(days=days)
+    items = view.get("items") or []
+    if items:
+        rows = (
+            await db.execute(
+                text(
+                    "SELECT session_id, turn_index, payload->>'langfuse_trace_id' AS trace_id, "
+                    "payload->'flags' AS flags FROM interview_pipeline_events "
+                    "WHERE event = 'turn_spoken' AND payload->>'langfuse_trace_id' = ANY(:ids)"
+                ),
+                {"ids": [item["traceId"] for item in items]},
+            )
+        ).mappings().all()
+        by_trace = {row["trace_id"]: row for row in rows}
+        for item in items:
+            row = by_trace.get(item["traceId"])
+            item["sessionId"] = row["session_id"] if row else None
+            item["turnIndex"] = row["turn_index"] if row else None
+            item["flags"] = list(row["flags"] or []) if row else []
+    return {"success": True, **view}
+
+
+# --------------------------------------------------------------------------- interviewer playbook
+
+
+class PlaybookReflectRequest(BaseModel):
+    days: int = Field(default=14, ge=1, le=90)
+
+
+class PlaybookEntryRequest(BaseModel):
+    step: Literal["all", "evaluate_answer", "probe", "clarify"] = "all"
+    text: str = Field(min_length=5, max_length=400)
+    skill: str | None = Field(default=None, max_length=160)
+
+
+class PlaybookDecisionRequest(BaseModel):
+    decision: Literal["APPROVE", "REJECT", "RETIRE"]
+    note: str | None = Field(default=None, max_length=500)
+    text: str | None = Field(default=None, max_length=400)
+
+
+def _playbook_error(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=getattr(exc, "status_code", 400), detail=getattr(exc, "code", str(exc)))
+
+
+@router.get("/interviewer-playbook")
+async def get_interviewer_playbook(
+    _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
+) -> dict:
+    """Lessons from past interviews: proposed, active (in the prompts), retired; the last reflection."""
+    return {"success": True, **await interviewer_playbook.view(db)}
+
+
+@router.post("/interviewer-playbook/reflect", status_code=202)
+async def reflect_interviewer_playbook(
+    payload: PlaybookReflectRequest | None = None,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Propose lessons from recent flagged and reviewed turns (one LLM call, background)."""
+    days = payload.days if payload else 14
+    try:
+        run = interviewer_playbook.start_reflection(days=days)
+    except interviewer_playbook.PlaybookError as exc:
+        raise _playbook_error(exc) from exc
+    await _log_admin_action(db, admin, "REFLECT_PLAYBOOK", detail={"days": days})
+    return {"success": True, "run": run}
+
+
+@router.post("/interviewer-playbook", status_code=201)
+async def add_playbook_entry(
+    payload: PlaybookEntryRequest, admin: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
+) -> dict:
+    """A lesson written by hand; it is PROPOSED like the reflector's and needs approval."""
+    try:
+        entry_id = await interviewer_playbook.add_manual(
+            db,
+            step=payload.step,
+            text_value=payload.text,
+            skill=payload.skill,
+            actor_id=str(admin.get("sub") or ""),
+        )
+    except interviewer_playbook.PlaybookError as exc:
+        raise _playbook_error(exc) from exc
+    await _log_admin_action(
+        db, admin, "ADD_PLAYBOOK_ENTRY", target_id=entry_id, detail={"step": payload.step}
+    )
+    return {"success": True, "id": entry_id}
+
+
+@router.post("/interviewer-playbook/{entry_id}/decision")
+async def decide_playbook_entry(
+    entry_id: str,
+    payload: PlaybookDecisionRequest,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Approve (into the prompts), reject a proposal, or retire an active lesson."""
+    try:
+        result = await interviewer_playbook.decide(
+            db,
+            entry_id[:36],
+            decision=payload.decision,
+            actor_id=str(admin.get("sub") or ""),
+            note=payload.note,
+            text_value=payload.text,
+        )
+    except interviewer_playbook.PlaybookError as exc:
+        raise _playbook_error(exc) from exc
+    await _log_admin_action(
+        db,
+        admin,
+        "DECIDE_PLAYBOOK_ENTRY",
+        target_id=entry_id[:36],
+        detail={"decision": payload.decision, **result},
+    )
+    return {"success": True, **result}
+
+
+@router.get("/ai/evaluation")
+async def get_admin_ai_evaluation(
+    days: int = Query(7, ge=1, le=90),
+    refresh: bool = Query(False),
+    _: dict = Depends(require_admin),
+) -> dict:
+    """Summary of the Langfuse project: judge and reviewer rates, review queue, golden-set runs."""
+    return {"success": True, **await ai_overview.evaluation_view(days=days, refresh=refresh)}
+
+
+@router.get("/ai/speech")
+async def get_admin_ai_speech(
+    days: int = Query(7, ge=1, le=90),
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """How the interviewer's speech was controlled: guard outcomes, reasons, sources, style."""
+    try:
+        speech = await interview_speech_control(db, days=days)
+    except Exception as exc:  # tables missing until migration 0029 is applied
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="AI observability tables are not migrated") from exc
+    return {"success": True, **speech}
+
+
+class SpeechCheckReview(BaseModel):
+    event_id: int = Field(alias="eventId", ge=1)
+    check_index: int = Field(alias="checkIndex", ge=0, le=50)
+    verdict: Literal["correct", "wrong", "clear"]
+
+
+@router.post("/ai/speech/reviews")
+async def review_admin_ai_speech_check(
+    body: SpeechCheckReview,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """An admin's verdict on a refused or edited line: blocked correctly, or a good line blocked."""
+    try:
+        saved = await review_interview_speech_check(
+            db,
+            event_id=body.event_id,
+            check_index=body.check_index,
+            verdict=body.verdict,
+            admin_id=str(admin.get("sub") or "") or None,
+        )
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="AI observability tables are not migrated") from exc
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Speech check not found")
+    return {"success": True, **saved}
 
 
 _AI_CALL_COLUMNS = (
@@ -682,3 +991,176 @@ async def get_admin_question_quality(
     )
     return {"success": True, **report}
 
+
+
+# --------------------------------------------------------------------------- interventions
+
+
+async def _log_admin_action(
+    db: AsyncSession,
+    admin: dict,
+    action: str,
+    *,
+    session_id: str | None = None,
+    target_id: str | None = None,
+    detail: dict | None = None,
+) -> None:
+    """Record an admin action in admin_access_logs; never fails the action itself."""
+    await record_admin_action(db, admin, action, session_id=session_id, target_id=target_id, detail=detail)
+
+
+class SessionCloseRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=200)
+
+
+@router.post("/sessions/{session_id}/close")
+async def close_admin_session(
+    session_id: str,
+    payload: SessionCloseRequest | None = None,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """End a session stuck open (stored as TECHNICAL_FAILURE; the log names the admin)."""
+    note = payload.note if payload else None
+    try:
+        result = await admin_close_interview_session(db, session_id[:36], note=note)
+    except InterviewAdminActionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+    result["roomClosed"] = await _close_live_room(session_id[:36])
+    await _log_admin_action(
+        db, admin, "CLOSE_INTERVIEW_SESSION", session_id=session_id[:36], detail={**result, "note": note}
+    )
+    return {"success": True, **result}
+
+
+async def _close_live_room(session_id: str) -> bool | None:
+    """Tear down the voice/video room of a session the admin closed (None: LiveKit off or unreachable)."""
+    from src.core.config import get_settings
+
+    settings = get_settings()
+    if not settings.livekit_url or not settings.livekit_api_key or not settings.livekit_api_secret:
+        return None
+    try:
+        from livekit import api
+    except ImportError:
+        return None
+    try:
+        return await asyncio.wait_for(
+            room_observer.close_room(
+                api,
+                url=settings.livekit_url,
+                key=settings.livekit_api_key,
+                secret=settings.livekit_api_secret,
+                session_id=session_id,
+            ),
+            timeout=5,
+        )
+    except TimeoutError:
+        return None
+
+
+@router.post("/sessions/{session_id}/grade", status_code=202)
+async def grade_admin_session(
+    session_id: str,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Grade a closed session that has no report; runs in the background."""
+    try:
+        result = await admin_grade_interview_session(db, session_id[:36])
+    except InterviewAdminActionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+    await _log_admin_action(db, admin, "GRADE_INTERVIEW_SESSION", session_id=session_id[:36])
+    return {"success": True, **result}
+
+
+class GradePendingRequest(BaseModel):
+    userId: str | None = Field(default=None, max_length=36)
+
+
+@router.post("/grading-batch", status_code=202)
+async def grade_pending_sessions(
+    payload: GradePendingRequest | None = None,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Grade, one after another, closed sessions without a report (of one user, or of everyone)."""
+    user_id = payload.userId if payload else None
+    try:
+        result = await admin_grade_pending_sessions(db, user_id=user_id)
+    except InterviewAdminActionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+    await _log_admin_action(
+        db, admin, "GRADE_PENDING_SESSIONS", target_id=user_id, detail={"queued": result["queued"]}
+    )
+    return {"success": True, **result}
+
+
+@router.get("/grading-batch")
+async def get_grade_pending_state(
+    user_id: str | None = Query(None, alias="userId", max_length=36),
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Progress of the last batch, and how many sessions a batch would grade now."""
+    return {
+        "success": True,
+        "batch": admin_batch_grading_state(user_id),
+        "eligible": await admin_count_gradable_sessions(db, user_id=user_id),
+    }
+
+
+@router.post("/cv-parsing/runs/{cv_id}/reparse", status_code=202)
+async def reparse_admin_cv(
+    cv_id: str,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Parse a user's CV again (failed, stuck, or to pick up a parser fix)."""
+    try:
+        result = await reparse_cv_as_admin(db, cv_id[:36])
+    except CvAdminReparseError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+    await _log_admin_action(
+        db, admin, "REPARSE_CV", target_id=cv_id[:36], detail={"previousStatus": result["previousStatus"]}
+    )
+    return {"success": True, **result}
+
+
+@router.get("/system/config")
+async def get_admin_system_config(_: dict = Depends(require_admin)) -> dict:
+    """The configuration the backend runs with; read-only, secrets reported as set / not set."""
+    return {"success": True, **system_config.config_view()}
+
+
+@router.get("/system/health")
+async def get_admin_system_health(
+    _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
+) -> dict:
+    """Database, RabbitMQ queues and workers, LiveKit, voice agent, Langfuse; each check times out alone."""
+    return {"success": True, **await system_health.health_view(db)}
+
+
+@router.get("/practice")
+async def get_admin_practice(
+    weeks: int = Query(8, ge=2, le=26),
+    include_demo: bool = Query(False, alias="includeDemo"),
+    _: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Practice week by week: sessions, valid sessions, active users, weekly goals met."""
+    return {"success": True, **await practice_stats.practice_view(db, weeks=weeks, include_demo=include_demo)}
+
+
+@router.get("/users/{user_id}/activity")
+async def get_admin_user_activity(
+    user_id: str,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """One account: CVs, sessions with scores, matching runs, real-interview reports."""
+    view = await user_activity.user_activity(db, user_id[:36])
+    if view is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await _log_admin_action(db, admin, "VIEW_USER_ACTIVITY", target_id=user_id[:36])
+    return {"success": True, **view}

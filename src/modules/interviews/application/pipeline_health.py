@@ -178,6 +178,28 @@ async def load_health(db: AsyncSession, *, days: int = 7) -> dict[str, Any]:
         params,
     )
     stuck = [row for row in stuck if row.get("reason")][:50]
+    # Rule flags of application/llm_checks.py, stored on each turn_spoken event.
+    flags = await _all(
+        db,
+        """
+        SELECT flag, COUNT(*) AS count, COUNT(DISTINCT session_id) AS sessions
+        FROM interview_pipeline_events,
+             jsonb_array_elements_text(COALESCE(payload->'flags', '[]'::jsonb)) AS flag
+        WHERE event = 'turn_spoken' AND created_at >= :since
+        GROUP BY flag ORDER BY count DESC
+        """,
+        params,
+    )
+    rules = await _all(
+        db,
+        """
+        SELECT payload->>'decision_rule' AS rule, COUNT(*) AS count
+        FROM interview_pipeline_events
+        WHERE event = 'turn_spoken' AND created_at >= :since AND payload ? 'decision_rule'
+        GROUP BY 1 ORDER BY count DESC
+        """,
+        params,
+    )
 
     return {
         "windowDays": days,
@@ -257,6 +279,13 @@ async def load_health(db: AsyncSession, *, days: int = 7) -> dict[str, Any]:
                 "updatedAt": row["updated_at"].isoformat() if row.get("updated_at") else None,
             }
             for row in stuck
+        ],
+        "flags": [
+            {"flag": row["flag"], "count": int(row["count"]), "sessions": int(row["sessions"])}
+            for row in flags
+        ],
+        "decisionRules": [
+            {"rule": row["rule"], "count": int(row["count"])} for row in rules if row.get("rule")
         ],
         "generatedAt": datetime.now(UTC).isoformat(),
     }

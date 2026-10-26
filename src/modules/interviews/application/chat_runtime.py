@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any, Literal
@@ -22,9 +23,12 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core import llm_tracing
 from src.core.pipeline_events import current_session_id
 from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
+from src.modules.interviews.application import interviewer_playbook, llm_checks
+from src.modules.interviews.core import playbook, speech_checks
 from src.modules.interviews.core.opening_script import build_opening, warmup_question
 from src.modules.interviews.core.demo_mode import is_demo_duration
 from src.modules.interviews.core.interviewer_voice import (
@@ -36,10 +40,13 @@ from src.modules.interviews.core.interviewer_voice import (
     WRAP_ENDED_EARLY_PARTIAL_VI,
     WRAP_TIMEOUT_PARTIAL_EN,
     WRAP_TIMEOUT_PARTIAL_VI,
+    ack_mode,
     compose_speech,
     first_paragraph,
     last_paragraph,
+    localize_particles,
     pick_variant,
+    speech_v2_enabled,
 )
 from src.modules.interviews.core.interview_engine import (
     SAFE_FALLBACK_PROBE_EN,
@@ -148,7 +155,7 @@ async def _candidate_names(
         cv_name = " ".join(word.capitalize() for word in cv_name.split())
     full_name, short_name = _candidate_name_parts(cv_name)
     if full_name:
-        return full_name, short_name
+        return _speakable_names(full_name, short_name)
     raw_name = await db.scalar(
         text(
             "SELECT NULLIF(BTRIM(u.name), '') FROM interview_sessions s "
@@ -156,14 +163,69 @@ async def _candidate_names(
         ),
         {"sid": session_id},
     )
-    return _candidate_name_parts(raw_name)
+    return _speakable_names(*_candidate_name_parts(raw_name))
+
+
+# Vietnamese letters with diacritics; a Vietnamese name written without them
+# ("Hien") is read like English by TTS and is ambiguous (Hiền, Hiển, Hiến…).
+_VI_DIACRITIC_RE = re.compile(
+    "[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", re.IGNORECASE
+)
+_VI_SURNAMES_ASCII = frozenset(
+    "nguyen tran le pham hoang huynh phan vu vo dang bui do ho ngo duong ly dinh truong lam mai ha".split()
+)
+
+
+def _speakable_names(full_name: str | None, short_name: str | None) -> tuple[str | None, str | None]:
+    """Drop a Vietnamese name written without diacritics (speech v2): call the candidate "bạn".
+
+    Buổi thật 20/10: "Hien muốn dừng ở đây phải không?". A one-word ASCII name, or
+    one starting with a common Vietnamese surname, is treated as Vietnamese.
+    """
+    if not full_name or not speech_v2_enabled() or _VI_DIACRITIC_RE.search(full_name):
+        return full_name, short_name
+    words = full_name.split()
+    if len(words) == 1 or words[0].casefold() in _VI_SURNAMES_ASCII:
+        return None, None
+    return full_name, short_name
 
 
 def _personalize_candidate_address(text_value: str, short_name: str | None) -> str:
-    """Use the candidate's one-word call name instead of the generic `bạn`."""
-    if not short_name:
+    """Use the candidate's one-word call name instead of the generic `bạn`.
+
+    Only with ``INTERVIEWER_SPEECH_V2=0``. Replacing every "bạn" named the
+    candidate about twice a turn (up to four times), broke the check against
+    repeating a line just said (stored lines had the name, pooled lines "bạn")
+    and could turn "bạn bè" into "Hiền bè". Speech v2 names the candidate in the
+    greeting and now and then in a stage transition (``_name_in_transition``).
+    """
+    if not short_name or speech_v2_enabled():
         return text_value
     return re.sub(r"\b[Bb]ạn\b", short_name, text_value)
+
+
+# Lines the core avoids repeating: 4 until 25/10, 6 since (the neutral pool still
+# repeated three times in 40 turns at round 5 of the naturalness measures).
+RECENT_LINES_V2 = 6
+
+# A transition may use the name when none of the last few interviewer messages
+# did: the greeting names the candidate, so the next stage change does not.
+NAME_GAP_MESSAGES = 3
+
+
+def _name_in_transition(message: str, transition: str, short_name: str | None, recent: list[str]) -> str:
+    """Name the candidate once in a stage transition, now and then (speech v2).
+
+    "Phần cuối, mình hỏi về cách bạn làm việc nhóm." → "… cách Hiền làm việc nhóm."
+    Only the first "bạn" of the transition sentence changes, never the question.
+    """
+    if not (speech_v2_enabled() and short_name and transition and transition in message):
+        return message
+    if any(re.search(rf"(?<!\w){re.escape(short_name)}(?!\w)", line) for line in recent[-NAME_GAP_MESSAGES:]):
+        return message
+    # "bạn bè", "các bạn": not the candidate.
+    named, count = re.subn(r"(?<!\w)(?<!các )bạn(?!\w)(?! bè)", short_name, transition, count=1)
+    return message.replace(transition, named, 1) if count else message
 
 
 def _personalize_opening(
@@ -222,6 +284,9 @@ def _provenance_metadata(core_output: Any) -> dict[str, str]:
     # the progress view counts only gap probes as "needed a follow-up".
     if raw.get("probe_kind"):
         out["probeKind"] = str(raw["probe_kind"])
+    # Where each piece of the turn came from (llm, topic, script, bank…): speech v2.
+    if raw.get("speech_plan"):
+        out["speechPlan"] = raw["speech_plan"]
     return out
 
 
@@ -248,11 +313,36 @@ async def _displayed_question_text(
     return _personalize_candidate_address(question, short_name)
 
 
-async def _recent_interviewer_lines(db: AsyncSession, session_id: str, limit: int = 4) -> list[str]:
+async def _recent_interviewer_contents(db: AsyncSession, session_id: str, limit: int) -> list[str]:
+    """The interviewer's last few messages in full, newest last (best effort)."""
+    try:
+        result = await db.execute(
+            text(
+                """
+                SELECT content FROM interview_chat_messages
+                WHERE session_id = :sid AND role = 'assistant'
+                ORDER BY sequence DESC
+                LIMIT :limit
+                """
+            ),
+            {"sid": session_id, "limit": limit},
+        )
+        rows = result.mappings().all()
+    except Exception:
+        return []
+    contents = [row.get("content") if hasattr(row, "get") else None for row in list(rows)[:limit]]
+    return [content for content in reversed(contents) if isinstance(content, str) and content.strip()]
+
+
+async def _recent_interviewer_lines(
+    db: AsyncSession, session_id: str, limit: int = 4, call_name: str | None = None
+) -> list[str]:
     """The opening sentence of the interviewer's last few messages, newest last.
 
     Passed to the core so it neither asks the model for, nor falls back to, a
     line it has just said. Best effort: a read failure only loses variety.
+    ``call_name`` is put back to "bạn" so a stored "Ừm, mình hiểu ý Hiền." still
+    matches the pooled "Ừm, mình hiểu ý bạn." (messages saved before speech v2).
     """
     try:
         result = await db.execute(
@@ -273,7 +363,10 @@ async def _recent_interviewer_lines(db: AsyncSession, session_id: str, limit: in
     for row in reversed(list(rows)[:limit]):
         content = row.get("content") if hasattr(row, "get") else None
         if isinstance(content, str) and content.strip():
-            lines.append(first_paragraph(content))
+            line = first_paragraph(content)
+            if call_name:
+                line = re.sub(rf"(?<!\w){re.escape(call_name)}(?!\w)", "bạn", line)
+            lines.append(line)
     return lines
 
 
@@ -286,6 +379,10 @@ def _trace_spoken_turn(
     core_output: Any,
     recent_lines: list[str],
     core_ms: int,
+    decision_rule: str | None = None,
+    flags: list[str] | None = None,
+    langfuse_trace_id: str | None = None,
+    playbook_ids: list[str] | None = None,
 ) -> None:
     """One record per interviewer turn for the live naturalness monitor.
 
@@ -330,6 +427,19 @@ def _trace_spoken_turn(
         answer_chars=len(candidate_text),
         repeats_recent=bool(ack) and any(ack.strip() == str(line).strip() for line in recent_lines),
         core_ms=core_ms,
+        # Speech control (admin "Lời nói AI"): where each part of the reply came
+        # from, what the guards did, and terms the AI brought in on its own.
+        speech_plan=meta.get("speech_plan") or None,
+        speech_checks=speech_checks.collected() or None,
+        new_terms=meta.get("new_terms") or None,
+        transition=bool(meta.get("transition")),
+        qna_reason=meta.get("qna_rejection_reason"),
+        # LLM monitoring (application/llm_checks.py, src/core/llm_tracing.py).
+        decision_rule=decision_rule,
+        flags=flags or None,
+        langfuse_trace_id=langfuse_trace_id,
+        # Interviewer playbook entries in the prompts of this turn (helpful / harmful counters).
+        playbook_ids=playbook_ids or None,
     )
 
 
@@ -744,6 +854,8 @@ async def start_chat_session(
         if is_vi:
             greeting, _, rest = opening_text.partition(". ")
             opening_text = f"{greeting}. {_personalize_candidate_address(rest, candidate_short_name)}"
+    if is_vi:
+        opening_text = localize_particles(opening_text)
 
     question_id = str(uuid4())
     q_meta = {
@@ -1243,7 +1355,9 @@ async def process_candidate_message(
     # =========================================================================
     is_vi = (session_row.get("locale") or "vi").lower().startswith("vi")
     job_title = await _get_job_title(db, session_row.get("job_id"))
-    _, candidate_short_name = await _candidate_names(db, session_id)
+    candidate_full_name, candidate_short_name = await _candidate_names(db, session_id)
+    # Masked out of every payload sent to Langfuse.
+    llm_tracing.register_names(candidate_full_name, candidate_short_name)
 
     asst_msg_id = str(uuid4())
 
@@ -1297,7 +1411,9 @@ async def process_candidate_message(
         session_state["current_question_context"]["follow_up_prompt"] = (
             last_paragraph(current_turn_probe_texts[-1]) or current_turn_probe_texts[-1]
         )
-    session_state["recent_interviewer_lines"] = await _recent_interviewer_lines(db, session_id)
+    session_state["recent_interviewer_lines"] = await _recent_interviewer_lines(
+        db, session_id, limit=RECENT_LINES_V2 if speech_v2_enabled() else 4, call_name=candidate_short_name
+    )
     if _turn_stage(current_turn) == "CLOSING":
         session_state["job_context"] = await _get_job_context(db, session_row.get("job_id"))
         # Questions the candidate has sent on this closing turn, including this one.
@@ -1328,35 +1444,114 @@ async def process_candidate_message(
         telemetry=telemetry or {},
     )
 
-    core_started = perf_counter()
-    try:
-        core_output = await engine.handle_turn(turn_input, session_state)
-    except Exception as exc:
-        trace_event(
-            "interviewer",
-            "engine_turn_failed",
-            session_id=session_id,
-            turn_id=current_turn_id,
-            turn_index=current_turn_index,
-            error_type=type(exc).__name__,
-            error_message=str(exc),
+    # Langfuse: one trace per turn with every model call, the decision and the
+    # rule checks (src/core/llm_tracing.py). A no-op when Langfuse is not configured.
+    question_ctx = session_state.get("current_question_context") or {}
+    question_text = str(question_ctx.get("follow_up_prompt") or question_ctx.get("main_prompt") or "")
+    # Approved lessons from past interviews (application/interviewer_playbook.py), cached 60 s.
+    await interviewer_playbook.refresh(db)
+    lf_stack = ExitStack()
+    lf_turn = lf_stack.enter_context(
+        llm_tracing.trace(
+            llm_tracing.TURN_TRACE,
+            session_id=str(session_id),
+            user_id=str(session_row.get("user_id") or "") or None,
+            input={
+                "question": question_text,
+                "stage": session_state.get("current_stage"),
+                "modality": modality,
+            },
+            private_input={"answer": cleaned_content},
+            metadata={
+                "turn_index": str(current_turn_index),
+                "modality": str(modality or "CHAT"),
+                "speech_v2": str(speech_v2_enabled()),
+                "ack_mode": ack_mode(),
+                "playbook": playbook.version() or "none",
+            },
         )
-        raise
-
-    if is_vi:
-        core_output.message_text = _personalize_candidate_address(
-            core_output.message_text, candidate_short_name
-        )
-
-    _trace_spoken_turn(
-        session_id=session_id,
-        turn_index=current_turn_index,
-        candidate_text=cleaned_content,
-        modality=modality,
-        core_output=core_output,
-        recent_lines=session_state.get("recent_interviewer_lines") or [],
-        core_ms=round((perf_counter() - core_started) * 1000),
     )
+    try:
+        core_started = perf_counter()
+        # Every guard decision on the AI's lines in this turn (core/speech_checks.py).
+        speech_checks.begin()
+        try:
+            core_output = await engine.handle_turn(turn_input, session_state)
+        except Exception as exc:
+            trace_event(
+                "interviewer",
+                "engine_turn_failed",
+                session_id=session_id,
+                turn_id=current_turn_id,
+                turn_index=current_turn_index,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
+            raise
+
+        if is_vi:
+            core_output.message_text = _personalize_candidate_address(
+                core_output.message_text, candidate_short_name
+            )
+            transition = str((core_output.metadata or {}).get("transition") or "")
+            if transition and speech_v2_enabled():
+                core_output.message_text = _name_in_transition(
+                    core_output.message_text,
+                    transition,
+                    candidate_short_name,
+                    await _recent_interviewer_contents(db, session_id, NAME_GAP_MESSAGES),
+                )
+            # "nhé" → "nha" when the voice is Southern (INTERVIEWER_VOICE_DIALECT=nam).
+            core_output.message_text = localize_particles(core_output.message_text)
+
+        core_ms = round((perf_counter() - core_started) * 1000)
+        turn_meta = core_output.metadata or {}
+        action_value = str(getattr(core_output.action, "value", core_output.action))
+        rule = llm_checks.decision_rule(
+            action_value, {**turn_meta, "exit_reason": getattr(core_output.exit_reason, "value", None)}
+        )
+        checks = speech_checks.collected()
+        flags = llm_checks.turn_flags(
+            action=action_value,
+            meta=turn_meta,
+            answer=cleaned_content,
+            question=question_text,
+            rubric=str(question_ctx.get("rubric_criteria") or ""),
+            reply=str(core_output.message_text or ""),
+            checks=checks,
+        )
+        _trace_spoken_turn(
+            session_id=session_id,
+            turn_index=current_turn_index,
+            candidate_text=cleaned_content,
+            modality=modality,
+            core_output=core_output,
+            recent_lines=session_state.get("recent_interviewer_lines") or [],
+            core_ms=core_ms,
+            decision_rule=rule,
+            flags=flags,
+            langfuse_trace_id=lf_turn.trace_id if lf_turn else None,
+            playbook_ids=playbook.ids(),
+        )
+        llm_tracing.finish(
+            lf_turn,
+            output={
+                "action": action_value,
+                "decision_rule": rule,
+                "intent": turn_meta.get("intent"),
+                "sufficiency": turn_meta.get("sufficiency_status"),
+                "missing_aspect": turn_meta.get("missing_aspect"),
+                "reply": core_output.message_text,
+                "speech_plan": turn_meta.get("speech_plan"),
+                "speech_checks": checks,
+                "new_terms": turn_meta.get("new_terms"),
+            },
+            flags=flags,
+            private_input={"question": question_text, "answer": cleaned_content},
+            scores={"guard.rejects": sum(1 for c in checks if c.get("outcome") == "reject")},
+        )
+    finally:
+        lf_stack.close()
 
     trace_event(
         "interviewer",
@@ -1829,7 +2024,9 @@ async def process_candidate_message(
         )
         if is_vi:
             # core_output.message_text is already personalised, so compare like with like.
-            next_q_text = _personalize_candidate_address(next_q_text, candidate_short_name)
+            next_q_text = localize_particles(
+                _personalize_candidate_address(next_q_text, candidate_short_name)
+            )
 
         # Bridge: the core already said "acknowledgement\n\n[transition] question".
         next_content = core_output.message_text
@@ -1980,7 +2177,7 @@ async def process_candidate_message(
                 CLOSE_COMPLETED_VI if is_vi else CLOSE_COMPLETED_EN, f"{session_id}:wrap"
             )
     if is_vi:
-        wrap_text = _personalize_candidate_address(wrap_text, candidate_short_name)
+        wrap_text = localize_particles(_personalize_candidate_address(wrap_text, candidate_short_name))
 
     await db.execute(
         text(
@@ -2139,7 +2336,7 @@ async def complete_chat_session(
         asst_seq = int(max_seq or 0) + 1
         wrap_text = pick_variant(USER_ENDED_VI if is_vi else USER_ENDED_EN, f"{session_id}:user_ended")
         if is_vi:
-            wrap_text = _personalize_candidate_address(wrap_text, candidate_short_name)
+            wrap_text = localize_particles(_personalize_candidate_address(wrap_text, candidate_short_name))
         await db.execute(
             text(
                 """

@@ -11,7 +11,9 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core import llm_tracing
 from src.core.trace_logging import trace_event
+from src.modules.interviews.application import llm_checks
 from src.modules.interviews.evaluation.answer_outcome import (
     ANSWERED,
     NOT_GRADABLE,
@@ -100,7 +102,77 @@ async def evaluate_closed_session(
 
     Trả về None khi một request đồng thời đã tạo xong báo cáo trong lúc request
     này chờ lock.
+
+    The grading run is one Langfuse trace (``session_grading``) with every
+    grader call; after it, the checks of ``llm_checks.session_flags`` become
+    session scores (a no-op when Langfuse is not configured).
     """
+    with llm_tracing.trace(
+        llm_tracing.GRADING_TRACE, session_id=str(session_id), input={"session_id": str(session_id)}
+    ) as lf_run:
+        result = await _evaluate_closed_session(db, session_id, engine)
+        if lf_run is not None and result is not None:
+            await _report_grading_checks(db, str(session_id), result, lf_run)
+        return result
+
+
+async def _report_grading_checks(
+    db: AsyncSession, session_id: str, result: SessionEvaluationResult, lf_run: Any
+) -> None:
+    try:
+        turn_rows = await db.execute(
+            text("SELECT id, turn_index FROM interview_turns WHERE session_id = :sid"), {"sid": session_id}
+        )
+        index_by_turn = {str(r["id"]): r["turn_index"] for r in turn_rows.mappings().all()}
+        events = await db.execute(
+            text(
+                "SELECT turn_index, payload->>'sufficiency' AS sufficiency, payload->>'action' AS action "
+                "FROM interview_pipeline_events WHERE session_id = :sid AND event = 'turn_spoken'"
+            ),
+            {"sid": session_id},
+        )
+        verdicts: dict[int, set[str]] = {}
+        for row in events.mappings().all():
+            # "Complete" only when the interview moved on without a follow-up.
+            if row["turn_index"] is not None and row["action"] == "NEXT_QUESTION" and row["sufficiency"]:
+                verdicts.setdefault(int(row["turn_index"]), set()).add(str(row["sufficiency"]))
+        grades = [
+            {
+                "turn_index": index_by_turn.get(str(t.turn_id)),
+                "score": t.score,
+                "rubric_points": t.rubric_points,
+            }
+            for t in result.turn_evaluations
+        ]
+        checks = llm_checks.session_flags(grades, verdicts)
+    except Exception:  # noqa: BLE001 - monitoring must not fail the grading
+        logger.debug("grading checks not computed", exc_info=True)
+        await db.rollback()
+        return
+    flags = [
+        name.removeprefix("check.")
+        for name, value in checks.items()
+        if value and name != "check.graded_questions"
+    ]
+    llm_tracing.finish(
+        lf_run,
+        output={
+            "overall_score": result.overall_score,
+            "decision": getattr(result.decision_recommendation, "value", result.decision_recommendation),
+            **checks,
+        },
+        flags=flags,
+        scores=checks,
+    )
+    for name, value in checks.items():
+        llm_tracing.score_session(session_id, name, value)
+
+
+async def _evaluate_closed_session(
+    db: AsyncSession,
+    session_id: str,
+    engine: InterviewEvaluationEngine | None = None,
+) -> SessionEvaluationResult | None:
     started_at = time.monotonic()
     trace_event("interviewer", "evaluation_pipeline_started", session_id=session_id)
     eval_engine = engine or InterviewEvaluationEngine(verdict_cache=DatabaseVerdictCache())

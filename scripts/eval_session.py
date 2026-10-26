@@ -16,6 +16,8 @@ Chỉ số:
   trong 3 lượt gần nhất, từ đánh giá hoặc kết luận chất lượng, giọng tóm tắt bài.
 - Độ trễ: thời gian Interview Core xử lý mỗi lượt (trung vị, p95), lấy từ file theo dõi.
   Không tính theo giờ lưu tin nhắn: tin của ứng viên và của AI được lưu cùng lúc.
+- Ghép lượt (25/10): số lần gọi tên mỗi lượt, lượt có từ hai "nhé", hai lượt liền
+  mở bằng cùng một tiếng đệm (À, Ừ, Ừm, Ok, Vâng).
 - AI chấm: cả chuỗi lời người phỏng vấn (từng đoạn 10 lượt) và từng lượt (1-5, kèm
   câu nghe cứng nhất).
 """
@@ -151,6 +153,32 @@ def _turns(messages: list[dict]) -> list[dict]:
     return turns
 
 
+_OPENING_RE = re.compile(r"^\W*(à|ừm|ừ|ok|okay|vâng|dạ|được|không sao)\b", re.IGNORECASE)
+
+
+def _opening(reply: str) -> str:
+    match = _OPENING_RE.match(reply or "")
+    return match.group(1).casefold() if match else ""
+
+
+def _turn_shape(turns: list[dict], call_name: str | None) -> dict:
+    """How each reply is put together: names, "nhé", repeated opening interjections."""
+    replies = [t["reply"] for t in turns]
+    names = (
+        [len(re.findall(rf"(?<!\w){re.escape(call_name)}(?!\w)", r)) for r in replies] if call_name else []
+    )
+    nhe = [len(re.findall(r"(?<!\w)nhé(?!\w)", r, re.IGNORECASE)) for r in replies]
+    openings = [_opening(r) for r in replies]
+    same_opening = sum(1 for a, b in zip(openings, openings[1:]) if a and a == b)
+    return {
+        "call_name": call_name,
+        "names_per_reply_avg": round(statistics.mean(names), 2) if names else None,
+        "names_per_reply_max": max(names) if names else None,
+        "replies_with_two_nhe": sum(n >= 2 for n in nhe),
+        "consecutive_same_opening": same_opening,
+    }
+
+
 def _metrics(turns: list[dict], traces: list[dict]) -> dict:
     acks = [t["ack"] for t in turns if t["ack"]]
     n = len(acks) or 1
@@ -223,6 +251,12 @@ async def main() -> None:
             print("Không tìm thấy buổi phỏng vấn (hoặc mã khớp nhiều buổi).")
             return
         messages = await _load_messages(db, session_id)
+        try:
+            from src.modules.interviews.application.chat_runtime import _candidate_names
+
+            _, call_name = await _candidate_names(db, session_id)
+        except Exception:  # noqa: BLE001 - the name only feeds one metric
+            call_name = None
     turns = _turns(messages)
     if not turns:
         print(f"Buổi {session_id} chưa có lượt trả lời nào.")
@@ -230,6 +264,7 @@ async def main() -> None:
     traces = _trace_records(session_id)
     _attach_traces(turns, traces)
     metrics = _metrics(turns, traces)
+    metrics.update(_turn_shape(turns, call_name))
     judged = None if args.no_judge else await _judge(turns)
 
     stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -249,6 +284,8 @@ async def main() -> None:
         f"- Câu đáp trung tính có sẵn: {m['neutral_pool_rate']:.0%}; nguồn theo trace: {m['ack_sources_from_trace'] or 'không có trace'}",
         f"- Từ đánh giá / kết luận chất lượng: {m['evaluative_or_judgmental']}; giọng tóm tắt bài / chép lại: {m['grader_or_parroting']}",
         f"- Số từ trung bình mỗi câu ghi nhận: {m['avg_words']}",
+        f"- Gọi tên ({m['call_name'] or 'không có tên'}): trung bình {m['names_per_reply_avg']}, nhiều nhất {m['names_per_reply_max']} lần mỗi lượt; "
+        f"lượt có từ hai \"nhé\": {m['replies_with_two_nhe']}; hai lượt liền cùng tiếng đệm mở đầu: {m['consecutive_same_opening']}",
         f"- Độ trễ Core: trung vị {m['latency_median_s']} s, p95 {m['latency_p95_s']} s"
         + ("" if m["latency_median_s"] is not None else " (không có file theo dõi cho buổi này)"),
     ]

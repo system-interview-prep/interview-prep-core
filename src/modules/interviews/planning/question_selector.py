@@ -27,10 +27,12 @@ from src.core.trace_logging import trace_event
 from src.modules.interviews.core.demo_mode import is_demo_duration
 from src.modules.interviews.core.opening_script import warmup_question
 from src.modules.interviews.planning.spoken_questions import add_spoken_versions
+from src.modules.interviews.core.interviewer_voice import speech_v2_enabled
 from src.modules.interviews.planning.project_evidence import (
     build_project_validation_question,
     extract_project_evidences,
     select_best_project,
+    spoken_project_question,
 )
 from src.modules.question_bank.facade import GENERATED_QUESTION_AUTHOR
 
@@ -1506,6 +1508,8 @@ async def select_and_freeze_questions(
             if is_vi
             else f"In '{project_name}', which parts did you do yourself, and what was the hardest problem you solved?"
         )
+        if speech_v2_enabled():
+            validate_text = spoken_project_question(project_name, is_vi=is_vi)
     elif key_technologies:
         tech_str = ", ".join(key_technologies[:3])
         validate_text = (

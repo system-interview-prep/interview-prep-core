@@ -143,6 +143,49 @@ _STANDALONE_INT_RE = re.compile(r"(?<![\w.,/:-])(\d{1,9})(?![\w/:]|[.,]\d|-\w)")
 _DECIMAL_VI_RE = re.compile(r"(?<![\w.,])(\d{1,6}),(\d{1,3})(?![\w.,])")
 
 
+def _speech_v2_enabled() -> bool:
+    """Same switch as core.interviewer_voice.speech_v2_enabled (the agent cannot import src)."""
+    return os.getenv("INTERVIEWER_SPEECH_V2", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+_PAREN_RE = re.compile(r"\s*\(([^()]{1,60})\)")
+_QUOTED_RE = re.compile(r"(?<!\w)['‘’]([^'‘’\n]{1,80})['‘’](?!\w)")
+_HTTP_CODE_RE = re.compile(r"\b(HTTP|status|mã lỗi|mã)\s+([1-5]\d{2})\b", re.IGNORECASE)
+_MS_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s?ms\b")
+_SIZE_RE = re.compile(r"(\d+(?:[.,]\d+)?)(GB|MB|KB|TB)\b")
+_PATH_RE = re.compile(r"(?<![\w:/])/(?:[\w{}.-]+/?)+")
+
+
+try:
+    from .pronunciations_vi import PRONUNCIATIONS_VI
+except ImportError:  # Loaded directly by the LiveKit agent subprocess.
+    from pronunciations_vi import PRONUNCIATIONS_VI  # type: ignore[no-redef]
+
+_PRONUNCIATIONS_VI = tuple((re.compile(pattern), spoken) for pattern, spoken in PRONUNCIATIONS_VI)
+
+
+def _spoken_details_vi(spoken: str) -> str:
+    """Speech v2 (25/10): notation the voice read literally in the 20/10 sessions.
+
+    Brackets and single quotes around a name are dropped ("dự án 'X'" → "dự án
+    X"), "vd" is "ví dụ", "HTTP 404" is read digit by digit, "200ms" is "200 mi
+    li giây", and a URL path such as /users/{id} becomes "đường dẫn".
+    """
+    spoken = _QUOTED_RE.sub(r"\1", spoken)
+    spoken = _PAREN_RE.sub(r", \1,", spoken)
+    spoken = re.sub(r"(?<!\w)(vd|VD|Vd)\.?(?!\w)", "ví dụ", spoken)
+    spoken = re.sub(r"(?<!\w)v\.v\.?", "vân vân", spoken)
+    spoken = _HTTP_CODE_RE.sub(
+        lambda m: f"{m.group(1)} {' '.join(_DIGITS_VI[int(d)] for d in m.group(2))}", spoken
+    )
+    spoken = _MS_RE.sub(r"\1 mi li giây", spoken)
+    spoken = _SIZE_RE.sub(r"\1 \2", spoken)
+    spoken = _PATH_RE.sub("đường dẫn", spoken)
+    for pattern, replacement in _PRONUNCIATIONS_VI:
+        spoken = pattern.sub(replacement, spoken)
+    return spoken
+
+
 def _spoken_layout(text_value: str, locale: str) -> str:
     """Đổi một câu hiển thị thành câu để đọc: bỏ ký hiệu, xuống dòng, đọc số.
 
@@ -159,6 +202,8 @@ def _spoken_layout(text_value: str, locale: str) -> str:
     # Tên nút viết trong “ ” ở kịch bản chung; đọc lên thì bỏ ngoặc, " & " đứng riêng thành "và".
     spoken = re.sub(r"[“”\"]", "", spoken)
     spoken = re.sub(r"\s+&\s+", " và " if is_vi else " and ", spoken)
+    if is_vi and _speech_v2_enabled():
+        spoken = _spoken_details_vi(spoken)
     if is_vi:
         spoken = re.sub(r"(\d)\s*′", r"\1 phút", spoken)
         spoken = re.sub(r"(\d)\s*″", r"\1 giây", spoken)
@@ -176,6 +221,7 @@ def _spoken_layout(text_value: str, locale: str) -> str:
         spoken = re.sub(r"(\d)\s*%", r"\1 percent", spoken)
     spoken = re.sub(r"\s+([,.!?])(?=\s|$)", r"\1", spoken)
     spoken = re.sub(r",\s*,", ",", spoken)
+    spoken = re.sub(r",\s*([.!?;])", r"\1", spoken)
     return re.sub(r"\s{2,}", " ", spoken).strip()
 
 

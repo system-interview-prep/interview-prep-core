@@ -673,7 +673,8 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
 
     async def test_coding_turn_triggers_tech_lead_probe_on_passed_tests(self):
         """9. Ứng viên nộp giải pháp coding qua test -> Kích hoạt Tech Lead probe phản biện kiến trúc."""
-        tech_lead_probe = "Bạn có thể phân tích đánh đổi giữa việc dùng Lock so với Semaphore trong hàm này không?"
+        # 25/10: naming Semaphore (in the rubric, never said by the candidate) gives the answer away.
+        tech_lead_probe = "Vì sao bạn chọn asyncio.Lock cho critical section trong hàm này?"
         llm = MockLLM(
             probe_text=tech_lead_probe,
         )

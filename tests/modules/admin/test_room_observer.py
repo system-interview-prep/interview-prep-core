@@ -69,3 +69,39 @@ def test_room_is_running_needs_an_existing_room_with_participants() -> None:
     assert ask(_FakeRooms([])) is False
     assert ask(_FakeRooms([SimpleNamespace(num_participants=0)])) is False
     assert ask(_FakeRooms(error=RuntimeError("down"))) is None
+
+
+class _DeletableRooms(_FakeRooms):
+    def __init__(self, rooms=None, error=None):
+        super().__init__(rooms, error)
+        self.deleted = None
+
+    async def delete_room(self, request):
+        self.deleted = request.room
+        return None
+
+
+def _deleting_api(rooms):
+    fake = _fake_api(rooms)
+    fake.DeleteRoomRequest = lambda room: SimpleNamespace(room=room)
+    return fake
+
+
+def _close(rooms):
+    return asyncio.run(
+        room_observer.close_room(_deleting_api(rooms), url="u", key="k", secret="s", session_id="s1")
+    )
+
+
+def test_close_room_deletes_the_session_room_and_never_raises() -> None:
+    rooms = _DeletableRooms(rooms=[SimpleNamespace(num_participants=2)])
+    assert _close(rooms) is True and rooms.deleted == "interview-s1"
+
+    # Chat session or room already gone: nothing to delete.
+    empty = _DeletableRooms()
+    assert _close(empty) is False
+    assert empty.deleted is None
+
+    # LiveKit down: the session close still goes through.
+    down = _DeletableRooms(error=RuntimeError("unreachable"))
+    assert _close(down) is None
