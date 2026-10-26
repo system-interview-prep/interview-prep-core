@@ -186,11 +186,15 @@ def _llm_connections() -> list[str] | None:
 
 
 def langfuse_status(url: str | None, providers: list[str] | None) -> tuple[str, str | None]:
-    """ok / warn (judges cannot score: no LLM connection) / down (unreachable)."""
+    """ok / down (unreachable).
+
+    The project API lists only project-level LLM connections; an organization
+    connection (Settings → LLM Connections → Organization connections) also
+    serves the judges but is not visible here, so an empty list is not a
+    problem to report. The page shows what the project list contains.
+    """
     if not url:
         return "down", "unreachable"
-    if providers is not None and not providers:
-        return "warn", "no_llm_connection"
     return "ok", None
 
 
