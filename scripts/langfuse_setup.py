@@ -91,17 +91,48 @@ def ensure_judges(lf, provider: str, model: str, sampling: float) -> None:
         EvaluationRuleEvaluatorAssignmentInput,
     )
     from langfuse.api.evaluators.types.create_evaluator_request import CreateEvaluatorRequest_LlmAsJudge
+    from langfuse.api.evaluators.types.update_llm_as_judge_evaluator_request import (
+        UpdateLlmAsJudgeEvaluatorRequest,
+    )
 
-    existing = {evaluator.name: evaluator.id for evaluator in lf.api.evaluators.list().data}
+    # An evaluator created before its LLM connection is paused at once and stays
+    # paused after the connection is added; Langfuse resumes it only when it is saved again.
+    if not any(c.provider == provider for c in lf.api.llm_connections.list().data):
+        print(
+            f"  ! chưa có LLM connection {provider}: thêm ở Langfuse → Settings → LLM Connections "
+            "rồi chạy lại lệnh này (giám khảo tạo khi thiếu connection sẽ bị tạm dừng)."
+        )
+        return
+    evaluators = {evaluator.name: evaluator for evaluator in lf.api.evaluators.list().data}
     mapping = [
         PromptVariableMappingInput(variable="input", source="input"),
         PromptVariableMappingInput(variable="output", source="output"),
     ]
     ids = []
     for judge in JUDGES:
-        if judge["name"] in existing:
-            print(f"  = giám khảo {judge['name']}")
-            ids.append(existing[judge["name"]])
+        current = evaluators.get(judge["name"])
+        if current is not None:
+            ids.append(current.id)
+            if getattr(current.status, "value", current.status) != "paused":
+                print(f"  = giám khảo {judge['name']}")
+                continue
+            lf.api.evaluators.update(
+                current.id,
+                request=UpdateLlmAsJudgeEvaluatorRequest(
+                    type="llm_as_judge",
+                    prompt=current.prompt,
+                    model_config_=current.model_config_,
+                    variable_mapping=[
+                        PromptVariableMappingInput(variable=v.variable, source=v.source)
+                        for v in current.variable_mapping
+                    ],
+                    output_definition=EvaluatorOutputDefinition_Boolean(
+                        score_reasoning_instructions=current.output_definition.score_reasoning_instructions,
+                        score_value_instructions=current.output_definition.score_value_instructions,
+                    ),
+                ),
+            )
+            print(f"  ~ giám khảo {judge['name']} đang tạm dừng ({current.paused_reason}): đã bật lại")
             continue
         request = CreateEvaluatorRequest_LlmAsJudge(
             name=judge["name"],
