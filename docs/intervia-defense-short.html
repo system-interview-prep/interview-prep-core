@@ -177,10 +177,10 @@
     <section class="slide dark active" data-title="Mở đầu">
       <div class="content">
         <p class="eyebrow">INTERVIA · BẢN RÚT GỌN CHO HỘI ĐỒNG</p>
-        <h1>Từ điểm đối sánh CV–JD đến kế hoạch câu hỏi, buổi phỏng vấn và báo cáo kết quả</h1>
+        <h1>Từ kết quả đối chiếu CV–JD đến kế hoạch câu hỏi, buổi phỏng vấn và báo cáo kết quả</h1>
         <p class="lead">Bốn khâu nối tiếp nhau. Với mỗi khâu, slide trả lời ba câu: nhận dữ liệu gì, xử lý bằng kỹ thuật gì (kèm hằng số trong code), và trả ra gì cho khâu sau.</p>
         <div class="agenda">
-          <div><strong>1 · Đối sánh ra điểm</strong><span>Xét từng yêu cầu JD, gộp 5 yếu tố thành điểm 0–1, cổng yêu cầu bắt buộc</span></div>
+          <div><strong>1 · Đối chiếu ra điểm phù hợp</strong><span>Xét từng yêu cầu JD, gộp 5 yếu tố thành điểm 0–1, cổng yêu cầu bắt buộc</span></div>
           <div><strong>2 · Lập kế hoạch</strong><span>Năng lực nào hỏi trước, bao nhiêu câu, câu nào, rồi khóa bộ câu hỏi</span></div>
           <div><strong>3 · Phỏng vấn</strong><span>6 giai đoạn, xử lý từng câu trả lời, khi nào hỏi đào sâu, chat và giọng nói</span></div>
           <div><strong>4 · Chấm điểm và báo cáo</strong><span>Chấm từng câu theo rubric, điểm tổng có trọng số, nội dung báo cáo</span></div>
@@ -197,22 +197,22 @@
         <table class="t" style="margin-top:22px">
           <thead><tr><th style="width:15%">Khâu</th><th style="width:25%">Nhận vào</th><th style="width:36%">Kỹ thuật chính</th><th>Trả ra</th></tr></thead>
           <tbody>
-            <tr><td>1 · Đối sánh</td><td>Dữ kiện CV và JD đã bóc tách, mỗi dữ kiện kèm câu trích từ tài liệu gốc</td><td>So khớp theo luật cho từng yêu cầu · BM25 · cosine giữa 2 vector embedding · cổng yêu cầu bắt buộc</td><td>Điểm phù hợp 0–1, nhãn phù hợp, trạng thái Đạt / Không đạt / Chưa rõ của từng yêu cầu</td></tr>
+            <tr><td>1 · Đối chiếu</td><td>Dữ kiện CV và JD đã bóc tách, mỗi dữ kiện kèm câu trích từ tài liệu gốc</td><td>So khớp theo luật cho từng yêu cầu · BM25 · cosine giữa 2 vector embedding · cổng yêu cầu bắt buộc</td><td>Điểm phù hợp 0–1, nhãn phù hợp, trạng thái Đạt / Không đạt / Chưa rõ của từng yêu cầu</td></tr>
             <tr><td>2 · Lập kế hoạch</td><td>Trạng thái và mức ưu tiên của từng yêu cầu · thời lượng phiên</td><td>Công thức số câu theo thời gian · xếp hạng năng lực · xếp hạng câu hỏi nhiều khóa · băm SHA-256 để khóa</td><td>Bộ câu hỏi đã khóa: câu hỏi, rubric, ý cần có, thời gian từng câu</td></tr>
             <tr><td>3 · Phỏng vấn</td><td>Bộ câu hỏi đã khóa · câu trả lời qua chat hoặc giọng nói</td><td>Máy trạng thái 6 giai đoạn · luật nhận diện ý định · LLM xét câu trả lời đủ hay thiếu ý · STT/TTS cho giọng nói</td><td>Câu trả lời từng lượt (gồm phần đào sâu), thời điểm, lý do kết thúc phiên</td></tr>
             <tr><td>4 · Chấm điểm</td><td>Câu trả lời từng lượt · rubric đã khóa</td><td>LLM chấm từng câu 0–10 theo thang 4 mức · trung bình có trọng số theo năng lực · luật độ phủ</td><td>Điểm tổng, xếp loại, điểm từng năng lực, nhận xét từng câu, cảnh báo</td></tr>
           </tbody>
         </table>
         <div class="note warn" style="margin-top:12px"><strong>Điểm 0–1 và nhãn phù hợp không điều khiển kế hoạch:</strong> chúng chỉ được lưu kèm kế hoạch để tham chiếu. Khâu 2 chỉ dùng <b>trạng thái và mức ưu tiên của từng yêu cầu</b>. Ứng viên ở nhãn nào (kể cả "Không đủ điều kiện") vẫn bắt đầu phiên luyện tập được.</div>
-        <div class="note"><strong>Phân vai LLM và code:</strong> LLM chỉ làm việc với ngôn ngữ: xét câu trả lời đủ hay thiếu ý, viết câu đào sâu, chấm điểm và viết nhận xét cho từng câu. Còn điểm đối sánh, số câu, câu nào được hỏi, chuyển giai đoạn, khi nào dừng, điểm tổng và xếp loại đều do công thức cố định trong code tính.</div>
+        <div class="note"><strong>Phân vai LLM và code:</strong> LLM chỉ làm việc với ngôn ngữ: xét câu trả lời đủ hay thiếu ý, viết câu đào sâu, chấm điểm và viết nhận xét cho từng câu. Còn điểm phù hợp, số câu, câu nào được hỏi, chuyển giai đoạn, khi nào dừng, điểm tổng và xếp loại đều do công thức cố định trong code tính.</div>
         <div class="footer"><span>Chat và giọng nói dùng chung lõi phỏng vấn (InterviewCoreEngine); giọng nói chỉ thêm lớp nhận và phát âm thanh</span><span>02</span></div>
       </div>
     </section>
 
     <!-- 03 -->
-    <section class="slide" data-title="Đối sánh: từng yêu cầu">
+    <section class="slide" data-title="Đối chiếu: từng yêu cầu">
       <div class="content">
-        <p class="eyebrow">KHÂU 1 · ĐỐI SÁNH · BƯỚC A</p>
+        <p class="eyebrow">KHÂU 1 · ĐỐI CHIẾU · BƯỚC A</p>
         <h2>Xét từng yêu cầu trong JD với bằng chứng trong CV, cho ra Đạt, Không đạt hoặc Chưa rõ</h2>
         <div class="grid3" style="grid-template-columns:1fr 1.15fr .8fr">
           <div class="block">
@@ -254,9 +254,9 @@
     </section>
 
     <!-- 04 -->
-    <section class="slide" data-title="Đối sánh: gộp điểm">
+    <section class="slide" data-title="Đối chiếu: gộp điểm">
       <div class="content">
-        <p class="eyebrow">KHÂU 1 · ĐỐI SÁNH · BƯỚC B</p>
+        <p class="eyebrow">KHÂU 1 · ĐỐI CHIẾU · BƯỚC B</p>
         <h2>Gộp 5 yếu tố thành điểm 0–1, có tính đến độ tin cậy, rồi qua cổng yêu cầu bắt buộc</h2>
         <div class="grid2 wide-left">
           <div class="block">
@@ -293,9 +293,9 @@
     </section>
 
     <!-- 05 -->
-    <section class="slide" data-title="Từ đối sánh sang kế hoạch">
+    <section class="slide" data-title="Từ đối chiếu sang kế hoạch">
       <div class="content">
-        <p class="eyebrow">KHÂU 1 → 2 · KẾT QUẢ ĐỐI SÁNH QUYẾT ĐỊNH HỎI GÌ</p>
+        <p class="eyebrow">KHÂU 1 → 2 · KẾT QUẢ ĐỐI CHIẾU QUYẾT ĐỊNH HỎI GÌ</p>
         <h2>Năng lực bắt buộc và năng lực còn thiếu hoặc chưa rõ trong CV được hỏi trước</h2>
         <div class="grid2">
           <div class="block">
@@ -320,7 +320,7 @@
                 </tbody>
               </table>
             </div>
-            <p style="margin-top:10px">Hệ số trạng thái &gt; 1 để <b>chỗ còn thiếu được hỏi nhiều hơn</b>. Bảng này khác bảng mức quan trọng ở khâu đối sánh, vì mục đích ở đây là chọn chỗ cần kiểm tra chứ không phải tính điểm.</p>
+            <p style="margin-top:10px">Hệ số trạng thái &gt; 1 để <b>chỗ còn thiếu được hỏi nhiều hơn</b>. Bảng này khác bảng mức quan trọng ở khâu đối chiếu, vì mục đích ở đây là chọn chỗ cần kiểm tra chứ không phải tính điểm.</p>
             <p><b>Không dùng ở đây:</b> điểm phù hợp 0–1 và nhãn phù hợp. Số câu chỉ phụ thuộc thời lượng; độ khó chỉ lấy từ JD.</p>
           </div>
           <div class="block green">
@@ -658,7 +658,7 @@
     <section class="slide" data-title="Ví dụ tính điểm">
       <div class="content">
         <p class="eyebrow">VÍ DỤ XUYÊN SUỐT · TIẾP TỤC TỪ SLIDE 5 · PHIÊN 25 PHÚT</p>
-        <h2>React, SQL, Docker đi từ kết quả đối sánh tới điểm tổng của một phiên 25′</h2>
+        <h2>React, SQL, Docker đi từ kết quả đối chiếu tới điểm tổng của một phiên 25′</h2>
         <div class="grid2 wide-left">
           <div class="block">
             <h3>Bảng tính (điểm từng câu là số giả định)</h3>
@@ -737,7 +737,7 @@
         <div class="metrics">
           <div class="metric"><h3>Bóc tách CV · 60 hồ sơ</h3><b>Macro F1 0,317</b><p>Câu trích hợp lệ 100%. Chưa đạt ngưỡng 0,50, cần cải thiện phần kỹ năng và chứng chỉ.</p></div>
           <div class="metric"><h3>Bóc tách JD · 50 mô tả</h3><b>Macro 0,626</b><p>Câu trích hợp lệ 100%. F1 phần yêu cầu là 0,610.</p></div>
-          <div class="metric"><h3>Đối sánh · 60 trường hợp</h3><b>Accuracy 93,3%</b><p>Lớp "không đạt" chỉ có 3 mẫu (F1 = 0), dữ liệu chưa cân bằng.</p></div>
+          <div class="metric"><h3>Đối chiếu · 60 trường hợp</h3><b>Accuracy 93,3%</b><p>Lớp "không đạt" chỉ có 3 mẫu (F1 = 0), dữ liệu chưa cân bằng.</p></div>
           <div class="metric"><h3>STT tiếng Việt · thử</h3><b>WER 13,75%</b><p>99 câu, 3 người nói, cấu hình production. Bật danh sách thuật ngữ: 12,89%. Chưa đủ 300 câu, chưa chạy liên tục 24–48 giờ.</p></div>
         </div>
         <div class="grid2" style="margin-top:24px">
@@ -753,7 +753,7 @@
           <div class="block green">
             <h3>Kết luận</h3>
             <ul>
-              <li>Điểm đối sánh tính bằng luật và công thức; mỗi kết luận truy được về dữ kiện trong CV.</li>
+              <li>Điểm phù hợp tính bằng luật và công thức; mỗi kết luận truy được về dữ kiện trong CV.</li>
               <li>Số câu, thời gian và thứ tự hỏi tính bằng công thức, kiểm tra được bằng số học.</li>
               <li>Điểm từng câu dựa trên rubric đã khóa; điểm tổng và xếp loại dựa trên trọng số cố định trong code.</li>
             </ul>
