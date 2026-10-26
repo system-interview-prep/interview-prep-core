@@ -142,11 +142,10 @@ def test_sessions_outside_the_window_are_ignored() -> None:
     assert view["totals"]["sessions"] == 0 and view["totals"]["medianSessionsPerUser"] is None
 
 
-def test_langfuse_without_llm_connection_warns_that_judges_cannot_score() -> None:
+def test_langfuse_llm_connections_are_informational() -> None:
     from src.modules.admin.system_health import langfuse_status
 
     assert langfuse_status(None, None) == ("down", "unreachable")
-    assert langfuse_status("https://lf/project/p", []) == ("warn", "no_llm_connection")
+    # Organization connections are invisible to the project API: no false alarm.
+    assert langfuse_status("https://lf/project/p", []) == ("ok", None)
     assert langfuse_status("https://lf/project/p", ["openai"]) == ("ok", None)
-    # The connection list could not be read (older Langfuse): do not raise a false alarm.
-    assert langfuse_status("https://lf/project/p", None) == ("ok", None)
