@@ -6,9 +6,13 @@ from src.modules.question_bank import insights
 def test_who_decides_what() -> None:
     assert insights.can_decide("REVISE", "ACCEPT", {"QUESTION_AUTHOR"})
     assert not insights.can_decide("RETIRE", "ACCEPT", {"QUESTION_AUTHOR"})
-    assert insights.can_decide("RETIRE", "ACCEPT", {"QUESTION_BANK_ADMIN"})
-    assert insights.can_decide("VARIANT", "DISMISS", {"QUESTION_REVIEWER"})
+    assert insights.can_decide("RETIRE", "ACCEPT", {"ADMIN"})
+    assert insights.can_decide("VARIANT", "DISMISS", {"ADMIN"})
     assert not insights.can_decide("VARIANT", "DISMISS", {"QUESTION_AUTHOR"})
+    assert not insights.can_decide("REVISE", "DISMISS", {"QUESTION_AUTHOR"})
+    # Retired roles (folded into ADMIN on 28/10) decide nothing.
+    assert not insights.can_decide("RETIRE", "ACCEPT", {"QUESTION_BANK_ADMIN"})
+    assert not insights.can_decide("VARIANT", "DISMISS", {"QUESTION_REVIEWER"})
     assert insights.can_decide("DUPLICATE", "ACCEPT", {"ADMIN"})
 
 
