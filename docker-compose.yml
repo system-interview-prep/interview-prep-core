@@ -42,7 +42,7 @@ services:
       # code save. Forced off here because .env may still set it to true.
       LIVEKIT_AGENT_AUTOSTART: "false"
       LIVEKIT_AGENT_RUN_MODE: ${LIVEKIT_AGENT_RUN_MODE:-dev}
-      LIVEKIT_STT_MODEL: ${LIVEKIT_STT_MODEL:-assemblyai/universal-3-6-pro}
+      LIVEKIT_STT_MODEL: ${LIVEKIT_STT_MODEL:-assemblyai/universal-3-5-pro}
       # Interviews are Vietnamese-only: never auto-detect the language.
       LIVEKIT_STT_LANGUAGE: "vi"
       VOICE_LAB_STT_LANGUAGE: ${VOICE_LAB_STT_LANGUAGE:-vi}
@@ -72,7 +72,11 @@ services:
     environment:
       VOICE_RUNTIME_API_BASE_URL: http://backend:5000
       LIVEKIT_AGENT_MAX_RETRY: ${LIVEKIT_AGENT_MAX_RETRY:-32}
-      LIVEKIT_STT_MODEL: ${LIVEKIT_STT_MODEL:-assemblyai/universal-3-6-pro}
+      LIVEKIT_STT_PROVIDER: ${LIVEKIT_STT_PROVIDER:-assemblyai}
+      LIVEKIT_STT_MODEL: ${LIVEKIT_STT_MODEL:-assemblyai/universal-3-5-pro}
+      QWEN_STT_BASE_URL: ${QWEN_STT_BASE_URL:-}
+      QWEN_STT_MODEL: ${QWEN_STT_MODEL:-Qwen/Qwen3-ASR-1.7B}
+      QWEN_STT_CHUNK_SIZE_SECONDS: ${QWEN_STT_CHUNK_SIZE_SECONDS:-1.0}
       # Interviews are Vietnamese-only: never auto-detect the language.
       LIVEKIT_STT_LANGUAGE: "vi"
       VOICE_LAB_STT_LANGUAGE: ${VOICE_LAB_STT_LANGUAGE:-vi}
