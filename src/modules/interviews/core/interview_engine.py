@@ -809,6 +809,7 @@ class InterviewCoreEngine:
             current_question=current_question,
             is_vi=is_vi,
             telemetry=turn_input.telemetry,
+            precomputed_evaluation=turn_input.precomputed_evaluation,
         )
 
         # BẢO HIỂM TẦNG 2: Nếu LLM nhận diện ý định xin dừng phỏng vấn -> Kích hoạt Modal xác nhận
@@ -1247,6 +1248,7 @@ class InterviewCoreEngine:
         current_question: Dict[str, Any],
         is_vi: bool = True,
         telemetry: Optional[Dict[str, Any]] = None,
+        precomputed_evaluation: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Gọi LLM phân tích nhanh câu trả lời để quyết định probe & early-exit."""
         question_prompt = current_question.get("main_prompt", "")
@@ -1278,6 +1280,9 @@ class InterviewCoreEngine:
                 or telemetry.get("codeDiff")
             )
         )
+        if precomputed_evaluation is not None and not is_coding:
+            # Supplied only by the authenticated, signed voice-preview flow.
+            return dict(precomputed_evaluation)
         if is_coding:
             test_passed = bool(telemetry.get("test_passed", telemetry.get("testPassed", False)))
             if test_passed:
