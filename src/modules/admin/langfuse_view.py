@@ -7,7 +7,7 @@ public API so an admin sees, on our own pages:
 * ``trace_view``: one turn's model calls (step, model, latency, tokens, cost,
   input and output when the turn carried text) and its scores (rules, AI
   judges, reviewers);
-* ``session_view``: every trace of one interview with totals;
+* ``session_view``: every trace of one interview with tokens and cost, and totals;
 * ``flagged_turns``: the latest turns a rule flagged, mapped to their session;
 * ``record_review``: a reviewer's verdict written back to Langfuse as a
   ``human.*`` score, the same names the annotation queue and judges use.
@@ -180,6 +180,7 @@ def _session(session_id: str) -> dict[str, Any]:
                 "startTime": None,
                 "calls": 0,
                 "tokens": 0,
+                "cost": 0.0,
                 "warnings": 0,
             },
         )
@@ -192,6 +193,7 @@ def _session(session_id: str) -> dict[str, Any]:
             item["calls"] += 1
             usage = getattr(obs, "usage_details", None) or {}
             item["tokens"] += usage.get("total") or (usage.get("input") or 0) + (usage.get("output") or 0)
+            item["cost"] = round(item["cost"] + float(getattr(obs, "total_cost", None) or 0), 6)
         if _level(obs) in {"WARNING", "ERROR"}:
             item["warnings"] += 1
     project = llm_tracing.project_url()
@@ -199,6 +201,11 @@ def _session(session_id: str) -> dict[str, Any]:
         "connected": True,
         "sessionUrl": f"{project}/sessions/{session_id}" if project else None,
         "traces": sorted(traces.values(), key=lambda t: t["startTime"] or ""),
+        "totals": {
+            "calls": sum(t["calls"] for t in traces.values()),
+            "tokens": sum(t["tokens"] for t in traces.values()),
+            "cost": round(sum(t["cost"] for t in traces.values()), 6),
+        },
         "scores": [{**score_view(s), "kind": score_kind(s.name)} for s in scores],
         "syncing": not observations,
     }
