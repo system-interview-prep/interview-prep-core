@@ -266,6 +266,7 @@ class QuestionBankService:
             raise HTTPException(403, "Only the draft author can submit this version.")
         await self._validate_publishable_contract(version)
         version.status = "IN_REVIEW"
+        version.submitted_at = datetime.now(UTC)
         await self.db.flush()
         return version
 
