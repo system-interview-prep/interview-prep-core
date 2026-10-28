@@ -697,10 +697,10 @@ def _playbook_error(exc: Exception) -> HTTPException:
 
 @router.get("/interviewer-playbook")
 async def get_interviewer_playbook(
-    _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
+    admin: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ) -> dict:
     """Lessons from past interviews: proposed, active (in the prompts), retired; the last reflection."""
-    return {"success": True, **await interviewer_playbook.view(db)}
+    return {"success": True, **await interviewer_playbook.view(db, actor_id=str(admin.get("sub") or ""))}
 
 
 @router.post("/interviewer-playbook/reflect", status_code=202)
@@ -777,6 +777,16 @@ async def get_admin_ai_evaluation(
 ) -> dict:
     """Summary of the Langfuse project: judge and reviewer rates, review queue, golden-set runs."""
     return {"success": True, **await ai_overview.evaluation_view(days=days, refresh=refresh)}
+
+
+@router.get("/ai/cost")
+async def get_admin_ai_cost(
+    days: int = Query(7, ge=1, le=90),
+    refresh: bool = Query(False),
+    _: dict = Depends(require_admin),
+) -> dict:
+    """LLM cost from Langfuse: total, per model, per feature, per day."""
+    return {"success": True, **await ai_overview.cost_view(days=days, refresh=refresh)}
 
 
 @router.get("/ai/speech")
