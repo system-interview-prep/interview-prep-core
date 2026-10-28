@@ -20,19 +20,26 @@ def test_author_edits_and_submits_only_their_own_draft_with_a_rubric() -> None:
     assert _actions(rubric=False)["submit"] == {"allowed": False, "reason": "needs_rubric"}
     assert _actions(created_by="someone")["edit"]["reason"] == "not_author"
     assert _actions(status="IN_REVIEW")["edit"]["reason"] == "not_editable"
-    assert _actions(roles=("QUESTION_REVIEWER",))["edit"]["reason"] == "no_role"
+    assert _actions(roles=("CANDIDATE",))["edit"]["reason"] == "no_role"
 
 
-def test_review_needs_the_role_a_version_in_review_and_someone_elses_question() -> None:
-    assert _actions("IN_REVIEW", "other", ("QUESTION_REVIEWER",))["review"]["allowed"]
-    assert _actions("IN_REVIEW", "me", ("QUESTION_REVIEWER",))["review"]["reason"] == "own_question"
-    assert _actions("DRAFT", "other", ("QUESTION_REVIEWER",))["review"]["reason"] == "not_in_review"
-    # The bank admin approves; reviewing is the reviewer's job (router guard).
-    assert _actions("IN_REVIEW", "other", ("QUESTION_BANK_ADMIN",))["review"]["reason"] == "no_role"
+def test_review_is_admin_only_on_a_version_in_review_and_someone_elses_question() -> None:
+    assert _actions("IN_REVIEW", "other", ("ADMIN",))["review"]["allowed"]
+    assert _actions("IN_REVIEW", "me", ("ADMIN",))["review"]["reason"] == "own_question"
+    assert _actions("DRAFT", "other", ("ADMIN",))["review"]["reason"] == "not_in_review"
+    assert _actions("IN_REVIEW", "other", ("QUESTION_AUTHOR",))["review"]["reason"] == "no_role"
+
+
+def test_retired_reviewer_and_bank_admin_roles_grant_nothing() -> None:
+    for role in ("QUESTION_REVIEWER", "QUESTION_BANK_ADMIN"):
+        actions = _actions("IN_REVIEW", "other", (role,), approvals=1)
+        assert actions["review"]["reason"] == "no_role"
+        assert actions["approve"]["reason"] == "no_role"
+        assert work_buckets_for([role]) == []
 
 
 def test_approval_needs_an_approve_review_and_never_on_ones_own_question() -> None:
-    approver = ("QUESTION_BANK_ADMIN",)
+    approver = ("ADMIN",)
     assert (
         _actions("IN_REVIEW", "other", approver, approvals=0)["approve"]["reason"] == "needs_approve_review"
     )
@@ -49,7 +56,6 @@ def test_revision_starts_from_a_finished_version() -> None:
 
 def test_work_buckets_follow_roles() -> None:
     assert work_buckets_for(["QUESTION_AUTHOR"]) == ["drafts", "changes"]
-    assert work_buckets_for(["QUESTION_REVIEWER"]) == ["review"]
     assert work_buckets_for(["ADMIN"]) == ["drafts", "changes", "review", "approve"]
     assert work_buckets_for(["CANDIDATE"]) == []
 
