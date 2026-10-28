@@ -4,7 +4,7 @@ from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.admin_audit import record_admin_action
-from src.core.roles import QUESTION_AUTHOR, QUESTION_BANK_ADMIN, QUESTION_REVIEWER
+from src.core.roles import QUESTION_AUTHOR
 from src.core.security import require_admin, require_roles
 from src.infrastructure.database import get_db
 from src.modules.taxonomy.admin_service import TaxonomyAdminService
@@ -14,7 +14,7 @@ router=APIRouter(prefix="/admin/taxonomy",tags=["taxonomy"])
 # Question authors map their questions to concepts and reviewers check that
 # mapping, so the active taxonomy and its versions are readable to them too.
 # Every change stays ADMIN-only.
-_read_taxonomy = require_roles(QUESTION_AUTHOR, QUESTION_REVIEWER, QUESTION_BANK_ADMIN)
+_read_taxonomy = require_roles(QUESTION_AUTHOR)
 @router.get("/template")
 async def taxonomy_template(_:dict=Depends(require_admin))->Response:
     import io
