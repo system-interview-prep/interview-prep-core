@@ -1,6 +1,7 @@
 """Voice experiments and the authenticated LiveKit adapter for Interview Core."""
 
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from time import perf_counter
 from typing import Any
 
@@ -17,11 +18,14 @@ from src.core.config import get_settings
 from src.core.security import bearer_scheme, current_user
 from src.infrastructure.database import get_db
 from src.modules.interviews.api.rate_limit import interview_rate_limiter
+from src.modules.interviews.application.chat_runtime import build_session_state_from_db
 from src.modules.interviews.application.facade import (
     ChatRuntimeError,
     start_voice_interview,
     submit_voice_answer,
 )
+from src.modules.interviews.core.interview_engine import InterviewCoreEngine
+from src.modules.interviews.core.interview_types import InterviewStage
 
 router = APIRouter(prefix="/voice-lab", tags=["voice-lab"])
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
@@ -41,12 +45,17 @@ class VoiceRuntimeMessage(BaseModel):
     content: str = Field(min_length=1, max_length=20000)
     duration_seconds: float = Field(default=0.0, alias="durationSeconds", ge=0, le=3600)
     telemetry: dict[str, Any] = Field(default_factory=dict)
+    preview_token: str | None = Field(default=None, alias="previewToken", max_length=12000)
 
     model_config = {"populate_by_name": True}
 
 
 class LabSpeechRequest(LabSessionRequest):
     text: str = Field(min_length=1, max_length=4096)
+
+
+class VoiceRuntimePreview(BaseModel):
+    transcript: str = Field(min_length=1, max_length=20000)
 
 
 async def _ready(session_id: str, user: dict, db: AsyncSession) -> str:
@@ -231,6 +240,64 @@ async def start_livekit_runtime(
     }
 
 
+@router.post("/livekit/runtime/preview")
+async def preview_livekit_runtime_answer(
+    payload: VoiceRuntimePreview,
+    claims: dict[str, str] = Depends(_voice_runtime_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Run the same answer evaluator speculatively without writing interview state."""
+    session = await _runtime_session(db, claims)
+    transcript = payload.transcript.strip()
+    if len(transcript.split()) < 4 or len(transcript) < 16:
+        return {"previewToken": None, "reason": "transcript_too_short"}
+
+    turn_result = await db.execute(
+        text(
+            "SELECT id, turn_index, status, question_version_id, question_snapshot, answer_text, started_at "
+            "FROM interview_turns WHERE session_id = :sid ORDER BY turn_index ASC"
+        ),
+        {"sid": session["id"]},
+    )
+    turns = [dict(row) for row in turn_result.mappings().all()]
+    asked_turns = [turn for turn in turns if turn.get("status") == "ASKED"]
+    if len(asked_turns) != 1:
+        return {"previewToken": None, "reason": "no_unique_active_turn"}
+
+    current_turn = asked_turns[0]
+    session_state = build_session_state_from_db(session, turns, current_turn, False)
+    question = session_state.get("current_question_context") or {}
+    stage = InterviewStage(session_state.get("current_stage", InterviewStage.WARM_UP))
+    if stage in {InterviewStage.CLOSING, InterviewStage.CLOSED} or not question.get("main_prompt"):
+        return {"previewToken": None, "reason": "stage_not_previewable"}
+
+    is_vi = str(session.get("locale") or "vi").lower().startswith("vi")
+    engine = InterviewCoreEngine()
+    evaluation = await engine._evaluate_candidate_response(
+        candidate_text=transcript,
+        current_stage=stage,
+        current_question=question,
+        is_vi=is_vi,
+        telemetry={},
+    )
+    settings = get_settings()
+    preview_token = jwt.encode(
+        {
+            "scope": "interview:voice-preview",
+            "sid": str(session["id"]),
+            "sub": str(claims["user_id"]),
+            "turn_id": str(current_turn["id"]),
+            "transcript_hash": sha256(transcript.encode("utf-8")).hexdigest(),
+            "evaluation": evaluation,
+            "iat": datetime.now(UTC),
+            "exp": datetime.now(UTC) + timedelta(minutes=2),
+        },
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+    return {"previewToken": preview_token, "reason": "ready"}
+
+
 @router.post("/livekit/runtime/message")
 async def send_livekit_runtime_message(
     payload: VoiceRuntimeMessage,
@@ -240,6 +307,35 @@ async def send_livekit_runtime_message(
     session = await _runtime_session(db, claims)
     modality = "VIDEO" if session["mode"] == "video" else "VOICE"
     telemetry = {**payload.telemetry, "transport": "livekit", "modality": modality}
+    precomputed_evaluation = None
+    if payload.preview_token:
+        settings = get_settings()
+        try:
+            preview = jwt.decode(
+                payload.preview_token,
+                settings.jwt_secret,
+                algorithms=[settings.jwt_algorithm],
+            )
+            transcript_hash = sha256(payload.content.strip().encode("utf-8")).hexdigest()
+            if (
+                preview.get("scope") == "interview:voice-preview"
+                and preview.get("sid") == str(session["id"])
+                and preview.get("sub") == str(claims["user_id"])
+                and preview.get("transcript_hash") == transcript_hash
+                and isinstance(preview.get("evaluation"), dict)
+            ):
+                active_turn = await db.scalar(
+                    text(
+                        "SELECT id FROM interview_turns "
+                        "WHERE session_id = :sid AND status = 'ASKED' ORDER BY turn_index LIMIT 1"
+                    ),
+                    {"sid": session["id"]},
+                )
+                if str(active_turn) == preview.get("turn_id"):
+                    precomputed_evaluation = preview["evaluation"]
+        except jwt.InvalidTokenError:
+            # Preview is an optimization only; canonical evaluation must still run.
+            pass
     try:
         return await submit_voice_answer(
             db=db,
@@ -249,6 +345,7 @@ async def send_livekit_runtime_message(
             telemetry=telemetry,
             duration_seconds=payload.duration_seconds,
             modality=modality,
+            precomputed_evaluation=precomputed_evaluation,
         )
     except ValueError as exc:
         await db.rollback()

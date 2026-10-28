@@ -24,7 +24,8 @@ LIVEKIT_AGENT_AUTOSTART=true
 LIVEKIT_AGENT_IDLE_PROCESSES=1
 LIVEKIT_AGENT_MAX_RETRY=32
 LIVEKIT_AGENT_RUN_MODE=dev
-LIVEKIT_STT_MODEL=assemblyai/universal-3-6-pro
+LIVEKIT_STT_PROVIDER=assemblyai
+LIVEKIT_STT_MODEL=assemblyai/universal-3-5-pro
 LIVEKIT_STT_LANGUAGE=session
 VOICE_LAB_STT_STEERING=prompt
 VOICE_LAB_STT_MIN_TURN_SILENCE_MS=128
@@ -114,7 +115,26 @@ The API verifies session ownership, voice mode, and locked plan. It passes the w
 ## Notes
 
 - The browser must have microphone permission and connect to the configured LiveKit server.
-- AssemblyAI Universal-3.6 Pro handles Vietnamese/English code-switching. STT turn
+- Choose `LIVEKIT_STT_PROVIDER=assemblyai` with
+  `LIVEKIT_STT_MODEL=assemblyai/universal-3-5-pro` for streaming AssemblyAI, or
+  `LIVEKIT_STT_PROVIDER=qwen` with `QWEN_STT_BASE_URL`, `QWEN_STT_MODEL`, and
+  `QWEN_STT_CHUNK_SIZE_SECONDS` for Qwen's official chunk-streaming API. The
+  adapter finalizes a Qwen utterance after `QWEN_STT_ENDPOINT_SILENCE_SECONDS`
+  of trailing audio below `QWEN_STT_SILENCE_RMS_THRESHOLD`; defaults are 0.8s
+  and 0.008. LiveKit VAD still decides when to submit the completed turn. For
+  Windows/Docker Desktop, point the base URL at the EC2 public DNS/IP on port
+  8001 (the AWS security group should restrict that port to your administrator
+  CIDR). Qwen emits interim transcripts as audio chunks are decoded, then a final
+  transcript when Silero VAD ends the utterance. The model may revise its recent
+  words as more audio arrives; shorter chunks can increase GPU load and do not
+  guarantee lower end-to-end latency.
+- With Qwen, `VOICE_LLM_SPECULATIVE_PREVIEW=1` (default) sends stable interim
+  transcript snapshots to a read-only Core preview. It is rate-limited to at
+  most three model evaluations per answer. The final turn reuses a preview only
+  when its signed token matches the exact final transcript and still-active
+  question; otherwise the normal Core evaluation runs. Preview text is never
+  committed or spoken by itself.
+- AssemblyAI Universal-3.5 Pro handles Vietnamese/English code-switching. STT turn
   silence, Silero sensitivity, endpoint delay, and barge-in thresholds can be tuned
   independently with the values above.
 - `LIVEKIT_STT_LANGUAGE=session` locks recognition to the interview locale for

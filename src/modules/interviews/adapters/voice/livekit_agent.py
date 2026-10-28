@@ -50,6 +50,8 @@ try:
     )
     from .language import assemblyai_stream_options, normalize_transcript_for_locale, speakable_text
     from .provider_config import tts_provider_config
+    from .qwen_streaming_stt import QwenStreamingSTT
+    from .stt_provider import stt_provider_settings
     from .transcript_quality import assess_transcript
     from .tts_cache import SpeechAudioCache, SpeechClip
     from .tuning import voice_tuning
@@ -80,6 +82,8 @@ except ImportError:  # Executed directly by the API's LiveKit subprocess.
         speakable_text,
     )
     from provider_config import tts_provider_config  # type: ignore[no-redef]
+    from qwen_streaming_stt import QwenStreamingSTT  # type: ignore[no-redef]
+    from stt_provider import stt_provider_settings  # type: ignore[no-redef]
     from transcript_quality import assess_transcript  # type: ignore[no-redef]
     from tts_cache import SpeechAudioCache, SpeechClip  # type: ignore[no-redef]
     from tuning import voice_tuning  # type: ignore[no-redef]
@@ -131,6 +135,13 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _session_stt_language(locale: str) -> str:
     """Keep recognition in the interview language for the whole session."""
     configured = os.getenv("LIVEKIT_STT_LANGUAGE", "session").strip().lower()
@@ -151,11 +162,7 @@ def _message_metrics(message: object) -> dict[str, float]:
         "on_user_turn_completed_delay",
         "e2e_latency",
     )
-    return {
-        name: round(float(raw[name]), 4)
-        for name in names
-        if isinstance(raw.get(name), (int, float))
-    }
+    return {name: round(float(raw[name]), 4) for name in names if isinstance(raw.get(name), (int, float))}
 
 
 def opening_paragraphs(text: str) -> list[str]:
@@ -173,6 +180,8 @@ class VoiceLabAgent(Agent):
         room_name: str,
         room: object,
         locale: str,
+        stt_provider: str = "assemblyai",
+        enable_speculative_preview: bool = False,
         speech_cache: SpeechAudioCache | None = None,
         on_interview_closed=None,
     ) -> None:
@@ -187,6 +196,8 @@ class VoiceLabAgent(Agent):
         self._room_name = room_name
         self._room = room
         self._locale = locale
+        self._stt_provider = stt_provider
+        self._enable_speculative_preview = enable_speculative_preview
         self._active_speech_handle: object | None = None
         self._active_speech_text = ""
         self._last_interview_speech_text = ""
@@ -195,6 +206,13 @@ class VoiceLabAgent(Agent):
         # Answer window: fragments of one spoken answer, submitted together.
         self._answer = AnswerWindow()
         self._commit_task: asyncio.Task | None = None
+        self._preview_task: asyncio.Task | None = None
+        self._preview_target = ""
+        self._preview_pending = ""
+        self._preview_text = ""
+        self._preview_token: str | None = None
+        self._preview_last_started = 0.0
+        self._preview_call_count = 0
         self._core_in_flight = False
         self._reprompt_task: asyncio.Task | None = None
         self._reprompted_text = ""
@@ -221,14 +239,89 @@ class VoiceLabAgent(Agent):
     async def _commit_after(self, delay: float) -> None:
         try:
             await asyncio.sleep(delay)
+            await self._commit_answer()
         except asyncio.CancelledError:
             return
-        await self._commit_answer()
 
     def on_user_speaking(self) -> None:
         """The candidate is (still) talking: the answer is not finished yet."""
         self._cancel_task(self._commit_task)
         self._cancel_task(self._reprompt_task)
+        self._preview_token = None
+        self._preview_text = ""
+        self._preview_target = ""
+        self._preview_pending = ""
+        if self._answer.is_empty:
+            self._preview_call_count = 0
+
+    def on_interim_transcript(self, text: str) -> None:
+        """Speculatively evaluate a stable rolling transcript without committing it."""
+        if not self._enable_speculative_preview:
+            return
+        transcript = normalize_transcript_for_locale(text, locale=self._locale).strip()
+        combined = " ".join(part for part in (self._answer.text, transcript) if part)
+        if len(combined) >= 16 and len(combined.split()) >= 4:
+            self._schedule_preview(combined)
+
+    def _schedule_preview(self, transcript: str) -> None:
+        if (
+            not self._enable_speculative_preview
+            or self._core_in_flight
+            or transcript == self._preview_target
+            or self._preview_call_count >= 3
+        ):
+            return
+        self._preview_target = transcript
+        self._preview_pending = transcript
+        self._preview_token = None
+        self._preview_text = ""
+        if self._preview_task is None or self._preview_task.done():
+            self._preview_task = asyncio.create_task(self._drain_previews())
+
+    async def _drain_previews(self) -> None:
+        # Keep one model request at a time; while it runs, only the newest
+        # transcript snapshot is retained for the next speculative pass.
+        while self._preview_pending:
+            await asyncio.sleep(max(0.65, 1.0 - (perf_counter() - self._preview_last_started)))
+            transcript = self._preview_pending
+            self._preview_pending = ""
+            if transcript != self._preview_target or self._core_in_flight or self._preview_call_count >= 3:
+                continue
+            self._preview_last_started = perf_counter()
+            self._preview_call_count += 1
+            started = perf_counter()
+            try:
+                response = await self._runtime_client.post(
+                    "/ai/voice-lab/livekit/runtime/preview",
+                    json={"transcript": transcript},
+                )
+                response.raise_for_status()
+                token = response.json().get("previewToken")
+                if (
+                    transcript == self._preview_target
+                    and not self._preview_pending
+                    and isinstance(token, str)
+                    and token
+                ):
+                    self._preview_text = transcript
+                    self._preview_token = token
+                    logger.info(
+                        "Voice answer preview ready",
+                        extra={
+                            "session_id": self._session_id,
+                            "room_name": self._room_name,
+                            "transcript_words": len(transcript.split()),
+                            "preview_latency_ms": round((perf_counter() - started) * 1000),
+                        },
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug(
+                    "Voice answer preview unavailable; canonical evaluation will run",
+                    extra={"session_id": self._session_id, "room_name": self._room_name},
+                    exc_info=True,
+                )
 
     def on_agent_listening(self) -> None:
         """A question finished playing: start waiting for the answer."""
@@ -279,9 +372,23 @@ class VoiceLabAgent(Agent):
         """Submit the buffered answer to Interview Core and speak its reply."""
         if self._core_in_flight:
             return  # speech that arrives meanwhile waits for the next question
+        answer_text = self._answer.text
+        if not answer_text:
+            return
+        if self._preview_text != answer_text and self._preview_target != answer_text:
+            self._schedule_preview(answer_text)
+        preview_is_pending = (
+            self._preview_target == answer_text
+            and self._preview_task is not None
+            and not self._preview_task.done()
+        )
+        if preview_is_pending:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(self._preview_task), timeout=1.0)
         answer = self._answer.take()
         if answer is None:
             return
+        preview_token = self._preview_token if self._preview_text == answer.text else None
         self._core_in_flight = True
         self._cancel_task(self._reprompt_task)
         self._publish_turn_state("processing")
@@ -306,6 +413,7 @@ class VoiceLabAgent(Agent):
                         "transcriptConfidence": answer.confidence,
                         "interruption": self._last_interruption_telemetry,
                     },
+                    "previewToken": preview_token,
                 },
             )
             response.raise_for_status()
@@ -333,6 +441,7 @@ class VoiceLabAgent(Agent):
                 "core_latency_ms": round((perf_counter() - core_started) * 1000),
                 "answer_fragments": answer.fragment_count,
                 "answer_words": len(answer.text.split()),
+                "speculative_evaluation_reused": bool(preview_token),
             },
         )
         is_terminal = bool(
@@ -468,6 +577,15 @@ class VoiceLabAgent(Agent):
 
     async def on_user_turn_completed(self, _turn_ctx, new_message) -> None:
         raw_transcript = new_message.text_content
+        logger.info(
+            "LiveKit user turn completed",
+            extra={
+                "session_id": self._session_id,
+                "room_name": self._room_name,
+                "transcript_characters": len(raw_transcript) if isinstance(raw_transcript, str) else 0,
+                "transcript_words": len(raw_transcript.split()) if isinstance(raw_transcript, str) else 0,
+            },
+        )
         transcript = (
             normalize_transcript_for_locale(raw_transcript, locale=self._locale)
             if isinstance(raw_transcript, str)
@@ -478,6 +596,11 @@ class VoiceLabAgent(Agent):
             self._active_speech_text,
         )
         confidence = getattr(new_message, "transcript_confidence", None)
+        if self._stt_provider == "qwen":
+            # Qwen's chunk API returns text but no calibrated confidence score.
+            # Its adapter uses a neutral numeric placeholder for LiveKit internals;
+            # do not treat that placeholder as a measured score in quality gating.
+            confidence = None
         if not isinstance(transcript, str) or not transcript.strip():
             if not self._answer.is_empty:
                 # A silent/blank fragment inside an answer: keep waiting.
@@ -583,9 +706,7 @@ class VoiceLabAgent(Agent):
                 self._schedule_commit(self._answer.commit_delay())
                 return
             self.speak(
-                "Vâng, bạn cứ tiếp tục nhé."
-                if self._locale.lower().startswith("vi")
-                else "Sure, go ahead.",
+                "Vâng, bạn cứ tiếp tục nhé." if self._locale.lower().startswith("vi") else "Sure, go ahead.",
                 allow_interruptions=True,
                 add_to_chat_ctx=False,
             )
@@ -642,6 +763,7 @@ class VoiceLabAgent(Agent):
             ),
             confidence=quality.confidence,
         )
+        self._schedule_preview(self._answer.text)
         self._cancel_task(self._reprompt_task)
         self._publish_turn_state("answering")
         if not self._core_in_flight:
@@ -721,8 +843,9 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
             },
         )
 
-    stt_model = os.getenv("LIVEKIT_STT_MODEL", "assemblyai/universal-3-6-pro").strip()
-    is_assemblyai = stt_model.startswith("assemblyai/")
+    stt_settings = stt_provider_settings()
+    stt_model = stt_settings.model
+    is_assemblyai = stt_settings.provider == "assemblyai"
     stt_language = _session_stt_language(locale)
     if is_assemblyai:
         assemblyai_options = assemblyai_stream_options(stt_language, agent_context=opening_text)
@@ -732,9 +855,12 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
             extra_kwargs=assemblyai_options,
         )
     else:
-        stt = inference.STT(
+        stt = QwenStreamingSTT(
             model=stt_model,
-            language=stt_language,
+            base_url=stt_settings.base_url,
+            chunk_size_seconds=stt_settings.chunk_size_seconds,
+            endpoint_silence_seconds=stt_settings.endpoint_silence_seconds,
+            silence_rms_threshold=stt_settings.silence_rms_threshold,
         )
 
     interruption_mode = os.getenv("VOICE_LAB_INTERRUPTION_MODE", "adaptive").strip().lower()
@@ -751,6 +877,7 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
             "room_name": ctx.room.name,
             "locale": locale,
             "stt_language": stt_language,
+            "stt_provider": stt_settings.provider,
             "stt_model": stt_model,
             "tts_provider": tts_provider,
             "tts_language": tts_config.language if tts_config else "auto",
@@ -775,9 +902,9 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
     if use_inference and inference_tts is None:
         raise RuntimeError("VOICE_LAB_TTS_PROVIDER=cartesia needs VOICE_LAB_FALLBACK_TTS_MODEL")
     if use_vieneu:
-        vieneu_api_key = os.getenv("VIENEU_TTS_API_KEY", "").strip() or os.getenv(
-            "VIENEU_API_KEY", ""
-        ).strip()
+        vieneu_api_key = (
+            os.getenv("VIENEU_TTS_API_KEY", "").strip() or os.getenv("VIENEU_API_KEY", "").strip()
+        )
         try:
             vieneu_timeout = float(os.getenv("VIENEU_TTS_TIMEOUT_SECONDS", "180"))
         except ValueError:
@@ -1045,6 +1172,10 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
         room_name=ctx.room.name,
         room=ctx.room,
         locale=locale,
+        stt_provider=stt_settings.provider,
+        enable_speculative_preview=(
+            stt_settings.provider == "qwen" and _bool_env("VOICE_LLM_SPECULATIVE_PREVIEW", True)
+        ),
         speech_cache=speech_cache,
         on_interview_closed=release_session,
     )
@@ -1083,6 +1214,22 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
     def on_user_state(event) -> None:
         if event.new_state == "speaking":
             agent.on_user_speaking()
+
+    @session.on("user_input_transcribed")
+    def on_user_input_transcribed(event) -> None:
+        if isinstance(event.transcript, str):
+            logger.info(
+                "LiveKit STT transcript received",
+                extra={
+                    "session_id": session_id,
+                    "room_name": ctx.room.name,
+                    "provider": stt_settings.provider,
+                    "is_final": bool(event.is_final),
+                    "transcript_characters": len(event.transcript),
+                },
+            )
+            if not event.is_final:
+                agent.on_interim_transcript(event.transcript)
 
     @session.on("agent_state_changed")
     def on_agent_state(event) -> None:
