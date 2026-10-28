@@ -36,7 +36,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.roles import ADMIN, QUESTION_AUTHOR, QUESTION_BANK_ADMIN, QUESTION_REVIEWER
+from src.core.roles import ADMIN, QUESTION_AUTHOR
 from src.core.trace_logging import trace_event
 from src.infrastructure.database import SessionFactory
 from src.modules.question_bank.permissions import REVISABLE_STATUSES
@@ -57,13 +57,11 @@ def _held(actor: dict[str, Any]) -> set[str]:
 
 
 def can_decide(kind: str, decision: str, roles: set[str]) -> bool:
+    # ADMIN decides everything (reviewer and bank-manager duties since 28/10);
+    # an author may only accept the kinds that become a revision for them.
     if ADMIN in roles:
         return True
-    if decision == "DISMISS":
-        return bool(roles & {QUESTION_REVIEWER, QUESTION_BANK_ADMIN})
-    if kind in AUTHOR_KINDS:
-        return QUESTION_AUTHOR in roles
-    return QUESTION_BANK_ADMIN in roles
+    return decision == "ACCEPT" and kind in AUTHOR_KINDS and QUESTION_AUTHOR in roles
 
 
 # --------------------------------------------------------------------------- store a run
