@@ -106,6 +106,30 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
             ],
         }
 
+    async def test_trusted_precomputed_evaluation_skips_duplicate_llm_call(self):
+        llm = SinglePassProbeLLM()
+        engine = InterviewCoreEngine(llm_client=llm)
+        expected = {
+            "intent": "ANSWER",
+            "sufficiency_status": "SUFFICIENT",
+            "is_sufficient": True,
+            "missing_aspect": "",
+            "acknowledgement": "Mình hiểu rồi.",
+            "probe_question": "",
+            "score": 8.0,
+        }
+
+        actual = await engine._evaluate_candidate_response(
+            candidate_text="Tôi thiết kế API bằng FastAPI và PostgreSQL.",
+            current_stage=InterviewStage.DEEP_DIVE,
+            current_question={"main_prompt": "Bạn thiết kế API thế nào?", "rubric_criteria": ""},
+            is_vi=True,
+            precomputed_evaluation=expected,
+        )
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(llm.evaluation_calls, 0)
+
     async def test_normal_transition_next_question(self):
         """1. Trả lời đạt và đủ ý -> Core chuyển ngay sang câu hỏi tiếp theo (NEXT_QUESTION)."""
         llm = MockLLM(eval_result={"score": 8.5, "is_sufficient": True, "acknowledgement": "Rất tốt."})
