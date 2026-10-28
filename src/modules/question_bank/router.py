@@ -11,8 +11,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.admin_audit import record_admin_action
-from src.core.roles import QUESTION_AUTHOR, QUESTION_BANK_ADMIN, QUESTION_REVIEWER
-from src.core.security import require_roles
+from src.core.roles import QUESTION_AUTHOR
+from src.core.security import require_admin, require_roles
 from src.infrastructure.database import get_db
 from src.modules.question_bank import insights
 from src.modules.question_bank.facade import GENERATED_QUESTION_AUTHOR
@@ -49,7 +49,7 @@ def _import_response(import_run: object) -> dict:
 
 @router.get("/imports/template")
 async def import_template(
-    _: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_BANK_ADMIN)),
+    _: dict = Depends(require_roles(QUESTION_AUTHOR)),
     format: str = Query(default="csv"),
 ) -> Response:
     if format == "xlsx":
@@ -70,7 +70,7 @@ async def import_template(
 @router.post("/imports", status_code=status.HTTP_201_CREATED)
 async def upload_import(
     file: UploadFile = File(...),
-    actor: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_BANK_ADMIN)),
+    actor: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     import_run = await QuestionImportService(db).create_csv_import(file, actor["sub"])
@@ -81,7 +81,7 @@ async def upload_import(
 @router.get("/imports/{import_id}")
 async def get_import(
     import_id: UUID,
-    _: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    _: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     return _import_response(await QuestionImportService(db).summary(import_id))
@@ -90,7 +90,7 @@ async def get_import(
 @router.get("/imports/{import_id}/rows")
 async def get_import_rows(
     import_id: UUID,
-    _: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    _: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     rows = await QuestionImportService(db).rows(import_id)
@@ -114,7 +114,7 @@ async def patch_import_row(
     import_id: UUID,
     row_id: UUID,
     payload: dict,
-    _: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_BANK_ADMIN)),
+    _: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     row = await QuestionImportService(db).patch_row(import_id, row_id, payload)
@@ -125,7 +125,7 @@ async def patch_import_row(
 @router.get("/imports/{import_id}/report")
 async def import_report(
     import_id: UUID,
-    _: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    _: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     content = await QuestionImportService(db).report_csv(import_id)
@@ -140,7 +140,7 @@ async def import_report(
 async def commit_import(
     import_id: UUID,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    actor: dict = Depends(require_roles(QUESTION_BANK_ADMIN)),
+    actor: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     if not idempotency_key:
@@ -221,7 +221,7 @@ async def create_draft(
 
 @router.get("/questions")
 async def list_questions(
-    actor: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    actor: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
     q: str | None = Query(default=None, max_length=200),
     status_filter: str | None = Query(default=None, alias="status"),
@@ -298,7 +298,7 @@ async def list_questions(
 
 @router.get("/questions/work-summary")
 async def work_summary(
-    actor: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    actor: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """How many questions wait for the signed-in person, per "my work" bucket their roles have."""
@@ -355,7 +355,7 @@ async def _person(db: AsyncSession, user_id: str | None) -> str | None:
 @router.get("/questions/{question_id}")
 async def get_question(
     question_id: UUID,
-    actor: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    actor: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     row = await db.execute(
@@ -442,7 +442,7 @@ async def _version_rubric(db: AsyncSession, version_id: object) -> dict | None:
 
 @router.get("/rubrics")
 async def list_rubrics(
-    _: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    _: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
     q: str | None = Query(default=None, max_length=200),
 ) -> dict:
@@ -558,7 +558,7 @@ async def submit(
 async def review(
     version_id: UUID,
     payload: ReviewRequest,
-    actor: dict = Depends(require_roles(QUESTION_REVIEWER)),
+    actor: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     review_record = await QuestionBankService(db).record_review(version_id, actor["sub"], payload)
@@ -573,7 +573,7 @@ async def review(
 async def approve(
     version_id: UUID,
     payload: ApproveRequest,
-    actor: dict = Depends(require_roles(QUESTION_BANK_ADMIN)),
+    actor: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     version = await QuestionBankService(db).approve(version_id, actor["sub"], payload.approval_policy_version)
@@ -587,7 +587,7 @@ async def list_active_questions(
     # Returns canonical text and the scoring objective of every approved
     # question; a candidate must never be able to read the bank before an
     # interview.
-    _: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    _: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
     limit: int = 50,
 ) -> dict:
@@ -600,7 +600,7 @@ async def list_active_questions(
 
 @router.get("/coverage")
 async def question_coverage(
-    _: dict = Depends(require_roles(QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    _: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """How well the bank covers locked sessions and the ACTIVE jobs' must-have skills."""
@@ -623,7 +623,7 @@ class SuggestionDecision(BaseModel):
 
 @router.get("/insights")
 async def insights_state(
-    _: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    _: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """The last analysis run and how many suggestions are open, per kind."""
@@ -633,7 +633,7 @@ async def insights_state(
 @router.post("/insights/run", status_code=status.HTTP_202_ACCEPTED)
 async def run_insights(
     payload: InsightsRunRequest | None = None,
-    actor: dict = Depends(require_roles(QUESTION_BANK_ADMIN)),
+    actor: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Analyse real answers to bank questions in the background (up to 5 LLM calls with ``withAi``)."""
@@ -645,7 +645,7 @@ async def run_insights(
 
 @router.get("/suggestions")
 async def list_bank_suggestions(
-    _: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    _: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
     status_filter: Literal["OPEN", "ACCEPTED", "DISMISSED"] = Query(default="OPEN", alias="status"),
     question_id: UUID | None = Query(default=None, alias="questionId"),
@@ -658,7 +658,7 @@ async def list_bank_suggestions(
 async def decide_bank_suggestion(
     suggestion_id: UUID,
     payload: SuggestionDecision,
-    actor: dict = Depends(require_roles(QUESTION_AUTHOR, QUESTION_REVIEWER, QUESTION_BANK_ADMIN)),
+    actor: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Accept (revision draft, AI variants, retirement) or dismiss one suggestion."""
@@ -675,7 +675,7 @@ async def decide_bank_suggestion(
 
 @router.post("/coverage/prepare", status_code=status.HTTP_202_ACCEPTED)
 async def prepare_question_coverage(
-    _: dict = Depends(require_roles(QUESTION_BANK_ADMIN)),
+    _: dict = Depends(require_admin),
 ) -> dict:
     """Backfill: queue gated pre-generation for every ACTIVE job (idempotent)."""
     from src.modules.interviews.facade import enqueue_question_coverage
