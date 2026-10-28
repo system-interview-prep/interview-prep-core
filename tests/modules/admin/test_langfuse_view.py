@@ -123,6 +123,7 @@ def test_session_view_groups_observations_by_trace(monkeypatch) -> None:
     traces = {t["traceId"]: t for t in view["traces"]}
     assert traces["t1"]["name"] == "interview_turn" and traces["t1"]["calls"] == 1
     assert traces["t2"]["calls"] == 2 and traces["t2"]["warnings"] == 1 and traces["t2"]["tokens"] == 240
+    assert traces["t2"]["cost"] == 0.002 and view["totals"] == {"calls": 3, "tokens": 360, "cost": 0.003}
     assert view["sessionUrl"] == "https://lf/project/p1/sessions/s1"
 
 
