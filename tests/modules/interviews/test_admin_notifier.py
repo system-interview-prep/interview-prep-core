@@ -136,3 +136,68 @@ def test_new_notifications_are_announced_to_admin_pages(monkeypatch):
             }
         ],
     }
+
+
+def test_review_work_tells_admins_what_waits_for_them():
+    submitted = datetime(2026, 10, 28, 9, 0, tzinfo=UTC)
+    items = notifier.review_items(
+        questions=[
+            {
+                "version_id": "v1",
+                "question_id": "q1",
+                "stable_key": "be.http.idempotency",
+                "text": "Giải thích tính idempotent của phương thức HTTP.",
+                "created_by": "author-1",
+                "submitted_at": submitted,
+                "author": "Trần B",
+            }
+        ],
+        generated={"count": 3, "latest": submitted},
+        lessons=[
+            {"id": "p1", "text": "Hỏi thêm ví dụ khi câu trả lời chung chung.", "origin": "reflection"},
+            {
+                "id": "p2",
+                "text": "Nhắc ứng viên thời gian còn lại.",
+                "origin": "manual",
+                "created_by": "admin-1",
+            },
+        ],
+        suggestions={"count": 0, "latest": None},
+    )
+    assert [i["data"]["kind"] for i in items] == [
+        "review_question",
+        "review_generated",
+        "review_playbook",
+        "review_playbook",
+    ]
+    question = items[0]
+    assert question["dedupe_key"] == f"review:question:v1:{submitted.isoformat()}"
+    assert question["title"] == "Câu hỏi chờ duyệt · be.http.idempotency"
+    assert question["message"].startswith("Trần B gửi duyệt:")
+    assert question["data"]["link"] == "/admin/question-bank/q1"
+    # The author cannot approve their own question, so they are not notified.
+    assert question["exclude"] == "author-1"
+    assert items[1]["title"] == "3 câu do AI sinh đang chờ duyệt"
+    assert items[2]["message"].startswith("AI đề xuất:") and items[2]["exclude"] == ""
+    assert items[3]["message"].startswith("Một admin đề xuất:") and items[3]["exclude"] == "admin-1"
+    assert items[3]["data"]["link"] == "/admin/ai/playbook"
+
+
+def test_a_resubmitted_question_notifies_again_and_long_text_is_cut():
+    row = {"version_id": "v1", "question_id": "q1", "text": "x " * 200}
+    first = notifier.review_items(
+        questions=[{**row, "submitted_at": datetime(2026, 10, 27, tzinfo=UTC)}],
+        generated=None,
+        lessons=[],
+        suggestions={"count": 4, "latest": datetime(2026, 10, 28, tzinfo=UTC)},
+    )
+    again = notifier.review_items(
+        questions=[{**row, "submitted_at": datetime(2026, 10, 28, tzinfo=UTC)}],
+        generated=None,
+        lessons=[],
+        suggestions=None,
+    )
+    assert first[0]["dedupe_key"] != again[0]["dedupe_key"]
+    assert "…" in first[0]["message"] and len(first[0]["message"]) < 200
+    assert first[1]["title"] == "4 đề xuất cho ngân hàng câu hỏi"
+    assert first[1]["data"]["link"] == "/admin/question-bank/insights"
