@@ -1,8 +1,8 @@
 import pytest
 from pydantic import ValidationError
 
-from src.modules.matching.requirement_evaluators import evaluate_unresolved_requirement
-from src.modules.matching.schemas import RequirementResult, UnresolvedRequirement
+from src.modules.matching.evaluation.requirement_evaluators import evaluate_unresolved_requirement
+from src.modules.matching.domain.schemas import RequirementResult, UnresolvedRequirement
 from src.modules.user_cvs.schemas import CanonicalResume
 
 SHA = "d" * 64
@@ -81,7 +81,7 @@ def test_all_of_concepts_are_grounded_independently() -> None:
     assert result.concept_results[1].evidence_strength == "applied"
 
 
-def test_all_of_missing_one_concept_is_unknown() -> None:
+def test_all_of_with_one_unmentioned_concept_is_not_evidenced_not_failed() -> None:
     result = evaluate_unresolved_requirement(
         _requirement(
             "Basic knowledge of NLP, GenAI and LLM",
@@ -93,8 +93,12 @@ def test_all_of_missing_one_concept_is_unknown() -> None:
         _resume("Built NLP pipeline.", "Built GenAI workflow."),
     )
 
+    # An unmentioned concept is "not evidenced" (ask the candidate), not a
+    # confident not_met that fails a must-have.
     assert result.status == "unknown"
+    assert result.reason_code == "concept_group_evidence_missing"
     assert [item.status for item in result.concept_results] == ["met", "met", "unknown"]
+    assert result.concept_results[2].reason_code == "concept_not_evidenced"
     assert result.concept_results[2].evidence_refs == []
 
 
@@ -142,15 +146,18 @@ def test_concept_keeps_only_two_strongest_deduplicated_evidence_refs() -> None:
     assert result.evidence_refs == concept.evidence_refs
 
 
-def test_no_evidence_is_unknown_and_similarity_cannot_promote_it() -> None:
+def test_no_evidence_is_not_evidenced_and_similarity_cannot_promote_it() -> None:
     result = evaluate_unresolved_requirement(
         _requirement("Experience with Rust", ("skill-rust", "Rust")),
         _resume("Built a high-performance distributed systems service."),
     )
 
     assert result.status == "unknown"
+    assert result.reason_code == "concept_group_not_evidenced"
     assert result.concept_results[0].status == "unknown"
+    assert result.concept_results[0].reason_code == "concept_not_evidenced"
     assert result.concept_results[0].evidence_refs == []
+    assert "chưa nhắc tới" in result.evidence_explanation
 
 
 def test_taxonomy_concepts_are_generic_not_fixture_specific() -> None:
@@ -238,3 +245,12 @@ def test_requirement_result_rejects_non_union_evidence_and_partial_status() -> N
             "confidence": 0.5,
             "reasonCode": "unsupported",
         })
+    for status in ("met", "unknown"):
+        with pytest.raises(ValidationError, match="must cite CV evidence"):
+            RequirementResult.model_validate({
+                "requirementId": "req-1",
+                "status": status,
+                "score": 1 if status == "met" else None,
+                "confidence": 0.5,
+                "reasonCode": "test",
+            })

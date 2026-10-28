@@ -31,6 +31,7 @@ from src.modules.job_descriptions.parsing.llm_candidate import (
     JobDescriptionCandidate,
     TextCandidate,
 )
+from src.modules.taxonomy.facade import alias_pattern
 from src.modules.user_cvs.facade import EvidenceMapper, SourceDocument
 from src.modules.user_cvs.schemas import ParserWarning, TaxonomyRef
 
@@ -552,7 +553,7 @@ class HybridJobDescriptionParser:
 
     def _resolve_concept(self, text: str) -> TaxonomyRef | None:
         for concept_id, (label, aliases) in self._taxonomy.items():
-            if any(re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", text, re.I) for alias in aliases):
+            if any(alias_pattern(alias).search(text) for alias in aliases):
                 return TaxonomyRef(
                     conceptId=concept_id,
                     scheme="internal",

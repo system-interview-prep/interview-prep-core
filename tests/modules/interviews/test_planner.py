@@ -1,8 +1,8 @@
-from src.modules.interviews.planner import (
+from src.modules.interviews.planning.planner import (
     PLANNER_POLICY_VERSION,
     derive_competency_plan,
 )
-from src.modules.matching.schemas import (
+from src.modules.matching.domain.schemas import (
     CanonicalJob,
     ConceptResult,
     MatchResult,
@@ -70,7 +70,7 @@ def _result(requirement_id: str, status: str) -> RequirementResult:
         status=status,
         score=1.0 if status == "met" else None,
         confidence=1.0 if status == "met" else 0.0,
-        evidenceRefs=[],
+        evidenceRefs=[f"cv-{requirement_id}"] if status in {"met", "unknown"} else [],
         reasonCode=f"test_{status}",
     )
 
@@ -129,7 +129,7 @@ def test_planner_preserves_atomic_concepts_and_allocates_bounded_budget() -> Non
         status="unknown",
         score=None,
         confidence=0.4,
-        evidenceRefs=[],
+        evidenceRefs=["cv-nlp", "cv-genai", "cv-llm"],
         reasonCode="atomic_group_incomplete",
         groupOperator="all_of",
         conceptResults=[
@@ -138,7 +138,7 @@ def test_planner_preserves_atomic_concepts_and_allocates_bounded_budget() -> Non
                 label="NLP",
                 status="met",
                 confidence=1.0,
-                evidenceRefs=[],
+                evidenceRefs=["cv-nlp"],
                 reasonCode="concept_evidenced",
             ),
             ConceptResult(
@@ -146,7 +146,7 @@ def test_planner_preserves_atomic_concepts_and_allocates_bounded_budget() -> Non
                 label="GenAI",
                 status="met",
                 confidence=1.0,
-                evidenceRefs=[],
+                evidenceRefs=["cv-genai"],
                 reasonCode="concept_evidenced",
             ),
             ConceptResult(
@@ -154,7 +154,7 @@ def test_planner_preserves_atomic_concepts_and_allocates_bounded_budget() -> Non
                 label="LLM",
                 status="unknown",
                 confidence=0.0,
-                evidenceRefs=[],
+                evidenceRefs=["cv-llm"],
                 reasonCode="concept_evidence_missing",
             ),
         ],
@@ -342,7 +342,128 @@ def test_planner_keeps_must_have_concepts_ahead_of_repeated_nice_to_have() -> No
         duration_minutes=12,
     )
 
-    assert plan["questionBudget"] == 2
+    # 12 minutes leave room for a single technical question after the presets;
+    # it must go to the must-have concept.
+    assert plan["questionBudget"] == 1
     assert "skill.core" in {item["conceptId"] for item in plan["targets"]}
     assert plan["targets"][0]["conceptId"] == "skill.core"
     assert plan["targets"][0]["selectionRank"] == 0
+
+
+def test_question_budget_fits_the_session_time() -> None:
+    """M10: the agenda's expected time (presets + questions with one probe) fits the session."""
+    from src.modules.interviews.planning.planner import (
+        _PRESET_EXPECTED_SECONDS,
+        _TECHNICAL_EXPECTED_SECONDS,
+        _question_budget,
+    )
+
+    assert {d: _question_budget(d) for d in (15, 25, 45)} == {15: 1, 25: 4, 45: 8}
+    for minutes in (20, 25, 30, 45, 60):
+        expected = _PRESET_EXPECTED_SECONDS + _question_budget(minutes) * _TECHNICAL_EXPECTED_SECONDS
+        assert expected <= minutes * 60
+
+
+def _skill(requirement_id: str, concept_id: str, label: str, priority: str = "must_have") -> SkillRequirement:
+    return SkillRequirement(
+        requirementId=requirement_id,
+        priority=priority,
+        sourceEvidenceRef=f"jd-ev-{requirement_id}",
+        type="skill",
+        skill=_concept(concept_id, label),
+    )
+
+
+def test_planner_does_not_ask_json_or_xml_as_their_own_topic() -> None:
+    """Research 20/10: interviewers ask JSON inside API design, not as a topic."""
+    requirements = [
+        _skill("req-json", "skill-json", "JSON"),
+        _skill("req-xml", "skill-xml", "XML"),
+        _skill("req-sql", "skill-sql", "SQL"),
+        _skill("req-python", "skill-python", "Python"),
+    ]
+    plan = derive_competency_plan(
+        job=_job(*requirements),
+        match=_match([_result(r.requirement_id, "unknown") for r in requirements]),
+        duration_minutes=25,
+    )
+    asked = {item["conceptId"] for item in plan["targets"]}
+    assert asked == {"skill-sql", "skill-python"}
+    assert plan["targetQuestionCount"] == plan["questionBudget"]
+    assert plan["selection"]["minorConceptIds"] == ["skill-json", "skill-xml"]
+    # The CV is still checked against every requirement.
+    assert {t["requirementId"] for t in plan["evaluationTargets"]} >= {"req-json", "req-xml"}
+
+
+def test_planner_keeps_a_minor_keyword_when_the_job_has_nothing_else() -> None:
+    requirement = _skill("req-json", "skill-json", "JSON")
+    plan = derive_competency_plan(
+        job=_job(requirement), match=_match([_result("req-json", "unknown")]), duration_minutes=25
+    )
+    assert [item["conceptId"] for item in plan["targets"]] == ["skill-json"]
+
+
+def test_planner_spreads_questions_over_rounds_before_repeating_one() -> None:
+    """Four database skills and one infrastructure skill: infrastructure is asked too."""
+    requirements = [
+        _skill("req-pg", "skill-postgresql", "PostgreSQL"),
+        _skill("req-mysql", "skill-mysql", "MySQL"),
+        _skill("req-redis", "skill-redis", "Redis"),
+        _skill("req-mongo", "skill-mongodb", "MongoDB"),
+        _skill("req-docker", "skill-docker", "Docker", priority="nice_to_have"),
+    ]
+    plan = derive_competency_plan(
+        job=_job(*requirements),
+        match=_match([_result(r.requirement_id, "met") for r in requirements]),
+        duration_minutes=20,
+    )
+    budget = plan["questionBudget"]
+    assert budget < len(requirements)
+    asked = [item["conceptId"] for item in plan["targets"]]
+    assert "skill-docker" in asked
+    # Must-haves still come first.
+    assert asked[-1] == "skill-docker"
+
+
+def test_planner_gives_half_the_questions_to_the_round_the_candidate_chose() -> None:
+    requirements = [
+        _skill("req-python", "skill-python", "Python"),
+        _skill("req-docker", "skill-docker", "Docker"),
+        _skill("req-k8s", "skill-kubernetes", "Kubernetes", priority="nice_to_have"),
+        _skill("req-pg", "skill-postgresql", "PostgreSQL"),
+        _skill("req-redis", "skill-redis", "Redis", priority="nice_to_have"),
+    ]
+    results = _match([_result(r.requirement_id, "met") for r in requirements])
+    plan = derive_competency_plan(job=_job(*requirements), match=results, duration_minutes=25, focus_area="data")
+    asked = [item["conceptId"] for item in plan["targets"]]
+    assert asked[:2] == ["skill-postgresql", "skill-redis"]
+    assert plan["selection"]["focusArea"] == "data"
+    # An unknown or non-technical round is ignored.
+    plain = derive_competency_plan(job=_job(*requirements), match=results, duration_minutes=25, focus_area="teamwork")
+    assert plain["selection"]["focusArea"] is None
+
+
+def test_planner_asks_again_a_skill_with_a_point_due_for_practice() -> None:
+    """Spaced re-ask (research 24/10): the due skill gets a slot even when ranked low."""
+    requirements = [
+        _skill("req-python", "skill-python", "Python"),
+        _skill("req-docker", "skill-docker", "Docker"),
+        _skill("req-pg", "skill-postgresql", "PostgreSQL"),
+        _skill("req-redis", "skill-redis", "Redis", priority="nice_to_have"),
+    ]
+    results = _match([_result(r.requirement_id, "met") for r in requirements])
+    plan = derive_competency_plan(
+        job=_job(*requirements),
+        match=results,
+        duration_minutes=20,
+        reask=[{"conceptId": "skill-redis", "points": ["TTL ngẫu nhiên", "Hot key"]}],
+    )
+    asked = [item["conceptId"] for item in plan["targets"]]
+    assert plan["questionBudget"] == 2 and "skill-redis" in asked
+    reask = plan["selection"]["reask"]
+    assert reask == [{"conceptId": "skill-redis", "points": ["TTL ngẫu nhiên", "Hot key"]}]
+    # A due skill the job does not ask about is ignored.
+    other = derive_competency_plan(
+        job=_job(*requirements), match=results, duration_minutes=20, reask=[{"conceptId": "skill-kafka"}]
+    )
+    assert other["selection"]["reask"] == []

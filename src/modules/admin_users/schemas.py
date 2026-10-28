@@ -1,12 +1,13 @@
 from pydantic import BaseModel, Field, field_validator
 
-from src.core.roles import USER_ROLES
+from src.core.roles import ASSIGNABLE_ROLES
 from src.modules.auth.schemas import EMAIL_PATTERN, PASSWORD_PATTERN
 
 
 def _validate_roles(value: list[str]) -> list[str]:
     normalized = [role.strip().upper() for role in value]
-    if not normalized or len(normalized) != len(set(normalized)) or not set(normalized).issubset(USER_ROLES):
+    unique = len(normalized) == len(set(normalized))
+    if not normalized or not unique or not set(normalized).issubset(ASSIGNABLE_ROLES):
         raise ValueError("roles must be a non-empty, unique allow-listed set")
     return sorted(normalized)
 

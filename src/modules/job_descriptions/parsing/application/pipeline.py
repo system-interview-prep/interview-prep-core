@@ -38,6 +38,8 @@ class JobDescriptionParseRepository(Protocol):
 
     async def fail(self, upload_id: str, error: str) -> None: ...
 
+    async def release(self, upload_id: str) -> None: ...
+
 
 class JobDescriptionObjectStorage(Protocol):
     def read(self, key: str) -> bytes: ...
@@ -90,7 +92,7 @@ class JobDescriptionParsingPipeline:
         self._parser = parser
         self._source_builder = source_builder
 
-    async def run(self, upload_id: str) -> JobDescriptionPipelineResult:
+    async def run(self, upload_id: str, *, final_attempt: bool = True) -> JobDescriptionPipelineResult:
         started_at = time.monotonic()
         if not upload_id:
             trace_event("jd_parser", "ignored")
@@ -148,6 +150,10 @@ class JobDescriptionParsingPipeline:
                 parser_version=parsed.parsing.parser_version,
             )
         except Exception as exc:
+            if isinstance(exc, TimeoutError) and not final_attempt:
+                await self._repository.release(upload_id)
+                trace_event("jd_parser", "retry_scheduled", upload_id=upload_id, error=str(exc)[:300])
+                raise
             await self._repository.fail(upload_id, str(exc)[:1000])
             trace_event(
                 "jd_parser",

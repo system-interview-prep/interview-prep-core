@@ -22,6 +22,8 @@ class EvidenceSpan(CanonicalModel):
     document_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[a-fA-F0-9]+$")
     section: str = Field(min_length=1)
     text: str = Field(min_length=1)
+    evidence_source: Literal["document", "candidate_self_report"] = "document"
+    source_requirement_id: str | None = None
     char_start: int = Field(ge=0)
     char_end: int = Field(gt=0)
     page: int | None = Field(default=None, ge=1)
@@ -35,6 +37,10 @@ class EvidenceSpan(CanonicalModel):
             raise ValueError("charEnd must be greater than charStart")
         if self.char_end - self.char_start != len(self.text):
             raise ValueError("evidence text length must equal charEnd - charStart")
+        if self.evidence_source == "candidate_self_report" and not self.source_requirement_id:
+            raise ValueError("candidate self-report evidence must identify its requirement")
+        if self.evidence_source == "document" and self.source_requirement_id is not None:
+            raise ValueError("document evidence cannot be tied to a clarification requirement")
         if self.bounding_box is not None:
             x0, y0, x1, y1 = self.bounding_box
             if min(self.bounding_box) < 0 or x1 <= x0 or y1 <= y0:
@@ -311,7 +317,9 @@ class CanonicalResume(CanonicalModel):
             if not set(owner.skill_claim_ids).issubset(skill_set):
                 raise ValueError("all skillClaimIds must resolve inside the resume")
         for item in self.evidence:
-            if item.document_id != self.document_id or item.document_sha256 != self.document_sha256:
+            if item.evidence_source == "document" and (
+                item.document_id != self.document_id or item.document_sha256 != self.document_sha256
+            ):
                 raise ValueError("evidence must belong to the resume document revision")
         return self
 

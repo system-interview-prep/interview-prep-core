@@ -16,6 +16,12 @@ class SqlAlchemyCvUploadRepository:
         )
         return result.scalar_one_or_none()
 
+    async def filenames(self, user_id: str) -> set[str]:
+        result = await self._session.execute(
+            text("SELECT filename FROM user_cvs WHERE user_id = :user_id"), {"user_id": user_id}
+        )
+        return {str(name) for name in result.scalars().all() if name}
+
     async def create(self, record: CvUploadRecord) -> None:
         try:
             await self._session.execute(

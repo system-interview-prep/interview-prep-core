@@ -19,7 +19,7 @@ class RecordingPipeline:
     def __init__(self, **dependencies):
         RecordingPipeline.created_with = dependencies
 
-    async def run(self, upload_id):
+    async def run(self, upload_id, *, final_attempt=True):
         return SimpleNamespace(status="DONE", upload_id=upload_id)
 
 

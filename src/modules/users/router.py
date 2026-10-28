@@ -1,10 +1,12 @@
 import base64
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import current_user
 from src.infrastructure.database import get_db
+from src.modules.users.password import PasswordChangeError, change_password
 from src.modules.users.repository import UserRepository
 from src.modules.users.schemas import ProfilePatch, ProfileResponse
 from src.modules.users.service import UserNotFoundError, UserService, profile_response
@@ -93,3 +95,21 @@ async def upload_profile_picture(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy người dùng."
         ) from exc
+
+
+class PasswordChange(BaseModel):
+    currentPassword: str = Field(min_length=1, max_length=200)
+    newPassword: str = Field(min_length=1, max_length=200)
+
+
+@router.post("/users/me/password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_own_password(
+    payload: PasswordChange,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Change the signed-in user's password; refused for Google accounts."""
+    try:
+        await change_password(db, user["sub"], payload.currentPassword, payload.newPassword)
+    except PasswordChangeError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc

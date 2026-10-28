@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from src.modules.chat.router import ChatRequest
+from src.modules.interviews.adapters.chat.router import ChatRequest
 
 
 def test_chat_request_validation() -> None:

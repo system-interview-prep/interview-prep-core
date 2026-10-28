@@ -1,9 +1,9 @@
 import pytest
 
 from src.modules.job_descriptions.schemas import CanonicalJobDescription, JobRequirement
-from src.modules.matching.adapters import job_description_to_matching_job
-from src.modules.matching.facade import MatchingFacade
-from src.modules.matching.schemas import MatchRequest, SkillRequirement, UnresolvedRequirement
+from src.modules.matching.domain.adapters import job_description_to_matching_job
+from src.modules.matching.application.facade import MatchingFacade
+from src.modules.matching.domain.schemas import MatchRequest, SkillRequirement, UnresolvedRequirement
 from tests.modules.matching.test_matching_pipeline import SHA256, StubEmbedder, _evidence, _payload
 
 
@@ -80,11 +80,12 @@ def test_unresolved_must_have_is_not_silently_dropped_or_marked_met() -> None:
     result = MatchingFacade(StubEmbedder()).match(request)
 
     degree = next(item for item in result.requirement_results if item.requirement_id == "req-degree")
+    # Kept and not marked met; an unaddressed must-have sends the candidate to
+    # review instead of rejecting on absence alone.
     assert degree.status == "unknown"
-    assert degree.reason_code == "raw_text_coverage_incomplete"
-    assert degree.evidence_explanation
+    assert degree.reason_code == "requirement_not_evidenced"
+    assert "chưa nhắc tới" in (degree.evidence_explanation or "")
     assert result.eligibility == "review_required"
-    assert result.decision == "abstained"
 
 
 def test_adapter_fails_closed_when_finalized_jd_has_no_evidence() -> None:

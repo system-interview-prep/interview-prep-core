@@ -1,8 +1,8 @@
 import pytest
 from pydantic import ValidationError
 
-from src.modules.matching.facade import MatchingFacade
-from src.modules.matching.schemas import MatchRequest
+from src.modules.matching.application.facade import MatchingFacade
+from src.modules.matching.domain.schemas import MatchRequest
 
 SHA256 = "a" * 64
 
@@ -111,14 +111,17 @@ def test_semantic_score_cannot_compensate_for_failed_must_have() -> None:
     assert result.failed_must_have_requirements == ["req-java"]
 
 
-def test_missing_must_have_requires_manual_review() -> None:
+def test_must_have_the_cv_never_mentions_needs_review_not_rejection() -> None:
+    """A CV that does not mention Java is no evidence the candidate lacks it:
+    the requirement is "not evidenced" and the candidate goes to review. Only a
+    CV that shows the skill below the required level fails (see above)."""
     result = MatchingFacade(StubEmbedder()).match(MatchRequest.model_validate(_payload(add_java=False)))
     assert result.eligibility == "review_required"
-    assert result.decision == "abstained"
-    assert result.requirement_results[0].status == "unknown"
-    assert result.suitability_score is None
-    assert result.diagnostic_score is not None
     assert result.failed_must_have_requirements == []
+    requirement = result.requirement_results[0]
+    assert (requirement.status, requirement.reason_code) == ("unknown", "skill_not_evidenced")
+    assert requirement.evidence_refs == []
+    assert "chưa nhắc tới Java" in (requirement.evidence_explanation or "")
 
 
 def test_named_skill_context_keeps_unknown_but_exposes_related_evidence() -> None:
@@ -151,7 +154,7 @@ def test_named_skill_context_keeps_unknown_but_exposes_related_evidence() -> Non
     assert result.requirement_results[0].evidence_refs == ["cv-ev-java"]
 
 
-def test_unknown_requirement_is_excluded_from_coverage_score_but_exposed_in_provenance() -> None:
+def test_unmentioned_requirement_is_not_met_and_counted_in_coverage() -> None:
     payload = _payload()
     payload["job"]["requirements"].append(
         {
@@ -166,9 +169,10 @@ def test_unknown_requirement_is_excluded_from_coverage_score_but_exposed_in_prov
     result = MatchingFacade(StubEmbedder()).match(MatchRequest.model_validate(payload))
 
     coverage = next(item for item in result.factor_results if item.factor == "requirement_coverage")
-    assert coverage.raw_score == 1.0
-    assert coverage.reliability == pytest.approx(0.5)
-    assert result.score_provenance.unknown_requirement_count == 1
+    assert coverage.raw_score == 0.5
+    assert coverage.reliability == pytest.approx(1.0)
+    assert result.score_provenance.unknown_requirement_count == 0
+    assert result.requirement_results[-1].status == "not_met"
 
 
 def test_grounded_coverage_contribution_exceeds_semantic_contribution() -> None:
@@ -260,7 +264,7 @@ def test_matching_facade_builds_the_default_embedder_once_per_batch(monkeypatch)
         created.append(embedder)
         return embedder
 
-    monkeypatch.setattr("src.modules.matching.facade.build_embedding_adapter_from_env", build_embedder)
+    monkeypatch.setattr("src.modules.matching.application.facade.build_embedding_adapter_from_env", build_embedder)
     facade = MatchingFacade()
     request = MatchRequest.model_validate(_payload())
 

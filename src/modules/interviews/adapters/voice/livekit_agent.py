@@ -1,0 +1,1489 @@
+"""LiveKit voice adapter for the authenticated Interview Core runtime.
+
+The API lifespan starts this worker automatically when ``LIVEKIT_AGENT_AUTOSTART``
+is enabled. It keeps streaming speech recognition and ElevenLabs TTS (with a
+LiveKit Inference fallback voice), while
+Interview Core supplies every interview question and response.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import os
+from pathlib import Path
+from time import perf_counter
+
+import httpx
+from dotenv import load_dotenv
+from livekit import agents, rtc
+from livekit.agents import Agent, AgentServer, AgentSession, TurnHandlingOptions, inference, room_io
+from livekit.agents.voice.turn import EndpointingOptions, InterruptionOptions
+from livekit.plugins import elevenlabs
+
+try:
+    from livekit.plugins import noise_cancellation
+except ImportError:  # Allows a rolling deploy before the optional wheel is present.
+    noise_cancellation = None  # type: ignore[assignment]
+
+try:
+    from .answer_window import (
+        PROCESSING_FILLER_SECONDS,
+        AnswerWindow,
+        backchannel_continue_text,
+        core_error_text,
+        localize_particles,
+        not_heard_lines,
+        pick_processing_filler,
+        processing_filler,
+        processing_fillers,
+        reprompt_after_seconds,
+        scripted_reply_lines,
+        silence_reprompt,
+        speech_v2_enabled,
+        turn_taking_tip,
+        unclear_transcript_text,
+        without_leading_interjection,
+    )
+    from .health import provider_error_payload, provider_recovered_payload
+    from .interruption import (
+        capture_interruption,
+        classify_interruption,
+        hold_acknowledgement,
+        is_greeting_backchannel,
+        is_repeat_request,
+        is_resume_request,
+        remaining_after_interruption,
+        resolve_interruption,
+    )
+    from .language import assemblyai_stream_options, normalize_transcript_for_locale, speakable_text
+    from .provider_config import tts_provider_config
+    from .qwen_streaming_stt import QwenStreamingSTT
+    from .stt_provider import stt_provider_settings
+    from .transcript_quality import assess_transcript
+    from .tts_cache import SpeechAudioCache, SpeechClip
+    from .tuning import voice_tuning
+    from .vieneu_tts import VieNeuTTS
+    from .voice_events import VoiceEventReporter
+except ImportError:  # Executed directly by the API's LiveKit subprocess.
+    from answer_window import (  # type: ignore[no-redef]
+        PROCESSING_FILLER_SECONDS,
+        AnswerWindow,
+        backchannel_continue_text,
+        core_error_text,
+        localize_particles,
+        not_heard_lines,
+        pick_processing_filler,
+        processing_filler,
+        processing_fillers,
+        reprompt_after_seconds,
+        scripted_reply_lines,
+        silence_reprompt,
+        speech_v2_enabled,
+        turn_taking_tip,
+        unclear_transcript_text,
+        without_leading_interjection,
+    )
+    from health import provider_error_payload, provider_recovered_payload  # type: ignore[no-redef]
+    from interruption import (  # type: ignore[no-redef]
+        capture_interruption,
+        classify_interruption,
+        hold_acknowledgement,
+        is_greeting_backchannel,
+        is_repeat_request,
+        is_resume_request,
+        remaining_after_interruption,
+        resolve_interruption,
+    )
+    from language import (  # type: ignore[no-redef]
+        assemblyai_stream_options,
+        normalize_transcript_for_locale,
+        speakable_text,
+    )
+    from provider_config import tts_provider_config  # type: ignore[no-redef]
+    from qwen_streaming_stt import QwenStreamingSTT  # type: ignore[no-redef]
+    from stt_provider import stt_provider_settings  # type: ignore[no-redef]
+    from transcript_quality import assess_transcript  # type: ignore[no-redef]
+    from tts_cache import SpeechAudioCache, SpeechClip  # type: ignore[no-redef]
+    from tuning import voice_tuning  # type: ignore[no-redef]
+    from vieneu_tts import VieNeuTTS  # type: ignore[no-redef]
+    from voice_events import VoiceEventReporter  # type: ignore[no-redef]
+
+# Prefer variables supplied by Docker/the backend environment. The project-root
+# .env file only fills values that are not already present.
+load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
+
+# The ElevenLabs plugin uses ELEVEN_API_KEY, while the existing Voice Lab uses
+# the more explicit ELEVENLABS_API_KEY name.
+if os.getenv("ELEVENLABS_API_KEY") and not os.getenv("ELEVEN_API_KEY"):
+    os.environ["ELEVEN_API_KEY"] = os.environ["ELEVENLABS_API_KEY"]
+
+
+AGENT_INSTRUCTIONS = """
+You are the voice transport for an interview controlled by Interview Core.
+Interview Core supplies every greeting, question, probe, clarification, and closing.
+Never create, rephrase, or add interview content independently.
+"""
+
+logger = logging.getLogger(__name__)
+
+
+def _noise_filter(mode: str):
+    if mode == "off":
+        return None
+    if noise_cancellation is None:
+        logger.warning(
+            "Server noise cancellation requested but plugin is unavailable; continuing with WebRTC filtering"
+        )
+        return None
+    return noise_cancellation.BVC()
+
+
+def _float_env(name: str, default: float) -> float:
+    """Read a numeric tuning value without making a bad .env stop the agent."""
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _int_env(name: str, default: int) -> int:
+    """Read a non-negative integer without making a bad .env stop the agent."""
+    try:
+        return max(0, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _session_stt_language(locale: str) -> str:
+    """Keep recognition in the interview language for the whole session."""
+    configured = os.getenv("LIVEKIT_STT_LANGUAGE", "session").strip().lower()
+    if configured not in {"", "auto", "multi", "session"}:
+        return configured
+    return "vi" if locale.lower().startswith("vi") else "en"
+
+
+def _message_metrics(message: object) -> dict[str, float]:
+    raw = getattr(message, "metrics", None)
+    if not isinstance(raw, dict):
+        return {}
+    names = (
+        "started_speaking_at",
+        "stopped_speaking_at",
+        "transcription_delay",
+        "end_of_turn_delay",
+        "on_user_turn_completed_delay",
+        "e2e_latency",
+    )
+    return {name: round(float(raw[name]), 4) for name in names if isinstance(raw.get(name), (int, float))}
+
+
+def opening_paragraphs(text: str) -> list[str]:
+    """The opening's blank-line paragraphs (core/opening_script.py), in order."""
+    paragraphs = [part.strip() for part in text.split("\n\n")]
+    return [part for part in paragraphs if part] or [text]
+
+
+class VoiceLabAgent(Agent):
+    def __init__(
+        self,
+        *,
+        runtime_client: httpx.AsyncClient,
+        session_id: str,
+        room_name: str,
+        room: object,
+        locale: str,
+        stt_provider: str = "assemblyai",
+        enable_speculative_preview: bool = False,
+        speech_cache: SpeechAudioCache | None = None,
+        on_interview_closed=None,
+        events: VoiceEventReporter | None = None,
+    ) -> None:
+        super().__init__(instructions=AGENT_INSTRUCTIONS)
+        # Voice-room state and incidents for the admin view (voice_events.py).
+        self._events = events
+        # Called once Core has closed the interview, to release the session.
+        self._on_interview_closed = on_interview_closed
+        self._speech_cache = speech_cache
+        # Turned off while the primary voice is down (see tts_availability_changed).
+        self.cache_writes_enabled = True
+        self._runtime_client = runtime_client
+        self._session_id = session_id
+        self._room_name = room_name
+        self._room = room
+        self._locale = locale
+        self._stt_provider = stt_provider
+        self._enable_speculative_preview = enable_speculative_preview
+        self._active_speech_handle: object | None = None
+        self._active_speech_text = ""
+        self._active_speech_kind = "question"
+        self._last_answer_metrics: dict[str, float] = {}
+        self._last_interview_speech_text = ""
+        self._held_speech_text = ""
+        self._held_resume_text = ""
+        # Answer window: fragments of one spoken answer, submitted together.
+        self._answer = AnswerWindow()
+        self._commit_task: asyncio.Task | None = None
+        self._core_task: asyncio.Task | None = None
+        self._preview_task: asyncio.Task | None = None
+        self._preview_target = ""
+        self._preview_pending = ""
+        self._preview_text = ""
+        self._preview_token: str | None = None
+        self._preview_last_started = 0.0
+        self._preview_call_count = 0
+        self._core_in_flight = False
+        self._reprompt_task: asyncio.Task | None = None
+        self._reprompted_text = ""
+        self._last_interruption_telemetry: dict = {}
+
+    # ── Admin view ───────────────────────────────────────────────────────────
+
+    def report(self, event: str, **fields) -> None:
+        if self._events is not None:
+            self._events.emit(event, **fields)
+
+    def report_state(self, state: str, **fields) -> None:
+        if self._events is not None:
+            self._events.state(state, **fields)
+
+    def _resting_state(self) -> str:
+        """Where the turn is when nobody is speaking."""
+        if self._core_in_flight:
+            return "processing"
+        if not self._answer.is_empty:
+            return "answer_pending"
+        return "waiting_answer"
+
+    def on_agent_speaking(self) -> None:
+        self.report_state("ai_speaking", kind=self._active_speech_kind)
+
+    def on_user_stopped(self) -> None:
+        self.report_state(self._resting_state())
+
+    def on_user_away(self) -> None:
+        self.report_state("candidate_away")
+
+    # ── Answer window ────────────────────────────────────────────────────────
+
+    def _publish_turn_state(self, state: str) -> None:
+        """Tell the room UI where the answer is: answering | processing | listening."""
+        self.report_state(
+            {"answering": "answer_pending", "processing": "processing"}.get(state, "waiting_answer")
+        )
+        payload = json.dumps({"type": "turn.state", "state": state, "sessionId": self._session_id})
+        with contextlib.suppress(Exception):
+            asyncio.create_task(
+                self._room.local_participant.publish_data(payload, reliable=True, topic="intervia.turn")
+            )
+
+    def _cancel_task(self, task: asyncio.Task | None) -> None:
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _schedule_commit(self, delay: float) -> None:
+        self._cancel_task(self._commit_task)
+        self._commit_task = asyncio.create_task(self._commit_after(delay))
+
+    async def _commit_after(self, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        # The Core call runs in its own task. `_commit_task` is cancelled
+        # whenever the candidate speaks; if the call ran inside it, talking
+        # while Core works ("alo?") would cancel the request mid-flight and
+        # leave `_core_in_flight` set, so every later answer was ignored.
+        self._core_task = asyncio.create_task(self._commit_answer())
+
+    def on_user_speaking(self) -> None:
+        """The candidate is (still) talking: the answer is not finished yet."""
+        self._cancel_task(self._commit_task)
+        self._cancel_task(self._reprompt_task)
+        self._preview_token = None
+        self._preview_text = ""
+        self._preview_target = ""
+        self._preview_pending = ""
+        if self._answer.is_empty:
+            self._preview_call_count = 0
+
+    def on_interim_transcript(self, text: str) -> None:
+        """Speculatively evaluate a stable rolling transcript without committing it."""
+        if not self._enable_speculative_preview:
+            return
+        transcript = normalize_transcript_for_locale(text, locale=self._locale).strip()
+        combined = " ".join(part for part in (self._answer.text, transcript) if part)
+        if len(combined) >= 16 and len(combined.split()) >= 4:
+            self._schedule_preview(combined)
+
+    def _schedule_preview(self, transcript: str) -> None:
+        if (
+            not self._enable_speculative_preview
+            or self._core_in_flight
+            or transcript == self._preview_target
+            or self._preview_call_count >= 3
+        ):
+            return
+        self._preview_target = transcript
+        self._preview_pending = transcript
+        self._preview_token = None
+        self._preview_text = ""
+        if self._preview_task is None or self._preview_task.done():
+            self._preview_task = asyncio.create_task(self._drain_previews())
+
+    async def _drain_previews(self) -> None:
+        # Keep one model request at a time; while it runs, only the newest
+        # transcript snapshot is retained for the next speculative pass.
+        while self._preview_pending:
+            await asyncio.sleep(max(0.65, 1.0 - (perf_counter() - self._preview_last_started)))
+            transcript = self._preview_pending
+            self._preview_pending = ""
+            if transcript != self._preview_target or self._core_in_flight or self._preview_call_count >= 3:
+                continue
+            self._preview_last_started = perf_counter()
+            self._preview_call_count += 1
+            started = perf_counter()
+            try:
+                response = await self._runtime_client.post(
+                    "/ai/voice-lab/livekit/runtime/preview",
+                    json={"transcript": transcript},
+                )
+                response.raise_for_status()
+                token = response.json().get("previewToken")
+                if (
+                    transcript == self._preview_target
+                    and not self._preview_pending
+                    and isinstance(token, str)
+                    and token
+                ):
+                    self._preview_text = transcript
+                    self._preview_token = token
+                    logger.info(
+                        "Voice answer preview ready",
+                        extra={
+                            "session_id": self._session_id,
+                            "room_name": self._room_name,
+                            "transcript_words": len(transcript.split()),
+                            "preview_latency_ms": round((perf_counter() - started) * 1000),
+                        },
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug(
+                    "Voice answer preview unavailable; canonical evaluation will run",
+                    extra={"session_id": self._session_id, "room_name": self._room_name},
+                    exc_info=True,
+                )
+        self.report_state("candidate_speaking")
+
+    def on_agent_listening(self) -> None:
+        """A question finished playing: start waiting for the answer."""
+        self.report_state(self._resting_state())
+        if not self._answer.is_empty or self._core_in_flight or not self._last_interview_speech_text:
+            return
+        if self._reprompted_text == self._last_interview_speech_text:
+            return  # one gentle re-prompt per question
+        self._cancel_task(self._reprompt_task)
+        self._reprompt_task = asyncio.create_task(self._reprompt_after_silence())
+
+    async def _reprompt_after_silence(self) -> None:
+        try:
+            await asyncio.sleep(reprompt_after_seconds())
+        except asyncio.CancelledError:
+            return
+        if self._answer.is_empty and not self._core_in_flight:
+            self._reprompted_text = self._last_interview_speech_text
+            self.report("voice_silence_reprompt", after_s=reprompt_after_seconds())
+            self.speak(
+                silence_reprompt(self._locale),
+                allow_interruptions=True,
+                add_to_chat_ctx=False,
+                kind="reprompt",
+            )
+
+    def handle_client_message(self, message: dict) -> None:
+        """Data messages from the room UI (topic ``intervia.answer``)."""
+        kind = message.get("type")
+        if kind == "question.repeat" and self._last_interview_speech_text:
+            self.report("voice_question_replayed", reason="button")
+            self.speak(
+                self._last_interview_speech_text,
+                allow_interruptions=True,
+                add_to_chat_ctx=False,
+                kind="replay",
+            )
+
+    def _not_heard_lines(self) -> tuple[str, ...]:
+        return not_heard_lines(self._locale)
+
+    def _not_heard_text(self) -> str:
+        """Rotates so a candidate asked to repeat twice hears two different lines."""
+        lines = self._not_heard_lines()
+        self._not_heard_count = getattr(self, "_not_heard_count", 0) + 1
+        return lines[(self._not_heard_count - 1) % len(lines)]
+
+    def _core_error_text(self) -> str:
+        return core_error_text(self._locale)
+
+    def _unclear_transcript_text(self) -> str:
+        return unclear_transcript_text(self._locale)
+
+    async def _commit_answer(self) -> None:
+        """Submit the buffered answer to Interview Core and speak its reply."""
+        if self._core_in_flight:
+            return  # speech that arrives meanwhile waits for the next question
+        answer_text = self._answer.text
+        if not answer_text:
+            return
+        if self._preview_text != answer_text and self._preview_target != answer_text:
+            self._schedule_preview(answer_text)
+        preview_is_pending = (
+            self._preview_target == answer_text
+            and self._preview_task is not None
+            and not self._preview_task.done()
+        )
+        if preview_is_pending:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(self._preview_task), timeout=1.0)
+        answer = self._answer.take()
+        if answer is None:
+            return
+        preview_token = self._preview_token if self._preview_text == answer.text else None
+        self._core_in_flight = True
+        self._cancel_task(self._reprompt_task)
+        self.report(
+            "voice_answer_submitted",
+            words=len(answer.text.split()),
+            fragments=answer.fragment_count,
+            duration_s=answer.duration_seconds,
+            confidence=answer.confidence,
+            transcription_delay_ms=round(self._last_answer_metrics.get("transcription_delay", 0.0) * 1000)
+            if "transcription_delay" in self._last_answer_metrics
+            else None,
+            end_of_turn_delay_ms=round(self._last_answer_metrics.get("end_of_turn_delay", 0.0) * 1000)
+            if "end_of_turn_delay" in self._last_answer_metrics
+            else None,
+        )
+        self._publish_turn_state("processing")
+
+        filler_spoken = False
+
+        async def filler() -> None:
+            nonlocal filler_spoken
+            await asyncio.sleep(PROCESSING_FILLER_SECONDS)
+            self._filler_count = getattr(self, "_filler_count", 0) + 1
+            self.report("voice_processing_filler", after_s=PROCESSING_FILLER_SECONDS)
+            if speech_v2_enabled():
+                line = pick_processing_filler(
+                    self._locale,
+                    f"{self._session_id}:{self._filler_count}",
+                    getattr(self, "_last_filler", None),
+                )
+            else:
+                line = processing_filler(self._locale, self._filler_count - 1)
+            self._last_filler = line
+            filler_spoken = True
+            self.speak(line, allow_interruptions=True, add_to_chat_ctx=False, kind="filler")
+
+        filler_task = asyncio.create_task(filler())
+        core_started = perf_counter()
+        try:
+            response = await self._runtime_client.post(
+                "/ai/voice-lab/livekit/runtime/message",
+                json={
+                    "clientMessageId": answer.client_message_id,
+                    "content": answer.text,
+                    "durationSeconds": answer.duration_seconds,
+                    "telemetry": {
+                        "roomName": self._room_name,
+                        "rawTranscript": answer.raw_text,
+                        "answerFragments": answer.fragment_count,
+                        "transcriptConfidence": answer.confidence,
+                        "interruption": self._last_interruption_telemetry,
+                    },
+                    "previewToken": preview_token,
+                },
+            )
+            response.raise_for_status()
+            response_payload = response.json()
+            assistant = response_payload.get("assistantResponse")
+            content = assistant.get("content") if isinstance(assistant, dict) else None
+            if not isinstance(content, str) or not content.strip():
+                raise RuntimeError("Interview Core returned no voice response")
+        except asyncio.CancelledError:
+            self._cancel_task(filler_task)
+            self._core_in_flight = False
+            raise
+        except Exception as exc:
+            self._cancel_task(filler_task)
+            self._core_in_flight = False
+            self.report(
+                "voice_core_failed",
+                error_type=type(exc).__name__,
+                core_ms=round((perf_counter() - core_started) * 1000),
+            )
+            self._publish_turn_state("listening")
+            logger.exception(
+                "Interview Core voice turn failed",
+                extra={"session_id": self._session_id, "room_name": self._room_name},
+            )
+            self.speak(self._core_error_text(), allow_interruptions=True, add_to_chat_ctx=False)
+            return
+        self._cancel_task(filler_task)
+        logger.info(
+            "Interview Core voice turn completed",
+            extra={
+                "session_id": self._session_id,
+                "room_name": self._room_name,
+                "core_latency_ms": round((perf_counter() - core_started) * 1000),
+                "answer_fragments": answer.fragment_count,
+                "answer_words": len(answer.text.split()),
+                "speculative_evaluation_reused": bool(preview_token),
+            },
+        )
+        is_terminal = bool(
+            response_payload.get("sessionStatus") == "CLOSED" or response_payload.get("completed")
+        )
+        self.report(
+            "voice_core_completed",
+            core_ms=round((perf_counter() - core_started) * 1000),
+            action=str(response_payload.get("action") or "")[:40] or None,
+            terminal=is_terminal,
+        )
+        self._core_in_flight = False
+        leftover = self._answer.take()
+        if leftover is not None:
+            # Speech that arrived while Core was working is the tail of the
+            # answer just submitted, not an answer to the question about to be
+            # asked; submitting it would answer the next question with it.
+            logger.info(
+                "Speech during Core processing dropped",
+                extra={"session_id": self._session_id, "fragments": leftover.fragment_count},
+            )
+        self._publish_turn_state("listening")
+        # Core asks the candidate to confirm a stop. Chat renders stop/continue
+        # buttons in the bubble; the voice room only learns of it from this
+        # event, so publish it before speaking and open the dialog right away.
+        # The confirmation is not the current question: "continue" must
+        # replay the question, not this line.
+        is_abort_confirmation = response_payload.get("action") == "CONFIRM_ABORT"
+        if is_abort_confirmation:
+            with contextlib.suppress(Exception):
+                await self._room.local_participant.publish_data(
+                    json.dumps({"type": "interview.abort.requested", "sessionId": self._session_id}),
+                    reliable=True,
+                    topic="intervia.session",
+                )
+        if filler_spoken and speech_v2_enabled():
+            # "Ừm, chờ mình một chút nhé." then "Ừm, mình hiểu ý bạn.": say the
+            # interjection once. Only the spoken line changes; the transcript keeps Core's text.
+            content = without_leading_interjection(content)
+        speech = self.speak(
+            content,
+            allow_interruptions=not is_terminal,
+            add_to_chat_ctx=not is_abort_confirmation,
+            kind="closing" if is_terminal else "question",
+        )
+        if is_terminal:
+            # Let the candidate hear the deterministic closing before the UI
+            # leaves the room, then publish a reliable terminal event.
+            await speech.wait_for_playout()
+            terminal_payload = json.dumps(
+                {
+                    "type": "interview.session.closed",
+                    "sessionId": self._session_id,
+                    "sessionStatus": "CLOSED",
+                    "endReason": response_payload.get("endReason") or "COMPLETED",
+                }
+            )
+            await self._room.local_participant.publish_data(
+                terminal_payload,
+                reliable=True,
+                topic="intervia.session",
+            )
+            if self._on_interview_closed is not None:
+                self._on_interview_closed("interview closed by Core")
+
+    def _fixed_lines(self) -> frozenset[str]:
+        """Lines identical in every session: their audio is shared on disk."""
+        return frozenset(
+            {
+                *processing_fillers(self._locale),
+                silence_reprompt(self._locale),
+                hold_acknowledgement(self._locale),
+                self._unclear_transcript_text(),
+                self._core_error_text(),
+                *self._not_heard_lines(),
+                turn_taking_tip(self._locale),
+                *(scripted_reply_lines(self._locale) if speech_v2_enabled() else ()),
+            }
+        )
+
+    async def tts_node(self, text, model_settings):
+        """Speak notation as words ("CI/CD" → "CI CD") and reuse audio already paid for.
+
+        session.say hands the whole line at once (no LLM streams here), so the
+        text is complete before synthesis starts. A fixed line or the question
+        being replayed plays from cache; anything else is synthesized and
+        cached only if it played to the end, so an interrupted line is never
+        stored half-spoken.
+        """
+        full_text = "".join([chunk async for chunk in text])
+        paragraphs = [part.strip() for part in full_text.split("\n\n") if part.strip()]
+        if speech_v2_enabled() and len(paragraphs) > 1:
+            # Paragraph by paragraph (speech v2): the scripted acknowledgement that
+            # opens most turns plays from the disk cache at once, and the question
+            # paragraph is cached for a replay. One speech handle, so interruptions
+            # behave as before.
+            for paragraph in paragraphs:
+                async for frame in self._synthesize_or_replay(paragraph, model_settings):
+                    yield frame
+            return
+        async for frame in self._synthesize_or_replay(full_text, model_settings):
+            yield frame
+
+    async def _synthesize_or_replay(self, full_text: str, model_settings):
+        cache = self._speech_cache
+        clip = cache.get(full_text) if cache else None
+        if clip is not None:
+            logger.info(
+                "Voice speech replayed from cache",
+                extra={
+                    "session_id": self._session_id,
+                    "room_name": self._room_name,
+                    "characters_not_synthesized": len(full_text),
+                    "session_characters_not_synthesized": cache.saved_characters,
+                },
+            )
+            for piece in clip.chunks():
+                yield rtc.AudioFrame(
+                    data=piece,
+                    sample_rate=clip.sample_rate,
+                    num_channels=clip.channels,
+                    samples_per_channel=len(piece) // (2 * clip.channels),
+                )
+            return
+
+        async def spoken():
+            yield speakable_text(full_text, locale=self._locale)
+
+        pieces: list[bytes] = []
+        sample_rate = channels = 0
+        async for frame in Agent.default.tts_node(self, spoken(), model_settings):
+            pieces.append(bytes(frame.data))
+            sample_rate, channels = frame.sample_rate, frame.num_channels
+            yield frame
+        if cache and pieces and self.cache_writes_enabled:
+            cache.put(
+                full_text,
+                SpeechClip(pcm=b"".join(pieces), sample_rate=sample_rate, channels=channels),
+                persist=full_text in self._fixed_lines(),
+            )
+
+    def speak(
+        self,
+        text: str,
+        *,
+        allow_interruptions: bool = True,
+        add_to_chat_ctx: bool = True,
+        kind: str | None = None,
+    ):
+        # question | closing | filler | reprompt | replay | notice (admin view).
+        text = localize_particles(text)
+        self._active_speech_kind = kind or ("question" if add_to_chat_ctx else "notice")
+        handle = self.session.say(
+            text,
+            allow_interruptions=allow_interruptions,
+            add_to_chat_ctx=add_to_chat_ctx,
+        )
+        self._active_speech_handle = handle
+        self._active_speech_text = text
+        if add_to_chat_ctx:
+            self._last_interview_speech_text = text
+        return handle
+
+    async def on_user_turn_completed(self, _turn_ctx, new_message) -> None:
+        raw_transcript = new_message.text_content
+        logger.info(
+            "LiveKit user turn completed",
+            extra={
+                "session_id": self._session_id,
+                "room_name": self._room_name,
+                "transcript_characters": len(raw_transcript) if isinstance(raw_transcript, str) else 0,
+                "transcript_words": len(raw_transcript.split()) if isinstance(raw_transcript, str) else 0,
+            },
+        )
+        transcript = (
+            normalize_transcript_for_locale(raw_transcript, locale=self._locale)
+            if isinstance(raw_transcript, str)
+            else raw_transcript
+        )
+        interruption = capture_interruption(
+            self._active_speech_handle,
+            self._active_speech_text,
+        )
+        confidence = getattr(new_message, "transcript_confidence", None)
+        if self._stt_provider == "qwen":
+            # Qwen's chunk API returns text but no calibrated confidence score.
+            # Its adapter uses a neutral numeric placeholder for LiveKit internals;
+            # do not treat that placeholder as a measured score in quality gating.
+            confidence = None
+        if not isinstance(transcript, str) or not transcript.strip():
+            if not self._answer.is_empty:
+                # A silent/blank fragment inside an answer: keep waiting.
+                self._schedule_commit(self._answer.commit_delay())
+                return
+            if interruption.occurred:
+                resolution = resolve_interruption("", interruption, locale=self._locale)
+                if resolution.resume_text:
+                    self.report("voice_interruption", action="resume", reason="blank")
+                    self.speak(
+                        resolution.resume_text,
+                        allow_interruptions=True,
+                        add_to_chat_ctx=False,
+                        kind="replay",
+                    )
+                return
+            self.report("voice_not_heard")
+            self.speak(self._not_heard_text(), allow_interruptions=True, add_to_chat_ctx=False)
+            return
+
+        if transcript != raw_transcript:
+            # Keep the committed conversation context and persisted transcript
+            # consistent with the locale correction.
+            new_message.content = [transcript]
+            logger.info(
+                "Corrected locale-specific STT artifact",
+                extra={
+                    "session_id": self._session_id,
+                    "room_name": self._room_name,
+                    "raw_transcript": raw_transcript,
+                    "corrected_transcript": transcript,
+                },
+            )
+
+        quality = assess_transcript(transcript, confidence=confidence, locale=self._locale)
+        logger.info(
+            "Final candidate transcript assessed",
+            extra={
+                "session_id": self._session_id,
+                "room_name": self._room_name,
+                "transcript_confidence": quality.confidence,
+                "transcript_words": quality.word_count,
+                "transcript_quality": quality.reason,
+                "transcript_characters": len(transcript),
+            },
+        )
+        if not quality.accepted:
+            self._cancel_task(self._commit_task)
+            if not self._answer.is_empty:
+                self._schedule_commit(self._answer.commit_delay())
+                return
+            self.report(
+                "voice_unclear_transcript",
+                reason=str(quality.reason or "")[:40] or None,
+                confidence=quality.confidence,
+                words=quality.word_count,
+            )
+            self._publish_turn_state("listening")
+            self.speak(self._unclear_transcript_text(), allow_interruptions=True, add_to_chat_ctx=False)
+            return
+
+        # A hold owns the conversational floor until the candidate explicitly
+        # hands it back or starts a substantive answer.
+        if self._held_speech_text:
+            if is_repeat_request(transcript, locale=self._locale):
+                replay = self._held_speech_text
+            elif is_resume_request(transcript, locale=self._locale) or (
+                classify_interruption(transcript, locale=self._locale) == "backchannel"
+            ):
+                replay = self._held_resume_text or self._held_speech_text
+            else:
+                replay = ""
+            self._held_speech_text = ""
+            self._held_resume_text = ""
+            if replay:
+                self.report("voice_question_replayed", reason="after_hold")
+                self.speak(replay, allow_interruptions=True, add_to_chat_ctx=False, kind="replay")
+                return
+
+        # Greetings just after playout and explicit playback complaints are not
+        # interview answers. Replay the complete question as one protected
+        # utterance so Core does not advance and the UI can replace its prefix.
+        replay_requested = is_repeat_request(transcript, locale=self._locale)
+        greeting_only = is_greeting_backchannel(transcript, locale=self._locale) and self._answer.is_empty
+        if self._last_interview_speech_text and (
+            replay_requested or (greeting_only and not interruption.occurred)
+        ):
+            # Repeating the question mid-answer keeps what was said so far.
+            self._cancel_task(self._commit_task)
+            self.report(
+                "voice_question_replayed",
+                reason="repeat_request" if replay_requested else "greeting",
+            )
+            self.speak(
+                self._last_interview_speech_text,
+                allow_interruptions=True,
+                add_to_chat_ctx=False,
+                kind="replay",
+            )
+            logger.info(
+                "Voice question replayed without advancing interview",
+                extra={
+                    "session_id": self._session_id,
+                    "room_name": self._room_name,
+                    "reason": "repeat_request" if replay_requested else "greeting",
+                },
+            )
+            return
+
+        # A standalone acknowledgement after playout is not an answer. Keep
+        # listening without replaying the whole question or advancing Core.
+        if (
+            not interruption.occurred
+            and classify_interruption(transcript, locale=self._locale) == "backchannel"
+        ):
+            if not self._answer.is_empty:
+                # "ừm", "vâng" while thinking mid-answer: not a turn of its own.
+                self._schedule_commit(self._answer.commit_delay())
+                return
+            self.speak(
+                backchannel_continue_text(self._locale),
+                allow_interruptions=True,
+                add_to_chat_ctx=False,
+            )
+            return
+
+        if interruption.occurred:
+            resolution = resolve_interruption(transcript, interruption, locale=self._locale)
+            if resolution.action == "resume":
+                replayed = bool(resolution.resume_text)
+                self.report(
+                    "voice_interruption", action="resume", reason=str(resolution.reason or "")[:40] or None
+                )
+                if replayed:
+                    self.speak(
+                        resolution.resume_text,
+                        allow_interruptions=True,
+                        add_to_chat_ctx=False,
+                        kind="replay",
+                    )
+                logger.info(
+                    "Voice overlap filtered and interviewer playout resumed",
+                    extra={
+                        "session_id": self._session_id,
+                        "room_name": self._room_name,
+                        "speech_id": interruption.speech_id,
+                        "reason": resolution.reason,
+                        "replayed": replayed,
+                    },
+                )
+                return
+            if resolution.action == "hold":
+                self.report(
+                    "voice_interruption", action="hold", reason=str(resolution.reason or "")[:40] or None
+                )
+                self._held_speech_text = interruption.expected_text
+                self._held_resume_text = (
+                    remaining_after_interruption(
+                        interruption.expected_text,
+                        interruption.delivered_text,
+                    )
+                    or interruption.expected_text
+                )
+                self.speak(
+                    hold_acknowledgement(self._locale),
+                    allow_interruptions=True,
+                    add_to_chat_ctx=False,
+                )
+                return
+
+        # Buffer fragments into one answer and submit after adaptive silence.
+        metrics = _message_metrics(new_message)
+        self._last_answer_metrics = metrics
+        self._last_interruption_telemetry = interruption.telemetry()
+        self._answer.add(
+            transcript,
+            message_id=str(new_message.id),
+            raw_text=raw_transcript if isinstance(raw_transcript, str) else transcript,
+            duration=max(
+                0.0,
+                float(metrics.get("stopped_speaking_at", 0.0))
+                - float(metrics.get("started_speaking_at", 0.0)),
+            ),
+            confidence=quality.confidence,
+        )
+        self._schedule_preview(self._answer.text)
+        self._cancel_task(self._reprompt_task)
+        self._publish_turn_state("answering")
+        if not self._core_in_flight:
+            self._schedule_commit(self._answer.commit_delay())
+
+
+# Development mode otherwise keeps zero warm workers. That made the first
+# candidate wait roughly 15-20 seconds after joining a room. One idle process
+# removes that cold start while remaining configurable for small machines.
+server = AgentServer(
+    num_idle_processes=_int_env("LIVEKIT_AGENT_IDLE_PROCESSES", 1),
+    # The default is finite. Docker restarts the process after this budget is
+    # exhausted, while the larger budget absorbs short DNS/LiveKit incidents
+    # without throwing away a warm worker.
+    max_retry=max(1, _int_env("LIVEKIT_AGENT_MAX_RETRY", 32)),
+)
+
+
+@server.rtc_session(agent_name=os.getenv("LIVEKIT_AGENT_NAME", "intervia-voice"))
+async def voice_lab_session(ctx: agents.JobContext) -> None:
+    default_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
+    tts_provider = os.getenv("VOICE_LAB_TTS_PROVIDER", "elevenlabs").strip().lower()
+    if tts_provider in {"vieneu", "vieneu-tts"}:
+        tts_provider = "vieneu"
+    elif tts_provider not in {"elevenlabs", "cartesia"}:
+        logger.warning("Unknown VOICE_LAB_TTS_PROVIDER=%r; falling back to elevenlabs", tts_provider)
+        tts_provider = "elevenlabs"
+
+    runtime_token = (ctx.job.metadata or "").strip()
+    if not runtime_token:
+        raise RuntimeError("LiveKit dispatch did not include an interview runtime credential")
+
+    api_base_url = os.getenv("VOICE_RUNTIME_API_BASE_URL", "http://127.0.0.1:5000").rstrip("/")
+    runtime_client = httpx.AsyncClient(
+        base_url=api_base_url,
+        headers={"Authorization": f"Bearer {runtime_token}"},
+        timeout=httpx.Timeout(90.0),
+    )
+    try:
+        start_response = await runtime_client.post("/ai/voice-lab/livekit/runtime/start")
+        start_response.raise_for_status()
+        start_payload = start_response.json()
+        opening = start_payload.get("openingMessage")
+        opening_text = opening.get("content") if isinstance(opening, dict) else None
+        session_id = str(start_payload.get("sessionId") or "")
+        locale = str(start_payload.get("locale") or "vi-VN")
+        if not opening_text or not session_id:
+            raise RuntimeError("Interview Core returned no opening question")
+    except Exception:
+        await runtime_client.aclose()
+        raise
+
+    async def post_voice_events(batch: list[dict]) -> None:
+        response = await runtime_client.post(
+            "/ai/voice-lab/livekit/runtime/events", json={"events": batch}, timeout=5.0
+        )
+        response.raise_for_status()
+
+    # Voice-room state and incidents for the admin view; never blocks the call.
+    voice_events = VoiceEventReporter(post_voice_events)
+
+    async def close_runtime_client(_reason: str) -> None:
+        with contextlib.suppress(Exception):
+            await voice_events.aclose()
+        await runtime_client.aclose()
+
+    # Register cleanup before constructing provider clients so a later setup
+    # failure cannot leave the authenticated HTTP connection open.
+    ctx.add_shutdown_callback(close_runtime_client)
+
+    is_vietnamese = locale.lower().startswith("vi")
+    locale_voice_var = "ELEVENLABS_VI_VOICE_ID" if is_vietnamese else "ELEVENLABS_EN_VOICE_ID"
+    voice_id = os.getenv(locale_voice_var, "").strip() or default_voice_id
+    # "cartesia" speaks through LiveKit Inference only, so development and
+    # automated tests do not spend ElevenLabs credits.
+    use_elevenlabs = tts_provider == "elevenlabs"
+    use_vieneu = tts_provider == "vieneu"
+    use_inference = tts_provider == "cartesia"
+    if use_elevenlabs and not voice_id:
+        raise RuntimeError(f"{locale_voice_var} or ELEVENLABS_VOICE_ID is missing")
+    if use_elevenlabs and is_vietnamese and not os.getenv("ELEVENLABS_VI_VOICE_ID", "").strip():
+        logger.warning(
+            "Vietnamese session is using the generic ElevenLabs voice; configure a Vietnamese-accent voice",
+            extra={
+                "session_id": session_id,
+                "room_name": ctx.room.name,
+                "configuration_key": "ELEVENLABS_VI_VOICE_ID",
+            },
+        )
+
+    stt_settings = stt_provider_settings()
+    stt_model = stt_settings.model
+    is_assemblyai = stt_settings.provider == "assemblyai"
+    stt_language = _session_stt_language(locale)
+    if is_assemblyai:
+        assemblyai_options = assemblyai_stream_options(stt_language, agent_context=opening_text)
+        stt = inference.STT(
+            model=stt_model,
+            language=stt_language,
+            extra_kwargs=assemblyai_options,
+        )
+    else:
+        stt = QwenStreamingSTT(
+            model=stt_model,
+            base_url=stt_settings.base_url,
+            chunk_size_seconds=stt_settings.chunk_size_seconds,
+            endpoint_silence_seconds=stt_settings.endpoint_silence_seconds,
+            silence_rms_threshold=stt_settings.silence_rms_threshold,
+        )
+
+    interruption_mode = os.getenv("VOICE_LAB_INTERRUPTION_MODE", "adaptive").strip().lower()
+    if interruption_mode not in {"adaptive", "vad"}:
+        logger.warning("Unknown interruption mode %r; falling back to vad", interruption_mode)
+        interruption_mode = "vad"
+    tuning = voice_tuning()
+    tts_config = tts_provider_config(locale) if use_elevenlabs else None
+
+    logger.info(
+        "Voice session language locked",
+        extra={
+            "session_id": session_id,
+            "room_name": ctx.room.name,
+            "locale": locale,
+            "stt_language": stt_language,
+            "stt_provider": stt_settings.provider,
+            "stt_model": stt_model,
+            "tts_provider": tts_provider,
+            "tts_language": tts_config.language if tts_config else "auto",
+        },
+    )
+
+    tts_language = {"language": tts_config.language} if tts_config and tts_config.language else {}
+    fallback_model = os.getenv("VOICE_LAB_FALLBACK_TTS_MODEL", "cartesia/sonic-3").strip()
+    fallback_voice = os.getenv("VOICE_LAB_FALLBACK_TTS_VOICE", "").strip()
+    # Pinning "vi" reads English terms with Vietnamese phonology; auto
+    # kept them intelligible (15/15 vs 13/15 English-only STT check).
+    fallback_language = os.getenv("VOICE_LAB_FALLBACK_TTS_LANGUAGE", "auto").strip().lower()
+    inference_tts = (
+        inference.TTS(
+            model=fallback_model,
+            **({} if fallback_language == "auto" else {"language": "vi" if is_vietnamese else "en"}),
+            **({"voice": fallback_voice} if fallback_voice else {}),
+        )
+        if fallback_model and (use_elevenlabs or use_inference or use_vieneu)
+        else None
+    )
+    if use_inference and inference_tts is None:
+        raise RuntimeError("VOICE_LAB_TTS_PROVIDER=cartesia needs VOICE_LAB_FALLBACK_TTS_MODEL")
+    if use_vieneu:
+        vieneu_api_key = (
+            os.getenv("VIENEU_TTS_API_KEY", "").strip() or os.getenv("VIENEU_API_KEY", "").strip()
+        )
+        try:
+            vieneu_timeout = float(os.getenv("VIENEU_TTS_TIMEOUT_SECONDS", "180"))
+        except ValueError:
+            vieneu_timeout = 180.0
+        primary_tts = VieNeuTTS(
+            base_url=os.getenv("VIENEU_TTS_BASE_URL", "http://host.docker.internal:8000"),
+            api_key=vieneu_api_key,
+            voice=os.getenv("VIENEU_TTS_VOICE", ""),
+            model=os.getenv("VIENEU_TTS_MODEL", ""),
+            timeout_seconds=vieneu_timeout,
+            sample_rate=_int_env("VIENEU_TTS_SAMPLE_RATE", 16000),
+        )
+    elif use_elevenlabs:
+        assert tts_config is not None
+        primary_tts = elevenlabs.TTS(
+            voice_id=voice_id,
+            model=tts_config.model,
+            **tts_language,
+            auto_mode=tts_config.auto_mode,
+            apply_text_normalization=tts_config.apply_text_normalization,
+            voice_settings=elevenlabs.VoiceSettings(
+                stability=tts_config.stability,
+                similarity_boost=tts_config.similarity_boost,
+                style=tts_config.style,
+                speed=tts_config.speed,
+                use_speaker_boost=tts_config.use_speaker_boost,
+            ),
+        )
+    else:
+        assert inference_tts is not None
+        primary_tts = inference_tts
+    # An exhausted ElevenLabs quota, or a self-hosted VieNeu server that is not
+    # running, answers every request with no audio, and a session with a
+    # single TTS then closes as unrecoverable: the candidate hears nothing.
+    # LiveKit Inference reuses the LiveKit credentials STT already needs, so
+    # the fallback adds no key. An empty model disables it.
+    tts_providers: list = [primary_tts]
+    if (use_elevenlabs or use_vieneu) and inference_tts is not None:
+        tts_providers.append(inference_tts)
+    voice_signature = (
+        f"elevenlabs|{voice_id}|{json.dumps(tts_config.telemetry(), sort_keys=True)}|{locale}"
+        if use_elevenlabs
+        else (
+            f"{tts_provider}|{primary_tts.model}|{os.getenv('VIENEU_TTS_VOICE', '')}|{locale}"
+            if use_vieneu
+            else f"inference|{fallback_model}|{fallback_voice}|{fallback_language}|{locale}"
+        )
+    )
+    speech_cache = SpeechAudioCache(
+        voice_signature=voice_signature,
+        directory=Path(os.getenv("VOICE_LAB_TTS_CACHE_DIR", "/tmp/intervia-tts-cache")) / "fixed"
+        if os.getenv("VOICE_LAB_TTS_CACHE_DIR", "/tmp/intervia-tts-cache").strip()
+        else None,
+    )
+    tts = (
+        agents.tts.FallbackAdapter(
+            tts_providers,
+            # Fail over on the first rejected request; each retry is a pause
+            # the candidate hears as dead air.
+            max_retry_per_tts=_int_env("VOICE_LAB_TTS_RETRIES_BEFORE_FALLBACK", 1),
+        )
+        if len(tts_providers) > 1
+        else primary_tts
+    )
+
+    degraded_components: set[str] = set()
+
+    def publish_health(payload: dict) -> None:
+        with contextlib.suppress(Exception):
+            asyncio.create_task(
+                ctx.room.local_participant.publish_data(
+                    json.dumps(payload),
+                    reliable=True,
+                    topic="intervia.health",
+                )
+            )
+
+    def mark_provider_recovered(component: str) -> None:
+        if component not in degraded_components:
+            return
+        degraded_components.discard(component)
+        publish_health(provider_recovered_payload(session_id=session_id, component=component))
+        voice_events.emit("voice_provider_recovered", component=component)
+        logger.info(
+            "Voice provider recovered",
+            extra={"session_id": session_id, "room_name": ctx.room.name, "component": component},
+        )
+
+    voice_events.emit(
+        "voice_session_started",
+        stt_model=stt_model,
+        tts_provider=tts_provider,
+        interruption_mode=interruption_mode,
+    )
+
+    @stt.on("metrics_collected")
+    def on_stt_metrics(metric) -> None:
+        mark_provider_recovered("stt")
+        logger.info(
+            "Voice STT metrics",
+            extra={
+                "session_id": session_id,
+                "room_name": ctx.room.name,
+                "provider": getattr(getattr(metric, "metadata", None), "provider", None),
+                "model": getattr(getattr(metric, "metadata", None), "model_name", None),
+                "duration_ms": round(float(metric.duration) * 1000),
+                "audio_duration_ms": round(float(metric.audio_duration) * 1000),
+                "streamed": bool(metric.streamed),
+            },
+        )
+
+    if tts is not primary_tts:
+
+        @tts.on("tts_availability_changed")
+        def on_tts_availability(event) -> None:
+            # While the primary voice is down, speech may come from the
+            # fallback voice: never file that audio under the primary voice.
+            if event.tts is primary_tts:
+                agent.cache_writes_enabled = bool(event.available)
+            voice_events.emit(
+                "voice_tts_fallback",
+                provider=str(getattr(event.tts, "provider", type(event.tts).__name__))[:40],
+                available=bool(event.available),
+                primary=event.tts is primary_tts,
+            )
+            logger.warning(
+                "Voice TTS provider availability changed",
+                extra={
+                    "session_id": session_id,
+                    "room_name": ctx.room.name,
+                    "provider": getattr(event.tts, "provider", type(event.tts).__name__),
+                    "model": getattr(event.tts, "model", None),
+                    "available": bool(event.available),
+                },
+            )
+
+    @tts.on("metrics_collected")
+    def on_tts_metrics(metric) -> None:
+        mark_provider_recovered("tts")
+        with contextlib.suppress(Exception):
+            voice_events.emit(
+                "voice_tts_metrics",
+                provider=str(getattr(getattr(metric, "metadata", None), "provider", "") or "")[:40] or None,
+                ttfb_ms=round(float(metric.ttfb) * 1000),
+                audio_ms=round(float(metric.audio_duration) * 1000),
+                characters=int(metric.characters_count),
+                cancelled=bool(metric.cancelled),
+            )
+        logger.info(
+            "Voice TTS metrics",
+            extra={
+                "session_id": session_id,
+                "room_name": ctx.room.name,
+                "provider": getattr(getattr(metric, "metadata", None), "provider", None),
+                "model": getattr(getattr(metric, "metadata", None), "model_name", None),
+                "ttfb_ms": round(float(metric.ttfb) * 1000),
+                "duration_ms": round(float(metric.duration) * 1000),
+                "audio_duration_ms": round(float(metric.audio_duration) * 1000),
+                "characters": int(metric.characters_count),
+                "cancelled": bool(metric.cancelled),
+            },
+        )
+
+    session = AgentSession(
+        # Vietnamese mode is more reliable for short utterances. Set the env
+        # value to "multi" only when the candidate frequently code-switches.
+        stt=stt,
+        # STT decides end-of-turn. Silero remains deliberately more sensitive
+        # so quiet Vietnamese syllables and real barge-ins are not discarded.
+        vad=inference.VAD(
+            model="silero",
+            min_speech_duration=tuning.vad_min_speech_duration,
+            min_silence_duration=tuning.vad_min_silence_duration,
+            activation_threshold=tuning.vad_activation_threshold,
+            deactivation_threshold=tuning.vad_deactivation_threshold,
+        ),
+        # Turn callback forwards transcripts to Interview Core; no free-form LLM is attached.
+        llm=None,
+        tts=tts,
+        # Browser echo cancellation is already enabled. A shorter warmup keeps
+        # the opening interruptible without removing AEC protection entirely.
+        aec_warmup_duration=tuning.aec_warmup_duration,
+        # Leave a human-sized breath between the immediate acknowledgement and
+        # the full Interview Core response queued behind it.
+        min_consecutive_speech_delay=tuning.min_consecutive_speech_delay,
+        # End a user turn after a short, stable silence. This makes the lab
+        # predictable for measurement and prevents waiting for manual input.
+        turn_handling=TurnHandlingOptions(
+            turn_detection="stt" if is_assemblyai else "vad",
+            endpointing=EndpointingOptions(
+                mode="fixed",
+                min_delay=0.0 if is_assemblyai else 0.8,
+                max_delay=tuning.endpoint_max_delay,
+            ),
+            interruption=InterruptionOptions(
+                enabled=True,
+                mode=interruption_mode,
+                min_duration=tuning.interruption_min_duration,
+                min_words=_int_env("VOICE_LAB_INTERRUPTION_MIN_WORDS", 2),
+                resume_false_interruption=True,
+                false_interruption_timeout=tuning.false_interruption_timeout,
+                backchannel_boundary=(
+                    _float_env("VOICE_LAB_BACKCHANNEL_START_BOUNDARY", 0.5),
+                    _float_env("VOICE_LAB_BACKCHANNEL_END_BOUNDARY", 2.2),
+                ),
+            ),
+        ),
+    )
+
+    @session.on("error")
+    def on_provider_error(event) -> None:
+        payload = provider_error_payload(event, session_id=session_id)
+        component = str(payload["component"])
+        degraded_components.add(component)
+        publish_health(payload)
+        voice_events.emit(
+            "voice_provider_degraded",
+            component=component,
+            provider=str(payload.get("provider") or "")[:40] or None,
+            recoverable=bool(payload.get("recoverable")),
+        )
+        provider_exception = getattr(getattr(event, "error", None), "error", None)
+        logger.warning(
+            "Voice provider degraded",
+            exc_info=(
+                type(provider_exception),
+                provider_exception,
+                provider_exception.__traceback__,
+            )
+            if isinstance(provider_exception, BaseException)
+            else None,
+            extra={
+                "session_id": session_id,
+                "room_name": ctx.room.name,
+                "component": component,
+                "provider": payload["provider"],
+                "recoverable": payload["recoverable"],
+            },
+        )
+
+    @session.on("overlapping_speech")
+    def on_overlapping_speech(event) -> None:
+        logger.info(
+            "Adaptive interruption decision",
+            extra={
+                "session_id": session_id,
+                "room_name": ctx.room.name,
+                "is_interruption": event.is_interruption,
+                "probability": round(float(event.probability), 4),
+                "detection_delay_ms": round(float(event.detection_delay) * 1000),
+                "prediction_duration_ms": round(float(event.prediction_duration) * 1000),
+            },
+        )
+
+    @session.on("agent_false_interruption")
+    def on_false_interruption(event) -> None:
+        logger.info(
+            "False interruption recovered",
+            extra={
+                "session_id": session_id,
+                "room_name": ctx.room.name,
+                "resumed": event.resumed,
+            },
+        )
+
+    # LiveKit Inference counts every open STT stream against the plan's
+    # concurrency cap (Build: 5). A session left open after the interview, or
+    # after the candidate closed the tab (close_on_disconnect only covers a
+    # client-initiated leave), held its stream until the room timed out, and
+    # back-to-back sessions then failed with 429. Release it explicitly.
+    closing = False
+
+    def release_session(reason: str, *, delay: float = 1.0) -> None:
+        nonlocal closing
+        if closing:
+            return
+        closing = True
+
+        voice_events.emit("voice_session_released", reason=reason[:60])
+
+        async def _release() -> None:
+            # Let the terminal data packet reach the browser first.
+            await asyncio.sleep(delay)
+            logger.info(
+                "Voice session released",
+                extra={"session_id": session_id, "room_name": ctx.room.name, "reason": reason},
+            )
+            with contextlib.suppress(Exception):
+                await session.aclose()
+            ctx.shutdown(reason=reason)
+
+        asyncio.create_task(_release())
+
+    agent = VoiceLabAgent(
+        runtime_client=runtime_client,
+        session_id=session_id,
+        room_name=ctx.room.name,
+        room=ctx.room,
+        locale=locale,
+        stt_provider=stt_settings.provider,
+        enable_speculative_preview=(
+            stt_settings.provider == "qwen" and _bool_env("VOICE_LLM_SPECULATIVE_PREVIEW", True)
+        ),
+        speech_cache=speech_cache,
+        on_interview_closed=release_session,
+        events=voice_events,
+    )
+
+    abandon_grace = _float_env("VOICE_LAB_ABANDON_GRACE_SECONDS", 20.0)
+    abandon_task: asyncio.Task | None = None
+
+    def _candidate_present() -> bool:
+        local_identity = ctx.room.local_participant.identity
+        return any(identity != local_identity for identity in ctx.room.remote_participants)
+
+    async def _release_if_abandoned() -> None:
+        try:
+            await asyncio.sleep(abandon_grace)
+        except asyncio.CancelledError:
+            return
+        if not _candidate_present():
+            # Tell Core first (the client closes with the session): the reaper
+            # closes the interview as CANDIDATE_LEFT unless the candidate rejoins.
+            with contextlib.suppress(Exception):
+                await runtime_client.post("/ai/voice-lab/livekit/runtime/left", timeout=5.0)
+            release_session("candidate left the room", delay=0.0)
+
+    @ctx.room.on("participant_disconnected")
+    def on_candidate_left(_participant) -> None:
+        # Any reason (tab closed, network lost): wait briefly for a reconnect.
+        nonlocal abandon_task
+        if _candidate_present():
+            return
+        voice_events.emit("voice_candidate_left", grace_s=abandon_grace)
+        agent.on_user_away()
+        if abandon_task is not None and not abandon_task.done():
+            abandon_task.cancel()
+        abandon_task = asyncio.create_task(_release_if_abandoned())
+
+    @ctx.room.on("participant_connected")
+    def on_candidate_back(_participant) -> None:
+        voice_events.emit("voice_candidate_returned")
+        if abandon_task is not None and not abandon_task.done():
+            abandon_task.cancel()
+
+    @session.on("user_state_changed")
+    def on_user_state(event) -> None:
+        if event.new_state == "speaking":
+            agent.on_user_speaking()
+        elif event.new_state == "away":
+            agent.on_user_away()
+        elif event.old_state == "speaking":
+            agent.on_user_stopped()
+
+    @session.on("user_input_transcribed")
+    def on_user_input_transcribed(event) -> None:
+        if isinstance(event.transcript, str):
+            logger.info(
+                "LiveKit STT transcript received",
+                extra={
+                    "session_id": session_id,
+                    "room_name": ctx.room.name,
+                    "provider": stt_settings.provider,
+                    "is_final": bool(event.is_final),
+                    "transcript_characters": len(event.transcript),
+                },
+            )
+            if not event.is_final:
+                agent.on_interim_transcript(event.transcript)
+
+    @session.on("agent_state_changed")
+    def on_agent_state(event) -> None:
+        if event.new_state == "speaking":
+            agent.on_agent_speaking()
+        elif event.old_state == "speaking" and event.new_state == "listening":
+            agent.on_agent_listening()
+
+    @ctx.room.on("data_received")
+    def on_data_received(packet) -> None:
+        if getattr(packet, "topic", None) != "intervia.answer":
+            return
+        try:
+            message = json.loads(bytes(packet.data).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return
+        if isinstance(message, dict):
+            agent.handle_client_message(message)
+
+    await session.start(
+        room=ctx.room,
+        agent=agent,
+        room_options=room_io.RoomOptions(
+            audio_input=room_io.AudioInputOptions(
+                noise_cancellation=_noise_filter(tuning.noise_cancellation),
+                auto_gain_control=True,
+            ),
+            # A closed session must not leave its room, and the STT stream
+            # tied to it, counting against the plan's concurrency cap.
+            delete_room_on_close=True,
+        ),
+    )
+    # Do not let startup noise or echo turn the opening question into a
+    # candidate answer before AEC has converged. The spoken opening combines
+    # a brief greeting with the first question in one utterance.
+    # "Repeat" replays the most recent question.
+    for paragraph in opening_paragraphs(opening_text):
+        await agent.speak(paragraph, allow_interruptions=False)
+
+
+if __name__ == "__main__":
+    agents.cli.run_app(server)

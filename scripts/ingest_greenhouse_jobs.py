@@ -37,6 +37,7 @@ try:
 except Exception:  # pragma: no cover
     SessionFactory = None
 
+from src.modules.interviews.planning.question_coverage import enqueue_question_coverage  # noqa: E402
 from src.modules.job_descriptions.ingestion.adapters.greenhouse import GreenhouseJobBoardAdapter
 from src.modules.job_descriptions.ingestion.models import IngestionConfig
 from src.modules.job_descriptions.ingestion.repository import JobIngestionRepository
@@ -134,16 +135,34 @@ async def run_ingestion(args: argparse.Namespace) -> int:
         print("ERROR: Database SessionFactory is not available.", file=sys.stderr)
         return 1
 
+    from src.modules.taxonomy.facade import load_active_skill_taxonomy
+
+    # Parse with the same database taxonomy the upload worker uses.
+    async with SessionFactory() as session:
+        taxonomy = await load_active_skill_taxonomy(session)
+    from src.core.config import get_settings
+    from src.modules.job_descriptions.parsing.hybrid import HybridJobDescriptionParser
+
+    parser_cls = (
+        HybridJobDescriptionParser
+        if get_settings().jd_parser_mode.casefold().strip() == "hybrid"
+        else DeterministicJobDescriptionParser
+    )
+    parser = parser_cls(taxonomy.skills, taxonomy.version)
+
     async with SessionFactory() as session:
         async with session.begin():
             repo = JobIngestionRepository(session)
-            service = JobIngestionService(repo, adapter)
+            service = JobIngestionService(repo, adapter, parser)
             summary = await service.ingest_candidates(config, candidates)
 
     print("\n" + "=" * 70)
     print("INGESTION SUMMARY")
     print("=" * 70)
     print(json.dumps(summary.model_dump(), indent=2, default=str))
+    # After commit: pre-generate questions for the published jobs' must-have skills.
+    if summary.metrics.get("created_count") or summary.metrics.get("updated_count"):
+        enqueue_question_coverage()
 
     if summary.status == "FAILED":
         return 1

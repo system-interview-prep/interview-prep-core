@@ -15,8 +15,12 @@ class SqlAlchemyCvParseRepository:
         result = await self._session.execute(
             text(
                 "UPDATE user_cvs SET status = 'PARSING', error = NULL, updated_at = now() "
-                "WHERE id = :id AND status IN ('PENDING', 'FAILED') "
-                "RETURNING id, filename, storage_key, checksum"
+                # A PARSING row untouched for 15 minutes belongs to a worker that
+                # died mid-task (restart, crash); its redelivered task must be
+                # able to take it over, or the CV stays PARSING forever.
+                "WHERE id = :id AND (status IN ('PENDING', 'FAILED') "
+                "OR (status = 'PARSING' AND updated_at < now() - interval '15 minutes')) "
+                "RETURNING id, filename, storage_key, checksum, user_id"
             ),
             {"id": cv_id},
         )
@@ -30,6 +34,7 @@ class SqlAlchemyCvParseRepository:
             filename=row["filename"],
             storage_key=row["storage_key"],
             checksum=row["checksum"],
+            user_id=(str(row["user_id"]) if row.get("user_id") else None),
         )
 
     async def complete(
@@ -55,12 +60,22 @@ class SqlAlchemyCvParseRepository:
         )
         await self._session.commit()
 
-    async def fail(self, cv_id: str, error: str) -> None:
+    async def release(self, cv_id: str) -> None:
+        # A transient failure with a Celery retry still to come: back to PENDING
+        # (not FAILED), so the UI keeps waiting instead of showing an error that
+        # the retry is about to fix.
         await self._session.execute(
             text(
-                "UPDATE user_cvs SET status = 'FAILED', error = :error, updated_at = now() "
-                "WHERE id = :id"
+                "UPDATE user_cvs SET status = 'PENDING', error = NULL, updated_at = now() "
+                "WHERE id = :id AND status = 'PARSING'"
             ),
+            {"id": cv_id},
+        )
+        await self._session.commit()
+
+    async def fail(self, cv_id: str, error: str) -> None:
+        await self._session.execute(
+            text("UPDATE user_cvs SET status = 'FAILED', error = :error, updated_at = now() WHERE id = :id"),
             {"id": cv_id, "error": error},
         )
         await self._session.commit()

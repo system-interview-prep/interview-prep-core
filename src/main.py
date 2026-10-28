@@ -19,23 +19,21 @@ from src.infrastructure.socketio import sio
 from src.modules.admin import build_module as build_admin_module
 from src.modules.admin_users import build_module as build_admin_users_module
 from src.modules.auth import build_module as build_auth_module
-from src.modules.chat import build_module as build_chat_module
 from src.modules.health import build_module as build_health_module
 from src.modules.interviews import build_module as build_interviews_module
+from src.modules.interviews.agent.checkpoints import interview_checkpoint_lifespan
+from src.modules.interviews.application.admin_notifier import notifier as admin_notifier
+from src.modules.interviews.application.pipeline_live import bridge as pipeline_live_bridge
+from src.modules.interviews.application.session_reaper import session_reaper_loop
+from src.modules.interviews.planning.planner import configured_planner_policy
 from src.modules.job_descriptions import build_module as build_job_descriptions_module
 from src.modules.matching import build_module as build_matching_module
 from src.modules.notifications import build_module as build_notifications_module
 from src.modules.question_bank import build_module as build_question_bank_module
-from src.modules.sessions import build_module as build_sessions_module
-from src.modules.signaling import _events as _signaling_events
 from src.modules.taxonomy import build_module as build_taxonomy_module
 from src.modules.user_cvs import build_module as build_user_cvs_module
 from src.modules.users import build_module as build_users_module
-from src.modules.video_calls import build_module as build_video_calls_module
-from src.modules.voice import build_module as build_voice_module
 from src.seeds import run_all_seeds
-
-del _signaling_events
 
 MODULES = [
     build_health_module(),
@@ -49,10 +47,6 @@ MODULES = [
     build_matching_module(),
     build_question_bank_module(),
     build_interviews_module(),
-    build_sessions_module(),
-    build_chat_module(),
-    build_voice_module(),
-    build_video_calls_module(),
     build_notifications_module(),
 ]
 
@@ -78,7 +72,14 @@ async def _start_livekit_agent(settings: object) -> asyncio.subprocess.Process |
     if run_mode not in {"dev", "start"}:
         raise RuntimeError("LIVEKIT_AGENT_RUN_MODE must be 'dev' or 'start'")
 
-    agent_script = Path(__file__).resolve().parent / "modules" / "voice" / "livekit_agent.py"
+    agent_script = (
+        Path(__file__).resolve().parent
+        / "modules"
+        / "interviews"
+        / "adapters"
+        / "voice"
+        / "livekit_agent.py"
+    )
     try:
         process = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -125,16 +126,37 @@ async def bootstrap_question_bank_schema(engine: object) -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     livekit_agent: asyncio.subprocess.Process | None = None
+    session_reaper: asyncio.Task[None] | None = None
+    settings = get_settings()
+    # Validate the opt-in interview planner policy before serving traffic. A bad
+    # value used to surface only when a candidate called POST /plan, and the
+    # router mapped it to 409 - so a deployment mistake read as "your session is
+    # in conflict" instead of failing the boot that introduced it.
+    configured_planner_policy()
     async with postgres_lifespan():
         from src.infrastructure.database import engine
 
         await bootstrap_question_bank_schema(engine)
-        await run_all_seeds(SessionFactory)
-        async with rabbitmq_lifespan():
-            livekit_agent = await _start_livekit_agent(get_settings())
+        # Pass settings explicitly: the fixture gate is environment-driven and
+        # fails closed without them.
+        await run_all_seeds(SessionFactory, settings)
+        async with interview_checkpoint_lifespan(), rabbitmq_lifespan():
+            livekit_agent = await _start_livekit_agent(settings)
+            session_reaper = asyncio.create_task(
+                session_reaper_loop(SessionFactory), name="interview-session-reaper"
+            )
+            # Pushes pipeline activity to open admin pages (socket.io /admin-pipeline).
+            await pipeline_live_bridge.start()
+            # Turns new AI pipeline problems into admin notifications.
+            await admin_notifier.start()
             try:
                 yield
             finally:
+                await admin_notifier.stop()
+                await pipeline_live_bridge.stop()
+                if session_reaper is not None:
+                    session_reaper.cancel()
+                    await asyncio.gather(session_reaper, return_exceptions=True)
                 await _stop_livekit_agent(livekit_agent)
 
 
@@ -159,7 +181,15 @@ def create_app() -> FastAPI:
     async def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
-            content={"message": _message(exc.detail), "statusCode": exc.status_code},
+            # `detail` keeps FastAPI's original payload (a string, or a dict
+            # such as {errorCode, message, details}); the interview frontend
+            # reads it, and structured codes like question_bank_insufficient
+            # were lost when only `message` was sent.
+            content={
+                "message": _message(exc.detail),
+                "statusCode": exc.status_code,
+                "detail": exc.detail,
+            },
             headers=exc.headers,
         )
 

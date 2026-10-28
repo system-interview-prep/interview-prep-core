@@ -15,7 +15,9 @@ class SqlAlchemyJobDescriptionParseRepository:
                 "UPDATE job_descriptions "
                 "SET status = 'PARSING', processing_status = 'PROCESSING', "
                 "error = NULL, updated_at = now() "
-                "WHERE id = :id AND item_type = 'JD_UPLOAD' AND status IN ('PENDING', 'FAILED') "
+                # Stale PARSING = a worker died mid-task; let the redelivered task take over.
+                "WHERE id = :id AND item_type = 'JD_UPLOAD' AND (status IN ('PENDING', 'FAILED') "
+                "OR (status = 'PARSING' AND updated_at < now() - interval '15 minutes')) "
                 "RETURNING id, filename, storage_key, checksum"
             ),
             {"id": upload_id},
@@ -55,6 +57,20 @@ class SqlAlchemyJobDescriptionParseRepository:
                 "structured_data": parsed.model_dump_json(by_alias=True),
                 "parse_source": parse_source,
             },
+        )
+        await self._session.commit()
+
+    async def release(self, upload_id: str) -> None:
+        # A transient failure with a Celery retry still to come: back to PENDING
+        # (not FAILED), so the UI keeps waiting instead of showing an error that
+        # the retry is about to fix.
+        await self._session.execute(
+            text(
+                "UPDATE job_descriptions "
+                "SET status = 'PENDING', processing_status = 'PENDING', error = NULL, updated_at = now() "
+                "WHERE id = :id AND item_type = 'JD_UPLOAD' AND status = 'PARSING'"
+            ),
+            {"id": upload_id},
         )
         await self._session.commit()
 

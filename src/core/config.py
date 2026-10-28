@@ -14,6 +14,49 @@ class Settings(BaseSettings):
     # None enables traces only in local/development environments.
     trace_logs_enabled: bool | None = None
     trace_logs_dir: str = "trace-logs"
+    # Admin pipeline view (interview_pipeline_events, ai_call_logs). Unlike the
+    # JSONL traces these are kept in every environment. None: on, except
+    # under pytest.
+    pipeline_events_enabled: bool | None = None
+    pipeline_events_retention_days: int = Field(default=90, ge=1, le=3650)
+    # Store truncated model inputs/outputs in ai_call_logs. They contain CV
+    # and answer text, so this is off unless an operator turns it on.
+    ai_call_log_capture_text: bool = False
+    # Langfuse (src/core/llm_tracing.py): one trace per interview turn and per
+    # grading run, with every model call, the engine's decision, guard results
+    # and rule scores. Off unless the keys are set (and the `langfuse` package
+    # is installed). Self-hosted: LANGFUSE_BASE_URL=http://host.docker.internal:3000.
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_base_url: str = "https://cloud.langfuse.com"
+    langfuse_enabled: bool | None = None
+    langfuse_environment: str = ""
+    # Share of sessions whose prompts and answers are sent as text (masked);
+    # flagged turns are always sent. The LLM judge in Langfuse runs on these.
+    langfuse_text_sample_rate: float = Field(default=0.2, ge=0.0, le=1.0)
+    # Annotation queue that receives flagged turns plus a random share of the
+    # text-sampled ones (scripts/langfuse_setup.py prints the id).
+    langfuse_review_queue_id: str = ""
+    langfuse_review_random_rate: float = Field(default=0.05, ge=0.0, le=1.0)
+    # Address of the Langfuse UI for links on the admin pages, when the browser
+    # reaches it differently from the backend (http://localhost:3000 vs host.docker.internal).
+    langfuse_ui_url: str = ""
+    # Seeds the curated Question Bank (approved questions, rubrics and taxonomy
+    # mappings). Interviews fail closed with question_bank_insufficient on an
+    # empty bank, so a demo deployment must turn this on explicitly.
+    # None seeds only in development/test environments.
+    question_bank_seed_enabled: bool | None = None
+    # When a JD skill has no approved question (nor a broader-skill or role
+    # question), ask the LLM for one, use it in that interview, and file it as
+    # an IN_REVIEW draft. Off -> the skill is dropped and reported uncovered.
+    question_generation_enabled: bool = True
+    # When a job is published, a background task generates gated drafts so each
+    # must-have skill has enough questions to rotate (question_coverage).
+    question_pregeneration_enabled: bool = True
+    # Old unstructured interview endpoints bypass the structured turn state
+    # machine. They remain opt-in only for a controlled migration window.
+    legacy_interview_api_enabled: bool = False
+    interview_ai_requests_per_minute: int = Field(default=20, ge=1, le=600)
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     jwt_secret: str = "development-only-secret-change-me"
@@ -35,6 +78,20 @@ class Settings(BaseSettings):
     celery_result_backend: str = "rpc://"
     database_url: str = "postgresql://user:password@localhost:5432/matching_db"
     openai_api_key: str | None = None
+    typesafe_api_key: str | None = None
+    typesafe_base_url: str = "https://api.typesafe.ai"
+    typesafe_default_model: str = "jev-latest"
+    jev_clarification_enabled: bool = False
+    jev_timeout_seconds: float = Field(default=5.0, gt=0)
+    jev_clarification_confidence_threshold: float = Field(default=0.75, ge=0, le=1)
+    jev_max_evidence_items: int = Field(default=5, ge=1, le=20)
+    matching_clarification_questions_enabled: bool = False
+    matching_clarification_model: str = "gpt-5.4-mini"
+    matching_llm_evidence_search_enabled: bool = True
+    matching_llm_evidence_search_max_chars: int = Field(default=12_000, ge=1_000, le=100_000)
+    matching_llm_evidence_search_max_requirements: int = Field(default=12, ge=1, le=30)
+    # Kept as text so a deliberately blank .env.example value stays valid.
+    matching_clarification_semantic_threshold: str | None = None
     voice_lab_enabled: bool = False
     voice_lab_realtime_model: str = "gpt-realtime-2.1"
     voice_lab_transcription_model: str = "gpt-4o-mini-transcribe"
@@ -51,6 +108,10 @@ class Settings(BaseSettings):
     llm_provider: str = "openai"
     # Pin the snapshot so an alias update cannot silently change eval behavior.
     llm_model: str = "gpt-5.4-mini-2026-03-17"
+    # Dynamic interview planning is opt-in because its time-allocation values
+    # are Product policy. When enabled, the JSON must satisfy PlannerPolicyConfig.
+    interview_dynamic_planner_enabled: bool = False
+    interview_planner_policy_json: str | None = None
     # Shared self-hosted model-service settings.  Modules consume these through
     # src.modules.ai rather than coupling themselves to a tunnel/provider.
     ai_model_url: str | None = None
@@ -75,6 +136,13 @@ class Settings(BaseSettings):
     # Document extraction provider. Select the adapter used by CV and JD jobs.
     # Supported values: mineru (default) and paddleocr.
     ocr_provider: str = "mineru"
+    # Provider tried when OCR_PROVIDER fails (outage, timeout, API error, missing
+    # key, empty output). "auto" = the other supported provider; "none" = no
+    # fallback; or name one explicitly.
+    ocr_fallback_provider: str = "auto"
+    # Read born-digital PDFs and .docx files locally before any OCR upload;
+    # scans, image-only PDFs and images still go to the OCR providers.
+    pdf_text_layer_enabled: bool = True
 
     # MinerU Precision Extract API. Set MINERU_API_KEY to enable CV parsing.
     mineru_api_key: str | None = None

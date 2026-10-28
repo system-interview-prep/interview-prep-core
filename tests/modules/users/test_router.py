@@ -44,7 +44,7 @@ def test_user_profile_aliases_require_authentication_and_use_standard_error(clie
     for path in ("/users/me", "/user/profile"):
         response = client.get(path)
         assert response.status_code == 401
-        assert response.json() == {"message": "Chưa xác thực.", "statusCode": 401}
+        assert response.json() == {"message": "Chưa xác thực.", "statusCode": 401, "detail": "Chưa xác thực."}
 
         response = client.patch(path, json={"name": "User"})
         assert response.status_code == 401

@@ -1,0 +1,514 @@
+"""Voice experiments and the authenticated LiveKit adapter for Interview Core."""
+
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+from time import perf_counter
+from typing import Any
+
+import httpx
+import jwt
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
+from fastapi.security import HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.core.config import get_settings
+from src.core.security import bearer_scheme, current_user
+from src.core.trace_logging import trace_event
+from src.infrastructure.database import get_db
+from src.modules.interviews.adapters.voice.voice_events import VOICE_EVENTS, sanitize_fields
+from src.modules.interviews.api.rate_limit import interview_rate_limiter
+from src.modules.interviews.application.chat_runtime import build_session_state_from_db
+from src.modules.interviews.application.facade import (
+    ChatRuntimeError,
+    start_voice_interview,
+    submit_voice_answer,
+)
+from src.modules.interviews.core.interview_engine import InterviewCoreEngine
+from src.modules.interviews.core.interview_types import InterviewStage
+
+router = APIRouter(prefix="/voice-lab", tags=["voice-lab"])
+MAX_AUDIO_BYTES = 10 * 1024 * 1024
+ALLOWED_AUDIO_TYPES = {"audio/webm", "audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp4"}
+
+
+class LabSessionRequest(BaseModel):
+    sessionId: str = Field(min_length=1)
+
+
+class LiveKitTokenRequest(LabSessionRequest):
+    roomName: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+
+
+class VoiceRuntimeMessage(BaseModel):
+    client_message_id: str = Field(alias="clientMessageId", min_length=1, max_length=64)
+    content: str = Field(min_length=1, max_length=20000)
+    duration_seconds: float = Field(default=0.0, alias="durationSeconds", ge=0, le=3600)
+    telemetry: dict[str, Any] = Field(default_factory=dict)
+    preview_token: str | None = Field(default=None, alias="previewToken", max_length=12000)
+
+    model_config = {"populate_by_name": True}
+
+
+class VoiceRuntimeEvent(BaseModel):
+    event: str = Field(min_length=1, max_length=64)
+    at: datetime | None = None
+    fields: dict[str, Any] = Field(default_factory=dict)
+
+
+class VoiceRuntimeEvents(BaseModel):
+    events: list[VoiceRuntimeEvent] = Field(default_factory=list, max_length=50)
+
+
+class LabSpeechRequest(LabSessionRequest):
+    text: str = Field(min_length=1, max_length=4096)
+
+
+class VoiceRuntimePreview(BaseModel):
+    transcript: str = Field(min_length=1, max_length=20000)
+
+
+async def _ready(session_id: str, user: dict, db: AsyncSession) -> str:
+    settings = get_settings()
+    if not settings.voice_lab_enabled:
+        raise HTTPException(status_code=404, detail="Voice lab disabled")
+    owned = await db.execute(
+        text("SELECT 1 FROM interview_sessions WHERE id = :sid AND user_id = :uid"),
+        {"sid": session_id, "uid": user["sub"]},
+    )
+    if owned.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not settings.openai_api_key:
+        raise HTTPException(status_code=503, detail="OpenAI API key is not configured")
+    return settings.openai_api_key
+
+
+async def _load_voice_session(db: AsyncSession, session_id: str, user_id: str) -> dict:
+    settings = get_settings()
+    if not settings.voice_lab_enabled:
+        raise HTTPException(status_code=404, detail="Voice lab disabled")
+    result = await db.execute(
+        text(
+            "SELECT s.id, s.user_id, s.resume_id, s.job_id, s.mode, s.status, s.locale, "
+            "s.duration_minutes, s.metadata, s.started_at, p.status AS plan_status "
+            "FROM interview_sessions s LEFT JOIN interview_session_plans p ON p.session_id = s.id "
+            "WHERE s.id = :sid AND s.user_id = :uid"
+        ),
+        {"sid": session_id, "uid": user_id},
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Interview session not found")
+    session = dict(row)
+    if session["mode"] not in {"voice", "video"}:
+        raise HTTPException(status_code=409, detail="Interview session is not configured for LiveKit media")
+    if session["plan_status"] != "LOCKED":
+        raise HTTPException(status_code=409, detail="Lock the interview plan before starting voice")
+    if session["status"] != "OPEN":
+        raise HTTPException(status_code=409, detail="Interview session is not open")
+    return session
+
+
+async def _voice_runtime_claims(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> dict[str, str]:
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Voice runtime authorization is required")
+    settings = get_settings()
+    try:
+        claims = jwt.decode(
+            credentials.credentials,
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
+            audience="interview-voice",
+        )
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail="Invalid voice runtime authorization") from exc
+    if claims.get("scope") != "interview:voice-runtime" or claims.get("tokenType") != "voice-runtime":
+        raise HTTPException(status_code=401, detail="Invalid voice runtime authorization")
+    if not claims.get("sub") or not claims.get("sid"):
+        raise HTTPException(status_code=401, detail="Invalid voice runtime authorization")
+    return {"user_id": str(claims["sub"]), "session_id": str(claims["sid"])}
+
+
+async def _runtime_session(db: AsyncSession, claims: dict[str, str]) -> dict:
+    return await _load_voice_session(db, claims["session_id"], claims["user_id"])
+
+
+async def _post(url: str, api_key: str, **kwargs) -> httpx.Response:
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            result = await client.post(
+                f"https://api.openai.com/v1/{url}",
+                headers={"Authorization": f"Bearer {api_key}"},
+                **kwargs,
+            )
+            result.raise_for_status()
+            return result
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="OpenAI audio request failed") from exc
+
+
+@router.post("/transcribe")
+async def transcribe(
+    sessionId: str = Form(...),
+    audio: UploadFile = File(...),
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    api_key = await _ready(sessionId, user, db)
+    if audio.content_type not in ALLOWED_AUDIO_TYPES:
+        raise HTTPException(status_code=415, detail="Unsupported audio format")
+    data = await audio.read(MAX_AUDIO_BYTES + 1)
+    if not data or len(data) > MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="Audio must be between 1 byte and 10 MiB")
+    started = perf_counter()
+    result = await _post(
+        "audio/transcriptions",
+        api_key,
+        data={"model": get_settings().voice_lab_transcription_model},
+        files={"file": (audio.filename or "recording.webm", data, audio.content_type)},
+    )
+    return {"text": result.json()["text"], "elapsedMs": round((perf_counter() - started) * 1000)}
+
+
+@router.post("/speak")
+async def speak(
+    payload: LabSpeechRequest,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    api_key = await _ready(payload.sessionId, user, db)
+    settings = get_settings()
+    started = perf_counter()
+    result = await _post(
+        "audio/speech",
+        api_key,
+        json={
+            "model": settings.voice_lab_tts_model,
+            "voice": settings.voice_lab_voice,
+            "input": payload.text,
+            "response_format": "mp3",
+        },
+    )
+    return Response(
+        result.content,
+        media_type="audio/mpeg",
+        headers={"X-Voice-Lab-Elapsed-Ms": str(round((perf_counter() - started) * 1000))},
+    )
+
+
+@router.post("/realtime-token")
+async def realtime_token(
+    payload: LabSessionRequest,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    api_key = await _ready(payload.sessionId, user, db)
+    settings = get_settings()
+    result = await _post(
+        "realtime/client_secrets",
+        api_key,
+        json={
+            "session": {
+                "type": "realtime",
+                "model": settings.voice_lab_realtime_model,
+                "audio": {"output": {"voice": settings.voice_lab_voice}},
+                "instructions": (
+                    "You are testing a Vietnamese and English voice interview. "
+                    "Do not select or invent approved question-bank questions. "
+                    "Ask only questions explicitly supplied by the application."
+                ),
+            }
+        },
+    )
+    return result.json()
+
+
+@router.post("/livekit/runtime/start")
+async def start_livekit_runtime(
+    claims: dict[str, str] = Depends(_voice_runtime_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await _runtime_session(db, claims)
+    try:
+        runtime = await start_voice_interview(db=db, session_row=session)
+    except ChatRuntimeError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    opening = next(
+        (message for message in reversed(runtime.get("messages", [])) if message.get("role") == "assistant"),
+        None,
+    )
+    if not opening:
+        raise HTTPException(status_code=409, detail="Interview runtime has no opening question")
+    # The candidate is (back) in the room: the session reaper must not close it as abandoned.
+    await _set_candidate_left(db, str(session["id"]), left=False)
+    return {
+        "sessionId": session["id"],
+        "openingMessage": opening,
+        "sessionStatus": runtime["sessionStatus"],
+        "locale": session.get("locale") or "vi-VN",
+    }
+
+
+@router.post("/livekit/runtime/preview")
+async def preview_livekit_runtime_answer(
+    payload: VoiceRuntimePreview,
+    claims: dict[str, str] = Depends(_voice_runtime_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Run the same answer evaluator speculatively without writing interview state."""
+    session = await _runtime_session(db, claims)
+    transcript = payload.transcript.strip()
+    if len(transcript.split()) < 4 or len(transcript) < 16:
+        return {"previewToken": None, "reason": "transcript_too_short"}
+
+    turn_result = await db.execute(
+        text(
+            "SELECT id, turn_index, status, question_version_id, question_snapshot, answer_text, started_at "
+            "FROM interview_turns WHERE session_id = :sid ORDER BY turn_index ASC"
+        ),
+        {"sid": session["id"]},
+    )
+    turns = [dict(row) for row in turn_result.mappings().all()]
+    asked_turns = [turn for turn in turns if turn.get("status") == "ASKED"]
+    if len(asked_turns) != 1:
+        return {"previewToken": None, "reason": "no_unique_active_turn"}
+
+    current_turn = asked_turns[0]
+    session_state = build_session_state_from_db(session, turns, current_turn, False)
+    question = session_state.get("current_question_context") or {}
+    stage = InterviewStage(session_state.get("current_stage", InterviewStage.WARM_UP))
+    if stage in {InterviewStage.CLOSING, InterviewStage.CLOSED} or not question.get("main_prompt"):
+        return {"previewToken": None, "reason": "stage_not_previewable"}
+
+    is_vi = str(session.get("locale") or "vi").lower().startswith("vi")
+    engine = InterviewCoreEngine()
+    evaluation = await engine._evaluate_candidate_response(
+        candidate_text=transcript,
+        current_stage=stage,
+        current_question=question,
+        is_vi=is_vi,
+        telemetry={},
+    )
+    settings = get_settings()
+    preview_token = jwt.encode(
+        {
+            "scope": "interview:voice-preview",
+            "sid": str(session["id"]),
+            "sub": str(claims["user_id"]),
+            "turn_id": str(current_turn["id"]),
+            "transcript_hash": sha256(transcript.encode("utf-8")).hexdigest(),
+            "evaluation": evaluation,
+            "iat": datetime.now(UTC),
+            "exp": datetime.now(UTC) + timedelta(minutes=2),
+        },
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+    return {"previewToken": preview_token, "reason": "ready"}
+
+
+async def _set_candidate_left(db: AsyncSession, session_id: str, *, left: bool) -> bool:
+    """Mark (or clear) that the candidate left the room; the reaper closes it as CANDIDATE_LEFT later."""
+    sql = (
+        "UPDATE interview_sessions SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), "
+        "'{candidate_left_at}', to_jsonb(now()::text)), updated_at = now() "
+        "WHERE id = :sid AND status = 'OPEN' AND metadata->>'candidate_left_at' IS NULL"
+        if left
+        else "UPDATE interview_sessions SET metadata = metadata - 'candidate_left_at' "
+        "WHERE id = :sid AND metadata->>'candidate_left_at' IS NOT NULL"
+    )
+    try:
+        result = await db.execute(text(sql), {"sid": session_id})
+        await db.commit()
+        return bool(result.rowcount)
+    except Exception:  # noqa: BLE001 - never fail the room over this marker
+        await db.rollback()
+        return False
+
+
+@router.post("/livekit/runtime/left")
+async def mark_livekit_candidate_left(
+    claims: dict[str, str] = Depends(_voice_runtime_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The agent saw the candidate leave and not come back within its grace period.
+
+    The session stays OPEN so the candidate can still rejoin (that clears the
+    mark); the session reaper closes it with CANDIDATE_LEFT if they do not.
+    """
+    marked = await _set_candidate_left(db, claims["session_id"], left=True)
+    return {"marked": marked}
+
+
+@router.post("/livekit/runtime/message")
+async def send_livekit_runtime_message(
+    payload: VoiceRuntimeMessage,
+    claims: dict[str, str] = Depends(_voice_runtime_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await _runtime_session(db, claims)
+    modality = "VIDEO" if session["mode"] == "video" else "VOICE"
+    telemetry = {**payload.telemetry, "transport": "livekit", "modality": modality}
+    precomputed_evaluation = None
+    if payload.preview_token:
+        settings = get_settings()
+        try:
+            preview = jwt.decode(
+                payload.preview_token,
+                settings.jwt_secret,
+                algorithms=[settings.jwt_algorithm],
+            )
+            transcript_hash = sha256(payload.content.strip().encode("utf-8")).hexdigest()
+            if (
+                preview.get("scope") == "interview:voice-preview"
+                and preview.get("sid") == str(session["id"])
+                and preview.get("sub") == str(claims["user_id"])
+                and preview.get("transcript_hash") == transcript_hash
+                and isinstance(preview.get("evaluation"), dict)
+            ):
+                active_turn = await db.scalar(
+                    text(
+                        "SELECT id FROM interview_turns "
+                        "WHERE session_id = :sid AND status = 'ASKED' ORDER BY turn_index LIMIT 1"
+                    ),
+                    {"sid": session["id"]},
+                )
+                if str(active_turn) == preview.get("turn_id"):
+                    precomputed_evaluation = preview["evaluation"]
+        except jwt.InvalidTokenError:
+            # Preview is an optimization only; canonical evaluation must still run.
+            pass
+    try:
+        return await submit_voice_answer(
+            db=db,
+            session_row=session,
+            client_message_id=payload.client_message_id,
+            content=payload.content,
+            telemetry=telemetry,
+            duration_seconds=payload.duration_seconds,
+            modality=modality,
+            precomputed_evaluation=precomputed_evaluation,
+        )
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ChatRuntimeError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/livekit/runtime/events", status_code=202)
+async def record_livekit_runtime_events(
+    payload: VoiceRuntimeEvents,
+    claims: dict[str, str] = Depends(_voice_runtime_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Voice-room state and incidents from the LiveKit agent, for the admin view.
+
+    The session comes from the runtime credential, never from the body. Events
+    are attached to the question being asked and stored like any other
+    interview event; unknown names and anything that is not a number, flag or
+    short code are dropped (adapters/voice/voice_events.py).
+    """
+    session_id = claims["session_id"]
+    accepted = [item for item in payload.events if item.event in VOICE_EVENTS]
+    if not accepted:
+        return {"accepted": 0}
+    turn_index = (
+        await db.execute(
+            text(
+                "SELECT turn_index FROM interview_turns WHERE session_id = :sid AND status = 'ASKED' "
+                "ORDER BY turn_index LIMIT 1"
+            ),
+            {"sid": session_id},
+        )
+    ).scalar_one_or_none()
+    for item in accepted:
+        fields = sanitize_fields(item.fields)
+        fields.pop("session_id", None)
+        fields.pop("turn_index", None)
+        trace_event(
+            "voice",
+            item.event,
+            session_id=session_id,
+            turn_index=turn_index,
+            agent_at=item.at.isoformat() if item.at else None,
+            **fields,
+        )
+    return {"accepted": len(accepted)}
+
+
+@router.post("/livekit-token")
+async def livekit_token(
+    payload: LiveKitTokenRequest,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Issue a room token and a session-scoped credential for the voice worker."""
+    await interview_rate_limiter.check(user["sub"], "voice-token")
+    session = await _load_voice_session(db, payload.sessionId, user["sub"])
+    expected_room_name = f"interview-{session['id']}"
+    if payload.roomName != expected_room_name:
+        raise HTTPException(status_code=409, detail="Room name does not match the interview session")
+    settings = get_settings()
+    if not settings.livekit_url or not settings.livekit_api_key or not settings.livekit_api_secret:
+        raise HTTPException(status_code=503, detail="LiveKit is not configured")
+    try:
+        from livekit import api
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="LiveKit dependencies are not installed") from exc
+
+    runtime_expires = datetime.now(UTC) + timedelta(
+        minutes=max(15, min(130, int(session.get("duration_minutes") or 25) + 10))
+    )
+    runtime_token = jwt.encode(
+        {
+            "sub": str(user["sub"]),
+            "sid": str(session["id"]),
+            "scope": "interview:voice-runtime",
+            "tokenType": "voice-runtime",
+            "aud": "interview-voice",
+            "iat": datetime.now(UTC),
+            "exp": runtime_expires,
+        },
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+    token = (
+        api.AccessToken(settings.livekit_api_key, settings.livekit_api_secret)
+        .with_identity(f"candidate-{user['sub']}")
+        .with_name("Interview candidate")
+        .with_ttl(timedelta(minutes=10))
+        .with_grants(
+            api.VideoGrants(
+                room_join=True,
+                room=expected_room_name,
+                can_publish=True,
+                can_subscribe=True,
+                can_publish_data=True,
+            )
+        )
+        .with_room_config(
+            api.RoomConfiguration(
+                agents=[
+                    api.RoomAgentDispatch(
+                        agent_name=settings.livekit_agent_name,
+                        metadata=runtime_token,
+                    )
+                ]
+            )
+        )
+        .to_jwt()
+    )
+    return {
+        "serverUrl": settings.livekit_url,
+        "participantToken": token,
+        "agentName": settings.livekit_agent_name,
+        "roomName": expected_room_name,
+        "expiresInSeconds": 600,
+    }

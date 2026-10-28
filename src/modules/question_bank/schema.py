@@ -11,6 +11,13 @@ async def create_question_bank_schema(engine: AsyncEngine) -> None:
 
     The project is intentionally rebuilding from an empty database, so this is
     bootstrap code rather than an Alembic compatibility migration.
+
+    Consequence: `create_all` only creates missing tables; it never alters an
+    existing one. Any column added to a question-bank model must ship with an
+    explicit `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` here, or databases that
+    already exist will not get it (the selector then fails with UndefinedColumn).
+    `interview_turns` deliberately stores question/rubric version ids without
+    foreign keys (see migration 0013); P2 validates them before freezing.
     """
     async with engine.begin() as connection:
         await connection.run_sync(QuestionBankBase.metadata.create_all)
@@ -19,6 +26,13 @@ async def create_question_bank_schema(engine: AsyncEngine) -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_question_version_primary_competency "
                 "ON question_version_taxonomy_concepts (question_version_id) "
                 "WHERE purpose = 'PRIMARY_COMPETENCY'"
+            )
+        )
+        # One OPEN suggestion per finding; re-running the analysis refreshes it.
+        await connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_question_bank_suggestion_open "
+                "ON question_bank_suggestions (dedupe_key) WHERE status = 'OPEN'"
             )
         )
         await connection.execute(

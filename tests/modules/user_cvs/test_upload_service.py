@@ -7,6 +7,7 @@ from src.modules.user_cvs.application.upload_service import (
     CvStorageUnavailable,
     CvUploadService,
     InvalidCvFile,
+    unique_filename,
 )
 
 
@@ -18,6 +19,9 @@ class MemoryUploadRepository:
 
     async def find_id_by_checksum(self, user_id: str, checksum: str) -> str | None:
         return self.existing_id
+
+    async def filenames(self, user_id):
+        return set(getattr(self, "names", set()))
 
     async def create(self, record) -> None:
         self.created = record
@@ -157,3 +161,41 @@ async def test_upload_service_marks_record_failed_when_queue_dispatch_fails() ->
         )
 
     assert repository.dispatch_failure == (repository.created.cv_id, "broker unavailable")
+
+
+def test_unique_filename_adds_lowest_free_number_case_insensitively() -> None:
+    assert unique_filename("CV.pdf", set()) == "CV.pdf"
+    assert unique_filename("CV.pdf", {"cv.PDF"}) == "CV (2).pdf"
+    assert unique_filename("CV.pdf", {"CV.pdf", "CV (2).pdf", "CV (4).pdf"}) == "CV (3).pdf"
+    assert unique_filename("CV", {"CV"}) == "CV (2)"
+
+
+async def test_upload_service_renames_a_different_file_with_a_taken_name() -> None:
+    repository = MemoryUploadRepository()
+    repository.names = {"resume.pdf"}
+    service = CvUploadService(repository=repository, storage=MemoryFileStorage(), publisher=RecordingPublisher())
+
+    result = await service.upload(
+        user_id="user-1", filename="resume.pdf", content_type="application/pdf", content=b"%PDF-1.7 other"
+    )
+
+    assert result.created is True
+    assert repository.created.filename == "resume (2).pdf"
+    assert repository.created.storage_key.endswith(".pdf")
+    assert result.renamed_from == "resume.pdf"
+
+
+async def test_upload_service_keeps_the_name_when_name_lookup_fails() -> None:
+    class BrokenNames(MemoryUploadRepository):
+        async def filenames(self, user_id):
+            raise RuntimeError("db down")
+
+    repository = BrokenNames()
+    service = CvUploadService(repository=repository, storage=MemoryFileStorage(), publisher=RecordingPublisher())
+
+    result = await service.upload(
+        user_id="user-1", filename="resume.pdf", content_type="application/pdf", content=b"%PDF-1.7"
+    )
+
+    assert repository.created.filename == "resume.pdf"
+    assert result.renamed_from is None

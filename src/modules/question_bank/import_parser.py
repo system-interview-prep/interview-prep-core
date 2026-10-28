@@ -8,6 +8,12 @@ from dataclasses import dataclass
 
 from openpyxl import Workbook, load_workbook
 
+from src.modules.question_bank.schemas import (
+    DEFAULT_TAXONOMY_VERSION,
+    DIFFICULTY_BANDS,
+    QUESTION_TYPES,
+)
+
 IMPORT_COLUMNS = (
     "stable_key", "version", "canonical_locale", "canonical_text", "objective",
     "question_type", "difficulty_band", "thinking_seconds", "soft_answer_seconds",
@@ -42,6 +48,12 @@ def xlsx_template() -> bytes:
     instructions.append([
         "Use JSON arrays for target_role_ids, supporting_competency_ids, skill_ids, "
         "expected_points and source_refs."
+    ])
+    instructions.append([f"question_type: one of {', '.join(QUESTION_TYPES)}."])
+    instructions.append([f"difficulty_band: one of {', '.join(DIFFICULTY_BANDS)}."])
+    instructions.append([
+        f"taxonomy_version defaults to {DEFAULT_TAXONOMY_VERSION}. skill_ids map as TARGET_SKILL, "
+        "target_role_ids (career codes) as TARGET_ROLE. rubric_key names an existing rubric."
     ])
     stream = io.BytesIO()
     workbook.save(stream)
@@ -94,14 +106,54 @@ def _parse_rows(rows: Iterable[tuple[int, dict]]) -> list[ParsedImportRow]:
                 payload[key] = int(payload[key])
             except ValueError:
                 errors.append({"field": key, "code": "INVALID_INTEGER", "severity": "ERROR"})
-        has_invalid_duration = (
-            isinstance(payload["soft_answer_seconds"], int)
-            and isinstance(payload["hard_answer_seconds"], int)
-            and payload["hard_answer_seconds"] < payload["soft_answer_seconds"]
-        )
-        if has_invalid_duration:
-            errors.append({"field": "hard_answer_seconds", "code": "HARD_BELOW_SOFT", "severity": "ERROR"})
-        if not payload["primary_competency_id"]:
-            errors.append({"field": "primary_competency_id", "code": "REQUIRED", "severity": "ERROR"})
+        normalize_row_payload(payload)
+        errors.extend(error for error in validate_row_payload(payload) if error not in errors)
         parsed.append(ParsedImportRow(row_number, payload, errors))
     return parsed
+
+
+def normalize_row_payload(payload: dict) -> None:
+    """Apply the same normalisation the authoring API applies."""
+    payload["stable_key"] = str(payload.get("stable_key") or "").strip().lower()
+    payload["version"] = str(payload.get("version") or "").strip() or "1.0.0"
+    taxonomy_version = str(payload.get("taxonomy_version") or "").strip()
+    payload["taxonomy_version"] = taxonomy_version or DEFAULT_TAXONOMY_VERSION
+    for key in ("question_type", "difficulty_band"):
+        payload[key] = str(payload.get(key) or "").strip().lower()
+
+
+def validate_row_payload(payload: dict) -> list[dict]:
+    """Semantic row checks shared by staging, row patches and commit."""
+    errors: list[dict] = []
+
+    def error(field: str, code: str) -> None:
+        errors.append({"field": field, "code": code, "severity": "ERROR"})
+
+    for key in ("stable_key", "canonical_locale", "canonical_text", "objective", "primary_competency_id"):
+        if not str(payload.get(key) or "").strip():
+            error(key, "REQUIRED")
+    if not 3 <= len(str(payload.get("stable_key") or "")) <= 180:
+        error("stable_key", "INVALID_LENGTH")
+    if len(str(payload.get("version") or "")) > 32:
+        error("version", "INVALID_LENGTH")
+    if payload.get("question_type") not in QUESTION_TYPES:
+        error("question_type", "INVALID_VALUE")
+    if payload.get("difficulty_band") not in DIFFICULTY_BANDS:
+        error("difficulty_band", "INVALID_VALUE")
+    for key in JSON_COLUMNS:
+        if not isinstance(payload.get(key, []), list):
+            error(key, "INVALID_JSON")
+    seconds = {}
+    for key in ("thinking_seconds", "soft_answer_seconds", "hard_answer_seconds"):
+        value = payload.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            error(key, "INVALID_INTEGER")
+        else:
+            seconds[key] = value
+    if (
+        "soft_answer_seconds" in seconds
+        and "hard_answer_seconds" in seconds
+        and seconds["hard_answer_seconds"] < seconds["soft_answer_seconds"]
+    ):
+        error("hard_answer_seconds", "HARD_BELOW_SOFT")
+    return errors

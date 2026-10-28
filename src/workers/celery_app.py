@@ -1,5 +1,5 @@
 from celery import Celery
-from celery.signals import worker_process_init
+from celery.signals import worker_process_init, worker_process_shutdown
 
 from src.core.config import get_settings
 
@@ -12,6 +12,7 @@ celery_app = Celery(
         "src.workers.tasks.matching",
         "src.workers.tasks.cv",
         "src.workers.tasks.job_description",
+        "src.workers.tasks.question_bank",
     ],
 )
 celery_app.conf.update(
@@ -23,6 +24,8 @@ celery_app.conf.update(
         "matching.*": {"queue": settings.rabbitmq_matching_queue},
         "cv.*": {"queue": settings.rabbitmq_cv_queue},
         "job_description.*": {"queue": settings.rabbitmq_jd_queue},
+        # Question pre-generation follows JD publishing; reuse its queue.
+        "question_bank.*": {"queue": settings.rabbitmq_jd_queue},
     },
 )
 
@@ -36,3 +39,12 @@ def on_worker_process_init(**kwargs: object) -> None:
     # the pool makes this child establish fresh connections on its own loop.
     engine.sync_engine.dispose(close=False)
     worker_async_runner.reset_after_fork()
+
+
+@worker_process_shutdown.connect
+def on_worker_process_shutdown(**kwargs: object) -> None:
+    # Pipeline events (CV parsing, matching) are written by a daemon thread a
+    # moment after each task; write what is still buffered before the child exits.
+    from src.core import pipeline_events
+
+    pipeline_events.flush_pending()

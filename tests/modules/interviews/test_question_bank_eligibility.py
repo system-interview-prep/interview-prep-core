@@ -19,14 +19,14 @@ These tests cover all 8 scenarios listed in the task:
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.modules.interviews.question_selector import (
+from src.modules.interviews.planning.question_selector import (
+    QuestionUnavailableError,
     _allowed_purposes,
     _Candidate,
     _candidate_rank,
@@ -232,7 +232,9 @@ class TestSeedIdempotency:
 
         summary = await seed_question_bank(factory)
 
-        assert summary["skill-artificial-intelligence"] == 12
+        # The two asyncio coding exercises belong to Python, not AI.
+        assert summary["skill-artificial-intelligence"] == 10
+        assert summary["skill-python"] >= 2
         assert summary["skill-generative-ai"] == 6
         assert summary["skill-large-language-models"] == 6
         assert summary["skill-natural-language-processing"] == 6
@@ -289,9 +291,9 @@ class TestSelectorEligibilityRules:
             for i in range(n)
         ]
 
-    async def test_empty_bank_uses_deterministic_fallbacks(self) -> None:
-        """An empty bank still produces a usable, explicitly unreviewed interview."""
-        from src.modules.interviews.question_selector import select_and_freeze_questions
+    async def test_empty_bank_fails_closed_without_writing_turns(self) -> None:
+        """An empty bank cannot create an unreviewed interview."""
+        from src.modules.interviews.planning.question_selector import select_and_freeze_questions
 
         db = AsyncMock()
         db.execute = AsyncMock()
@@ -315,19 +317,17 @@ class TestSelectorEligibilityRules:
             }
         ]
 
-        call_count = 0
-
         async def _side_effect(query, params=None):
-            nonlocal call_count
+            # Dispatch on the statement, not call order: the selector now runs
+            # an unlocked generation preflight before the FOR UPDATE read.
+            q_str = str(query)
             result = MagicMock()
-            if call_count == 0:
-                # First call: FOR UPDATE plan lock
+            if "interview_session_plans" in q_str:
                 result.mappings.return_value.one_or_none.return_value = {
                     "status": "READY",
                     "plan_payload": {},
                 }
-            elif call_count == 1:
-                # Second call: session_competency_targets
+            elif "session_competency_targets" in q_str:
                 result.mappings.return_value.all.return_value = [
                     {
                         "selection_rank": 0,
@@ -342,7 +342,6 @@ class TestSelectorEligibilityRules:
             else:
                 # Candidate query: returns nothing (empty bank)
                 result.mappings.return_value.all.return_value = []
-            call_count += 1
             return result
 
         db.execute.side_effect = _side_effect
@@ -353,14 +352,14 @@ class TestSelectorEligibilityRules:
             "locale": "en-US",
         }
 
-        result = await select_and_freeze_questions(db=db, session_row=session_row)
-
-        assert result["status"] == "LOCKED"
-        assert result["fallbackQuestionCount"] == 3
+        with pytest.raises(QuestionUnavailableError) as exc_info:
+            await select_and_freeze_questions(db=db, session_row=session_row)
+        assert exc_info.value.error_code == "question_bank_insufficient"
+        assert not any("INSERT INTO interview_turns" in str(call.args[0]) for call in db.execute.call_args_list)
 
     async def test_sufficient_candidates_do_not_raise(self) -> None:
         """3+ eligible questions → no error raised from the selector."""
-        from src.modules.interviews.question_selector import _load_candidates
+        from src.modules.interviews.planning.question_selector import _load_candidates
 
         db = AsyncMock()
 
@@ -425,7 +424,7 @@ class TestSelectorEligibilityRules:
 
     async def test_unapproved_question_is_excluded(self) -> None:
         """Questions with status != APPROVED|CALIBRATED are filtered out."""
-        from src.modules.interviews.question_selector import _load_candidates
+        from src.modules.interviews.planning.question_selector import _load_candidates
 
         db = AsyncMock()
 
@@ -467,7 +466,7 @@ class TestSelectorEligibilityRules:
 
     async def test_wrong_locale_candidate_excluded(self) -> None:
         """Candidates with a completely mismatched locale are excluded."""
-        from src.modules.interviews.question_selector import _load_candidates
+        from src.modules.interviews.planning.question_selector import _load_candidates
 
         db = AsyncMock()
 
@@ -505,9 +504,9 @@ class TestSelectorEligibilityRules:
         candidates = await _load_candidates(db, target=target, locale="en-US", difficulty="intermediate")
         assert len(candidates) == 0  # ja-JP != en-US, not even language match
 
-    async def test_fewer_candidates_are_filled_with_fallbacks(self) -> None:
-        """Available curated questions are retained and only the shortfall falls back."""
-        from src.modules.interviews.question_selector import select_and_freeze_questions
+    async def test_fewer_candidates_are_used_and_the_shortfall_reported(self) -> None:
+        """Partial coverage: ask what the bank has and report the missing question."""
+        from src.modules.interviews.planning.question_selector import select_and_freeze_questions
 
         db = AsyncMock()
 
@@ -582,7 +581,18 @@ class TestSelectorEligibilityRules:
             "locale": "en-US",
         }
 
+        # Contract change: a shortfall no longer refuses the whole interview.
+        # The two approved questions are asked; the missing third is reported.
         result = await select_and_freeze_questions(db=db, session_row=session_row)
-
-        assert result["status"] == "LOCKED"
-        assert result["fallbackQuestionCount"] == 1
+        assert result["technicalQuestionCount"] == 2
+        assert result["generatedQuestionCount"] == 0
+        assert result["uncoveredTargets"] == [
+            {
+                "taxonomyVersion": "internal-2026.1",
+                "conceptId": "skill-artificial-intelligence",
+                "label": "Artificial Intelligence",
+                "needed": 3,
+                "available": 2,
+                "reason": "no_question_after_fallback",
+            }
+        ]

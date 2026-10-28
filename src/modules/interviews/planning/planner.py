@@ -1,0 +1,1355 @@
+"""Deterministic P1 interview planner.
+
+P1 converts grounded CV/JD matching context into a persisted competency agenda.
+It does not select questions and it does not ask an LLM to invent competencies.
+"""
+
+import hashlib
+import json
+import math
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any
+from uuid import uuid4
+
+from pydantic import ValidationError
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.core.config import get_settings
+from src.core.trace_logging import trace_event
+from src.modules.interviews.core.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
+from src.modules.interviews.core.interview_rounds import FOCUSABLE_AREAS, area_of, is_minor, spread_key
+from src.modules.interviews.planning.plan_structure import (
+    build_evaluation_targets,
+    build_sections,
+    derive_difficulty,
+    validate_must_have_coverage,
+)
+from src.modules.interviews.planning.planner_config import (
+    PlannerPolicyConfig,
+    resolve_strict_hands_on_precedence,
+)
+from src.modules.interviews.planning.entry_gate import (
+    InterviewEntryBlocked,
+    evaluate_entry,
+    fit_adjusted_difficulty,
+)
+from src.modules.interviews.planning.project_evidence import extract_project_evidences
+from src.modules.job_descriptions.schemas import CanonicalJobDescription
+from src.modules.matching.facade import canonical_job_from_description, evaluate_match
+from src.modules.matching.schemas import (
+    CanonicalJob,
+    LanguageRequirement,
+    MatchRequest,
+    MatchResult,
+    SkillRequirement,
+    UnresolvedRequirement,
+)
+# `TaxonomyRef` is owned by user_cvs; matching only re-exported it.
+from src.modules.user_cvs.schemas import CanonicalResume, TaxonomyRef
+
+PLANNER_POLICY_VERSION = "interview-planner-v1"
+PLANNER_POLICY_VERSION_DYNAMIC = "interview-planner-v2-dynamic"
+
+_PRIORITY_WEIGHT = {
+    "must_have": 1.0,
+    "nice_to_have": 0.45,
+    "context": 0.20,
+}
+_STATUS_BOOST = {
+    "not_met": 1.35,
+    "unknown": 1.20,
+    "met": 1.00,
+    "not_applicable": 0.0,
+}
+_MAX_QUESTIONS_PER_TARGET = 3
+
+
+class PlannerPolicyConfigurationError(RuntimeError):
+    """The deployment enabled dynamic planning without a usable policy."""
+
+
+@dataclass
+class _CandidateTarget:
+    concept: TaxonomyRef
+    raw_weight: float = 0.0
+    requirement_ids: list[str] = field(default_factory=list)
+    priorities: list[str] = field(default_factory=list)
+    match_statuses: list[str] = field(default_factory=list)
+    source_evidence_refs: list[str] = field(default_factory=list)
+    source: str = "job_requirement"
+
+    def add_requirement(
+        self,
+        *,
+        requirement_id: str,
+        priority: str,
+        match_status: str,
+        source_evidence_ref: str,
+        weight: float,
+    ) -> None:
+        self.raw_weight += weight
+        if requirement_id not in self.requirement_ids:
+            self.requirement_ids.append(requirement_id)
+        if priority not in self.priorities:
+            self.priorities.append(priority)
+        if match_status not in self.match_statuses:
+            self.match_statuses.append(match_status)
+        if source_evidence_ref not in self.source_evidence_refs:
+            self.source_evidence_refs.append(source_evidence_ref)
+
+
+# Expected (soft) seconds of the preset turns P2 always freezes - WARM_UP 120,
+# VALIDATE 180, BEHAVIORAL 180 (see question_selector snapshots) - plus the
+# runtime's 60s closing reserve.
+_PRESET_EXPECTED_SECONDS = 120 + 180 + 180 + 60
+# Expected seconds per technical question: thinking 30 + soft answer 150 + one
+# follow-up probe 60.
+_TECHNICAL_EXPECTED_SECONDS = 30 + 150 + 60
+_MAX_TECHNICAL_QUESTIONS = 8
+
+
+def _question_budget(duration_minutes: int) -> int:
+    """Technical question budget derived from the session's time.
+
+    The old fixed matrix (15m -> 2, 25m -> 4, 45m -> 6) ignored timing: a
+    25-minute session's hard limits summed to exactly 1500s with no room for a
+    single follow-up, and a 15-minute session needed ~1080s for 900s, so
+    HARD_TIMEOUT was routine. Now: 15m -> 1, 25m -> 4 (with probe room),
+    45m and longer -> 8. The demo package is turn-driven, not time-driven, and
+    always freezes one DEEP_DIVE plus one CHALLENGE question.
+    """
+    if is_demo_duration(duration_minutes):
+        return DEMO_TECHNICAL_QUESTIONS
+    available = duration_minutes * 60 - _PRESET_EXPECTED_SECONDS
+    return max(1, min(_MAX_TECHNICAL_QUESTIONS, available // _TECHNICAL_EXPECTED_SECONDS))
+
+
+def _is_gap_target(item: "_CandidateTarget") -> bool:
+    return any(status in ("not_met", "unknown") for status in item.match_statuses)
+
+
+def _demo_targets(
+    ranked: list["_CandidateTarget"], selected: list["_CandidateTarget"]
+) -> list["_CandidateTarget"]:
+    """Put a CV gap in the demo's last (CHALLENGE) slot when the job has one.
+
+    The selector labels the last demo question CHALLENGE, and a challenge on a
+    skill the CV lacks is what the stage is meant to show. Without a gap in the
+    top slots, the best-ranked gap replaces the last one; the gap goes last.
+    """
+    if len(selected) < 2:
+        return selected
+    if not any(_is_gap_target(item) for item in selected):
+        best_gap = next((item for item in ranked if item not in selected and _is_gap_target(item)), None)
+        if best_gap is not None:
+            selected = [*selected[:-1], best_gap]
+    return sorted(selected, key=_is_gap_target)
+
+
+def _rank_index(ranked: list["_CandidateTarget"]) -> dict[int, int]:
+    return {id(item): index for index, item in enumerate(ranked)}
+
+
+def _select_across_rounds(
+    ranked: list["_CandidateTarget"],
+    budget: int,
+    *,
+    focus_area: str | None = None,
+    reask: Sequence[str] = (),
+) -> list["_CandidateTarget"]:
+    """Pick technical topics like a real interview: different rounds first.
+
+    Pass 1 takes the best must-have of each round (databases, infrastructure,
+    language...), pass 2 the best remaining topic of each round not yet
+    covered, pass 3 fills by rank. The result keeps the ranked order, so a
+    must-have still comes before a nice-to-have.
+
+    ``focus_area`` ("Luyện vòng này" on the progress page): up to half of the
+    budget (at least one) goes to that round first; the rest is spread as usual.
+
+    ``reask``: skills with a missed point due for practice again (spaced
+    re-ask, research 24/10). The first one the job asks about always gets a
+    slot; the selector then prefers a question the candidate has not seen.
+    """
+    focused = [item for item in ranked if focus_area and area_of(item.concept.concept_id) == focus_area]
+    again = [item for item in ranked if item.concept.concept_id in set(reask)][:1]
+    if budget >= len(ranked) and not focused:
+        return list(ranked)
+    chosen: list[_CandidateTarget] = list(again[:budget])
+    for item in focused[: max(1, budget // 2)]:
+        if item not in chosen and len(chosen) < budget:
+            chosen.append(item)
+    seen: set[str] = {spread_key(item.concept.concept_id) for item in chosen}
+    for must_only in (True, False):
+        for item in ranked:
+            if len(chosen) >= budget:
+                break
+            if must_only and "must_have" not in item.priorities:
+                continue
+            key = spread_key(item.concept.concept_id)
+            if item in chosen or key in seen:
+                continue
+            chosen.append(item)
+            seen.add(key)
+    for item in ranked:
+        if len(chosen) >= budget:
+            break
+        if item not in chosen:
+            chosen.append(item)
+    order = _rank_index(ranked)
+    return sorted(chosen, key=lambda item: (item not in focused, order[id(item)]))
+
+
+def _split_minor(
+    candidates: list["_CandidateTarget"],
+) -> tuple[list["_CandidateTarget"], list["_CandidateTarget"]]:
+    """Keep data formats and everyday tools (JSON, XML, Git) out of the plan.
+
+    They stay in the plan only when the job has nothing else to ask about.
+    """
+    major = [item for item in candidates if not is_minor(item.concept.concept_id)]
+    minor = [item for item in candidates if is_minor(item.concept.concept_id)]
+    if not major:
+        return minor, []
+    return major, minor
+
+
+def _requirement_concepts(requirement: Any) -> list[TaxonomyRef]:
+    if isinstance(requirement, SkillRequirement):
+        return [requirement.skill]
+    if isinstance(requirement, UnresolvedRequirement):
+        return list(requirement.atomic_concepts)
+    if isinstance(requirement, LanguageRequirement):
+        return []
+    return []
+
+
+def _status_for_concept(result: Any, concept_id: str) -> str:
+    if result is None:
+        return "unknown"
+    for concept_result in result.concept_results:
+        if concept_result.concept_id == concept_id:
+            return concept_result.status
+    return result.status
+
+
+def _allocate_question_counts(weights: list[float], budget: int) -> list[int]:
+    """Allocate an integer agenda deterministically.
+
+    Every selected competency gets one question first. Remaining slots are
+    assigned by normalized importance with a small per-target cap so one
+    competency cannot consume the entire interview.
+    """
+    if not weights or budget <= 0:
+        return []
+
+    counts = [1 for _ in weights]
+    remaining = max(0, budget - len(counts))
+    if remaining == 0:
+        return counts
+
+    total = sum(weights) or 1.0
+    normalized = [weight / total for weight in weights]
+
+    while remaining > 0:
+        eligible = [
+            index
+            for index, count in enumerate(counts)
+            if count < _MAX_QUESTIONS_PER_TARGET
+        ]
+        if not eligible:
+            break
+        # Prefer the target with the largest deficit versus its ideal share.
+        index = max(
+            eligible,
+            key=lambda idx: (
+                normalized[idx] * budget - counts[idx],
+                normalized[idx],
+                -idx,
+            ),
+        )
+        counts[index] += 1
+        remaining -= 1
+
+    return counts
+
+
+def _derive_competency_plan_legacy(
+    *,
+    job: CanonicalJob,
+    match: MatchResult,
+    duration_minutes: int,
+    listing: Mapping[str, Any] | None = None,
+    focus_area: str | None = None,
+    reask: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Legacy fixed question budget algorithm (interview-planner-v1).
+
+    ``reask``: ``{"conceptId", "points"}`` for skills with a missed point due
+    for practice again (``_due_reask``).
+    """
+    if focus_area not in FOCUSABLE_AREAS:
+        focus_area = None
+    result_by_id = {item.requirement_id: item for item in match.requirement_results}
+    candidates: dict[tuple[str, str], _CandidateTarget] = {}
+    non_competency_requirement_ids: list[str] = []
+    had_taxonomy_concepts = False
+
+    for requirement in job.requirements:
+        concepts = _requirement_concepts(requirement)
+        if not concepts:
+            non_competency_requirement_ids.append(requirement.requirement_id)
+            continue
+        had_taxonomy_concepts = True
+
+        result = result_by_id.get(requirement.requirement_id)
+        priority_weight = _PRIORITY_WEIGHT.get(requirement.priority, 0.0)
+        concept_count = len(concepts)
+
+        for concept in concepts:
+            match_status = _status_for_concept(result, concept.concept_id)
+            status_boost = _STATUS_BOOST.get(match_status, 1.0)
+            if status_boost <= 0.0:
+                continue
+            per_concept_weight = priority_weight * status_boost / concept_count
+
+            key = (concept.taxonomy_version, concept.concept_id)
+            target = candidates.get(key)
+            if target is None:
+                target = _CandidateTarget(concept=concept)
+                candidates[key] = target
+            target.add_requirement(
+                requirement_id=requirement.requirement_id,
+                priority=requirement.priority,
+                match_status=match_status,
+                source_evidence_ref=requirement.source_evidence_ref,
+                weight=per_concept_weight,
+            )
+
+    if not candidates and not had_taxonomy_concepts:
+        classifications = sorted(
+            job.career_classifications,
+            key=lambda item: (not item.is_primary, -item.confidence, item.code),
+        )
+        for classification in classifications[:2]:
+            concept = TaxonomyRef(
+                conceptId=classification.code,
+                scheme="career",
+                taxonomyVersion=classification.taxonomy_version,
+                label=classification.label,
+            )
+            candidates[(concept.taxonomy_version, concept.concept_id)] = _CandidateTarget(
+                concept=concept,
+                raw_weight=1.0 if classification.is_primary else 0.5,
+                source="career_classification_fallback",
+            )
+
+    if not candidates:
+        raise ValueError("No applicable taxonomy-backed interview competencies could be derived from the job")
+
+    budget = _question_budget(duration_minutes)
+    askable, folded = _split_minor(list(candidates.values()))
+    ranked = sorted(
+        askable,
+        key=lambda item: (
+            0 if "must_have" in item.priorities else 1,
+            -item.raw_weight,
+            item.concept.taxonomy_version,
+            item.concept.concept_id,
+        ),
+    )
+    reask_ids = [str(item.get("conceptId")) for item in reask if item.get("conceptId")]
+    selected = _select_across_rounds(ranked, budget, focus_area=focus_area, reask=reask_ids)
+    if is_demo_duration(duration_minutes):
+        selected = _demo_targets(ranked, selected)
+    raw_weights = [max(item.raw_weight, 0.0001) for item in selected]
+    total_weight = sum(raw_weights)
+    normalized_weights = [weight / total_weight for weight in raw_weights]
+    counts = _allocate_question_counts(normalized_weights, budget)
+
+    targets = []
+    for selection_rank, (item, importance, target_count) in enumerate(
+        zip(selected, normalized_weights, counts, strict=True)
+    ):
+        targets.append(
+            {
+                "selectionRank": selection_rank,
+                "taxonomyVersion": item.concept.taxonomy_version,
+                "conceptId": item.concept.concept_id,
+                "label": item.concept.label,
+                "importance": round(importance, 6),
+                "targetQuestionCount": target_count,
+                "rationale": {
+                    "source": item.source,
+                    "requirementIds": item.requirement_ids,
+                    "priorities": item.priorities,
+                    "matchStatuses": item.match_statuses,
+                    "jobEvidenceRefs": item.source_evidence_refs,
+                },
+            }
+        )
+
+    evaluation_targets = build_evaluation_targets(job=job, match=match)
+    validate_must_have_coverage(job=job, evaluation_targets=evaluation_targets)
+
+    strengths_to_verify = [
+        t["label"] or t["conceptId"]
+        for t in targets
+        if "met" in (t.get("rationale", {}).get("matchStatuses") or [])
+    ]
+    gap_competencies = [
+        t["label"] or t["conceptId"]
+        for t in targets
+        if any(s in ("not_met", "unknown") for s in (t.get("rationale", {}).get("matchStatuses") or []))
+    ]
+
+    plan = {
+        "policyVersion": PLANNER_POLICY_VERSION,
+        "questionBudget": budget,
+        "targetQuestionCount": sum(item["targetQuestionCount"] for item in targets),
+        "difficulty": derive_difficulty(job, listing=listing),
+        "sections": build_sections(duration_minutes),
+        "targets": targets,
+        "evaluationTargets": evaluation_targets,
+        "nonCompetencyRequirementIds": non_competency_requirement_ids,
+        "candidateMatrix": {
+            "strengthsToVerify": strengths_to_verify,
+            "gapCompetencies": gap_competencies,
+        },
+        # Rounds-aware selection (research 20/10): which job keywords were not
+        # asked as their own topic.
+        "selection": {
+            "policy": "rounds-v1",
+            "minorConceptIds": sorted(item.concept.concept_id for item in folded),
+            "focusArea": focus_area,
+            # Spaced re-ask: the skill asked again and the points due (research 24/10).
+            "reask": [
+                {"conceptId": str(item["conceptId"]), "points": list(item.get("points") or [])[:3]}
+                for item in reask
+                if item.get("conceptId") in {target.concept.concept_id for target in selected}
+            ][:1],
+        },
+    }
+    canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    plan["fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return plan
+
+
+_CODING_KEYWORDS = {"coding_problem", "live_coding", "algorithm", "data_structures", "coding"}
+
+
+def _is_coding_target(concept: TaxonomyRef, requirements: list[Any]) -> bool:
+    """Classify preliminarily whether a canonical concept target is CODING or TEXT.
+
+    Checks tags, labels, and evidence metadata without querying Question Bank.
+    """
+    for req in requirements:
+        req_tags = {str(t).lower() for t in getattr(req, "tags", [])}
+        if req_tags & _CODING_KEYWORDS:
+            return True
+        raw_label = (getattr(req, "raw_label", "") or "").lower()
+        if any(kw in raw_label for kw in ("coding", "algorithm", "data structure", "live coding")):
+            return True
+
+    concept_tags = {str(t).lower() for t in getattr(concept, "tags", [])}
+    if concept_tags & _CODING_KEYWORDS:
+        return True
+
+    text_corpus = f"{concept.concept_id} {concept.label}".lower()
+    return any(kw in text_corpus for kw in ("coding", "algorithm", "data_structure", "live_coding"))
+
+
+def _derive_competency_plan_dynamic(
+    *,
+    job: CanonicalJob,
+    match: MatchResult,
+    duration_minutes: int,
+    config: PlannerPolicyConfig,
+    listing: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Gate 2 dynamic time envelope allocation algorithm (interview-planner-v2-dynamic)."""
+    result_by_id = {item.requirement_id: item for item in match.requirement_results}
+    non_competency_requirement_ids: list[str] = []
+    had_taxonomy_concepts = False
+
+    # 1. Map all canonical concepts and requirements (C_all partition tracking)
+    canonical_map: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for requirement in job.requirements:
+        concepts = _requirement_concepts(requirement)
+        if not concepts:
+            non_competency_requirement_ids.append(requirement.requirement_id)
+            continue
+        had_taxonomy_concepts = True
+
+        result = result_by_id.get(requirement.requirement_id)
+        priority_weight = _PRIORITY_WEIGHT.get(requirement.priority, 0.0)
+        concept_count = len(concepts)
+
+        for concept in concepts:
+            match_status = _status_for_concept(result, concept.concept_id)
+            status_boost = _STATUS_BOOST.get(match_status, 1.0)
+            per_concept_weight = (priority_weight * status_boost / concept_count) if status_boost > 0.0 else 0.0
+
+            key = (concept.taxonomy_version, concept.concept_id)
+            if key not in canonical_map:
+                canonical_map[key] = {
+                    "concept": concept,
+                    "requirements": [],
+                    "requirement_ids": [],
+                    "priorities": [],
+                    "match_statuses": [],
+                    "source_evidence_refs": [],
+                    "raw_weight": 0.0,
+                    "source": "job_requirement",
+                }
+            entry = canonical_map[key]
+            entry["requirements"].append(requirement)
+            entry["raw_weight"] += per_concept_weight
+            if requirement.requirement_id not in entry["requirement_ids"]:
+                entry["requirement_ids"].append(requirement.requirement_id)
+            if requirement.priority not in entry["priorities"]:
+                entry["priorities"].append(requirement.priority)
+            if match_status not in entry["match_statuses"]:
+                entry["match_statuses"].append(match_status)
+            if requirement.source_evidence_ref not in entry["source_evidence_refs"]:
+                entry["source_evidence_refs"].append(requirement.source_evidence_ref)
+
+    if not canonical_map and not had_taxonomy_concepts:
+        classifications = sorted(
+            job.career_classifications,
+            key=lambda item: (not item.is_primary, -item.confidence, item.code),
+        )
+        for classification in classifications[:2]:
+            concept = TaxonomyRef(
+                conceptId=classification.code,
+                scheme="career",
+                taxonomyVersion=classification.taxonomy_version,
+                label=classification.label,
+            )
+            key = (concept.taxonomy_version, concept.concept_id)
+            canonical_map[key] = {
+                "concept": concept,
+                "requirements": [],
+                "requirement_ids": [],
+                "priorities": ["must_have" if classification.is_primary else "nice_to_have"],
+                "match_statuses": ["unknown"],
+                "source_evidence_refs": [],
+                "raw_weight": 1.0 if classification.is_primary else 0.5,
+                "source": "career_classification_fallback",
+            }
+
+    if not canonical_map:
+        raise ValueError("No applicable taxonomy-backed interview competencies could be derived from the job")
+
+    # 2. Compute T_tech_pool
+    total_session_seconds = duration_minutes * 60
+    t_onboarding = config.t_onboarding_base + config.t_cv_addon_inclusive
+    t_probe_pool = round(config.probe_pool_ratio * total_session_seconds)
+    total_reserves = (
+        t_onboarding
+        + config.t_cv_standalone_reserve
+        + config.t_behavioral
+        + t_probe_pool
+        + config.t_closing_reserve
+    )
+    if total_reserves > total_session_seconds:
+        raise ValueError(
+            f"Invalid budget configuration: total reserves ({total_reserves}s) "
+            f"exceed session duration ({total_session_seconds}s)."
+        )
+    tech_pool_seconds = total_session_seconds - total_reserves
+
+    # 3. Step 0: Pre-filtering 100% not_applicable targets
+    candidates: list[dict[str, Any]] = []
+    non_interviewed_targets: list[dict[str, Any]] = []
+
+    for key, entry in canonical_map.items():
+        concept = entry["concept"]
+        reqs = entry["requirements"]
+        match_statuses = entry["match_statuses"]
+        is_all_na = bool(match_statuses) and all(s == "not_applicable" for s in match_statuses)
+
+        is_coding = _is_coding_target(concept, reqs)
+        preliminary_archetype = "CODING" if is_coding else "TEXT"
+        entry["archetype"] = preliminary_archetype
+
+        highest_priority = (
+            "must_have"
+            if "must_have" in entry["priorities"]
+            else ("nice_to_have" if "nice_to_have" in entry["priorities"] else "context")
+        )
+        entry["priority"] = highest_priority
+
+        if is_all_na:
+            non_interviewed_targets.append({
+                "conceptId": concept.concept_id,
+                "taxonomyVersion": concept.taxonomy_version,
+                "label": concept.label,
+                "priority": highest_priority,
+                "targetArchetype": preliminary_archetype,
+                "omissionReason": "not_applicable_for_candidate",
+                "omissionDetail": {
+                    "matchStatus": "not_applicable",
+                    "weight": 0.0,
+                    "reason": "100% of underlying requirements evaluated as not_applicable",
+                },
+            })
+        else:
+            candidates.append(entry)
+
+    evaluation_targets = build_evaluation_targets(job=job, match=match)
+    validate_must_have_coverage(job=job, evaluation_targets=evaluation_targets)
+
+    # 4. Handle Case: 100% of targets are not_applicable (Option B)
+    if not candidates:
+        plan = {
+            "policyVersion": PLANNER_POLICY_VERSION_DYNAMIC,
+            "sessionDurationMinutes": duration_minutes,
+            "sessionDurationSeconds": total_session_seconds,
+            "onboardingReserveSeconds": t_onboarding,
+            "cvStandaloneReserveSeconds": config.t_cv_standalone_reserve,
+            "behavioralReserveSeconds": config.t_behavioral,
+            "probePoolSeconds": t_probe_pool,
+            "closingReserveSeconds": config.t_closing_reserve,
+            "techPoolSeconds": tech_pool_seconds,
+            "unallocatedBufferSeconds": tech_pool_seconds,
+            "difficulty": derive_difficulty(job, listing=listing),
+            "sections": build_sections(duration_minutes),
+            "targets": [],
+            "nonInterviewedTargets": non_interviewed_targets,
+            "evaluationTargets": evaluation_targets,
+            "nonCompetencyRequirementIds": non_competency_requirement_ids,
+            "estimatedTurnsRange": {
+                "estimatedFrozenTurnsRange": [
+                    config.n_onboarding + (1 if config.t_behavioral > 0 else 0),
+                    config.n_onboarding + (1 if config.t_behavioral > 0 else 0),
+                ],
+                "estimatedTotalInteractionTurnsRange": [
+                    config.n_onboarding + (1 if config.t_behavioral > 0 else 0),
+                    None,
+                ],
+            },
+            "candidateMatrix": {
+                "strengthsToVerify": [],
+                "gapCompetencies": [],
+            },
+        }
+        canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        plan["fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return plan
+
+    # 5. Deterministic Ranking of Candidate Targets
+    ranked_candidates = sorted(
+        candidates,
+        key=lambda item: (
+            0 if "must_have" in item["priorities"] else 1,
+            -item["raw_weight"],
+            item["concept"].taxonomy_version,
+            item["concept"].concept_id,
+        ),
+    )
+
+    # 6. Step 1: Sequential Allocation & Policy Decisions (Decisions 5 & 7)
+    eligible_targets: list[dict[str, Any]] = []
+    accumulated_floor = 0
+    precedence_hands_on = resolve_strict_hands_on_precedence(job=job, config=config)
+
+    for i, item in enumerate(ranked_candidates):
+        rem = tech_pool_seconds - accumulated_floor
+        arch = item["archetype"]
+        remaining_candidates = ranked_candidates[i + 1:]
+
+        if arch == "TEXT":
+            floor = config.t_arch_text_min
+            if accumulated_floor + floor <= tech_pool_seconds:
+                item["targetArchetype"] = "TEXT"
+                item["floorSeconds"] = floor
+                eligible_targets.append(item)
+                accumulated_floor += floor
+            else:
+                non_interviewed_targets.append({
+                    "conceptId": item["concept"].concept_id,
+                    "taxonomyVersion": item["concept"].taxonomy_version,
+                    "label": item["concept"].label,
+                    "priority": item["priority"],
+                    "targetArchetype": "TEXT",
+                    "omissionReason": "insufficient_tech_pool_for_minimum_envelope",
+                    "omissionDetail": {
+                        "poolRemainingSeconds": rem,
+                        "floorRequiredSeconds": floor,
+                    },
+                })
+                if config.strict_priority_stop:
+                    for rem_t in remaining_candidates:
+                        non_interviewed_targets.append({
+                            "conceptId": rem_t["concept"].concept_id,
+                            "taxonomyVersion": rem_t["concept"].taxonomy_version,
+                            "label": rem_t["concept"].label,
+                            "priority": rem_t["priority"],
+                            "targetArchetype": rem_t["archetype"],
+                            "omissionReason": "strict_priority_halted_due_to_higher_rank",
+                            "omissionDetail": {
+                                "haltedByConceptId": item["concept"].concept_id,
+                                "reason": "Strict priority stop halted due to higher rank target insufficiency",
+                            },
+                        })
+                    break
+                else:
+                    continue
+
+        elif arch == "CODING":
+            coding_floor = config.t_arch_code_min
+            if rem >= coding_floor:
+                item["targetArchetype"] = "CODING"
+                item["floorSeconds"] = coding_floor
+                eligible_targets.append(item)
+                accumulated_floor += coding_floor
+            else:
+                # Decision 5 Coding Fallback applies BEFORE deciding eligibility
+                # Precedence: True or None (missing flag -> fail-safe omission) prevents downgrade
+                if precedence_hands_on is True or precedence_hands_on is None:
+                    non_interviewed_targets.append({
+                        "conceptId": item["concept"].concept_id,
+                        "taxonomyVersion": item["concept"].taxonomy_version,
+                        "label": item["concept"].label,
+                        "priority": item["priority"],
+                        "targetArchetype": "CODING",
+                        "omissionReason": "insufficient_envelope_for_coding_assessment",
+                        "omissionDetail": {
+                            "poolRemainingSeconds": rem,
+                            "floorRequiredSeconds": coding_floor,
+                            "strictHandsOnRequired": precedence_hands_on,
+                        },
+                    })
+                    if config.strict_priority_stop:
+                        for rem_t in remaining_candidates:
+                            non_interviewed_targets.append({
+                                "conceptId": rem_t["concept"].concept_id,
+                                "taxonomyVersion": rem_t["concept"].taxonomy_version,
+                                "label": rem_t["concept"].label,
+                                "priority": rem_t["priority"],
+                                "targetArchetype": rem_t["archetype"],
+                                "omissionReason": "strict_priority_halted_due_to_higher_rank",
+                                "omissionDetail": {
+                                    "haltedByConceptId": item["concept"].concept_id,
+                                    "reason": "Strict priority stop halted due to higher rank target insufficiency",
+                                },
+                            })
+                        break
+                    else:
+                        continue
+                else:
+                    # precedence_hands_on is False: adhere to coding_fallback_policy
+                    if config.coding_fallback_policy == "downgrade_to_text":
+                        text_floor = config.t_arch_text_min
+                        if accumulated_floor + text_floor <= tech_pool_seconds:
+                            item["targetArchetype"] = "TEXT"
+                            item["floorSeconds"] = text_floor
+                            eligible_targets.append(item)
+                            accumulated_floor += text_floor
+                        else:
+                            non_interviewed_targets.append({
+                                "conceptId": item["concept"].concept_id,
+                                "taxonomyVersion": item["concept"].taxonomy_version,
+                                "label": item["concept"].label,
+                                "priority": item["priority"],
+                                "targetArchetype": "TEXT",
+                                "omissionReason": "insufficient_tech_pool_for_minimum_envelope",
+                                "omissionDetail": {
+                                    "poolRemainingSeconds": rem,
+                                    "floorRequiredSeconds": text_floor,
+                                },
+                            })
+                            if config.strict_priority_stop:
+                                for rem_t in remaining_candidates:
+                                    non_interviewed_targets.append({
+                                        "conceptId": rem_t["concept"].concept_id,
+                                        "taxonomyVersion": rem_t["concept"].taxonomy_version,
+                                        "label": rem_t["concept"].label,
+                                        "priority": rem_t["priority"],
+                                        "targetArchetype": rem_t["archetype"],
+                                        "omissionReason": "strict_priority_halted_due_to_higher_rank",
+                                        "omissionDetail": {
+                                            "haltedByConceptId": item["concept"].concept_id,
+                                            "reason": "Strict priority stop halted due to higher rank target insufficiency",
+                                        },
+                                    })
+                                break
+                            else:
+                                continue
+                    else:
+                        # 5B: omit
+                        non_interviewed_targets.append({
+                            "conceptId": item["concept"].concept_id,
+                            "taxonomyVersion": item["concept"].taxonomy_version,
+                            "label": item["concept"].label,
+                            "priority": item["priority"],
+                            "targetArchetype": "CODING",
+                            "omissionReason": "insufficient_envelope_for_coding_assessment",
+                            "omissionDetail": {
+                                "poolRemainingSeconds": rem,
+                                "floorRequiredSeconds": coding_floor,
+                            },
+                        })
+                        if config.strict_priority_stop:
+                            for rem_t in remaining_candidates:
+                                non_interviewed_targets.append({
+                                    "conceptId": rem_t["concept"].concept_id,
+                                    "taxonomyVersion": rem_t["concept"].taxonomy_version,
+                                    "label": rem_t["concept"].label,
+                                    "priority": rem_t["priority"],
+                                    "targetArchetype": rem_t["archetype"],
+                                    "omissionReason": "strict_priority_halted_due_to_higher_rank",
+                                    "omissionDetail": {
+                                        "haltedByConceptId": item["concept"].concept_id,
+                                        "reason": "Strict priority stop halted due to higher rank target insufficiency",
+                                    },
+                                })
+                            break
+                        else:
+                            continue
+
+    # 7. Step 2: Surplus Allocation via Hamilton-Hare on Integer Seconds
+    targets: list[dict[str, Any]] = []
+    if not eligible_targets:
+        unallocated_buffer_seconds = tech_pool_seconds
+    else:
+        surplus = tech_pool_seconds - accumulated_floor
+        total_w = sum(t["raw_weight"] for t in eligible_targets)
+        if total_w == 0.0:
+            # Defensive Zero-Weight Fallback: Equal share allocation without ZeroDivisionError
+            normalized_w = [1.0 / len(eligible_targets)] * len(eligible_targets)
+        else:
+            normalized_w = [t["raw_weight"] / total_w for t in eligible_targets]
+
+        ideal_surplus = [surplus * w for w in normalized_w]
+        floor_surplus = [int(math.floor(val)) for val in ideal_surplus]
+        fractions = [ideal_surplus[i] - floor_surplus[i] for i in range(len(eligible_targets))]
+        delta = surplus - sum(floor_surplus)
+
+        sorted_indices = sorted(
+            range(len(eligible_targets)),
+            key=lambda idx: (-fractions[idx], idx),
+        )
+        bonus = [0] * len(eligible_targets)
+        for idx in sorted_indices[:delta]:
+            bonus[idx] += 1
+
+        for rank, (item, norm_w, fl_s, b) in enumerate(zip(eligible_targets, normalized_w, floor_surplus, bonus)):
+            envelope = item["floorSeconds"] + fl_s + b
+            arch = item["targetArchetype"]
+            if arch == "CODING":
+                min_q = max(1, envelope // config.t_arch_code_max)
+                max_q = max(1, math.ceil(envelope / config.t_arch_code_min))
+            else:
+                min_q = max(1, envelope // config.t_arch_text_max)
+                max_q = max(1, math.ceil(envelope / config.t_arch_text_min))
+
+            targets.append({
+                "selectionRank": rank,
+                "taxonomyVersion": item["concept"].taxonomy_version,
+                "conceptId": item["concept"].concept_id,
+                "label": item["concept"].label,
+                "targetArchetype": arch,
+                "timeEnvelopeSeconds": envelope,
+                "floorSeconds": item["floorSeconds"],
+                "estimatedQuestionsRange": [min_q, max_q],
+                "importance": round(norm_w, 6),
+                "targetQuestionCount": max(1, min_q),
+                "rationale": {
+                    "source": item["source"],
+                    "requirementIds": item["requirement_ids"],
+                    "priorities": item["priorities"],
+                    "matchStatuses": item["match_statuses"],
+                    "jobEvidenceRefs": item["source_evidence_refs"],
+                },
+            })
+        unallocated_buffer_seconds = 0
+
+    # Verification of Invariants
+    total_env = sum(t["timeEnvelopeSeconds"] for t in targets)
+    # Explicit checks, not `assert`: asserts vanish under `python -O` and would
+    # otherwise surface as an unhandled 500.
+    if total_env + unallocated_buffer_seconds != tech_pool_seconds:
+        raise PlannerPolicyConfigurationError("Invariant 1 & 2 Conservation Violation")
+    if len(canonical_map) != len(targets) + len(non_interviewed_targets):
+        raise PlannerPolicyConfigurationError("Invariant 4B Partition Violation")
+
+    strengths_to_verify = [
+        t["label"] or t["conceptId"]
+        for t in targets
+        if "met" in (t.get("rationale", {}).get("matchStatuses") or [])
+    ]
+    gap_competencies = [
+        t["label"] or t["conceptId"]
+        for t in targets
+        if any(s in ("not_met", "unknown") for s in (t.get("rationale", {}).get("matchStatuses") or []))
+    ]
+
+    min_tech = sum(t["estimatedQuestionsRange"][0] for t in targets)
+    max_tech = sum(t["estimatedQuestionsRange"][1] for t in targets)
+    star_turns = 1 if config.t_behavioral > 0 else 0
+    min_frozen = config.n_onboarding + min_tech + star_turns
+    max_frozen = config.n_onboarding + max_tech + star_turns
+
+    plan = {
+        "policyVersion": PLANNER_POLICY_VERSION_DYNAMIC,
+        "sessionDurationMinutes": duration_minutes,
+        "sessionDurationSeconds": total_session_seconds,
+        "onboardingReserveSeconds": t_onboarding,
+        "cvStandaloneReserveSeconds": config.t_cv_standalone_reserve,
+        "behavioralReserveSeconds": config.t_behavioral,
+        "probePoolSeconds": t_probe_pool,
+        "closingReserveSeconds": config.t_closing_reserve,
+        "techPoolSeconds": tech_pool_seconds,
+        "unallocatedBufferSeconds": unallocated_buffer_seconds,
+        "difficulty": derive_difficulty(job, listing=listing),
+        "sections": build_sections(duration_minutes),
+        "targets": targets,
+        "nonInterviewedTargets": non_interviewed_targets,
+        "evaluationTargets": evaluation_targets,
+        "nonCompetencyRequirementIds": non_competency_requirement_ids,
+        "estimatedTurnsRange": {
+            "estimatedFrozenTurnsRange": [min_frozen, max_frozen],
+            "estimatedTotalInteractionTurnsRange": [min_frozen, None],
+        },
+        "candidateMatrix": {
+            "strengthsToVerify": strengths_to_verify,
+            "gapCompetencies": gap_competencies,
+        },
+    }
+    canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    plan["fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return plan
+
+
+def derive_competency_plan(
+    *,
+    job: CanonicalJob,
+    match: MatchResult,
+    duration_minutes: int,
+    policy_config: PlannerPolicyConfig | None = None,
+    listing: Mapping[str, Any] | None = None,
+    focus_area: str | None = None,
+    reask: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Build a deterministic competency agenda from canonical requirements.
+
+    When `policy_config` is None, executes the strict legacy allocation algorithm
+    (policyVersion "interview-planner-v1") to preserve full backward compatibility
+    for existing callers without imposing unapproved Product assumptions.
+
+    When `policy_config` is explicitly provided, executes the Gate 2 dynamic time
+    envelope allocation algorithm (policyVersion "interview-planner-v2-dynamic").
+    """
+    if policy_config is None:
+        return _derive_competency_plan_legacy(
+            job=job,
+            match=match,
+            duration_minutes=duration_minutes,
+            listing=listing,
+            focus_area=focus_area,
+            reask=reask,
+        )
+    return _derive_competency_plan_dynamic(
+        job=job,
+        match=match,
+        duration_minutes=duration_minutes,
+        config=policy_config,
+        listing=listing,
+    )
+
+
+def configured_planner_policy() -> PlannerPolicyConfig | None:
+    """Load an explicitly approved dynamic policy from application settings.
+
+    Raises `PlannerPolicyConfigurationError` on a bad deployment configuration so
+    callers can separate "this server is misconfigured" (500, and a failed boot)
+    from "this plan is already locked" (409 on the candidate's request).
+    """
+    settings = get_settings()
+    if not settings.interview_dynamic_planner_enabled:
+        return None
+    raw = settings.interview_planner_policy_json
+    if not raw or not raw.strip():
+        raise PlannerPolicyConfigurationError(
+            "INTERVIEW_PLANNER_POLICY_JSON is required when dynamic interview planning is enabled"
+        )
+    try:
+        return PlannerPolicyConfig.model_validate_json(raw)
+    except ValidationError as exc:
+        raise PlannerPolicyConfigurationError("INTERVIEW_PLANNER_POLICY_JSON is invalid") from exc
+
+
+async def _load_resume(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    resume_id: str,
+) -> tuple[CanonicalResume, str | None]:
+    result = await db.execute(
+        text(
+            "SELECT parsed_data, raw_text, checksum FROM user_cvs "
+            "WHERE id = :id AND user_id = :uid"
+        ),
+        {"id": resume_id, "uid": user_id},
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        raise ValueError("CV not found")
+    if not row["parsed_data"]:
+        raise ValueError("CV canonical parsing is incomplete")
+    try:
+        resume = CanonicalResume.model_validate(row["parsed_data"]).model_copy(
+            update={"raw_text": row["raw_text"] or ""}
+        )
+    except ValidationError as exc:
+        raise ValueError("CV canonical data is invalid") from exc
+    return resume, row["checksum"]
+
+
+async def _load_job(
+    db: AsyncSession,
+    *,
+    user: dict,
+    job_id: str,
+) -> CanonicalJob:
+    filters = ["id = :id", "item_type = 'JOB_DESCRIPTION'"]
+    if "ADMIN" not in user.get("roles", []):
+        filters.append("listing_status = 'ACTIVE'")
+    result = await db.execute(
+        text(
+            "SELECT structured_data, active_version_id FROM job_descriptions WHERE "
+            + " AND ".join(filters)
+        ),
+        {"id": job_id},
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        raise ValueError("Job description not found")
+    if not row["structured_data"]:
+        raise ValueError("Job canonical parsing is incomplete")
+    try:
+        parsed = CanonicalJobDescription.model_validate(row["structured_data"])
+        job = canonical_job_from_description(
+            parsed,
+            job_id=job_id,
+            job_version_id=(str(row["active_version_id"]) if row["active_version_id"] else None),
+        )
+    except (ValidationError, ValueError) as exc:
+        raise ValueError("Job canonical data is invalid") from exc
+    return job
+
+
+async def _load_job_listing_hints(db: AsyncSession, *, job_id: str) -> dict[str, Any]:
+    """Posting fields the canonical JD lacks but difficulty can use.
+
+    ``seniority`` here is the admin-editable column, so a corrected level wins
+    over the parser; ``title`` and ``experience_min_years`` back it up.
+    """
+    row = (
+        await db.execute(
+            text("SELECT seniority, title, experience_min_years FROM job_descriptions WHERE id = :id"),
+            {"id": job_id},
+        )
+    ).mappings().one_or_none()
+    return dict(row) if row else {}
+
+
+async def _focus_area(db: AsyncSession, *, plan_id: str) -> str | None:
+    """The round the candidate chose to practise, stored when the session was created."""
+    value = (
+        await db.execute(
+            text("SELECT source_context->>'focusArea' FROM interview_session_plans WHERE id = :id"),
+            {"id": plan_id},
+        )
+    ).scalar_one_or_none()
+    return value if value in FOCUSABLE_AREAS else None
+
+
+async def _requested_reask(db: AsyncSession, *, plan_id: str) -> list[dict[str, Any]]:
+    """The skill the candidate chose with "Luyện lại ý này", stored when the session was created."""
+    try:
+        value = (
+            await db.execute(
+                text("SELECT source_context->>'reaskConceptId' FROM interview_session_plans WHERE id = :id"),
+                {"id": plan_id},
+            )
+        ).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 - a hint for the plan, never a blocker
+        await db.rollback()
+        return []
+    return [{"conceptId": str(value), "points": []}] if value else []
+
+
+async def _due_reask(db: AsyncSession, *, user_id: str, job_id: str) -> list[dict[str, Any]]:
+    """Skills of this position with a missed point due for practice again.
+
+    From the progress Sổ ôn tập (``progress.gap_notebook``: 7, 14, then 30 days
+    after the point was last asked). Most often missed first. Never blocks a
+    plan: on any error the session is planned without a re-ask.
+    """
+    try:
+        from src.modules.interviews.application.progress import load_progress
+
+        progress = await load_progress(db, user_id)
+    except Exception:  # noqa: BLE001 - progress is a hint for the plan, not a requirement
+        await db.rollback()
+        return []
+    by_concept: dict[str, dict[str, Any]] = {}
+    for gap in (progress.get("gaps") or {}).get("open") or []:
+        key = str(gap.get("skillKey") or "")
+        if not gap.get("due") or key.startswith("label:") or gap["lastSeen"].get("jobId") != job_id:
+            continue
+        entry = by_concept.setdefault(key, {"conceptId": key, "points": [], "missed": 0})
+        entry["points"].append(gap["point"])
+        entry["missed"] = max(entry["missed"], int(gap.get("timesMissed") or 0))
+    ranked = sorted(by_concept.values(), key=lambda item: -item["missed"])
+    return [{"conceptId": item["conceptId"], "points": item["points"]} for item in ranked]
+
+
+async def evaluate_session_match(
+    *,
+    db: AsyncSession,
+    user: dict,
+    resume_id: str,
+    job_id: str,
+) -> MatchResult:
+    """Match the CV against the job exactly as the plan does (same cache)."""
+    resume, _checksum = await _load_resume(db, user_id=user["sub"], resume_id=resume_id)
+    job = await _load_job(db, user=user, job_id=job_id)
+    return await evaluate_match(
+        MatchRequest(
+            schemaVersion="2.1",
+            resume=resume,
+            job=job,
+            asyncProcessing=False,
+        )
+    )
+
+
+async def build_and_persist_session_plan(
+    *,
+    db: AsyncSession,
+    user: dict,
+    session_row: dict,
+) -> dict[str, Any]:
+    plan_id = session_row.get("plan_id")
+    if not plan_id:
+        raise ValueError("Interview session has no plan container")
+    if session_row.get("plan_status") == "LOCKED":
+        raise RuntimeError("Interview plan is already locked")
+
+    resume, resume_checksum = await _load_resume(
+        db,
+        user_id=user["sub"],
+        resume_id=session_row["resume_id"],
+    )
+    job = await _load_job(db, user=user, job_id=session_row["job_id"])
+
+    match = await evaluate_match(
+        MatchRequest(
+            schemaVersion="2.1",
+            resume=resume,
+            job=job,
+            asyncProcessing=False,
+        )
+    )
+    # Checked again here, not only when the session is created: a session made
+    # before the threshold existed, or before it was raised, must not open.
+    entry = evaluate_entry(match)
+    if not entry.allowed:
+        trace_event(
+            "interviewer",
+            "plan_blocked_by_match_threshold",
+            session_id=session_row.get("id"),
+            **entry.trace_fields(),
+        )
+        raise InterviewEntryBlocked(entry)
+    plan = derive_competency_plan(
+        job=job,
+        match=match,
+        duration_minutes=session_row["duration_minutes"],
+        policy_config=configured_planner_policy(),
+        listing=await _load_job_listing_hints(db, job_id=session_row["job_id"]),
+        focus_area=await _focus_area(db, plan_id=str(plan_id)),
+        reask=await _requested_reask(db, plan_id=str(plan_id))
+        + await _due_reask(db, user_id=str(user["sub"]), job_id=str(session_row["job_id"])),
+    )
+    # Practice tier from the match score (entry_gate): basic is one level
+    # easier than the job, challenge one level harder and probes sufficient
+    # answers too. Everyone practises; the score decides the level.
+    plan["difficulty"] = fit_adjusted_difficulty(plan.get("difficulty") or {}, entry)
+    plan["practiceTier"] = entry.tier
+    plan.pop("fingerprint", None)
+    canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    plan["fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    difficulty = plan.get("difficulty") or {}
+    trace_event(
+        "interviewer",
+        "plan_derived",
+        difficulty_level=difficulty.get("level"),
+        difficulty_source=difficulty.get("source"),
+        difficulty_job_level=difficulty.get("jobLevel"),
+        entry_warnings=list(entry.warnings),
+        practice_tier=entry.tier,
+        session_id=session_row.get("id"),
+        resume_id=session_row.get("resume_id"),
+        job_id=session_row.get("job_id"),
+        matching_decision=match.decision,
+        question_budget=plan.get("questionBudget"),
+        targets_count=len(plan.get("targets", [])),
+    )
+
+    # Re-acquire the plan row under a write lock immediately before
+    # persistence. Matching can take time, so the session snapshot received by
+    # the router may be stale by now (for example P2 could have LOCKED the plan).
+    # Serializing only the persistence phase keeps rebuilds idempotent without
+    # holding a database lock during matching/provider work.
+    locked_plan_result = await db.execute(
+        text(
+            "SELECT status, source_context FROM interview_session_plans "
+            "WHERE id = :id AND session_id = :session_id FOR UPDATE"
+        ),
+        {"id": plan_id, "session_id": session_row["id"]},
+    )
+    locked_plan = locked_plan_result.mappings().one_or_none()
+    if locked_plan is None:
+        raise ValueError("Interview plan not found")
+    if locked_plan["status"] == "LOCKED":
+        raise RuntimeError("Interview plan is already locked")
+
+    existing_context = locked_plan["source_context"] or {}
+    source_context = {
+        **existing_context,
+        "resumeId": session_row["resume_id"],
+        "resumeChecksum": resume_checksum,
+        "jobId": session_row["job_id"],
+        "jobVersionId": job.job_version_id,
+        "jobDocumentSha256": job.document_sha256,
+        "matchingPipelineVersion": match.pipeline_version,
+        "matchingPolicyVersion": match.policy_version,
+        "matchingDecision": match.decision,
+        "eligibility": match.eligibility,
+        "fitBand": match.fit_band,
+        "matchPercent": entry.percentage,
+        "entryWarnings": list(entry.warnings),
+        "practiceTier": entry.tier,
+        "plannerPolicyVersion": plan["policyVersion"],
+        "questionBudget": plan.get("questionBudget"),
+        "nonCompetencyRequirementIds": plan["nonCompetencyRequirementIds"],
+        "projectEvidences": [p.to_dict() for p in extract_project_evidences(
+            projects_data=resume.projects,
+            job_requirements=job.requirements,
+            cv_skills=resume.skills,
+        )] if hasattr(resume, "projects") and resume.projects else [],
+    }
+
+    await db.execute(
+        text("DELETE FROM session_competency_targets WHERE plan_id = :plan_id"),
+        {"plan_id": plan_id},
+    )
+    for target in plan["targets"]:
+        await db.execute(
+            text(
+                "INSERT INTO session_competency_targets "
+                "(id, plan_id, selection_rank, taxonomy_version, concept_id, label, "
+                "importance, target_question_count, rationale) "
+                "VALUES (:id, :plan_id, :selection_rank, :taxonomy_version, :concept_id, "
+                ":label, :importance, :question_count, CAST(:rationale AS jsonb))"
+            ),
+            {
+                "id": str(uuid4()),
+                "plan_id": plan_id,
+                "selection_rank": target["selectionRank"],
+                "taxonomy_version": target["taxonomyVersion"],
+                "concept_id": target["conceptId"],
+                "label": target["label"],
+                "importance": target["importance"],
+                "question_count": target["targetQuestionCount"],
+                "rationale": json.dumps(target["rationale"]),
+            },
+        )
+
+    await db.execute(
+        text(
+            "UPDATE interview_session_plans "
+            "SET status = 'READY', source_context = CAST(:context AS jsonb), "
+            "plan_payload = CAST(:plan_payload AS jsonb), updated_at = now() "
+            "WHERE id = :id"
+        ),
+        {
+            "id": plan_id,
+            "context": json.dumps(source_context),
+            "plan_payload": json.dumps(plan),
+        },
+    )
+    await db.commit()
+
+    return await read_session_plan(db=db, plan_id=plan_id, session_id=session_row["id"])
+
+
+async def read_session_plan(
+    *,
+    db: AsyncSession,
+    plan_id: str,
+    session_id: str,
+) -> dict[str, Any]:
+    plan_result = await db.execute(
+        text(
+            "SELECT id, schema_version, status, source_context, plan_payload, created_at, updated_at "
+            "FROM interview_session_plans WHERE id = :id AND session_id = :session_id"
+        ),
+        {"id": plan_id, "session_id": session_id},
+    )
+    plan_row = plan_result.mappings().one_or_none()
+    if plan_row is None:
+        raise ValueError("Interview plan not found")
+
+    targets_result = await db.execute(
+        text(
+            "SELECT selection_rank, taxonomy_version, concept_id, label, importance, "
+            "target_question_count, rationale "
+            "FROM session_competency_targets WHERE plan_id = :plan_id "
+            "ORDER BY selection_rank NULLS LAST, importance DESC, taxonomy_version, concept_id"
+        ),
+        {"plan_id": plan_id},
+    )
+    targets = [
+        {
+            "selectionRank": row["selection_rank"],
+            "taxonomyVersion": row["taxonomy_version"],
+            "conceptId": row["concept_id"],
+            "label": row["label"],
+            "importance": float(row["importance"]),
+            "targetQuestionCount": row["target_question_count"],
+            "rationale": row["rationale"],
+        }
+        for row in targets_result.mappings().all()
+    ]
+    context = plan_row["source_context"] or {}
+    payload = plan_row["plan_payload"] or {}
+    return {
+        "planId": plan_row["id"],
+        "sessionId": session_id,
+        "schemaVersion": plan_row["schema_version"],
+        "status": plan_row["status"],
+        "policyVersion": payload.get("policyVersion") or context.get("plannerPolicyVersion"),
+        "fingerprint": payload.get("fingerprint"),
+        "questionBudget": payload.get("questionBudget") or context.get("questionBudget"),
+        "targetQuestionCount": sum(item["targetQuestionCount"] for item in targets),
+        # The dynamic selector fills each time envelope (up to the target's
+        # estimatedQuestionsRange), so the frozen count can exceed the P1
+        # estimate above. Once LOCKED this is the number actually asked.
+        "frozenTechnicalQuestionCount": (payload.get("questionSelection") or {}).get("technicalQuestionCount"),
+        "difficulty": payload.get("difficulty"),
+        "sections": payload.get("sections", []),
+        "evaluationTargets": payload.get("evaluationTargets", []),
+        "sourceContext": context,
+        "targets": targets,
+        "createdAt": plan_row["created_at"].isoformat(),
+        "updatedAt": plan_row["updated_at"].isoformat(),
+    }

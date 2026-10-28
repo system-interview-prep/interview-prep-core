@@ -1,5 +1,8 @@
 from pydantic import BaseModel, Field, field_validator
+
 from src.modules.taxonomy.constants import CONCEPT_KINDS, RELATION_TYPES
+
+
 class TaxonomyVersionUpsert(BaseModel):
     version: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{1,80}$")
     priority: int = 0

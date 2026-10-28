@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 
+from src.core.pipeline_events import ai_call_timer, caller_purpose
 from src.modules.ai.config import ModelServiceConfig, get_model_service_config
 
 
@@ -60,6 +61,18 @@ class ModelServiceClient:
             "temperature": request.temperature,
         }
         headers = {"Authorization": f"Bearer {self._config.api_key}"}
+        timer = ai_call_timer(
+            caller_purpose(),
+            provider="model_service",
+            model=self._config.base_url,
+            input_text=request.input_text,
+        )
+        with timer as call:
+            text = await self._post_generate(payload, headers)
+            call.done(text)
+        return text
+
+    async def _post_generate(self, payload: dict[str, Any], headers: dict[str, str]) -> str:
         try:
             async with httpx.AsyncClient(timeout=self._config.timeout_seconds, transport=self._transport) as client:
                 response = await client.post(f"{self._config.base_url}/generate", json=payload, headers=headers)

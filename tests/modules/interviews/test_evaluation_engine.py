@@ -3,7 +3,10 @@ import json
 import unittest
 from unittest.mock import AsyncMock
 
-from src.modules.interviews.evaluation.evaluation_engine import InterviewEvaluationEngine
+from src.modules.interviews.evaluation.evaluation_engine import (
+    EvaluationGradingError,
+    InterviewEvaluationEngine,
+)
 from src.modules.interviews.evaluation.evaluation_types import (
     CompetencyScore,
     DecisionRecommendation,
@@ -96,6 +99,19 @@ class TestInterviewEvaluationEngine(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Kubernetes", instructions)
         self.assertIn("Microservices", instructions)
 
+    def test_voice_prompt_discloses_stt_provenance_and_forbids_repair(self):
+        engine = InterviewEvaluationEngine()
+        voice_input = self.sample_turn_input.model_copy(
+            update={"source_modality": "VOICE", "transcript_confidence": None}
+        )
+
+        instructions, user_content = engine.get_turn_evaluation_prompt(voice_input)
+
+        self.assertIn("VOICE TRANSCRIPT SAFETY", instructions)
+        self.assertIn("Never translate, repair, infer, or invent", instructions)
+        self.assertIn("Answer source: VOICE", user_content)
+        self.assertIn("not supplied by provider", user_content)
+
     async def test_evaluate_turn_fallback_on_invalid_json(self):
         """3. Kiểm tra cơ chế Fallback an toàn khi LLM trả về dữ liệu lỗi / JSON không hợp lệ."""
         mock_llm = MockLLM(text_payload="Invalid non-json output from LLM...")
@@ -103,11 +119,23 @@ class TestInterviewEvaluationEngine(unittest.IsolatedAsyncioTestCase):
 
         result = await engine.evaluate_turn(self.sample_turn_input)
 
-        # Engine không được quăng exception mà phải trả về fallback object an toàn
+        # Không quăng exception ở mức turn, nhưng cũng không bịa ra điểm 5.0:
+        # lượt bị đánh dấu chưa chấm được.
         self.assertEqual(result.turn_id, "turn-1")
-        self.assertEqual(result.score, 5.0)
+        self.assertFalse(result.graded)
         self.assertFalse(result.star_analysis.is_star_complete)
-        self.assertIn("Không thể phân tích dữ liệu", result.feedback)
+
+    async def test_evaluate_session_refuses_report_when_a_turn_cannot_be_graded(self):
+        """H6: an LLM outage must not produce (and persist) a fake 5.0/CONSIDER report."""
+        engine = InterviewEvaluationEngine(llm_client=MockLLM(text_payload="Invalid non-json output"))
+        with self.assertRaises(EvaluationGradingError):
+            await engine.evaluate_session("sess-1", [self.sample_turn_input])
+
+    async def test_evaluate_turn_rejects_response_without_score(self):
+        """A JSON reply without a score is a grader failure, not a midpoint score."""
+        engine = InterviewEvaluationEngine(llm_client=MockLLM(text_payload=json.dumps({"feedback": "ok"})))
+        result = await engine.evaluate_turn(self.sample_turn_input)
+        self.assertFalse(result.graded)
 
     async def test_aggregate_session_scoring_and_radar_chart(self):
         """4. Kiểm tra tổng hợp điểm theo Competency phục vụ vẽ Radar Chart trên Frontend."""
@@ -153,6 +181,32 @@ class TestInterviewEvaluationEngine(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(comp_map["PostgreSQL"], 8.5)
         # System Design: 7.0
         self.assertEqual(comp_map["System Design"], 7.0)
+
+    async def test_overall_score_is_weighted_and_skips_zero_weight_turns(self):
+        """Điểm tổng theo trọng số competency; WARM_UP (trọng số 0) không kéo điểm."""
+        llm = MockLLM(json_payload={"recruiter_summary": "S", "candidate_feedback": "F",
+                                    "next_round_topics": [], "red_flags": []})
+        engine = InterviewEvaluationEngine(llm_client=llm)
+        turn_inputs = [
+            TurnEvaluationInput(turn_id="w", turn_index=0, competency="Khởi động",
+                                question_prompt="Q", candidate_answer="A", weight=0.0),
+            TurnEvaluationInput(turn_id="a", turn_index=1, competency="Node.js",
+                                question_prompt="Q", candidate_answer="A", weight=3.0),
+            TurnEvaluationInput(turn_id="b", turn_index=2, competency="STAR",
+                                question_prompt="Q", candidate_answer="A", weight=1.0),
+        ]
+        evaluations = [
+            TurnEvaluationResult(turn_id="w", score=0.0),
+            TurnEvaluationResult(turn_id="a", score=8.0),
+            TurnEvaluationResult(turn_id="b", score=4.0),
+        ]
+        result = await engine.aggregate_session_evaluation("s", evaluations, turn_inputs)
+        # (8×3 + 4×1) / 4 = 7.0; the old plain mean was (0 + 8 + 4) / 3 = 4.0.
+        self.assertEqual(result.overall_score, 7.0)
+        self.assertEqual(result.decision_recommendation, DecisionRecommendation.PASS)
+
+        only_warmup = await engine.aggregate_session_evaluation("s", evaluations[:1], turn_inputs[:1])
+        self.assertEqual(only_warmup.overall_score, 0.0)
 
     def test_decision_thresholds(self):
         """5. Kiểm tra phân loại ngưỡng quyết định (STRONG_PASS, PASS, CONSIDER, REJECT)."""
@@ -211,3 +265,35 @@ class TestInterviewEvaluationEngine(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConcurrentGrading(unittest.IsolatedAsyncioTestCase):
+    async def test_grading_is_bounded_and_keeps_turn_order(self):
+        """M7: turns are graded in parallel (bounded) and reported in session order."""
+        import asyncio
+
+        in_flight = 0
+        peak = 0
+
+        class _SlowLLM:
+            async def generate_json(self, system_prompt: str, user_content: str):
+                nonlocal in_flight, peak
+                in_flight += 1
+                peak = max(peak, in_flight)
+                await asyncio.sleep(0.01)
+                in_flight -= 1
+                return {"score": 7}
+
+        engine = InterviewEvaluationEngine(llm_client=_SlowLLM())
+        turns = [
+            TurnEvaluationInput(
+                turn_id=f"t{i}", turn_index=i, competency=f"C{i}",
+                question_prompt="Q", candidate_answer="A", weight=1.0,
+            )
+            for i in range(9)
+        ]
+        result = await engine.evaluate_session("sess", turns)
+
+        self.assertLessEqual(peak, InterviewEvaluationEngine.GRADING_CONCURRENCY)
+        self.assertGreater(peak, 1)
+        self.assertEqual([te.turn_id for te in result.turn_evaluations], [t.turn_id for t in turns])

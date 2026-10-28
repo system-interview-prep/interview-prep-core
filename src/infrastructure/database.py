@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from src.core.config import get_settings
 
@@ -22,6 +23,17 @@ engine: AsyncEngine = create_async_engine(
     pool_pre_ping=True,
 )
 SessionFactory = async_sessionmaker(engine, expire_on_commit=False)
+
+# For code that runs its own event loop (asyncio.run inside a threadpool
+# thread). The pooled engine above hands out asyncpg connections bound to the
+# server's loop; reusing one from another loop corrupts it ("attached to a
+# different loop", "connection was closed in the middle of operation") and took
+# the API worker down. Unpooled: every session opens and closes its own
+# connection on the calling loop.
+StandaloneSessionFactory = async_sessionmaker(
+    create_async_engine(_async_database_url(get_settings().database_url), poolclass=NullPool),
+    expire_on_commit=False,
+)
 
 
 async def get_db() -> AsyncIterator[AsyncSession]:

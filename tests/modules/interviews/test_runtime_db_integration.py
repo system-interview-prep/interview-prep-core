@@ -6,13 +6,13 @@ from fastapi import HTTPException
 from sqlalchemy import text
 
 from src.infrastructure.database import SessionFactory, engine
-from src.modules.interviews.router import (
+from src.modules.interviews.api.router import (
     CreateInterviewSession,
     close_interview_session,
     create_interview_session,
     get_interview_session,
 )
-from src.modules.sessions.router import close_session as legacy_close_session
+from src.modules.interviews.api.session_router import close_session as legacy_close_session
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_DB_INTEGRATION_TESTS") != "1",

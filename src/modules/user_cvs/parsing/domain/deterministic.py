@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from hashlib import sha1
 from typing import Protocol
 
+from src.modules.taxonomy.facade import alias_pattern, skill_aliases
 from src.modules.user_cvs.domain.schemas import (
     CanonicalResume,
     EvidenceSpan,
@@ -27,77 +28,11 @@ from src.modules.user_cvs.parsing.domain.structured import (
     ProjectExtractor,
 )
 
-PARSER_VERSION = "deterministic-resume-v5"
+PARSER_VERSION = "deterministic-resume-v6"
 TAXONOMY_VERSION = "internal-2026.1"
 
-_SKILLS = {
-    "skill-python": ("Python", ("python",)),
-    "skill-java": ("Java", ("java",)),
-    "skill-spring-boot": ("Spring Boot", ("spring boot", "springboot")),
-    "skill-javascript": ("JavaScript", ("javascript", "js")),
-    "skill-typescript": ("TypeScript", ("typescript",)),
-    "skill-react": ("React", ("react", "reactjs", "react.js")),
-    "skill-fastapi": ("FastAPI", ("fastapi",)),
-    "skill-postgresql": ("PostgreSQL", ("postgresql", "postgres")),
-    "skill-docker": ("Docker", ("docker",)),
-    "skill-kubernetes": ("Kubernetes", ("kubernetes", "k8s")),
-    "skill-aws": ("AWS", ("aws", "amazon web services")),
-    "skill-azure": ("Microsoft Azure", ("azure", "microsoft azure")),
-    "skill-gcp": ("Google Cloud Platform", ("gcp", "google cloud platform")),
-    "skill-git": ("Git", ("git",)),
-    "skill-sql": ("SQL", ("sql",)),
-    "skill-mysql": ("MySQL", ("mysql",)),
-    "skill-oracle": ("Oracle Database", ("oracle", "oracle database")),
-    "skill-mongodb": ("MongoDB", ("mongodb",)),
-    "skill-linux": ("Linux", ("linux",)),
-    "skill-html": ("HTML", ("html",)),
-    "skill-css": ("CSS", ("css",)),
-    "skill-php": ("PHP", ("php",)),
-    "skill-cpp": ("C++", ("c++",)),
-    "skill-csharp": ("C#", ("c#",)),
-    "skill-dotnet": (".NET", (".net", "dotnet")),
-    "skill-angular": ("Angular", ("angular", "angularjs", "angular.js")),
-    "skill-nodejs": ("Node.js", ("node.js", "nodejs")),
-    "skill-django": ("Django", ("django",)),
-    "skill-flask": ("Flask", ("flask",)),
-    "skill-tensorflow": ("TensorFlow", ("tensorflow",)),
-    "skill-numpy": ("NumPy", ("numpy",)),
-    "skill-pandas": ("pandas", ("pandas",)),
-    "skill-excel": ("Microsoft Excel", ("excel", "ms excel", "microsoft excel")),
-    "skill-ms-office": ("Microsoft Office", ("ms office", "microsoft office")),
-    "skill-autocad": ("AutoCAD", ("autocad",)),
-    "skill-jira": ("Jira", ("jira",)),
-    "skill-selenium": ("Selenium", ("selenium",)),
-    "skill-android": ("Android", ("android",)),
-    "skill-ios": ("iOS", ("ios",)),
-    "skill-unity": ("Unity", ("unity",)),
-    "skill-json": ("JSON", ("json",)),
-    "skill-xml": ("XML", ("xml",)),
-    "skill-http": ("HTTP", ("http",)),
-    "skill-rest-api": ("REST API", ("rest", "rest api", "restful api")),
-    "skill-artificial-intelligence": ("Artificial Intelligence", ("artificial intelligence", "ai")),
-    "skill-machine-learning": ("Machine Learning", ("machine learning", "ml")),
-    "skill-natural-language-processing": (
-        "Natural Language Processing",
-        ("natural language processing", "nlp"),
-    ),
-    "skill-generative-ai": ("Generative AI", ("generative ai", "genai", "gen ai")),
-    "skill-large-language-models": (
-        "Large Language Models",
-        ("large language models", "large language model", "llms", "llm"),
-    ),
-    "skill-retrieval-augmented-generation": (
-        "Retrieval-Augmented Generation",
-        ("retrieval-augmented generation", "retrieval augmented generation", "rag"),
-    ),
-    "skill-langgraph": ("LangGraph", ("langgraph",)),
-    "skill-gemini": ("Gemini", ("gemini", "google gemini")),
-    "skill-bm25": ("BM25", ("bm25",)),
-    "skill-tf-idf": ("TF-IDF", ("tf-idf", "tf idf")),
-    "skill-reciprocal-rank-fusion": ("Reciprocal Rank Fusion", ("reciprocal rank fusion", "rrf")),
-    "skill-named-entity-recognition": ("Named Entity Recognition", ("named entity recognition", "ner")),
-    "skill-semantic-search": ("Semantic Search", ("semantic search",)),
-}
+# Shared with the CV parser and the seeded taxonomy; see taxonomy.skill_catalog.
+_SKILLS = skill_aliases()
 
 _EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\w.-])")
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+84|0)(?:[ .-]?\d){9,10}(?!\d)")
@@ -133,15 +68,38 @@ _LANGUAGE_RE = re.compile(
 )
 
 
+_NAME_WORD_RE = re.compile(r"[A-Za-zÀ-ỹĐđ'.-]+")
+
+
+def _looks_like_person_name(value: str) -> bool:
+    words = value.split()
+    return (
+        2 <= len(words) <= 5
+        and all(_NAME_WORD_RE.fullmatch(word) for word in words)
+        and not _NAME_TITLE_WORDS.intersection(word.casefold() for word in words)
+    )
+
+
+def candidate_name_from_text(text: str) -> str | None:
+    """The candidate's name from CV text: a "Họ tên:" label, else a name line at the top.
+
+    Same rules as the parser's identity extraction. The canonical resume is
+    PII-free, so callers that must address the candidate read it from raw text.
+    """
+    labelled = _NAME_RE.search(text or "")
+    if labelled:
+        return labelled.group("value").strip() or None
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return next((line for line in lines[:5] if _looks_like_person_name(line)), None)
+
+
 def _evidence_id(kind: str, start: int, end: int) -> str:
     digest = sha1(f"{kind}:{start}:{end}".encode(), usedforsecurity=False).hexdigest()[:12]
     return f"ev-{kind}-{digest}"
 
 
 def _pattern(alias: str) -> re.Pattern[str]:
-    if alias.lower() in {"js"}:
-        return re.compile(rf"(?<![\w.]){re.escape(alias)}(?![\w])", re.IGNORECASE)
-    return re.compile(rf"(?<![\w]){re.escape(alias)}(?![\w])", re.IGNORECASE)
+    return alias_pattern(alias)
 
 
 @dataclass
@@ -180,24 +138,52 @@ class TaxonomySkillExtractor:
         self._taxonomy_version = taxonomy_version
 
     def extract(self, source: SourceDocument, mapper: EvidenceMapper, draft: ResumeDraft) -> None:
+        eligible_texts: list[tuple[int, str]] = []
+        for block in source.blocks:
+            if block.section in {"education", "languages"}:
+                continue
+            text = block.text
+            offset = 0
+            if block.section == "employment":
+                # In compact/plain-text CVs the job title, employer and date
+                # can be rendered as one block.  Keep any responsibility text
+                # after the date, but do not treat the title itself as a
+                # skill declaration.
+                date_marker = re.search(r"\b(?:19|20)\d{2}\b", text)
+                if date_marker is not None:
+                    offset = date_marker.end()
+            if text[offset:].strip():
+                eligible_texts.append((block.char_start + offset, text[offset:]))
+
         for concept_id, (label, aliases) in self._taxonomy.items():
-            matches = [match for alias in aliases for match in _pattern(alias).finditer(source.text)]
+            # A job title such as "Azure Data Engineer" or "Java Developer"
+            # is not, by itself, an explicit skill claim.  Restrict taxonomy
+            # evidence to claim-bearing sections so employment titles and
+            # education text do not create false-positive skills.  ``other``
+            # remains eligible because many compact CVs have no section
+            # heading and put their skills in the opening content blocks.
+            matches = [
+                (offset + match.start(), offset + match.end())
+                for offset, text in eligible_texts
+                for alias in aliases
+                for match in _pattern(alias).finditer(text)
+            ]
             if not matches:
                 continue
-            matches.sort(key=lambda item: (item.start(), -(item.end() - item.start())))
+            matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
             refs: list[str] = []
-            for match in matches:
-                evidence_id = _evidence_id("skill", match.start(), match.end())
+            for start, end in matches:
+                evidence_id = _evidence_id("skill", start, end)
                 draft.evidence.setdefault(
                     evidence_id,
                     mapper.from_offsets(
                         evidence_id=evidence_id,
-                        char_start=match.start(),
-                        char_end=match.end(),
+                        char_start=start,
+                        char_end=end,
                     ),
                 )
                 refs.append(evidence_id)
-            first = matches[0]
+            first_start, first_end = matches[0]
             draft.skills.append(
                 SkillClaim(
                     claimId=f"claim-{concept_id}",
@@ -207,7 +193,7 @@ class TaxonomySkillExtractor:
                         taxonomyVersion=self._taxonomy_version,
                         label=label,
                     ),
-                    rawLabel=source.text[first.start() : first.end()],
+                    rawLabel=source.text[first_start:first_end],
                     evidenceRefs=list(dict.fromkeys(refs)),
                     assertionSource="explicit",
                     confidence=1.0,
@@ -325,13 +311,7 @@ class RegexIdentityExtractor:
     def _top_of_document_name(source: SourceDocument) -> IdentityValue | None:
         for block in source.blocks[:5]:
             value = block.text.strip()
-            words = value.split()
-            if (
-                block.page == 1
-                and 2 <= len(words) <= 5
-                and all(re.fullmatch(r"[A-Za-zÀ-ỹĐđ'.-]+", word) for word in words)
-                and not _NAME_TITLE_WORDS.intersection(word.casefold() for word in words)
-            ):
+            if block.page == 1 and _looks_like_person_name(value):
                 return IdentityValue(value=value, charStart=block.char_start, charEnd=block.char_end)
         return None
 

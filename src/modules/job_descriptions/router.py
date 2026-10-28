@@ -15,7 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.config import get_settings
+from src.core.admin_audit import record_admin_action
 from src.core.security import current_user, require_admin
 from src.infrastructure.database import SessionFactory, get_db
 from src.infrastructure.r2 import delete_object, get_object, public_url, put_object
@@ -27,6 +27,7 @@ from src.modules.documents.facade import (
     InvalidDocumentFile,
     status_event_stream,
 )
+from src.modules.interviews.facade import enqueue_question_coverage
 from src.modules.job_descriptions.domain.schemas import CanonicalJobDescription
 
 _inner_router = APIRouter(tags=["job-descriptions"])
@@ -802,6 +803,8 @@ async def finalize_upload(
         await db.rollback()
         raise
 
+    if listing_status == "ACTIVE":
+        enqueue_question_coverage([upload_id])
     return await _get(db, upload_id)
 
 
@@ -999,7 +1002,7 @@ async def get_job_description_version(
 async def publish_job_description_version(
     job_description_id: str,
     version_id: str,
-    _: dict = Depends(require_admin),
+    actor: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     try:
@@ -1048,6 +1051,10 @@ async def publish_job_description_version(
     except Exception:
         await db.rollback()
         raise
+    enqueue_question_coverage([job_description_id])
+    await record_admin_action(
+        db, actor, "PUBLISH_JD", target_id=job_description_id, detail={"versionId": version_id}
+    )
     return await _get(db, job_description_id)
 
 
@@ -1055,7 +1062,7 @@ async def publish_job_description_version(
 async def update_job_description(
     job_description_id: str,
     payload: JobDescriptionPatch,
-    _: dict = Depends(require_admin),
+    actor: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     values = payload.model_dump(exclude_unset=True)
@@ -1108,12 +1115,17 @@ async def update_job_description(
         await db.commit()
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Job description not found")
+        if values.get("listing_status") == "ACTIVE":
+            enqueue_question_coverage([job_description_id])
+        await record_admin_action(
+            db, actor, "EDIT_JD", target_id=job_description_id, detail={"fields": sorted(values)}
+        )
     return await _get(db, job_description_id)
 
 
 @_inner_router.delete("/{job_description_id}")
 async def delete_job_description(
-    job_description_id: str, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
+    job_description_id: str, actor: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ) -> dict:
     result = await db.execute(
         text("DELETE FROM job_descriptions WHERE id = :id AND item_type = 'JOB_DESCRIPTION'"),
@@ -1122,6 +1134,7 @@ async def delete_job_description(
     await db.commit()
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Job description not found")
+    await record_admin_action(db, actor, "DELETE_JD", target_id=job_description_id)
     return {"message": "Deleted"}
 
 
@@ -1129,4 +1142,3 @@ router = APIRouter()
 _LEGACY_PREFIX = "".join(["/admin", "/job", "-profiles"])
 router.include_router(_inner_router, prefix=_LEGACY_PREFIX)
 router.include_router(_inner_router, prefix="/admin/job-descriptions")
-

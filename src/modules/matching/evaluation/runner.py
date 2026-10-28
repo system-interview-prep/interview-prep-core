@@ -21,8 +21,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from src.modules.matching.facade import MatchingFacade
-from src.modules.matching.schemas import MatchRequest
+from src.modules.matching.application.facade import MatchingFacade
+from src.modules.matching.domain.schemas import MatchRequest
 
 DEFAULT_DATASET_DIR = Path(__file__).resolve().parents[5] / "DOC_AND_PLAN" / "data" / "eval" / "matching"
 DEFAULT_DATASET_FILE = "pair_core_v1/legacy/golden_matching_1to1_v1.json"
@@ -92,7 +92,11 @@ def _case_errors(case: dict[str, Any]) -> list[str]:
     return sorted(set(errors))
 
 
-def _load_cases(dataset_dir: Path, dataset_file: str, manifest_file: str = DEFAULT_MANIFEST_FILE) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _load_cases(
+    dataset_dir: Path,
+    dataset_file: str,
+    manifest_file: str = DEFAULT_MANIFEST_FILE,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     cases = json.loads((dataset_dir / dataset_file).read_text(encoding="utf-8"))
     manifest = json.loads((dataset_dir / manifest_file).read_text(encoding="utf-8"))
     if not isinstance(cases, list):

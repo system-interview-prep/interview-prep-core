@@ -35,7 +35,7 @@ from src.modules.interviews.evaluation.evaluation_types import (
     TurnEvaluationInput,
     TurnEvaluationResult,
 )
-from src.modules.interviews.project_evidence import (
+from src.modules.interviews.planning.project_evidence import (
     StructuredProjectEvidence,
     build_project_validation_question,
     extract_project_evidences,
@@ -364,8 +364,7 @@ class TestOfflineEvaluationMatrix(unittest.IsolatedAsyncioTestCase):
             locale="vi",
         )
         self.assertIn("AI Career Assistant", question_text)
-        self.assertIn("FastAPI", question_text)
-        self.assertIn("vai trò", question_text)
+        self.assertIn("trực tiếp làm phần nào", question_text)
 
     # ------------------------------------------------------------------------
     # Part C: Probing and Follow-up Evidence Integration

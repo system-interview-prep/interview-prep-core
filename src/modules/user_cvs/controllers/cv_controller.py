@@ -107,9 +107,12 @@ async def upload_cv(
         logger.exception("CV upload persisted but parse dispatch failed")
         raise HTTPException(status_code=503, detail="CV parsing queue is unavailable") from exc
     try:
-        return (await _query_service(db).get(user["sub"], result.cv_id)).as_response()
+        record = (await _query_service(db).get(user["sub"], result.cv_id)).as_response()
     except CvNotFoundError as exc:
         raise _not_found() from exc
+    # duplicate: the same file was uploaded before, this is that CV (nothing new stored).
+    # renamedFrom: a different file with this name existed, the new CV got a "(2)" name.
+    return {**record, "duplicate": not result.created, "renamedFrom": result.renamed_from}
 
 
 @router.get("")
@@ -117,10 +120,17 @@ async def list_cvs(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     career_code: str | None = Query(default=None, alias="careerCode", min_length=1),
 ) -> dict:
-    records = await _query_service(db).list(user["sub"], limit, career_code)
-    return {"items": [record.as_response() for record in records]}
+    """Newest first. `total` lets clients page with `offset` instead of a fixed cap."""
+    records, total = await _query_service(db).page(user["sub"], limit, offset, career_code)
+    return {
+        "items": [record.as_response() for record in records],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/career-taxonomy")

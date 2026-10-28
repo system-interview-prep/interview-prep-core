@@ -26,10 +26,14 @@ class FakeRepository:
         return self.record if self.record and (user_id, cv_id) == ("user-1", "cv-1") else None
 
     async def list_owned(
-        self, user_id: str, limit: int, career_code: str | None = None
+        self, user_id: str, limit: int, career_code: str | None = None, offset: int = 0
     ) -> list[CvRecord]:
         self.list_request = (user_id, limit, career_code)
-        return [self.record] if self.record and user_id == "user-1" and limit else []
+        self.offset = offset
+        return [self.record] if self.record and user_id == "user-1" and limit and offset == 0 else []
+
+    async def count_owned(self, user_id: str, career_code: str | None = None) -> int:
+        return 1 if self.record and user_id == "user-1" else 0
 
     async def delete_owned(self, user_id: str, cv_id: str) -> CvRecord | None:
         self.deleted = (user_id, cv_id)
@@ -71,6 +75,18 @@ async def test_query_service_passes_career_code_to_repository_filter() -> None:
 
     assert records == [repository.record]
     assert repository.list_request == ("user-1", 50, "technology.software-engineering.backend")
+
+
+async def test_query_service_pages_with_offset_and_reports_total() -> None:
+    repository = FakeRepository(_record())
+    service = CvQueryService(repository, FakeStorage())
+
+    first, total = await service.page("user-1", 10, 0)
+    beyond, total_again = await service.page("user-1", 10, 10)
+
+    assert first == [repository.record] and total == 1
+    assert beyond == [] and total_again == 1
+    assert repository.offset == 10
 
 
 async def test_query_service_exposes_domain_errors_not_http_errors() -> None:

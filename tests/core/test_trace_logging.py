@@ -8,6 +8,7 @@ from src.core.trace_logging import _WORKFLOW_DIRECTORIES, trace_event
 def test_interviewer_workflow_directory_mapping():
     assert _WORKFLOW_DIRECTORIES.get("interviewer") == "interview"
     assert _WORKFLOW_DIRECTORIES.get("interview") == "interview"
+    assert _WORKFLOW_DIRECTORIES.get("clarification") == "hoilai"
 
 
 def test_trace_event_interviewer(monkeypatch, tmp_path):
@@ -35,3 +36,18 @@ def test_trace_event_interviewer(monkeypatch, tmp_path):
     assert record["mode"] == "text"
     assert record["duration_minutes"] == 25
     assert "timestamp" in record
+
+
+def test_trace_event_clarification_uses_hoilai_directory(monkeypatch, tmp_path):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "trace_logs_enabled", True)
+    monkeypatch.setattr(settings, "trace_logs_dir", str(tmp_path))
+
+    trace_event("clarification", "question_generation_exhausted", requirement_id="req-1")
+
+    log_file = tmp_path / "hoilai" / "trace.jsonl"
+    assert log_file.exists()
+    record = json.loads(log_file.read_text(encoding="utf-8").strip())
+    assert record["workflow"] == "clarification"
+    assert record["event"] == "question_generation_exhausted"
+    assert record["requirement_id"] == "req-1"

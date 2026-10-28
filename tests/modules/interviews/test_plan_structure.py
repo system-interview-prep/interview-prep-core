@@ -1,10 +1,10 @@
-from src.modules.interviews.plan_structure import (
+from src.modules.interviews.planning.plan_structure import (
     build_evaluation_targets,
     build_sections,
     derive_difficulty,
     validate_must_have_coverage,
 )
-from src.modules.matching.schemas import (
+from src.modules.matching.domain.schemas import (
     CanonicalJob,
     LanguageRequirement,
     MatchResult,
@@ -60,7 +60,7 @@ def _result(requirement_id: str, status: str, reason: str) -> RequirementResult:
         status=status,
         score=1.0 if status == "met" else None,
         confidence=1.0 if status == "met" else 0.0,
-        evidenceRefs=[],
+        evidenceRefs=[f"cv-{requirement_id}"] if status in {"met", "unknown"} else [],
         reasonCode=reason,
     )
 
@@ -80,13 +80,34 @@ def test_sections_are_deterministic_and_preserve_exact_duration() -> None:
     assert all(item["durationMinutes"] >= 1 for item in first)
 
 
-def test_difficulty_uses_explicit_job_seniority_only() -> None:
+def test_difficulty_uses_explicit_job_seniority_first() -> None:
     assert derive_difficulty(_job(seniority="fresher"))["level"] == "foundational"
     assert derive_difficulty(_job(seniority="mid"))["level"] == "intermediate"
     assert derive_difficulty(_job(seniority="senior"))["level"] == "advanced"
+    # The admin-edited column wins over the parser.
+    assert derive_difficulty(_job(seniority="senior"), listing={"seniority": "junior"}) == {
+        "level": "foundational",
+        "source": "job_listing_seniority",
+        "seniority": "junior",
+    }
+
+
+def test_difficulty_falls_back_to_title_then_required_years() -> None:
+    by_title = derive_difficulty(_job(), listing={"title": "Android Engineer I", "experience_min_years": 4})
+    assert (by_title["level"], by_title["source"]) == ("foundational", "job_title_level")
+    assert derive_difficulty(_job(), listing={"title": "Staff Software Engineer"})["level"] == "advanced"
+    assert derive_difficulty(_job(), listing={"title": "Software Engineer II"})["level"] == "intermediate"
+
+    for years, level in ((1, "foundational"), (2, "intermediate"), (4, "intermediate"), (6, "advanced")):
+        derived = derive_difficulty(_job(), listing={"title": "Backend Software Engineer", "experience_min_years": years})
+        assert (derived["level"], derived["source"]) == (level, "job_min_experience_years")
+
+
+def test_difficulty_default_is_visible_not_silently_off() -> None:
+    # "unspecified" switched difficulty off in the selector for 54 of 55 plans.
     assert derive_difficulty(_job()) == {
-        "level": "unspecified",
-        "source": "job_seniority_missing",
+        "level": "intermediate",
+        "source": "default_no_job_signal",
         "seniority": None,
     }
 

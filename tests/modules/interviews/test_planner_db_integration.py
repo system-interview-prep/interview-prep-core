@@ -8,15 +8,15 @@ from fastapi import HTTPException
 from sqlalchemy import text
 
 from src.infrastructure.database import SessionFactory, engine
-from src.modules.interviews import planner as planner_module
-from src.modules.interviews.router import (
+from src.modules.interviews.planning import planner as planner_module
+from src.modules.interviews.api.router import (
     CreateInterviewSession,
     build_interview_plan,
     create_interview_session,
     get_interview_plan,
 )
 from src.modules.job_descriptions.schemas import CanonicalJobDescription, JobRequirement
-from src.modules.matching.schemas import MatchResult, RequirementResult
+from src.modules.matching.domain.schemas import MatchResult, RequirementResult
 from src.modules.user_cvs.schemas import (
     CanonicalResume,
     EvidenceSpan,
@@ -38,11 +38,23 @@ async def test_planner_persists_grounded_competency_agenda(monkeypatch) -> None:
     checksum = uuid4().hex + uuid4().hex
     user = {"sub": user_id, "email": f"{user_id}@example.test", "roles": ["CANDIDATE"]}
 
+    # `RequirementResult` refuses an `unknown` verdict that cites no CV evidence,
+    # so the resume has to carry the span the verdict points at.
+    cv_evidence = EvidenceSpan(
+        evidenceId="cv-ev-python",
+        documentId="cv-doc",
+        documentSha256="b" * 64,
+        section="experience",
+        text="Python",
+        charStart=0,
+        charEnd=6,
+    )
     resume = CanonicalResume(
         schemaVersion="2.1",
         resumeId=resume_id,
         documentId="cv-doc",
         documentSha256="b" * 64,
+        evidence=[cv_evidence],
     )
     jd_evidence = EvidenceSpan(
         evidenceId="jd-ev-python",
@@ -97,8 +109,9 @@ async def test_planner_persists_grounded_competency_agenda(monkeypatch) -> None:
                     status="unknown",
                     score=None,
                     confidence=0.0,
-                    evidenceRefs=[],
-                    reasonCode="evidence_missing",
+                    evidenceRefs=["cv-ev-python"],
+                    # What matching actually emits for `unknown` with evidence.
+                    reasonCode="generic_requirement_evidence_weak",
                 )
             ],
             factorResults=[],
@@ -106,6 +119,9 @@ async def test_planner_persists_grounded_competency_agenda(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(planner_module, "evaluate_match", fake_run_match)
+    # This match has no score (review required); the entry threshold is tested
+    # in test_entry_gate.py, here only plan persistence is under test.
+    monkeypatch.setenv("INTERVIEW_REQUIRE_MATCH_SCORE", "0")
 
     async with SessionFactory() as db:
         try:
@@ -164,8 +180,9 @@ async def test_planner_persists_grounded_competency_agenda(monkeypatch) -> None:
             plan = await build_interview_plan(created["sessionId"], user=user, db=db)
             assert plan["status"] == "READY"
             assert plan["policyVersion"] == "interview-planner-v1"
-            assert plan["questionBudget"] == 4
-            assert plan["targetQuestionCount"] == 3
+            # 20 minutes: presets (540s) + 2 questions x 240s fit; 4 did not.
+            assert plan["questionBudget"] == 2
+            assert plan["targetQuestionCount"] == 2
             assert plan["targets"][0]["conceptId"] == "skill.python"
             assert plan["targets"][0]["rationale"]["requirementIds"] == ["req-python"]
             assert plan["targets"][0]["rationale"]["matchStatuses"] == ["unknown"]

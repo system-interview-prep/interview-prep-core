@@ -17,10 +17,7 @@
 | user_cvs | upload metadata, S3 key, parse status | matching algorithms |
 | job_profiles | JD metadata, parse status | CV ranking |
 | matching | semantic matching and evidence scoring | user/session authorization |
-| sessions | interview lifecycle | model implementation |
-| chat | message history and orchestration | voice encoding |
-| voice | STT/TTS adapters | interview state |
-| signaling | Socket.IO/WebRTC signaling | video media |
+| interviews | session lifecycle, modality adapters, runtime state | question-bank authoring |
 
 ## Route compatibility checklist
 
@@ -40,9 +37,8 @@
 2. `user_cvs` và `job_profiles`, giữ queue contracts cũ.
 3. Worker parse CV/JD.
 4. Matching facade + scoring endpoint.
-5. Sessions/chat.
-6. Socket.IO signaling/status.
-7. Voice/video-call.
+5. Interviews: sessions, chat, voice, video-call and runtime.
+6. Socket.IO signaling/status as the interview video adapter.
 
 ## Definition of done cho mỗi module
 

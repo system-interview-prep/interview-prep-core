@@ -5,9 +5,11 @@ from src.modules.user_cvs.domain.schemas import (
     CanonicalResume,
     CareerClassification,
     EvidenceSpan,
+    LanguageClaim,
     ParserWarning,
     ParsingMetadata,
     ProficiencyLevel,
+    SkillClaim,
     TaxonomyRef,
 )
 
@@ -16,8 +18,10 @@ __all__ = [
     "CanonicalResume",
     "CareerClassification",
     "EvidenceSpan",
+    "LanguageClaim",
     "ParserWarning",
     "ParsingMetadata",
     "ProficiencyLevel",
+    "SkillClaim",
     "TaxonomyRef",
 ]

@@ -227,7 +227,8 @@ def normalize_text(value: str) -> str:
 def _heading_key(value: str) -> str:
     cleaned = re.sub(r"^[#\s\-*•=]+", "", value)
     cleaned = re.sub(r"^(?:[0-9]+|[ivxlcdm]+)[\s.)\-:]+", "", cleaned, flags=re.IGNORECASE)
-    cleaned = unicodedata.normalize("NFD", cleaned.casefold())
+    # "đ" has no combining-mark decomposition, so NFD alone turned "ĐÃ" into "a".
+    cleaned = unicodedata.normalize("NFD", cleaned.casefold().replace("đ", "d"))
     cleaned = "".join(char for char in cleaned if unicodedata.category(char) != "Mn")
     return re.sub(r"[^a-z0-9 ]+", " ", cleaned).strip()
 
@@ -292,22 +293,41 @@ def _section_for_heading(text: str) -> str | None:
             return section
 
     words = set(key.split())
+    # Vietnamese headings are multi-word ("kinh nghiem"); a set of single words
+    # never contained them, so "KINH NGHIỆM THỰC TẬP" or "CHỨNG CHỈ & NGOẠI NGỮ"
+    # fell into the previous section. Accept a phrase that opens the heading,
+    # or one anywhere in an all-caps heading ("HỌC VẤN & CHỨNG CHỈ").
+    shouty = stripped.upper() == stripped and any(char.isalpha() for char in stripped)
+
+    def has(terms: set[str]) -> bool:
+        for term in terms:
+            if " " not in term:
+                if term in words:
+                    return True
+            elif key == term or (shouty and f" {term} " in f" {key} "):
+                return True
+            elif key.startswith(f"{term} ") and len(key.split()) <= 4 and not re.search(r"\d", key):
+                # Mixed-case lines must look like a short title ("Dự án cá
+                # nhân"), not a sentence ("Kinh nghiệm với Docker 3 năm").
+                return True
+        return False
+
     project_keywords = {"experience", "portfolio", "history", "works", "research", "software", "ai"}
-    if words & {"projects", "du an"} or (words & {"project"} and words & project_keywords):
+    if has({"projects", "du an"}) or (words & {"project"} and words & project_keywords):
         return "projects"
-    if words & {"research", "nghien cuu", "publications", "papers", "bai bao"}:
+    if has({"research", "nghien cuu", "publications", "papers", "bai bao"}):
         return "research"
-    if words & {"competitions", "awards", "hackathons", "cuoc thi", "giai thuong"}:
+    if has({"competitions", "awards", "hackathons", "cuoc thi", "giai thuong"}):
         return "competitions"
-    if words & {"education", "academic", "hoc van", "giao duc", "dao tao"}:
+    if has({"education", "academic", "hoc van", "giao duc", "dao tao"}):
         return "education"
-    if words & {"experience", "employment", "kinh nghiem"}:
+    if has({"experience", "employment", "kinh nghiem"}):
         return "employment"
-    if words & {"certifications", "certificates", "chung chi"}:
+    if has({"certifications", "certificates", "chung chi"}):
         return "certifications"
-    if words & {"languages", "language", "ngoai ngu"}:
+    if has({"languages", "language", "ngoai ngu"}):
         return "languages"
-    if words & {"skills", "technologies", "ky nang"}:
+    if has({"skills", "technologies", "ky nang"}):
         return "skills"
 
     return None
@@ -359,6 +379,35 @@ def _artifact_items(content_list: list[Any]) -> list[tuple[dict[str, Any], int |
     ]
 
 
+def _split_text_lines(text: str, current_section: str) -> list[str]:
+    """Split page-sized items enough to recover headings and education evidence."""
+    segments: list[str] = []
+    current: list[str] = []
+
+    def flush() -> None:
+        block = "\n".join(current).strip()
+        if block:
+            segments.append(block)
+        current.clear()
+
+    for line in text.splitlines():
+        value = line.strip()
+        if not value:
+            continue
+        heading_section = _section_for_heading(value)
+        if heading_section:
+            flush()
+            segments.append(value)
+            current_section = heading_section
+        elif current_section in {"profile", "education"}:
+            flush()
+            segments.append(value)
+        else:
+            current.append(value)
+    flush()
+    return segments or [text]
+
+
 def build_source_document(
     artifacts: DocumentArtifacts, *, document_id: str, document_sha256: str
 ) -> SourceDocument:
@@ -370,10 +419,14 @@ def build_source_document(
         raw_items = [({"type": "markdown", "text": p}, None) for p in paragraphs]
 
     rendered: list[tuple[str, int | None, tuple[float, float, float, float] | None, str]] = []
+    rendered_section = "other"
     for item, page in raw_items:
         text = normalize_text(_content_text(item))
         if text:
-            rendered.append((text, page, _bbox(item.get("bbox")), str(item.get("type") or "text")))
+            for segment in _split_text_lines(text, rendered_section):
+                rendered.append((segment, page, _bbox(item.get("bbox")), str(item.get("type") or "text")))
+                if heading_section := _section_for_heading(segment):
+                    rendered_section = heading_section
 
     parts: list[str] = []
     blocks: list[SourceBlock] = []

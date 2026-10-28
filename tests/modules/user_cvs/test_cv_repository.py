@@ -43,3 +43,13 @@ async def test_repository_filters_cvs_by_exact_career_code_jsonb() -> None:
     assert json.loads(session.params["career_filter"]) == {
         "careerClassifications": [{"code": "technology.software-engineering.backend"}]
     }
+
+
+async def test_repository_pages_with_offset() -> None:
+    session = FakeSession()
+    repository = SqlAlchemyCvRepository(session)  # type: ignore[arg-type]
+
+    await repository.list_owned("user-1", 10, offset=20)
+
+    assert "LIMIT :limit OFFSET :offset" in session.statement
+    assert session.params["offset"] == 20 and session.params["limit"] == 10

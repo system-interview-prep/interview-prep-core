@@ -4,6 +4,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, Optional
 from uuid import UUID
+
 from pydantic import BaseModel, Field
 
 
@@ -42,6 +43,7 @@ class CandidateTurnInput(BaseModel):
     modality: str = Field(default="CHAT", description="CHAT | VOICE | VIDEO")
     duration_seconds: float = Field(default=0.0, description="Thời gian ứng viên hoàn thành câu trả lời")
     telemetry: Dict[str, Any] = Field(default_factory=dict, description="Metadata: VAD pauses, typing speed, proctoring flags...")
+    precomputed_evaluation: Optional[Dict[str, Any]] = Field(default=None, exclude=True)
 
 
 class InterviewerTurnOutput(BaseModel):
@@ -66,6 +68,9 @@ class QuestionItem(BaseModel):
     competency: str
     stage: InterviewStage = InterviewStage.DEEP_DIVE
     main_prompt: str
+    # The question as it is said aloud (written once at freeze time); grading
+    # and every decision keep using ``main_prompt``.
+    spoken_prompt: Optional[str] = None
     rubric_criteria: Optional[Any] = ""
     difficulty: str = "intermediate"  # foundational | intermediate | advanced
 

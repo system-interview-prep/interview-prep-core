@@ -115,6 +115,33 @@ def test_parser_does_not_assign_experience_or_priority_across_requirement_lines(
     assert requirements["skill-spring-boot"].minimum_experience_months == 24
 
 
+def test_experience_heading_resets_preferred_section_priority_for_minimum_duration() -> None:
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown=(
+                "Requirements\n"
+                "- Strong hands-on experience with C# / .NET backend development\n"
+                "Preferred Qualifications\n"
+                "- Experience with AWS is a plus\n"
+                "Experience\n"
+                "- Minimum 3 years of professional Backend Development experience"
+            )
+        ),
+        document_id="jd-experience-heading",
+        document_sha256="f" * 64,
+    )
+
+    parsed = DeterministicJobDescriptionParser().parse(source, extraction_version="test")
+
+    minimum_duration = next(
+        item for item in parsed.requirements if "Minimum 3 years" in item.raw_label
+    )
+    aws = next(item for item in parsed.requirements if "AWS" in item.raw_label)
+    assert minimum_duration.priority == "must_have"
+    assert minimum_duration.minimum_experience_months == 36
+    assert aws.priority == "preferred"
+
+
 def test_parser_drops_layout_section_metadata_without_label_allowlist() -> None:
     source = build_source_document(
         DocumentArtifacts(
@@ -550,3 +577,76 @@ def test_generic_document_level_negation_scenarios() -> None:
     assert "SQL" in req_labels
     assert "Docker" in req_labels
 
+
+def test_conjunctive_named_technologies_are_preserved_as_all_of_atoms() -> None:
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown="Requirements\nExperience with Kafka, Redis, and MySQL.",
+            content_list=[
+                {"type": "text", "text": "Requirements", "page_idx": 0},
+                {"type": "text", "text": "Experience with Kafka, Redis, and MySQL.", "page_idx": 0},
+            ],
+        ),
+        document_id="jd-tech-stack",
+        document_sha256="b" * 64,
+    )
+
+    parsed = DeterministicJobDescriptionParser().parse(
+        source, extraction_version="test"
+    )
+
+    requirement = next(item for item in parsed.requirements if item.atomic_concepts)
+    assert [item.label for item in requirement.atomic_concepts] == ["Kafka", "Redis", "MySQL"]
+    assert requirement.group_operator == "all_of"
+
+
+def test_slash_alternative_and_remaining_infrastructure_requirements_are_preserved() -> None:
+    line = "Experience with AWS, Kubernetes/Docker Swarm, monitoring, and CI/CD is a plus."
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown=f"Requirements\n{line}",
+            content_list=[
+                {"type": "text", "text": "Requirements", "page_idx": 0},
+                {"type": "text", "text": line, "page_idx": 0},
+            ],
+        ),
+        document_id="jd-infrastructure-alternatives",
+        document_sha256="c" * 64,
+    )
+
+    parsed = DeterministicJobDescriptionParser().parse(
+        source, extraction_version="test"
+    )
+
+    requirement = next(item for item in parsed.requirements if item.atomic_concepts)
+    assert [item.label for item in requirement.atomic_concepts] == [
+        "AWS",
+        "Kubernetes or Docker Swarm",
+        "Monitoring",
+        "CI/CD",
+    ]
+    assert requirement.group_operator == "all_of"
+    assert requirement.priority == "preferred"
+
+
+
+def test_two_aliases_of_one_concept_do_not_crash_the_requirement_group() -> None:
+    # Real postings: "About You" heading, and a line naming monitoring twice
+    # (two aliases) next to another skill used to raise "atomicConcepts must be unique".
+    line = "- Experience with monitoring and observability for Kotlin services"
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown=f"About You:\n{line}",
+            content_list=[
+                {"type": "text", "text": "About You:", "page_idx": 0},
+                {"type": "text", "text": line, "page_idx": 0},
+            ],
+        ),
+        document_id="jd-duplicate-alias",
+        document_sha256="d" * 64,
+    )
+
+    parsed = DeterministicJobDescriptionParser().parse(source, extraction_version="test")
+
+    requirement = next(item for item in parsed.requirements if item.atomic_concepts)
+    assert [item.label for item in requirement.atomic_concepts] == ["Monitoring", "Kotlin"]

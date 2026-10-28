@@ -12,27 +12,21 @@ Covers:
 """
 
 import pytest
-from src.modules.interviews.project_evidence import (
+
+from src.modules.interviews.core.interview_engine import InterviewCoreEngine
+from src.modules.interviews.planning.project_evidence import (
     StructuredProjectEvidence,
     build_project_validation_question,
     extract_project_evidences,
     select_best_project,
 )
-from src.modules.user_cvs.parsing.domain.source import SourceBlock, SourceDocument
-from src.modules.user_cvs.parsing.domain.structured import ProjectExtractor
+from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
 from src.modules.user_cvs.parsing.domain.deterministic import ResumeDraft
-
-
-
-
-
+from src.modules.user_cvs.parsing.domain.source import EvidenceMapper, build_source_document
+from src.modules.user_cvs.parsing.domain.structured import ProjectExtractor
 # ============================================================================
 # 1. Multiple projects extraction & retention
 # ============================================================================
-
-from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
-from src.modules.user_cvs.parsing.domain.source import EvidenceMapper, build_source_document
-
 
 def test_cv_with_multiple_projects_retains_all():
     """Requirement 1: CV with at least two projects retains all without dropped items or date artifacts."""
@@ -154,7 +148,7 @@ def test_tie_break_stability_independent_of_order():
 # ============================================================================
 
 def test_question_grounds_on_cv_claims_without_hallucination():
-    """Requirement 4: Question mentions actual role and metrics from CV without inventing facts."""
+    """Requirement 4: Question quotes the CV's project and invents nothing."""
     project = StructuredProjectEvidence(
         project_id="cax",
         name="Career Assistant X",
@@ -167,27 +161,26 @@ def test_question_grounds_on_cv_claims_without_hallucination():
     )
 
     q_vi = build_project_validation_question(project, job_title="AI Engineer", locale="vi")
-    assert "Career Assistant X" in q_vi
-    assert "Lead Developer" in q_vi
-    assert "Python" in q_vi
-    assert "90+ users" in q_vi
+    # Speech v2 (25/10): the name is said without quotes.
+    assert q_vi == (
+        "Trong dự án Career Assistant X, bạn trực tiếp làm phần nào, "
+        "và quyết định kỹ thuật khó nhất là gì?"
+    )
     # Check that no imaginary facts were introduced
     assert "1000" not in q_vi
     assert "Docker" not in q_vi
 
     q_en = build_project_validation_question(project, job_title="AI Engineer", locale="en")
     assert "Career Assistant X" in q_en
-    assert "Lead Developer" in q_en
-    assert "Python" in q_en
-    assert "90+ users" in q_en
+    assert q_en.count("?") == 1
 
 
 # ============================================================================
 # 5. Missing CV data asks for verification instead of asserting
 # ============================================================================
 
-def test_missing_cv_fields_prompts_verification_not_assertion():
-    """Requirement 5: When role or outcomes are missing in CV, system asks candidate to verify."""
+def test_missing_cv_fields_prompts_verification_not_assertion(monkeypatch):
+    """Requirement 5: When the role is missing in the CV, the question says so instead of asserting one."""
     project = StructuredProjectEvidence(
         project_id="sparse-proj",
         name="Internal Tool",
@@ -200,14 +193,51 @@ def test_missing_cv_fields_prompts_verification_not_assertion():
     )
 
     q_vi = build_project_validation_question(project, job_title="Software Engineer", locale="vi")
-    # Must NOT assert candidate was Lead or created a specific metric
+    # Must NOT assert candidate was Lead or created a specific metric. Speech v2
+    # asks what they did instead of reading out "CV chưa ghi rõ vai trò…".
     assert "Lead" not in q_vi
-    assert "xác minh chính xác vai trò" in q_vi
-    assert "đo lường bằng những chỉ số (metrics) nào so với baseline ban đầu" in q_vi
+    assert q_vi.startswith("Trong dự án Internal Tool, bạn trực tiếp làm phần nào")
+    assert "CV chưa ghi rõ" not in q_vi
+    assert "Kết quả" not in q_vi
+    assert q_vi.count("?") == 1
 
     q_en = build_project_validation_question(project, job_title="Software Engineer", locale="en")
-    assert "verify your direct contribution" in q_en
-    assert "metrics were used to measure the outcome against your initial baseline" in q_en
+    assert "measured" not in q_en
+    monkeypatch.setenv("INTERVIEWER_SPEECH_V2", "0")
+    assert build_project_validation_question(project, locale="vi").startswith(
+        "CV chưa ghi rõ vai trò của bạn trong dự án 'Internal Tool'."
+    )
+    assert build_project_validation_question(project, locale="en").startswith("Your CV does not state your role")
+
+
+def test_a_description_is_not_read_out_as_the_project_name():
+    from src.modules.interviews.planning.project_evidence import spoken_project_name, spoken_project_question
+
+    # Buổi thật 20/10.
+    assert spoken_project_name("operating with real users and generating revenue.") is None
+    assert spoken_project_name("'Hệ thống quản lý đơn hàng đa kênh'") == "Hệ thống quản lý đơn hàng đa kênh"
+    assert spoken_project_name("Xây dựng hệ thống đặt vé cho rạp chiếu phim toàn quốc của công ty") is None
+    assert spoken_project_question(None, is_vi=True).startswith("Trong dự án bạn ghi trong CV,")
+    assert "'" not in spoken_project_question("Career Assistant X", is_vi=True)
+
+
+def test_validation_question_is_one_short_spoken_question():
+    """The opening CV question asks one thing, without the role, technology list or outcome."""
+    project = StructuredProjectEvidence(
+        project_id="p1",
+        name="Hệ thống quản lý đơn hàng đa kênh",
+        role="Backend lead (team 4 người)",
+        role_status="present",
+        technologies=["Docker", "Node.Js", "Node.js", "PostgreSQL"],
+        technologies_status="present",
+        outcomes=["15.000 đơn/ngày"],
+        outcomes_status="present",
+    )
+    q_vi = build_project_validation_question(project, job_title="Backend", locale="vi")
+    assert q_vi.count("?") == 1
+    assert len(q_vi.split()) <= 30  # was 38 with role, technologies and outcome
+    # Listing technologies steered every probe to the first one (Docker).
+    assert "Docker" not in q_vi and "team 4 người" not in q_vi and "15.000" not in q_vi
 
 
 # ============================================================================
@@ -217,7 +247,7 @@ def test_missing_cv_fields_prompts_verification_not_assertion():
 @pytest.mark.asyncio
 async def test_no_repeated_project_validation_in_runtime():
     """Requirement 6: Once Turn 1 (project validation) is completed, it is never asked again."""
-    from src.modules.interviews.chat_runtime import process_candidate_message, start_chat_session
+    from src.modules.interviews.application.chat_runtime import process_candidate_message, start_chat_session
     from tests.modules.interviews.test_chat_runtime import MockChatSession
 
     session_row = {
@@ -267,12 +297,18 @@ async def test_no_repeated_project_validation_in_runtime():
     db = MockChatSession(session_row, turns)
     await start_chat_session(db, session_row)
 
+    async def sufficient_answer(**_kwargs):
+        return '{"intent":"ANSWER","sufficiency_status":"SUFFICIENT","acknowledgement":"Cảm ơn câu trả lời của bạn."}'
+
+    core_engine = InterviewCoreEngine(ai_generator=sufficient_answer)
+
     # Candidate introduces themselves (Turn 0 answer)
     res1 = await process_candidate_message(
         db,
         session_row,
         client_message_id="msg-1",
         content="Em là Nguyễn Văn A, em chuyên về AI và Backend.",
+        core_engine=core_engine,
     )
     # Next question must be Turn 1 (Project Validation)
     assert res1["turnStatus"]["turnIndex"] == 1
@@ -284,6 +320,7 @@ async def test_no_repeated_project_validation_in_runtime():
         session_row,
         client_message_id="msg-2",
         content="Trong Career Assistant X em là Core Developer phụ trách phần backend FastAPI và tích hợp Gemini.",
+        core_engine=core_engine,
     )
     # Next question must advance to Turn 2 (RAG)
     assert res2["turnStatus"]["turnIndex"] == 2

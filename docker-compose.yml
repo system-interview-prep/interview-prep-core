@@ -37,16 +37,20 @@ services:
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-interview}:${RABBITMQ_PASSWORD:-interview_password}@rabbitmq:5672/
       CELERY_BROKER_URL: amqp://${RABBITMQ_USER:-interview}:${RABBITMQ_PASSWORD:-interview_password}@rabbitmq:5672/
       DATABASE_URL: postgresql://user:password@postgres-db:5432/matching_db
-      LIVEKIT_AGENT_AUTOSTART: ${LIVEKIT_AGENT_AUTOSTART:-true}
+      # The voice agent runs as its own service (voice-agent below): a child of
+      # this --reload API process was killed, with every live call, on each
+      # code save. Forced off here because .env may still set it to true.
+      LIVEKIT_AGENT_AUTOSTART: "false"
       LIVEKIT_AGENT_RUN_MODE: ${LIVEKIT_AGENT_RUN_MODE:-dev}
       LIVEKIT_STT_MODEL: ${LIVEKIT_STT_MODEL:-assemblyai/universal-3-5-pro}
-      LIVEKIT_STT_LANGUAGE: ${LIVEKIT_STT_LANGUAGE:-auto}
+      # Interviews are Vietnamese-only: never auto-detect the language.
+      LIVEKIT_STT_LANGUAGE: "vi"
       VOICE_LAB_STT_LANGUAGE: ${VOICE_LAB_STT_LANGUAGE:-vi}
       # Docker Desktop on Windows/macOS needs polling to reliably notice bind-mounted edits.
       WATCHFILES_FORCE_POLLING: "true"
     ports: ["5000:5000"]
     command: ["sh", "-c", "python -m alembic upgrade head && exec uvicorn src.main:asgi_app --host 0.0.0.0 --port 5000 --reload --reload-dir /app/src"]
-    volumes: ["./src:/app/src", "./tests:/app/tests", "./migrations:/app/migrations", "./trace-logs:/app/trace-logs", "./alembic.ini:/app/alembic.ini:ro", "./pyproject.toml:/app/pyproject.toml:ro"]
+    volumes: ["./src:/app/src", "./tests:/app/tests", "./migrations:/app/migrations", "./trace-logs:/app/trace-logs", "./scripts:/app/scripts", "./alembic.ini:/app/alembic.ini:ro", "./pyproject.toml:/app/pyproject.toml:ro"]
     depends_on:
       rabbitmq: {condition: service_healthy}
       postgres-db: {condition: service_healthy}
@@ -55,6 +59,72 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  voice-agent:
+    # LiveKit voice interview agent. Separate from the API so a backend reload
+    # does not drop live calls. It does not hot-reload: restart this service
+    # after changing src/modules/interviews/adapters/voice/*.
+    # Reuses the backend image (same api target) instead of building a second one.
+    image: interview-prep-core-backend:latest
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      VOICE_RUNTIME_API_BASE_URL: http://backend:5000
+      LIVEKIT_AGENT_MAX_RETRY: ${LIVEKIT_AGENT_MAX_RETRY:-32}
+      LIVEKIT_STT_PROVIDER: ${LIVEKIT_STT_PROVIDER:-assemblyai}
+      LIVEKIT_STT_MODEL: ${LIVEKIT_STT_MODEL:-assemblyai/universal-3-5-pro}
+      QWEN_STT_BASE_URL: ${QWEN_STT_BASE_URL:-}
+      QWEN_STT_MODEL: ${QWEN_STT_MODEL:-Qwen/Qwen3-ASR-1.7B}
+      QWEN_STT_CHUNK_SIZE_SECONDS: ${QWEN_STT_CHUNK_SIZE_SECONDS:-1.0}
+      # Interviews are Vietnamese-only: never auto-detect the language.
+      LIVEKIT_STT_LANGUAGE: "vi"
+      VOICE_LAB_STT_LANGUAGE: ${VOICE_LAB_STT_LANGUAGE:-vi}
+      # Supported values: elevenlabs, vieneu, or cartesia. VieNeu is reached
+      # through VIENEU_TTS_BASE_URL (the .env file is passed into this service).
+      VOICE_LAB_TTS_PROVIDER: ${VOICE_LAB_TTS_PROVIDER:-elevenlabs}
+      # Audio of fixed interviewer lines, reused by every session.
+      VOICE_LAB_TTS_CACHE_DIR: /var/cache/intervia-tts
+    working_dir: /app/src/modules
+    command: ["python", "interviews/adapters/voice/livekit_agent.py", "start"]
+    volumes: ["./src:/app/src", "voice-tts-cache:/var/cache/intervia-tts"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Docker Desktop's embedded resolver has intermittently failed during live
+    # calls. Keep explicit, configurable upstream resolvers for this
+    # internet-facing worker; Docker still resolves internal service names.
+    dns:
+      - ${VOICE_AGENT_DNS_PRIMARY:-1.1.1.1}
+      - ${VOICE_AGENT_DNS_SECONDARY:-8.8.8.8}
+    dns_opt:
+      - timeout:2
+      - attempts:3
+    init: true
+    stop_grace_period: 30s
+    restart: unless-stopped
+    depends_on:
+      backend: {condition: service_healthy}
+
+  voice-eval:
+    profiles: ["tools"]
+    image: interview-prep-core-backend:latest
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PYTHONPATH: /app
+    working_dir: /app
+    command: ["python", "scripts/transcribe_vi_stt_corpus.py", "--help"]
+    volumes:
+      - "./src:/app/src:ro"
+      - "./scripts:/app/scripts:ro"
+      - "../DOC_AND_PLAN/data/eval/stt:/eval/stt"
+    dns:
+      - ${VOICE_AGENT_DNS_PRIMARY:-1.1.1.1}
+      - ${VOICE_AGENT_DNS_SECONDARY:-8.8.8.8}
+    dns_opt:
+      - timeout:2
+      - attempts:3
 
   worker:
     build:
@@ -77,3 +147,4 @@ services:
 volumes:
   rabbitmq_data:
   pgdata:
+  voice-tts-cache:

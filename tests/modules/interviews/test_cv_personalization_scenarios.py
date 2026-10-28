@@ -14,9 +14,9 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-from src.modules.interviews.planner import derive_competency_plan
-from src.modules.interviews.question_selector import select_and_freeze_questions
-from src.modules.matching.schemas import (
+from src.modules.interviews.planning.planner import derive_competency_plan
+from src.modules.interviews.planning.question_selector import select_and_freeze_questions
+from src.modules.matching.domain.schemas import (
     CanonicalJob,
     ConceptResult,
     MatchResult,
@@ -168,7 +168,7 @@ class TestCVPersonalizationScenarios(unittest.IsolatedAsyncioTestCase):
                         "relevance": 1.0,
                         "rubric_version_id": str(uuid4()),
                     }
-                ]
+                ] * 2
                 return mock_res
             if "SELECT id, version, score_min" in sql:
                 mock_res = MagicMock()
@@ -215,7 +215,8 @@ class TestCVPersonalizationScenarios(unittest.IsolatedAsyncioTestCase):
         turn_1_snap = json.loads(inserted_turns[1]["snapshot"])
         self.assertEqual(turn_1_snap["stage"], "VALIDATE")
         self.assertIn("E-commerce Microservices", turn_1_snap["questionText"])
-        self.assertIn("vai trò của bạn", turn_1_snap["questionText"])
+        # Speech v2 (25/10): asks what they did, no "CV chưa ghi rõ vai trò".
+        self.assertIn("trực tiếp làm phần nào", turn_1_snap["questionText"])
 
     async def test_scenario_2_cv_with_skills_fallback(self):
         """Kịch bản 2: CV không có dự án riêng nhưng có kỹ năng -> Turn 1 hỏi về top 3 công nghệ."""
@@ -299,7 +300,7 @@ class TestCVPersonalizationScenarios(unittest.IsolatedAsyncioTestCase):
                         "relevance": 1.0,
                         "rubric_version_id": str(uuid4()),
                     }
-                ]
+                ] * 2
                 return mock_res
             if "SELECT id, version, score_min" in sql:
                 mock_res = MagicMock()
@@ -376,6 +377,7 @@ class TestCVPersonalizationScenarios(unittest.IsolatedAsyncioTestCase):
                 requirementId="req-python",
                 status="met",
                 confidence=0.9,
+                evidenceRefs=["cv-python"],
                 reasonCode="MET_BY_SKILL",
                 conceptResults=[
                     ConceptResult(
@@ -383,6 +385,7 @@ class TestCVPersonalizationScenarios(unittest.IsolatedAsyncioTestCase):
                         label="Python Programming",
                         status="met",
                         confidence=0.9,
+                        evidenceRefs=["cv-python"],
                         reasonCode="EXACT_MATCH",
                     )
                 ],

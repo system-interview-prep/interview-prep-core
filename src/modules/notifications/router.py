@@ -39,6 +39,16 @@ async def list_notifications(
     return {"items": [_notification(row) for row in result.mappings().all()]}
 
 
+@router.post("/read-all")
+async def mark_all_read(user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)) -> dict:
+    result = await db.execute(
+        text("UPDATE notifications SET read_at = now() WHERE user_id = :uid AND read_at IS NULL"),
+        {"uid": user["sub"]},
+    )
+    await db.commit()
+    return {"updated": result.rowcount or 0}
+
+
 @router.patch("/{notification_id}/read")
 async def mark_read(
     notification_id: str, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)

@@ -26,6 +26,58 @@ Tuy nhiên, module P2 Question Selector (`src/modules/interviews/question_select
 
 ### 1.2. Các Blocker Chính Trước Tích Hợp
 
+> **Cập nhật trạng thái (rà soát lại toàn bộ luồng interview).** Bốn blocker bên
+> dưới giữ nguyên mô tả gốc để làm hồ sơ. Trạng thái hiện tại của mã nguồn:
+>
+> | Blocker | Trạng thái | Ghi chú |
+> |---|---|---|
+> | 1 — sàn `max(targetQuestionCount, 2)` | ✅ Đã gỡ | P2 freeze đúng `targetQuestionCount`; tổng câu kỹ thuật `<= questionBudget` (có thể nhỏ hơn khi ít target vì trần 3 câu/target). Regression: `test_legacy_branch_honours_planner_question_count`. |
+> | 2 — Persistence Bridge thiếu Time Envelope | ✅ Đã sửa | `plan_payload` lưu nguyên plan, nên nhánh dynamic đọc được `targetArchetype` / `floorSeconds` / `timeEnvelopeSeconds`. Trước đó `timeEnvelopeSeconds=0` làm **mọi** target fail-closed. |
+> | 3 — P2 tự tráo câu `coding` | ✅ Đã gỡ | Regression: `test_legacy_branch_does_not_force_a_coding_question`. |
+> | 4 — Question Bank thiếu câu | ✅ Fail-closed **toàn phần** (PO duyệt bổ sung) | Mở rộng quyết định 2A sang cả nhánh legacy. `_fallback_snapshot` đã bị **xoá khỏi mã nguồn**. Lý do và phần bù rủi ro: xem ADR mục 1. |
+>
+> Hai blocker hạ tầng kiểm thử (có sẵn từ trước, không do bốn blocker trên):
+>
+> | Hạng mục | Trạng thái | Ghi chú |
+> |---|---|---|
+> | Ranh giới module — `interviews` chọc vào nội bộ `matching` | ✅ Đã gỡ | Thêm `matching/schemas.py` + `matching/facade.py` ở gốc module theo đúng quy ước sẵn có của `user_cvs` / `job_descriptions`. `planning/planner.py` và `planning/plan_structure.py` nay import qua bề mặt công khai; `TaxonomyRef` lấy từ `user_cvs.schemas` vì đó mới là chủ sở hữu thật. |
+> | Ranh giới module — `matching` chọc vào nội bộ `user_cvs` | ✅ Đã gỡ (PO duyệt) | `user_cvs/schemas.py` bổ sung `LanguageClaim` + `SkillClaim`; ba file `matching/clarifications/{answer_evidence,models,rescore}.py` import qua bề mặt công khai. Đã kiểm mọi class re-export là **cùng một object** (`is`), nên không có pydantic model nào bị bọc lại. |
+> | `test_planner_db_integration` không chạy được | ✅ Đã sửa | `InterviewAgent.execute` truyền `durability="sync"` kể cả khi `get_interview_checkpointer()` trả `None`, làm LangGraph vỡ trong `AsyncPregelLoop`. Nay chỉ truyền khi có checkpointer. Test **PASS** trên PostgreSQL thật (`RUN_DB_INTEGRATION_TESTS=1`) — P1 lần đầu có coverage mức DB. Không phải lỗi production: caller duy nhất của `.execute()` đi qua FastAPI lifespan, nơi checkpointer luôn được set. |
+>
+> `tests/app/test_architecture.py` nay **xanh toàn phần** — 0 vi phạm ranh giới
+> module trên toàn `src/modules`.
+>
+> **Gate backend: 758 passed / 1 failed / 2 skipped** — chạy trọn bộ trên host
+> bằng `.venv` của dự án, với `RUN_DB_INTEGRATION_TESTS=1`.
+>
+> Fail duy nhất: `tests/modules/matching/test_evaluation_runner.py::test_production_evaluation_runs_the_facade_for_all_golden_cases`
+> — đã đối chiếu baseline (`git stash`), fail y hệt khi chưa có thay đổi nào của
+> phiên này. Thuộc `matching`.
+>
+> **Một test flaky, chưa khoanh được:**
+> `tests/modules/matching/test_targeted_reparse.py::test_targeted_reparse_does_not_recover_generic_requirement_words`
+> fail ở 1 trong 2 lần chạy full suite, nhưng pass 8/8 khi chạy riêng (cả khi
+> ParadeDB truy cập được lẫn khi ép fallback in-memory). Phụ thuộc thứ tự chạy;
+> chưa tái hiện được ổn định. Thuộc `matching`.
+>
+> **Điểm cần nhớ về môi trường:** PostgreSQL **native** (`postgresql-x64-18`)
+> chiếm IPv4 `0.0.0.0:5432` trong khi Docker chỉ bind được IPv6 `[::]:5432`.
+> Hai bên không báo lỗi khi khởi động, nhưng `localhost` phân giải IPv4 trước
+> nên mọi kết nối từ host **trúng nhầm native** — đó là nguyên nhân thật của
+> `extension "vector" is not available`. Đã stop service và chuyển `StartupType`
+> sang `Manual`; Docker nay bind dual-stack và chiếm cả hai.
+>
+> Lưu ý chạy test: phải dùng `.venv` của dự án (`.venv/Scripts/python.exe -m pytest`).
+> Python global trên máy thiếu `aio-pika` và `celery` nên 7 module test không
+> collect được — `.venv` thì có đủ.
+>
+> Phần bù rủi ro cho Blocker 4: seed Question Bank mở rộng từ 4 lên **25
+> concept / 93 câu** (backend, frontend, cloud-devops, mobile, game, cùng các
+> nền tảng dùng chung như SQL/Git/HTTP/JSON) và bổ sung mapping `TARGET_ROLE`
+> cho toàn bộ career code, nên nhánh career-classification fallback của P1
+> không còn chết chắc ở P2. Đo trên 103 file JD golden: **0 concept bị hở**,
+> được khoá bằng test dev-gate chống hồi quy.
+
 1. **Blocker 1: P2 ép cứng số lượng câu hỏi tối thiểu (`needed = max(targetQuestionCount, 2)`)**:
    - *Vị trí mã nguồn*: `src/modules/interviews/question_selector.py:494`.
    - *Hậu quả*: Bất kể P1 phân bổ phong bì thời gian bao nhiêu (kể cả khi P1 chỉ định mức sàn 180s cho 1 câu `TEXT`), P2 luôn ép chọn tối thiểu 2 câu hỏi cho mỗi target.
@@ -46,7 +98,8 @@ Tuy nhiên, module P2 Question Selector (`src/modules/interviews/question_select
      - **Timeout một lượt (Single-turn hard timeout)**: Được quy định bởi `hard_answer_seconds` gắn với từng câu hỏi trong Question Bank (`src/modules/question_bank/models.py:71`) để ngắt lượt trả lời nếu ứng viên nói quá thời gian của riêng câu đó.
      - **Dừng cấp câu hỏi mới và đóng phiên an toàn (Ngưỡng 90 giây)**: Theo `src/modules/interviews/core/interview_engine.py:871-874`, khi thời gian còn lại của phiên $\le 90$ giây và không ở stage `WARM_UP`, hàm `_get_next_stage_and_question` trả về `(InterviewStage.CLOSED, None)` để dừng cấp câu hỏi mới và chuyển phiên sang giai đoạn kết thúc an toàn. Tương tự tại line 525, stage `CLOSING` hoàn tất phiên với mã lý do chuẩn `SessionExitReason.NORMAL_COMPLETION` khi thời gian còn lại $\le 90$ giây hoặc ứng viên không còn câu hỏi nào khác.
      - **Hard Timeout toàn phiên khi nhận câu trả lời (Ngưỡng 30 giây)**: Theo `src/modules/interviews/core/interview_engine.py:248-264`, khi ứng viên nộp câu trả lời (`submit_turn_answer`), nếu thời gian còn lại của phiên $\le 30$ giây và chưa ở stage `CLOSING`, hệ thống chủ động ngắt phiên ngay lập tức với mã lý do chính thức `SessionExitReason.HARD_TIMEOUT`. Đây là hard timeout toàn phiên, tuyệt đối không gọi là emergency/pacing cutoff.
-     - **Giới hạn thời lượng phiên (Session duration limit)**: Giới hạn tổng thể $T_{\text{session}} = \text{duration\_minutes} \times 60$. Nguy cơ của kịch bản trên là thời lượng cần thiết vượt xa giới hạn phiên, dẫn tới việc ứng viên chưa kịp đi hết danh sách câu hỏi đã chạm ngưỡng 90 giây (dừng cấp câu mới) hoặc ngưỡng 30 giây (`HARD_TIMEOUT`).
+     - **Nhãn `end_reason` cho pacing cutoff (quyết định mới, ghi nhận tại đây)**: khi engine dừng phiên ở ngưỡng 90 giây mà hàng đợi frozen vẫn còn lượt chưa trả lời, runtime **không** đóng phiên là `COMPLETED` nữa (trước đây ném 409 `INVALID_SESSION_COMPLETION` sau khi đã commit tin nhắn ứng viên, làm ứng viên kẹt trong phòng). Phiên được đóng với `end_reason` phản ánh đúng nguyên nhân: `HARD_TIMEOUT` khi `remaining_time <= closing_reserve + behavioral_reserve`, `TECHNICAL_FAILURE` khi dừng sớm vì lý do khác. Như vậy `HARD_TIMEOUT` hiện bao phủ **cả** ngưỡng 30 giây lẫn pacing cutoff 90 giây — mở rộng so với định nghĩa hẹp ở các gạch đầu dòng phía trên.
+   - **Giới hạn thời lượng phiên (Session duration limit)**: Giới hạn tổng thể $T_{\text{session}} = \text{duration\_minutes} \times 60$. Nguy cơ của kịch bản trên là thời lượng cần thiết vượt xa giới hạn phiên, dẫn tới việc ứng viên chưa kịp đi hết danh sách câu hỏi đã chạm ngưỡng 90 giây (dừng cấp câu mới) hoặc ngưỡng 30 giây (`HARD_TIMEOUT`).
 
 2. **Blocker 2: Persistence Bridge hiện tại chưa lưu trữ các trường Time Envelope**:
    - *Vị trí mã nguồn*: `src/modules/interviews/planner.py:948-990`, `src/modules/interviews/question_selector.py:451-475`.
@@ -443,7 +496,7 @@ Cần phân định rạch ròi phạm vi công việc của Gate 3 để không
 3. **AC-GATE3-03 (Archetype Strictness)**: Trong nhánh dynamic, P2 không được chọn câu coding cho target `TEXT`, và không được chọn câu text cho target `CODING`.
 4. **AC-GATE3-04 (Single-Question Validity)**: Khi `timeEnvelopeSeconds` chỉ vừa đủ cho 1 câu hỏi đạt sàn (ví dụ 180s), P2 phải chọn đúng 1 câu hỏi, không ép lên 2 câu.
 5. **AC-GATE3-05 (Deterministic Selection)**: Cùng một input plan và cùng session salt, P2 phải sinh ra tập câu hỏi đóng băng giống hệt nhau mà không phụ thuộc thứ tự SQL query.
-6. **AC-GATE3-06 (Legacy Compatibility & Fallback Retention)**: Với plan có `policyVersion: "interview-planner-v1"` hoặc thiếu, P2 thực thi luồng legacy cũ (bao gồm cả việc duy trì `_fallback_snapshot` nếu thiếu câu) mà không gặp lỗi.
+6. **AC-GATE3-06 (Legacy Compatibility)**: Với plan có `policyVersion: "interview-planner-v1"` hoặc thiếu, P2 thực thi luồng legacy cũ mà không gặp lỗi. Khi kho thiếu câu, luồng legacy **fail-closed** với `question_bank_insufficient` đúng như nhánh dynamic; `_fallback_snapshot` đã bị xoá và không còn hành vi sinh câu tạm ở bất kỳ nhánh nào.
 7. **AC-GATE3-07 (Scope A Boundary — No Persistence Bridge / E2E in Gate 3)**: Gate 3 không kiểm thử persistence bridge hoặc tích hợp end-to-end P1–DB–P2 vì Product đã chọn Phạm vi A (P2 Module Testing). Toàn bộ kiểm thử Gate 3 được thực thi qua kế hoạch v2 được tiêm trực tiếp vào test fixtures.
 8. **AC-GATE3-08 (Floor Feasibility Preservation — Test Case 300s/180s/180s)**: Khi ngân sách `timeEnvelopeSeconds = 360`s và sàn `floorSeconds = 360`s; Question Bank có 3 ứng viên gồm câu $A$ ($300$s, relevance cao nhất) và hai câu $B, C$ ($180$s mỗi câu, relevance thấp hơn), thuật toán đóng gói KHÔNG được chọn câu $A$ rồi dừng lại ở mức $300$s (vi phạm sàn); thuật toán bắt buộc phải chọn được tập hợp lệ đạt sàn $\{B, C\}$ (tổng $360$s) thỏa mãn Hard Ceiling.
 9. **AC-GATE3-09 (Q2 Fail-Closed on Insufficient Questions)**: Nếu bất kỳ target bắt buộc nào không có tập câu hỏi đạt chuẩn thỏa mãn đúng `targetArchetype` và sàn `floorSeconds` trong trần `timeEnvelopeSeconds`, P2 không tạo queue một phần, không mở phiên, ném `QuestionUnavailableError` với HTTP 409 và error code `question_bank_insufficient`. Response trả về định danh target/concept bị thiếu ở định dạng an toàn (`concept_id`, `label`, `target_archetype`, `floor_seconds`), tuyệt đối không rò rỉ barem rubric hay nội dung nội bộ; P2 không tự ý loại bỏ target và không tự tái phân bổ ngân sách.

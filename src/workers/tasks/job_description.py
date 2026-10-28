@@ -27,16 +27,20 @@ from src.workers.celery_app import celery_app
     max_retries=3,
 )
 def parse_job_description(self, payload: dict) -> dict:
-    del self
+    # Only the last attempt may mark the upload FAILED; earlier timeouts are retried.
+    final_attempt = self.request.retries >= self.max_retries
     return worker_async_runner.run(
         _parse_job_description(
             str(payload.get("upload_id") or ""),
             str(payload.get("version_id") or "") or None,
+            final_attempt=final_attempt,
         )
     )
 
 
-async def _parse_job_description(upload_id: str, version_id: str | None = None) -> dict:
+async def _parse_job_description(
+    upload_id: str, version_id: str | None = None, *, final_attempt: bool = True
+) -> dict:
     if not upload_id:
         return {"status": "ignored"}
     try:
@@ -67,7 +71,7 @@ async def _parse_job_description(upload_id: str, version_id: str | None = None) 
                 parser=parser,
                 source_builder=build_source_document,
             )
-            result = await pipeline.run(upload_id)
+            result = await pipeline.run(upload_id, final_attempt=final_attempt)
             if version_id and result.status == "DONE":
                 await db.execute(
                     text(
@@ -85,6 +89,8 @@ async def _parse_job_description(upload_id: str, version_id: str | None = None) 
                 response["version_id"] = version_id
             return response
     except Exception as exc:
+        if isinstance(exc, TimeoutError) and not final_attempt:
+            raise  # the pipeline already released the upload to PENDING for the retry
         try:
             async with SessionFactory() as err_db:
                 repo = SqlAlchemyJobDescriptionParseRepository(err_db)

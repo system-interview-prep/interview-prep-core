@@ -1,0 +1,399 @@
+<title>INTERVIA Debrief Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one debrief column — reflect → key moments rail → turn workbench → takeaway → personal drills. Brand tokens from the INTERVIA app. */
+:root {
+  --bg: #F7F9FD; --card: #FFFFFF; --ink: #14244B; --ink-2: #3F4E73; --muted: #607096;
+  --line: #DCE4F3; --line-2: #C3CFE6; --brand: #204195; --brand-wash: #E8EEFA; --accent: #FCB625;
+  --best: #1F7A4B; --best-wash: #E3F3EA; --good: #2E7FA8; --good-wash: #E4F1F8;
+  --inacc: #9A6A08; --inacc-wash: #FBF1DA; --mistake: #C2571B; --mistake-wash: #FBE9DD;
+  --blunder: #B8323A; --blunder-wash: #F9E2E4; --great: #6A3FB5; --great-wash: #EEE7FA;
+  --del: #F9E2E4; --ins: #E3F3EA;
+  --f: "Be Vietnam Pro", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0E1424; --card: #151D33; --ink: #E7ECF8; --ink-2: #B7C2DD; --muted: #8C99BA;
+    --line: #26314F; --line-2: #34406A; --brand: #8FAEF0; --brand-wash: #1C2A4D; --accent: #FCC24A;
+    --best: #7FD3A5; --best-wash: #16302A; --good: #7CC3E6; --good-wash: #14293A;
+    --inacc: #E8C46A; --inacc-wash: #2E2716; --mistake: #F09A68; --mistake-wash: #33221A;
+    --blunder: #F08890; --blunder-wash: #351C22; --great: #B9A0F0; --great-wash: #261F3F;
+    --del: #351C22; --ins: #16302A;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0E1424; --card: #151D33; --ink: #E7ECF8; --ink-2: #B7C2DD; --muted: #8C99BA;
+  --line: #26314F; --line-2: #34406A; --brand: #8FAEF0; --brand-wash: #1C2A4D; --accent: #FCC24A;
+  --best: #7FD3A5; --best-wash: #16302A; --good: #7CC3E6; --good-wash: #14293A;
+  --inacc: #E8C46A; --inacc-wash: #2E2716; --mistake: #F09A68; --mistake-wash: #33221A;
+  --blunder: #F08890; --blunder-wash: #351C22; --great: #B9A0F0; --great-wash: #261F3F;
+  --del: #351C22; --ins: #16302A;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--f); font-size: 15px; line-height: 1.6; }
+.wrap { max-width: 1080px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 80px; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+.banner { display: flex; gap: 10px; align-items: flex-start; border: 1px dashed var(--line-2); background: var(--card); border-radius: 10px; padding: 10px 14px; font-size: 13px; color: var(--ink-2); }
+.banner b { color: var(--ink); }
+.legend-deps { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 6px; }
+.dep { display: inline-flex; align-items: center; gap: 5px; font: 600 10.5px var(--mono); letter-spacing: .04em; padding: 2px 7px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.dep.now { color: var(--best); } .dep.p02 { color: var(--inacc); } .dep.data { color: var(--blunder); }
+
+header.top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; align-items: end; margin: 26px 0 18px; }
+header.top h1 { margin: 0; font-size: clamp(24px, 3.4vw, 34px); line-height: 1.15; letter-spacing: -.01em; text-wrap: balance; }
+header.top p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+.steps { display: flex; gap: 4px; flex-wrap: wrap; }
+.steps span { font: 600 11px var(--mono); padding: 5px 9px; border-radius: 6px; background: var(--card); border: 1px solid var(--line); color: var(--muted); }
+.steps span.on { background: var(--brand); border-color: var(--brand); color: var(--card); }
+
+section.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; margin-top: 16px; }
+.ch { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.ch h2 { margin: 0; font-size: 17px; }
+.ch .sub { color: var(--muted); font-size: 13px; }
+.cb { padding: 16px 18px; }
+
+/* reflect */
+.reflect { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.rq { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+.rq p { margin: 0 0 8px; font-size: 13.5px; line-height: 1.45; }
+.stars { display: flex; gap: 4px; }
+.stars button { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--bg); cursor: pointer; font-weight: 700; color: var(--muted); }
+.stars button[aria-pressed="true"] { background: var(--brand); border-color: var(--brand); color: var(--card); }
+.reveal-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+.btn { border: 1px solid var(--brand); background: var(--brand); color: var(--card); border-radius: 8px; padding: 8px 14px; font-weight: 600; cursor: pointer; }
+.btn.ghost { background: transparent; color: var(--brand); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.calib { margin-top: 12px; display: grid; gap: 6px; }
+.calib div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; font-size: 13.5px; padding: 6px 10px; border-radius: 8px; background: var(--bg); }
+.calib b { font-family: var(--mono); font-size: 12.5px; }
+
+/* score band */
+.score { display: grid; grid-template-columns: auto 1fr; gap: 18px; align-items: center; }
+.big { font: 700 44px/1 var(--mono); color: var(--brand); font-variant-numeric: tabular-nums; }
+.big small { font-size: 16px; color: var(--muted); font-weight: 400; }
+.bandbar { position: relative; height: 34px; }
+.bandbar .axis { position: absolute; left: 0; right: 0; top: 15px; height: 4px; border-radius: 4px; background: var(--line); }
+.bandbar .band { position: absolute; top: 9px; height: 16px; border-radius: 8px; background: var(--brand-wash); border: 1px solid var(--brand); }
+.bandbar .dot { position: absolute; top: 9px; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%; background: var(--brand); }
+.bandbar .tick { position: absolute; top: 24px; font: 10.5px var(--mono); color: var(--muted); transform: translateX(-50%); }
+.note { font-size: 13px; color: var(--ink-2); margin-top: 8px; }
+
+/* moments rail */
+.rail { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.mv { text-align: left; border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: var(--card); cursor: pointer; min-width: 0; transition: border-color .2s; }
+.mv:hover { border-color: var(--line-2); }
+.mv[aria-selected="true"] { border-color: var(--brand); box-shadow: 0 0 0 2px var(--brand-wash); }
+.mv .n { font: 600 11px var(--mono); color: var(--muted); }
+.mv .q { font-size: 12.5px; line-height: 1.35; margin: 4px 0 8px; color: var(--ink-2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tag { display: inline-flex; align-items: center; gap: 5px; font: 700 11px var(--f); padding: 2px 8px; border-radius: 999px; }
+.tag i { font-style: normal; font-family: var(--mono); }
+.t-best { background: var(--best-wash); color: var(--best); }
+.t-good { background: var(--good-wash); color: var(--good); }
+.t-inacc { background: var(--inacc-wash); color: var(--inacc); }
+.t-mistake { background: var(--mistake-wash); color: var(--mistake); }
+.t-blunder { background: var(--blunder-wash); color: var(--blunder); }
+.t-great { background: var(--great-wash); color: var(--great); }
+.lost { font: 600 11px var(--mono); color: var(--muted); margin-left: 4px; }
+
+/* workbench */
+.bench { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 0; }
+.bench > div { padding: 16px 18px; min-width: 0; }
+.bench > div + div { border-left: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 60%, var(--card)); }
+.blk { margin-bottom: 18px; }
+.blk:last-child { margin-bottom: 0; }
+.blk h3 { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; font-size: 13.5px; margin: 0 0 8px; }
+.qtext { font-weight: 600; font-size: 15px; line-height: 1.45; margin: 0; }
+.flow { display: grid; gap: 6px; }
+.fl { display: grid; grid-template-columns: 82px 1fr auto; gap: 8px; align-items: start; font-size: 13.5px; padding: 7px 10px; border-radius: 8px; background: var(--bg); }
+.fl .who { font: 600 10.5px var(--mono); color: var(--muted); padding-top: 2px; }
+.fl.ai .who { color: var(--brand); }
+.st { font: 700 10.5px var(--mono); padding: 2px 6px; border-radius: 5px; white-space: nowrap; }
+.st.ok { background: var(--best-wash); color: var(--best); }
+.st.dodge { background: var(--blunder-wash); color: var(--blunder); }
+.answer { font-size: 14px; line-height: 1.65; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.answer mark { background: var(--brand-wash); color: inherit; border-bottom: 2px solid var(--brand); padding: 0 1px; border-radius: 2px; }
+.star { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.star div { border-radius: 8px; padding: 8px; font-size: 12.5px; border: 1px solid var(--line); min-width: 0; }
+.star b { display: block; font: 700 11px var(--mono); }
+.star .y { border-color: var(--best); } .star .y b { color: var(--best); }
+.star .n { border-color: var(--blunder); border-style: dashed; } .star .n b { color: var(--blunder); }
+.crit { display: grid; gap: 6px; }
+.crit div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; font-size: 13px; align-items: center; }
+.lv { display: flex; gap: 3px; }
+.lv i { width: 16px; height: 8px; border-radius: 3px; background: var(--line); }
+.lv i.f { background: var(--brand); }
+.cf { border-left: 3px solid var(--accent); padding: 8px 12px; background: var(--bg); border-radius: 0 8px 8px 0; font-size: 13.5px; }
+
+/* diff */
+.hunk { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin-bottom: 8px; }
+.hunk .hh { display: flex; flex-wrap: wrap; gap: 6px; justify-content: space-between; align-items: center; padding: 6px 10px; background: var(--bg); font-size: 12px; color: var(--muted); }
+.hunk .why { font-weight: 600; color: var(--ink-2); }
+.hunk .del, .hunk .ins { padding: 6px 10px; font-size: 13.5px; }
+.hunk .del { background: var(--del); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--blunder) 60%, transparent); }
+.hunk .ins { background: var(--ins); }
+.hunk.applied .del { display: none; }
+.hunk.rejected .ins { display: none; }
+.hunk.rejected .del { text-decoration: none; background: transparent; }
+.hb { display: flex; gap: 6px; }
+.hb button { font-size: 11.5px; font-weight: 600; padding: 3px 9px; border-radius: 6px; border: 1px solid var(--line-2); background: var(--card); cursor: pointer; }
+.hb button.primary { border-color: var(--best); color: var(--best); }
+.mine { margin-top: 8px; font-size: 13.5px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--best); background: var(--best-wash); }
+.mine b { display: block; font: 600 11px var(--mono); color: var(--best); margin-bottom: 4px; }
+
+/* takeaway + drills */
+textarea { width: 100%; min-height: 72px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--bg); color: var(--ink); padding: 10px 12px; font: inherit; font-size: 14px; resize: vertical; }
+.ccc { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.ccc div { border-radius: 10px; padding: 10px 12px; font-size: 13.5px; border: 1px solid var(--line); }
+.ccc b { display: block; font: 700 11px var(--mono); margin-bottom: 4px; }
+.ccc .c1 b, .ccc .c3 b { color: var(--best); } .ccc .c2 b { color: var(--inacc); }
+.drills { display: grid; gap: 8px; }
+.dr { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.dr .t { font-weight: 600; font-size: 14px; }
+.dr .s { font-size: 12.5px; color: var(--muted); }
+.meter { width: 90px; height: 6px; border-radius: 6px; background: var(--line); overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--accent); }
+.due { font: 600 11px var(--mono); color: var(--brand); white-space: nowrap; }
+
+@media (max-width: 860px) {
+  .rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bench { grid-template-columns: 1fr; }
+  .bench > div + div { border-left: 0; border-top: 1px solid var(--line); }
+  .star { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ccc { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+  .wrap { padding-inline: 16px; }
+  .score { grid-template-columns: 1fr; }
+  .fl { grid-template-columns: 1fr; }
+  .dr { grid-template-columns: 1fr; }
+}
+</style>
+
+<div class="wrap">
+  <div class="banner" role="note">
+    <span aria-hidden="true">◇</span>
+    <div><b>Prototype · dữ liệu minh họa.</b> Không phải kết quả thật. Mỗi khối có nhãn cho biết nó cần gì để làm thật:
+      <div class="legend-deps"><span class="dep now">LÀM NGAY ĐƯỢC</span><span class="dep p02">CẦN P-02 · CHẤM THEO MỐC</span><span class="dep data">CẦN LƯU DỮ LIỆU MỚI</span></div>
+    </div>
+  </div>
+
+  <header class="top">
+    <div>
+      <h1>Phân tích buổi phỏng vấn · Backend Engineer (Junior)</h1>
+      <p>Buổi 4 · 25 phút · 5 câu chính · 09/10/2026</p>
+    </div>
+    <div class="steps" aria-label="Trình tự phân tích"><span class="on" id="s1">1 · Tự đánh giá</span><span id="s2">2 · Khoảnh khắc then chốt</span><span id="s3">3 · Rút ra bài học</span></div>
+  </header>
+
+  <!-- 1. Reflect before reveal (PEARLS) -->
+  <section class="card" id="reflect">
+    <div class="ch"><h2>Trước khi xem điểm: bạn thấy mình trả lời thế nào?</h2><span class="dep now">LÀM NGAY ĐƯỢC</span></div>
+    <div class="cb">
+      <div class="reflect" id="reflectGrid"></div>
+      <div class="reveal-row">
+        <button type="button" class="btn" id="reveal" disabled>Xem điểm hệ thống</button>
+        <span class="sub" id="reflectHint">Chấm cả 5 câu để mở điểm. Bước này giúp bạn thấy chỗ mình tự đánh giá lệch.</span>
+      </div>
+      <div class="calib" id="calib" hidden></div>
+    </div>
+  </section>
+
+  <div id="afterReveal" hidden>
+    <!-- score with band -->
+    <section class="card">
+      <div class="ch"><h2>Điểm buổi này</h2><span class="dep p02">CẦN P-02 + P-03</span></div>
+      <div class="cb">
+        <div class="score">
+          <div class="big">6,4<small> / 10</small></div>
+          <div>
+            <div class="bandbar" aria-label="Khoảng tin cậy 5,8 đến 7,0">
+              <div class="axis"></div>
+              <div class="band" style="left:58%;width:12%"></div>
+              <div class="dot" style="left:64%"></div>
+              <span class="tick" style="left:0%">0</span><span class="tick" style="left:50%">5</span><span class="tick" style="left:100%">10</span>
+            </div>
+            <p class="note">Khoảng tin cậy 95%: <b>5,8 – 7,0</b>. Buổi trước 5,9: thay đổi +0,5 nằm <b>trong biên nhiễu</b>, chưa đủ để gọi là tiến bộ. Riêng câu neo “Caching” tăng từ mức 1 lên mức 3: <b>tiến bộ thật</b>.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. Key moments -->
+    <section class="card">
+      <div class="ch"><h2>Khoảnh khắc then chốt</h2><span class="sub">Phân loại theo số điểm rubric bị mất so với câu trả lời đạt mức cao nhất</span><span class="dep p02">CẦN P-02</span></div>
+      <div class="cb"><div class="rail" role="tablist" aria-label="Các câu trả lời" id="rail"></div></div>
+      <div class="bench" id="bench"></div>
+    </section>
+
+    <!-- 3. Takeaway -->
+    <section class="card">
+      <div class="ch"><h2>Bạn rút ra điều gì?</h2><span class="dep now">LÀM NGAY ĐƯỢC</span></div>
+      <div class="cb">
+        <div class="ccc">
+          <div class="c1"><b>GIỮ</b>Bạn nêu đúng công cụ và lý do chọn Redis, có số liệu TTL cụ thể.</div>
+          <div class="c2"><b>SỬA (TỐI ĐA 2)</b>1. Luôn kết thúc bằng kết quả đo được. 2. Khi bị hỏi đào sâu, trả lời thẳng câu hỏi trước.</div>
+          <div class="c3"><b>GIỮ TIẾP</b>Câu 4 cho thấy bạn gỡ lại tốt sau khi bị hỏi dồn.</div>
+        </div>
+        <label for="takeaway" style="display:block;margin:14px 0 6px;font-weight:600;font-size:14px">Viết một câu bạn sẽ làm khác ở buổi sau</label>
+        <textarea id="takeaway" placeholder="Ví dụ: Mỗi câu trả lời kỹ thuật, mình sẽ nói con số trước rồi mới giải thích."></textarea>
+        <p class="sub" style="margin:6px 0 0">Câu này sẽ được nhắc lại ở đầu buổi luyện tiếp theo.</p>
+      </div>
+    </section>
+
+    <!-- 4. Personal drills -->
+    <section class="card">
+      <div class="ch"><h2>Bài luyện từ lỗi của chính bạn</h2><span class="sub">Lỗi lặp lại qua các buổi được lên lịch ôn như thẻ từ vựng</span><span class="dep data">CẦN LƯU DỮ LIỆU MỚI</span></div>
+      <div class="cb"><div class="drills" id="drills"></div></div>
+    </section>
+  </div>
+</div>
+
+<script>
+(function () {
+  var TURNS = [
+    { q: 'Giới thiệu ngắn về bản thân và lý do ứng tuyển.', cls: 'good', label: 'Tốt', lost: 0.6, sys: 3, stage: 'WARM_UP',
+      flow: [['ai', 'Giới thiệu ngắn về bản thân và lý do ứng tuyển.', null], ['me', 'Em là sinh viên năm cuối, đã làm 2 dự án backend...', 'ok']],
+      answer: 'Em là sinh viên năm cuối ngành CNTT, đã làm <mark>2 dự án backend bằng FastAPI</mark>. Em ứng tuyển vì muốn làm hệ thống có lượng người dùng lớn.',
+      star: [1, 1, 1, 0], crit: [['Liên quan', 3], ['Độ sâu', 2], ['Rõ ràng', 3]],
+      cf: 'Thêm một câu về điều bạn muốn học ở vị trí này để lên mức tốt nhất.', diff: [] },
+    { q: 'Trong dự án Shop Mini, phần việc cụ thể bạn tự làm là gì?', cls: 'mistake', label: 'Thiếu sót lớn', lost: 3.1, sys: 2, stage: 'VALIDATE',
+      flow: [['ai', 'Phần việc cụ thể bạn tự làm trong Shop Mini là gì?', null], ['me', 'Nhóm em làm API giỏ hàng và thanh toán...', 'dodge'], ['ai', 'Riêng bạn phụ trách phần nào?', null], ['me', 'Em làm phần thanh toán ạ.', 'ok']],
+      answer: '<mark>Nhóm em</mark> làm API giỏ hàng và thanh toán bằng FastAPI, có dùng Redis để cache.',
+      star: [1, 0, 0, 0], crit: [['Vai trò cá nhân', 0], ['Chi tiết kỹ thuật', 2], ['Kết quả', 0]],
+      cf: 'Nói rõ “em” làm gì thay vì “nhóm em”, và một kết quả đo được: đủ để lên mức 2.',
+      diff: [
+        ['Vai trò cá nhân', 'Nhóm em làm API giỏ hàng và thanh toán', 'Em phụ trách API thanh toán, tích hợp VNPay sandbox'],
+        ['Kết quả', 'bằng FastAPI, có dùng Redis để cache.', 'bằng FastAPI; thêm khóa idempotency nên không còn lỗi trừ tiền hai lần khi người dùng bấm lại.']
+      ] },
+    { q: 'Bạn đã dùng cache ở đâu và vì sao?', cls: 'best', label: 'Tốt nhất', lost: 0.0, sys: 4, stage: 'DEEP_DIVE',
+      flow: [['ai', 'Bạn đã dùng cache ở đâu và vì sao?', null], ['me', 'Em cache kết quả truy vấn sản phẩm bằng Redis, TTL 5 phút...', 'ok'], ['ai', 'Khi giá đổi thì sao?', null], ['me', 'Em xóa khóa cache theo sản phẩm khi cập nhật giá.', 'ok']],
+      answer: 'Em <mark>cache kết quả truy vấn sản phẩm bằng Redis, TTL 5 phút</mark>, vì trang danh sách được gọi nhiều nhất. Khi giá đổi, <mark>em xóa khóa cache theo sản phẩm</mark>.',
+      star: [1, 1, 1, 1], crit: [['Lý do chọn', 3], ['Xử lý dữ liệu cũ', 3], ['Đo lường', 2]],
+      cf: 'Câu neo: lần trước mức 1, lần này mức 3. Thay đổi vượt ngưỡng nhiễu.', diff: [] },
+    { q: 'Hệ thống chậm vào giờ cao điểm. Bạn xử lý thế nào?', cls: 'great', label: 'Gỡ lại tốt', lost: 1.2, sys: 3, stage: 'CHALLENGE',
+      flow: [['ai', 'Hệ thống chậm vào giờ cao điểm, bạn xử lý thế nào?', null], ['me', 'Em sẽ tăng server...', 'ok'], ['ai', 'Trước khi tăng server, bạn kiểm tra gì?', null], ['me', 'Em xem log truy vấn chậm, thêm index cho cột lọc theo danh mục.', 'ok']],
+      answer: 'Ban đầu em định tăng server, nhưng sau đó <mark>em sẽ xem log truy vấn chậm trước, thêm index cho cột lọc</mark>, rồi mới tính chuyện mở rộng.',
+      star: [1, 1, 1, 0], crit: [['Chẩn đoán', 2], ['Giải pháp', 3], ['Đánh đổi', 1]],
+      cf: 'Nêu một đánh đổi của việc thêm index (ghi chậm hơn) để lên mức tốt nhất.', diff: [] },
+    { q: 'Kể về một lần bạn bất đồng với thành viên trong nhóm.', cls: 'blunder', label: 'Sai lầm', lost: 4.5, sys: 1, stage: 'BEHAVIORAL',
+      flow: [['ai', 'Kể về một lần bạn bất đồng với thành viên trong nhóm.', null], ['me', 'Em ít khi bất đồng với ai ạ.', 'dodge'], ['ai', 'Một lần ý kiến khác nhau về kỹ thuật thì sao?', null], ['me', 'Có lần chọn MongoDB hay Postgres, cuối cùng chọn Postgres.', 'ok']],
+      answer: 'Em <mark>ít khi bất đồng</mark> với ai ạ. Có lần chọn MongoDB hay Postgres, cuối cùng chọn Postgres.',
+      star: [1, 0, 0, 0], crit: [['Tình huống', 1], ['Hành động của bạn', 0], ['Kết quả', 0]],
+      cf: 'Thêm bạn đã làm gì để thuyết phục và kết quả cho dự án: đủ để lên mức 2.',
+      diff: [
+        ['Né câu hỏi', 'Em ít khi bất đồng với ai ạ.', 'Ở dự án Shop Mini, bạn cùng nhóm muốn dùng MongoDB còn em muốn Postgres.'],
+        ['Hành động + kết quả', 'Có lần chọn MongoDB hay Postgres, cuối cùng chọn Postgres.', 'Em làm bảng so sánh giao dịch và truy vấn báo cáo, cả nhóm chọn Postgres; về sau làm phần đối soát thanh toán nhanh hơn vì có transaction.']
+      ] }
+  ];
+  var LABEL = { best: 'Tốt nhất', good: 'Tốt', inacc: 'Chưa chuẩn', mistake: 'Thiếu sót lớn', blunder: 'Sai lầm', great: 'Gỡ lại tốt' };
+  var SYM = { best: '★', good: '✓', inacc: '?!', mistake: '?', blunder: '??', great: '!' };
+
+  // ---- 1. reflect
+  var self = [0, 0, 0, 0, 0];
+  var grid = document.getElementById('reflectGrid');
+  grid.innerHTML = TURNS.map(function (t, i) {
+    var stars = [1, 2, 3, 4].map(function (v) {
+      return '<button type="button" id="r' + i + '-' + v + '" data-i="' + i + '" data-v="' + v + '" aria-pressed="false" aria-label="Câu ' + (i + 1) + ': mức ' + v + '">' + v + '</button>';
+    }).join('');
+    return '<div class="rq"><p><b>Câu ' + (i + 1) + '.</b> ' + t.q + '</p><div class="stars">' + stars + '</div></div>';
+  }).join('');
+  grid.addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-i]'); if (!b) return;
+    var i = +b.dataset.i, v = +b.dataset.v; self[i] = v;
+    grid.querySelectorAll('button[data-i="' + i + '"]').forEach(function (x) { x.setAttribute('aria-pressed', String(+x.dataset.v === v)); });
+    document.getElementById('reveal').disabled = self.some(function (x) { return !x; });
+  });
+  document.getElementById('reveal').addEventListener('click', function () {
+    var calib = document.getElementById('calib');
+    calib.innerHTML = TURNS.map(function (t, i) {
+      var gap = self[i] - t.sys;
+      var msg = gap === 0 ? 'Khớp với hệ thống' : gap > 0 ? 'Bạn tự chấm cao hơn ' + gap + ' mức' : 'Bạn tự chấm thấp hơn ' + (-gap) + ' mức';
+      return '<div><span>Câu ' + (i + 1) + ' · ' + msg + '</span><b>bạn ' + self[i] + ' · hệ thống ' + t.sys + '</b></div>';
+    }).join('');
+    calib.hidden = false;
+    document.getElementById('afterReveal').hidden = false;
+    document.getElementById('reflectHint').textContent = 'Mức 1–4 tương ứng mốc rubric. Câu lệch nhiều nhất là chỗ đáng xem lại.';
+    document.getElementById('s1').classList.remove('on'); document.getElementById('s2').classList.add('on');
+    this.disabled = true;
+    select(1);
+  });
+
+  // ---- 2. moments
+  var rail = document.getElementById('rail'), bench = document.getElementById('bench');
+  rail.innerHTML = TURNS.map(function (t, i) {
+    return '<button type="button" class="mv" role="tab" id="mv' + i + '" aria-selected="false" data-i="' + i + '"><span class="n">CÂU ' + (i + 1) + ' · ' + t.stage + '</span><p class="q">' + t.q + '</p><span class="tag t-' + t.cls + '"><i>' + SYM[t.cls] + '</i>' + LABEL[t.cls] + '</span><span class="lost">−' + t.lost.toFixed(1) + '</span></button>';
+  }).join('');
+  rail.addEventListener('click', function (e) { var b = e.target.closest('.mv'); if (b) select(+b.dataset.i); });
+
+  var applied = {};
+  function select(i) {
+    rail.querySelectorAll('.mv').forEach(function (b) { b.setAttribute('aria-selected', String(+b.dataset.i === i)); });
+    var t = TURNS[i];
+    var flow = t.flow.map(function (f) {
+      var st = f[2] === 'ok' ? '<span class="st ok">ĐÃ TRẢ LỜI</span>' : f[2] === 'dodge' ? '<span class="st dodge">NÉ CÂU HỎI</span>' : '<span></span>';
+      return '<div class="fl ' + f[0] + '"><span class="who">' + (f[0] === 'ai' ? 'NGƯỜI HỎI' : 'BẠN') + '</span><span>' + f[1] + '</span>' + st + '</div>';
+    }).join('');
+    var starNames = ['Tình huống', 'Nhiệm vụ', 'Hành động', 'Kết quả'];
+    var star = t.star.map(function (v, k) { return '<div class="' + (v ? 'y' : 'n') + '"><b>' + (v ? '✓ ' : '✗ ') + 'STAR-' + 'STAR'[k] + '</b>' + starNames[k] + '</div>'; }).join('');
+    var crit = t.crit.map(function (c) {
+      var lv = [1, 2, 3].map(function (k) { return '<i class="' + (k <= c[1] ? 'f' : '') + '"></i>'; }).join('');
+      return '<div><span>' + c[0] + '</span><span class="lv" aria-label="Mức ' + c[1] + ' trên 3">' + lv + '</span></div>';
+    }).join('');
+    var key = 't' + i; applied[key] = applied[key] || {};
+    var diff = t.diff.length ? t.diff.map(function (h, k) {
+      var state = applied[key][k] || '';
+      return '<div class="hunk ' + state + '" data-k="' + k + '"><div class="hh"><span class="why">' + h[0] + '</span><span class="hb"><button type="button" class="primary" data-act="applied">Áp dụng</button><button type="button" data-act="rejected">Bỏ qua</button></span></div><div class="del">' + h[1] + '</div><div class="ins">' + h[2] + '</div></div>';
+    }).join('') + '<div class="mine" id="mine" hidden><b>CÂU TRẢ LỜI CỦA BẠN (ĐÃ CHỈNH)</b><span id="mineText"></span></div>'
+      : '<p class="note" style="margin:0">Câu này không cần sửa theo từng đoạn. Xem gợi ý lên mức bên cạnh.</p>';
+
+    bench.innerHTML =
+      '<div>' +
+        '<div class="blk"><h3>Câu hỏi <span class="tag t-' + t.cls + '"><i>' + SYM[t.cls] + '</i>' + LABEL[t.cls] + ' · mất ' + t.lost.toFixed(1) + ' điểm</span></h3><p class="qtext">' + t.q + '</p></div>' +
+        '<div class="blk"><h3>Diễn biến hỏi – đáp <span class="dep now">LÀM NGAY ĐƯỢC</span></h3><div class="flow">' + flow + '</div></div>' +
+        '<div class="blk"><h3>Câu trả lời · đoạn được dùng làm bằng chứng <span class="dep now">LÀM NGAY ĐƯỢC</span></h3><div class="answer">' + t.answer + '</div></div>' +
+        '<div class="blk"><h3>Sửa từng đoạn, giữ giọng của bạn <span class="dep data">CẦN LƯU DỮ LIỆU MỚI</span></h3>' + diff + '</div>' +
+      '</div>' +
+      '<div>' +
+        '<div class="blk"><h3>Khung STAR <span class="dep now">LÀM NGAY ĐƯỢC</span></h3><div class="star">' + star + '</div></div>' +
+        '<div class="blk"><h3>Mức theo từng tiêu chí <span class="dep p02">CẦN P-02</span></h3><div class="crit">' + crit + '</div></div>' +
+        '<div class="blk"><h3>Thiếu gì để lên mức tiếp theo <span class="dep p02">CẦN P-02</span></h3><div class="cf">' + t.cf + '</div></div>' +
+        '<div class="blk"><h3>Trả lời lại riêng câu này <span class="dep data">CẦN LƯU DỮ LIỆU MỚI</span></h3><button type="button" class="btn ghost" id="retry">Thử lại câu ' + (i + 1) + ' (90 giây)</button><p class="note" id="retryNote">Chấm lại cùng rubric; điểm mới chỉ tính là tiến bộ nếu vượt ngưỡng nhiễu.</p></div>' +
+      '</div>';
+
+    bench.querySelectorAll('.hunk').forEach(function (h) {
+      h.addEventListener('click', function (e) {
+        var b = e.target.closest('button[data-act]'); if (!b) return;
+        var k = +h.dataset.k; applied[key][k] = b.dataset.act; h.className = 'hunk ' + b.dataset.act; updateMine(t, key);
+      });
+    });
+    updateMine(t, key);
+    document.getElementById('retry').addEventListener('click', function () {
+      document.getElementById('retryNote').textContent = 'Trong bản thật: mở phòng luyện chỉ với câu này, rồi so hai câu trả lời cạnh nhau.';
+    });
+  }
+  function updateMine(t, key) {
+    var mine = document.getElementById('mine'); if (!mine) return;
+    var any = Object.keys(applied[key]).length > 0;
+    mine.hidden = !any;
+    if (any) document.getElementById('mineText').textContent = t.diff.map(function (h, k) { return applied[key][k] === 'applied' ? h[2] : h[1]; }).join(' ');
+  }
+
+  // ---- 4. drills
+  var D = [
+    ['Thiếu kết quả đo được', 'Gặp ở 3/5 câu buổi này, 7/12 câu ba buổi gần nhất', 0.35, 'Ôn ngày mai'],
+    ['Nói “nhóm em” thay vì “em”', 'Gặp ở 2/5 câu; hay xuất hiện ở câu về dự án', 0.55, 'Ôn sau 3 ngày'],
+    ['Né câu hỏi hành vi', 'Gặp ở 1/5 câu; lần đầu xuất hiện', 0.8, 'Ôn sau 1 tuần']
+  ];
+  document.getElementById('drills').innerHTML = D.map(function (d) {
+    return '<div class="dr"><div><div class="t">' + d[0] + '</div><div class="s">' + d[1] + '</div></div><div class="meter" aria-label="Mức đã nắm"><i style="width:' + Math.round(d[2] * 100) + '%"></i></div><span class="due">' + d[3] + ' · 60 giây</span></div>';
+  }).join('');
+})();
+</script>
