@@ -12,10 +12,14 @@ Pure and synchronous so it can be unit tested without LiveKit.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
+import sys
 import unicodedata
 from dataclasses import dataclass, field
+from pathlib import Path
+from types import ModuleType
 
 # Silence (seconds) after the last fragment before an answer is submitted.
 # A short buffer waits longer, so a brief real answer ("Chưa ạ.") still goes
@@ -132,33 +136,148 @@ class SubmittedAnswer:
     confidence: float | None
 
 
-def processing_filler(locale: str) -> str:
-    return "Mình đã ghi nhận. Chờ mình một chút nhé." if locale.lower().startswith("vi") else (
-        "Got it. Give me a moment."
-    )
+def _load_script() -> ModuleType:
+    """The shared interviewer script (core/interviewer_script.py).
+
+    The LiveKit worker runs this folder as plain scripts, without the ``src``
+    package, so the data-only script file is loaded by its path. Loading it
+    the same way inside the API avoids importing the whole core package (and
+    its engine) from a transport adapter.
+    """
+    cached = sys.modules.get("interviewer_script")
+    if cached is not None:
+        return cached
+    path = Path(__file__).resolve().parents[2] / "core" / "interviewer_script.py"
+    spec = importlib.util.spec_from_file_location("interviewer_script", path)
+    if spec is None or spec.loader is None:  # pragma: no cover - the file ships with the repo
+        raise ImportError(f"interviewer script not found at {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["interviewer_script"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+SCRIPT = _load_script()
+
+# Câu chỉ có ở kênh nói. Câu chữ nằm ở core/interviewer_script.py.
+PROCESSING_FILLERS_VI: tuple[str, ...] = SCRIPT.PROCESSING_FILLERS_VI
+PROCESSING_FILLERS_EN: tuple[str, ...] = SCRIPT.PROCESSING_FILLERS_EN
+NOT_HEARD_VI: tuple[str, ...] = SCRIPT.NOT_HEARD_VI
+NOT_HEARD_EN: tuple[str, ...] = SCRIPT.NOT_HEARD_EN
+
+
+def _is_vi(locale: str) -> bool:
+    return str(locale or "").lower().startswith("vi")
+
+
+def not_heard_lines(locale: str) -> tuple[str, ...]:
+    return NOT_HEARD_VI if _is_vi(locale) else NOT_HEARD_EN
+
+
+def processing_fillers(locale: str) -> tuple[str, ...]:
+    return PROCESSING_FILLERS_VI if _is_vi(locale) else PROCESSING_FILLERS_EN
+
+
+def processing_filler(locale: str, index: int = 0) -> str:
+    pool = processing_fillers(locale)
+    return pool[index % len(pool)]
+
+
+def speech_v2_enabled() -> bool:
+    """Same switch as core.interviewer_voice.speech_v2_enabled (the agent cannot import src)."""
+    return os.getenv("INTERVIEWER_SPEECH_V2", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def pick_processing_filler(locale: str, seed: str, avoid: str | None = None) -> str:
+    """A filler chosen by session and turn, never the one said last (speech v2).
+
+    The old rotation (``filler_count % 4``) said the same four lines in the same
+    order every session.
+    """
+    import hashlib
+
+    pool = processing_fillers(locale)
+    start = int(hashlib.sha256(seed.encode("utf-8")).hexdigest(), 16) % len(pool)
+    for offset in range(len(pool)):
+        line = pool[(start + offset) % len(pool)]
+        if line != avoid:
+            return line
+    return pool[start]
+
+
+def voice_dialect() -> str:
+    """Same as core.interviewer_voice.voice_dialect (INTERVIEWER_VOICE_DIALECT=bac|nam)."""
+    value = os.getenv("INTERVIEWER_VOICE_DIALECT", "bac").strip().casefold()
+    return "nam" if value in {"nam", "south", "southern", "mien nam", "miền nam"} else "bac"
+
+
+def localize_particles(text: str) -> str:
+    """Southern voice: "nhé" → "nha", "nhỉ" → "hen" for the lines only the room says (fillers…)."""
+    value = str(text or "")
+    if not speech_v2_enabled() or voice_dialect() != "nam":
+        return value
+    value = re.sub(r"(?<!\w)nhé(?!\w)", "nha", value)
+    return re.sub(r"(?<!\w)nhỉ(?!\w)", "hen", value)
+
+
+_SCRIPTED_REPLY_POOLS = (
+    "ACK_FALLBACK", "INTRO_ACK", "NON_ANSWER_ACK", "GIVE_UP_ACK", "SKIP_ACK", "SKIP_ACK_SHORT",
+    "PROBE_ACK", "WARMUP_SHORT_ACK",
+)
+
+
+def scripted_reply_lines(locale: str) -> tuple[str, ...]:
+    """Scripted acknowledgements Core may send as the first paragraph of a turn.
+
+    Since 25/10 the room synthesizes a turn paragraph by paragraph, so these
+    lines are cached on disk like the fillers: same audio every session, no
+    synthesis wait for the first words of a reply.
+    """
+    suffix = "_VI" if _is_vi(locale) else "_EN"
+    lines: list[str] = []
+    for name in _SCRIPTED_REPLY_POOLS:
+        lines += [localize_particles(line) for line in getattr(SCRIPT, name + suffix, ())]
+    return tuple(lines)
+
+
+_LEADING_INTERJECTION_RE = re.compile(
+    r"^\W*(?:à|ừ|ừm|ok|okay|vâng|dạ|ồ|oh|ah|mm|right)\b[\s,.!…-]*", re.IGNORECASE
+)
+
+
+def without_leading_interjection(content: str) -> str:
+    """After a filler ("Ừm, chờ mình…"), drop the interjection that opens the reply.
+
+    Only the first paragraph's opening word changes: "Ừm, mình hiểu ý bạn.\n\nCâu
+    hỏi…" → "Mình hiểu ý bạn.\n\nCâu hỏi…". A reply that is only "Ok." stays.
+    """
+    value = str(content or "")
+    head, sep, tail = value.partition("\n\n")
+    rest = _LEADING_INTERJECTION_RE.sub("", head.lstrip(), count=1)
+    if not rest.strip() or rest == head.lstrip():
+        return value
+    return rest[0].upper() + rest[1:] + sep + tail
 
 
 def silence_reprompt(locale: str) -> str:
-    if locale.lower().startswith("vi"):
-        return (
-            "Bạn cứ từ từ suy nghĩ nhé. Khi sẵn sàng, hãy trả lời tự nhiên; "
-            "nếu muốn nghe lại, chỉ cần nói “nhắc lại câu hỏi”."
-        )
-    return (
-        "Take your time and answer naturally when you're ready. "
-        "If you want to hear it again, just say “repeat the question”."
-    )
+    return SCRIPT.SILENCE_REPROMPT_VI if _is_vi(locale) else SCRIPT.SILENCE_REPROMPT_EN
 
 
 def turn_taking_tip(locale: str) -> str:
     """Briefly invite a natural answer before the opening question."""
-    if locale.lower().startswith("vi"):
-        return (
-            "Bạn cứ trả lời tự nhiên. Nếu cần nghe lại, hãy nói “nhắc lại câu hỏi”."
-        )
-    return (
-        "Answer naturally. If you need to hear a question again, just say “repeat the question”."
-    )
+    return SCRIPT.TURN_TAKING_TIP_VI if _is_vi(locale) else SCRIPT.TURN_TAKING_TIP_EN
+
+
+def unclear_transcript_text(locale: str) -> str:
+    return SCRIPT.UNCLEAR_TRANSCRIPT_VI if _is_vi(locale) else SCRIPT.UNCLEAR_TRANSCRIPT_EN
+
+
+def core_error_text(locale: str) -> str:
+    return SCRIPT.CORE_ERROR_VI if _is_vi(locale) else SCRIPT.CORE_ERROR_EN
+
+
+def backchannel_continue_text(locale: str) -> str:
+    return SCRIPT.BACKCHANNEL_CONTINUE_VI if _is_vi(locale) else SCRIPT.BACKCHANNEL_CONTINUE_EN
 
 
 def reprompt_after_seconds() -> float:

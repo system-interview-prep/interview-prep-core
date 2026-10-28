@@ -3,22 +3,53 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import logging
 import os
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 from src.core.config import Settings
+from src.core.pipeline_events import ai_call_timer
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_PURPOSE = "matching.embeddings"
+# "ok" (provider called) or "disk_cache" (every vector read from the local
+# cache) for the last embed_texts call in this context; read by the matching run view.
+_last_outcome: ContextVar[str | None] = ContextVar("embedding_outcome", default=None)
 
 
 class EmbeddingAdapter:
     """Interface for embedding text used by semantic matching."""
 
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+    def embed_texts(self, texts: list[str], *, purpose: str = DEFAULT_PURPOSE) -> list[list[float]]:
         raise NotImplementedError
+
+
+def _accepts_purpose(embedder: object) -> bool:
+    try:
+        parameters = inspect.signature(embedder.embed_texts).parameters  # type: ignore[attr-defined]
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return "purpose" in parameters or any(p.kind is p.VAR_KEYWORD for p in parameters.values())
+
+
+def embed_texts_for(embedder: object, texts: list[str], *, purpose: str) -> list[list[float]]:
+    """``embedder.embed_texts`` with the ai_call_logs purpose, for adapters that take one.
+
+    Test and evaluation stubs implement ``embed_texts(texts)`` only.
+    """
+    _last_outcome.set(None)
+    if _accepts_purpose(embedder):
+        return embedder.embed_texts(texts, purpose=purpose)  # type: ignore[attr-defined]
+    return embedder.embed_texts(texts)  # type: ignore[attr-defined]
+
+
+def last_embedding_outcome() -> str | None:
+    return _last_outcome.get()
 
 
 class OpenAIEmbeddingAdapter(EmbeddingAdapter):
@@ -99,19 +130,23 @@ class OpenAIEmbeddingAdapter(EmbeddingAdapter):
         except OSError:
             logger.warning("Could not persist embedding cache at %s", path)
 
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+    def embed_texts(self, texts: list[str], *, purpose: str = DEFAULT_PURPOSE) -> list[list[float]]:
         if not texts:
             return []
         vectors: list[list[float] | None] = [self._read_cached_vector(text) for text in texts]
         missing_positions = [index for index, vector in enumerate(vectors) if vector is None]
         if not missing_positions:
+            _last_outcome.set("disk_cache")
             return [vector for vector in vectors if vector is not None]
+        _last_outcome.set("ok")
 
         missing_texts = [texts[index] for index in missing_positions]
         request: dict[str, Any] = {"model": self._model, "input": missing_texts}
         if self._model.startswith("text-embedding-3"):
             request["dimensions"] = self._dimensions
-        response = self._client.embeddings.create(**request)
+        with ai_call_timer(purpose, provider="openai", model=self._model) as _ai_call:
+            response = self._client.embeddings.create(**request)
+            _ai_call.done(None, getattr(response, "usage", None))
         generated = [list(item.embedding) for item in sorted(response.data, key=lambda item: item.index)]
         if len(generated) != len(missing_positions):
             raise RuntimeError("Embedding provider returned an invalid vector count")

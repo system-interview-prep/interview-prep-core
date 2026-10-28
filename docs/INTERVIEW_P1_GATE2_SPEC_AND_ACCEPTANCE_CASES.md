@@ -55,7 +55,7 @@ P1 Planner nhận các dữ liệu cấu trúc sau để lập kế hoạch phi�
      - **Tầng Canonical Competency Target ($C_{\text{all}}$)**: Danh sách các concept năng lực chuẩn hóa duy nhất thu được sau khi phân giải taxonomy từ các requirement kỹ thuật. Quan hệ giữa requirement và competency concept là N-N (1 requirement có thể chứa nhiều `taxonomy_refs`, hoặc nhiều requirement cùng quy chiếu về 1 concept).
    - `job.strict_hands_on_required`: bool (Mặc định `false`. Nếu `true`, bắt buộc phải kiểm tra live coding hands-on cho năng lực code, không cho phép giáng cấp sang câu hỏi lý thuyết).
    - `job.seniority`: Cấp bậc chuyên môn (`intern`, `fresher`, `junior`, `mid`, `senior`, `lead`).
-3. **Kết quả đối sánh hồ sơ ứng viên (`match: MatchResult`)**:
+3. **Kết quả đối chiếu hồ sơ ứng viên (`match: MatchResult`)**:
    - `match.requirement_results`: Kết quả thẩm định từng requirement:
      - `requirement_id`: str.
      - `status`: `'met'` | `'not_met'` | `'unknown'` | `'not_applicable'`.

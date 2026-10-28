@@ -40,6 +40,7 @@ async def file_generated_question(
     objective: str,
     criteria: list[dict[str, Any]],
     timing: tuple[int, int, int],
+    change_summary: str = "Generated because the bank had no question for this skill.",
 ) -> UUID:
     """Create a generated draft with its rubric and submit it for review.
 
@@ -61,7 +62,7 @@ async def file_generated_question(
                 "thinkingSeconds": thinking,
                 "softAnswerSeconds": soft,
                 "hardAnswerSeconds": hard,
-                "changeSummary": "Generated because the bank had no question for this skill.",
+                "changeSummary": change_summary,
                 "taxonomyMappings": [
                     {"conceptId": skill_concept_id, "purpose": "TARGET_SKILL", "relevance": 1},
                     {"conceptId": competency_concept_id, "purpose": "PRIMARY_COMPETENCY", "relevance": 0.6},

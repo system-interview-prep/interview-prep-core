@@ -310,8 +310,13 @@ async def generate_and_file(
     locale: str,
     count: int,
     max_count: int = MAX_GENERATED_PER_TARGET,
+    change_summary: str | None = None,
 ) -> int:
-    """Generate up to ``count`` gated drafts for one skill and commit them. Returns how many were filed."""
+    """Generate up to ``count`` gated drafts for one skill and commit them. Returns how many were filed.
+
+    ``change_summary`` says why on the draft (default: the bank had no question
+    for the skill; the bank insights pass "variant of an over-exposed question").
+    """
     if not get_settings().question_generation_enabled or count <= 0:
         return 0
     count = min(count, max_count)
@@ -379,6 +384,7 @@ async def generate_and_file(
                 objective=normalized["objective"],
                 criteria=normalized["criteria"],
                 timing=GENERATED_TIMING,
+                **({"change_summary": change_summary} if change_summary else {}),
             )
         except GeneratedQuestionRejected as exc:
             logger.warning("Generated question for %s rejected: %s", concept_id, exc)

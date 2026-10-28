@@ -36,11 +36,13 @@ from src.modules.question_bank.schemas import (
 # Career codes are taxonomy specializations, which the taxonomy seed stores as
 # kind `competency`; no `job_role` concepts exist. TARGET_ROLE must accept both
 # or the P1 career-classification fallback can never be served by an authored
-# question.
+# question. The seeded bank files each question's skill as its PRIMARY_COMPETENCY
+# (the selector serves P1 skill targets from it), so a revision of a seeded
+# question must be able to keep that mapping.
 _MAPPING_KINDS: dict[str, frozenset[str]] = {
     "TARGET_ROLE": frozenset({"job_role", "competency"}),
     "TARGET_SKILL": frozenset({"skill"}),
-    "PRIMARY_COMPETENCY": frozenset({"competency"}),
+    "PRIMARY_COMPETENCY": frozenset({"competency", "skill"}),
     "SUPPORTING_COMPETENCY": frozenset({"competency"}),
 }
 _EDITABLE_STATUSES = frozenset({"DRAFT", "NEEDS_REVISION"})
@@ -264,6 +266,7 @@ class QuestionBankService:
             raise HTTPException(403, "Only the draft author can submit this version.")
         await self._validate_publishable_contract(version)
         version.status = "IN_REVIEW"
+        version.submitted_at = datetime.now(UTC)
         await self.db.flush()
         return version
 
@@ -318,8 +321,14 @@ class QuestionBankService:
         if len({(item.concept_id, item.purpose) for item in mappings}) != len(mappings):
             raise HTTPException(422, "A taxonomy mapping cannot be duplicated.")
         ids = list({item.concept_id for item in mappings})
-        result = await self.db.execute(text("SELECT concept_id, kind FROM taxonomy_concepts WHERE taxonomy_version = :version AND is_active AND concept_id = ANY(:ids)"), {"version": taxonomy_version, "ids": ids})
-        kinds = {row["concept_id"]: row["kind"] for row in result.mappings()}
+        # Concept ids are stable across taxonomy versions (the selector matches on the id
+        # too): seeded questions still name `internal-2026.1`, whose concepts now live in
+        # newer versions, so a version's own kind wins and any active version is the fallback.
+        result = await self.db.execute(text("SELECT concept_id, kind, taxonomy_version FROM taxonomy_concepts WHERE is_active AND concept_id = ANY(:ids)"), {"ids": ids})
+        kinds: dict[str, str] = {}
+        for row in result.mappings():
+            if row.get("taxonomy_version") == taxonomy_version or row["concept_id"] not in kinds:
+                kinds[row["concept_id"]] = row["kind"]
         if any(kinds.get(item.concept_id) not in _MAPPING_KINDS[item.purpose] for item in mappings):
             raise HTTPException(422, "Taxonomy mapping has an invalid or inactive concept kind.")
 

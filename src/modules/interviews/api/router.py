@@ -6,10 +6,11 @@ available during migration, but new product flows should create sessions here.
 
 import json
 import time
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,7 @@ from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
 from src.modules.interviews.api.rate_limit import interview_rate_limiter
 from src.modules.interviews.application.agent_runtime import database_operations, run_interview_command
+from src.modules.interviews.application.session_reaper import CANDIDATE_LEFT_GRACE_MINUTES
 from src.modules.interviews.application.chat_runtime import (
     ChatRuntimeError,
     get_chat_runtime,
@@ -35,8 +37,17 @@ from src.modules.interviews.evaluation.evaluation_service import (
     EvaluationServiceError,
     get_session_evaluation,
 )
+from src.modules.interviews.application.progress import compare_with_previous, load_progress, set_weekly_goal
+from src.modules.interviews.application.real_interviews import (
+    delete_report,
+    list_reports,
+    readiness_snapshot,
+    save_report,
+)
+from src.modules.interviews.planning.entry_gate import InterviewEntryBlocked, entry_policy, evaluate_entry
 from src.modules.interviews.planning.planner import (
     PlannerPolicyConfigurationError,
+    evaluate_session_match,
     read_session_plan,
 )
 from src.modules.interviews.planning.question_selector import (
@@ -61,6 +72,8 @@ SessionEndReason = Literal[
     "TECHNICAL_FAILURE",
     "HARD_TIMEOUT",
     "FAST_FAIL_TECH",
+    # Voice/video: the candidate left the room and did not come back (session reaper).
+    "CANDIDATE_LEFT",
 ]
 EndReason = SessionEndReason  # Backward compatibility alias
 
@@ -104,6 +117,12 @@ class CloseInterviewSession(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ChatPresence(BaseModel):
+    """Chat room presence: a heartbeat while the page is open, "left" when it closes."""
+
+    state: Literal["here", "left"] = "here"
+
+
 class SendVideoTranscript(BaseModel):
     client_message_id: str = Field(alias="clientMessageId", min_length=1, max_length=64)
     final_transcript: str = Field(alias="finalTranscript", min_length=1, max_length=10000)
@@ -125,6 +144,14 @@ class CreateInterviewSession(BaseModel):
     experience_type: ExperienceType = Field(default="interview_chat", alias="experienceType")
     locale: str = Field(default="vi-VN", min_length=2, max_length=35)
     duration_minutes: int = Field(default=25, alias="durationMinutes", ge=2, le=120)
+    # "Luyện vòng này" on the progress page: half of the technical questions
+    # come from this round (interview_rounds.FOCUSABLE_AREAS).
+    focus_area: Literal["language", "framework", "data", "api", "infra", "ai"] | None = Field(
+        default=None, alias="focusArea"
+    )
+    # "Luyện lại ý này": a skill (concept id) to ask again in this session,
+    # with a question the candidate has not seen (planner._due_reask).
+    reask_concept_id: str | None = Field(default=None, alias="reaskConceptId", max_length=120)
 
     model_config = {"populate_by_name": True}
 
@@ -235,6 +262,162 @@ async def _validate_context(
         raise HTTPException(status_code=404, detail="Job description not found")
 
 
+def _entry_blocked_http(exc: InterviewEntryBlocked) -> HTTPException:
+    # Same shape as question_bank_insufficient: { errorCode, message, details }.
+    return HTTPException(status_code=409, detail=exc.decision.detail())
+
+
+async def _require_match_threshold(db: AsyncSession, user: dict, resume_id: str, job_id: str) -> None:
+    """Refuse to create a session whose CV–job match is missing or below the threshold.
+
+    The match comes from the same cache as the fit report page, so this is the
+    score the candidate has just seen. No session row is written when blocked.
+    """
+    try:
+        match = await evaluate_session_match(db=db, user=user, resume_id=resume_id, job_id=job_id)
+    except ValueError as exc:
+        # CV or job not parsed yet: there is no score to enter the room with.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "errorCode": "match_score_unavailable",
+                "message": "Chưa chấm được điểm phù hợp giữa CV và vị trí này nên chưa thể vào phòng phỏng vấn.",
+                "details": {"reason": str(exc)},
+            },
+        ) from exc
+    decision = evaluate_entry(match)
+    trace_event(
+        "interviewer",
+        "session_entry_checked",
+        user_id=user.get("sub"),
+        resume_id=resume_id,
+        job_id=job_id,
+        **decision.trace_fields(),
+    )
+    if not decision.allowed:
+        raise _entry_blocked_http(InterviewEntryBlocked(decision))
+
+
+class WeeklyGoalPayload(BaseModel):
+    weekly_goal: int = Field(alias="weeklyGoal", ge=1, le=7)
+
+    model_config = {"populate_by_name": True}
+
+
+class RealInterviewPayload(BaseModel):
+    """A real interview the candidate reports (application/real_interviews.py)."""
+
+    job_id: str | None = Field(default=None, alias="jobId", max_length=36)
+    company: str | None = Field(default=None, max_length=160)
+    interview_date: date = Field(alias="date")
+    stage: Literal["screening", "technical", "final", "other"]
+    result: Literal["passed", "failed", "waiting"]
+    asked_areas: list[str] = Field(default_factory=list, alias="askedAreas", max_length=10)
+    hard_parts: str | None = Field(default=None, alias="hardParts", max_length=2000)
+
+    model_config = {"populate_by_name": True}
+
+
+def _tz_offset(value: int) -> int:
+    return max(-840, min(840, int(value)))
+
+
+@router.get("/progress")
+async def get_practice_progress(
+    tz_offset_minutes: int = Query(0, alias="tzOffsetMinutes", description="Minutes ahead of UTC (Vietnam: 420)"),
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Progress across interviews: skills, jobs, answer habits, weekly streak, milestones."""
+    return await load_progress(db, user["sub"], tz_offset_minutes=_tz_offset(tz_offset_minutes))
+
+
+@router.put("/progress/weekly-goal")
+async def update_weekly_goal(
+    payload: WeeklyGoalPayload,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return {"weeklyGoal": await set_weekly_goal(db, user["sub"], payload.weekly_goal)}
+
+
+@router.get("/progress/real-interviews")
+async def get_real_interviews(user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)) -> dict:
+    return {"reports": await list_reports(db, user["sub"])}
+
+
+async def _store_real_interview(
+    db: AsyncSession, user: dict, payload: RealInterviewPayload, report_id: str | None
+) -> dict:
+    if payload.interview_date > datetime.now(UTC).date() + timedelta(days=1):
+        raise HTTPException(status_code=422, detail="date is in the future")
+    readiness: dict[str, Any] = {}
+    if report_id is None:
+        readiness = readiness_snapshot(await load_progress(db, user["sub"]), payload.job_id)
+    try:
+        report = await save_report(
+            db,
+            user["sub"],
+            report_id=report_id,
+            job_id=payload.job_id,
+            company=payload.company,
+            interview_date=payload.interview_date,
+            stage=payload.stage,
+            result=payload.result,
+            asked_areas=payload.asked_areas,
+            hard_parts=payload.hard_parts,
+            readiness=readiness,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Report not found") from exc
+    return {"report": report}
+
+
+@router.post("/progress/real-interviews", status_code=status.HTTP_201_CREATED)
+async def add_real_interview(
+    payload: RealInterviewPayload, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
+) -> dict:
+    return await _store_real_interview(db, user, payload, None)
+
+
+@router.put("/progress/real-interviews/{report_id}")
+async def update_real_interview(
+    report_id: str,
+    payload: RealInterviewPayload,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return await _store_real_interview(db, user, payload, report_id)
+
+
+@router.delete("/progress/real-interviews/{report_id}")
+async def remove_real_interview(
+    report_id: str, user: dict = Depends(current_user), db: AsyncSession = Depends(get_db)
+) -> dict:
+    if not await delete_report(db, user["sub"], report_id):
+        raise HTTPException(status_code=404, detail="Report not found")
+    return {"deleted": True}
+
+
+@router.get("/sessions/{session_id}/progress-compare")
+async def get_session_progress_compare(
+    session_id: str,
+    tz_offset_minutes: int = Query(0, alias="tzOffsetMinutes"),
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """"So với lần trước" for the report: null when there is no earlier graded session."""
+    await _owned_session(db, user["sub"], session_id)
+    progress = await load_progress(db, user["sub"], tz_offset_minutes=_tz_offset(tz_offset_minutes))
+    return {"comparison": compare_with_previous(progress, session_id)}
+
+
+@router.get("/entry-policy")
+async def get_interview_entry_policy(user: dict = Depends(current_user)) -> dict:
+    """The match threshold for entering an interview room, for the UI to show."""
+    return entry_policy().to_payload()
+
+
 @router.post("/sessions", status_code=status.HTTP_201_CREATED)
 async def create_interview_session(
     payload: CreateInterviewSession,
@@ -259,6 +442,7 @@ async def create_interview_session(
                 ),
             )
         await _validate_context(db, user, payload.resume_id, payload.job_id)
+        await _require_match_threshold(db, user, payload.resume_id, payload.job_id)
 
         session_id = str(uuid4())
         plan_id = str(uuid4())
@@ -298,6 +482,8 @@ async def create_interview_session(
                         "resumeId": payload.resume_id,
                         "jobId": payload.job_id,
                         "source": "p0-session-context",
+                        "focusArea": payload.focus_area,
+                        "reaskConceptId": payload.reask_concept_id,
                     }
                 ),
             },
@@ -458,6 +644,17 @@ async def build_interview_plan(
             duration_ms=round((time.monotonic() - started_at) * 1000),
         )
         return result
+    except InterviewEntryBlocked as exc:
+        trace_event(
+            "interviewer",
+            "plan_failed",
+            session_id=session_id,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        await db.rollback()
+        raise _entry_blocked_http(exc) from exc
     except PlannerPolicyConfigurationError as exc:
         # A deployment-level misconfiguration, not a conflict on this session.
         # Keep the offending setting name out of the client response.
@@ -946,6 +1143,52 @@ async def send_video_transcript(
     except ChatRuntimeError as exc:
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/chat/presence")
+async def chat_presence(
+    session_id: str,
+    payload: ChatPresence,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Whether the candidate still has the chat room open.
+
+    "here" (on open and every minute) records ``candidate_seen_at`` and clears
+    a "left" mark, returning since when they were away; "left" (page closed)
+    marks ``candidate_left_at``. The session reaper closes a chat whose
+    candidate left, or stopped sending heartbeats, more than
+    CANDIDATE_LEFT_GRACE_MINUTES ago, with CANDIDATE_LEFT.
+    """
+    session = await _owned_session(db, user["sub"], session_id)
+    _require_runtime_mode(session, mode="text", experience_type="interview_chat")
+    if str(session.get("status") or "").upper() != "OPEN":
+        return {"open": False, "awaySince": None, "graceMinutes": CANDIDATE_LEFT_GRACE_MINUTES}
+    if payload.state == "left":
+        await db.execute(
+            text(
+                "UPDATE interview_sessions SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), "
+                "'{candidate_left_at}', to_jsonb(now()::text)) "
+                "WHERE id = :sid AND status = 'OPEN' AND metadata->>'candidate_left_at' IS NULL"
+            ),
+            {"sid": session_id},
+        )
+        await db.commit()
+        return {"open": True, "awaySince": None, "graceMinutes": CANDIDATE_LEFT_GRACE_MINUTES}
+    away = (
+        await db.execute(
+            text(
+                "UPDATE interview_sessions s "
+                "SET metadata = (COALESCE(s.metadata, '{}'::jsonb) - 'candidate_left_at') "
+                "|| jsonb_build_object('candidate_seen_at', now()::text) "
+                "FROM interview_sessions old WHERE s.id = :sid AND old.id = s.id AND s.status = 'OPEN' "
+                "RETURNING old.metadata->>'candidate_left_at' AS left_at"
+            ),
+            {"sid": session_id},
+        )
+    ).scalar_one_or_none()
+    await db.commit()
+    return {"open": True, "awaySince": away, "graceMinutes": CANDIDATE_LEFT_GRACE_MINUTES}
 
 
 @router.post("/sessions/{session_id}/chat/complete")

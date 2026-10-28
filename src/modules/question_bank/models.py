@@ -449,3 +449,37 @@ class QuestionImportRow(QuestionBankBase):
     draft_question_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     draft_question_version_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     updated_at: Mapped[datetime] = _now()
+
+
+class QuestionBankSuggestion(QuestionBankBase):
+    """A change the system proposes from real interview data (interviews/evaluation/bank_insights.py).
+
+    One row per (kind, question, criterion) while OPEN; a person ACCEPTs it
+    (revision draft, generated variants, retirement) or DISMISSes it. Created by
+    ``create_all`` on start like the other question-bank tables.
+    """
+
+    __tablename__ = "question_bank_suggestions"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('OPEN', 'ACCEPTED', 'DISMISSED')", name="ck_question_bank_suggestion_status"
+        ),
+    )
+    id: Mapped[UUID] = _id()
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    reason: Mapped[str] = mapped_column(String(48), nullable=False)
+    question_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    question_version_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    criterion_key: Mapped[str | None] = mapped_column(String(128))
+    dedupe_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="OPEN")
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, server_default="MEDIUM")
+    evidence: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    proposal: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    result: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    run_id: Mapped[str | None] = mapped_column(String(36))
+    decided_by: Mapped[str | None] = mapped_column(String(36))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _now()
+    updated_at: Mapped[datetime] = _now()

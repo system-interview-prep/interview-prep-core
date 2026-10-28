@@ -50,7 +50,9 @@ def _level_from_years(min_years: float) -> str:
 def derive_difficulty(job: CanonicalJob, *, listing: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Derive the session difficulty from what the job posting states.
 
-    Still JD-only: never inferred from CV prose or matching scores. Most
+    JD-only here: never inferred from CV prose. The session planner then moves
+    it at most one level by practice tier (``entry_gate.fit_adjusted_difficulty``):
+    easier for a CV far from the job, harder in challenge tier. Most
     postings carry no seniority word, which used to leave difficulty
     "unspecified" and switched it off for the selector (54 of 55 plans), so
     the posting's other signals are tried in order:

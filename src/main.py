@@ -22,6 +22,8 @@ from src.modules.auth import build_module as build_auth_module
 from src.modules.health import build_module as build_health_module
 from src.modules.interviews import build_module as build_interviews_module
 from src.modules.interviews.agent.checkpoints import interview_checkpoint_lifespan
+from src.modules.interviews.application.admin_notifier import notifier as admin_notifier
+from src.modules.interviews.application.pipeline_live import bridge as pipeline_live_bridge
 from src.modules.interviews.application.session_reaper import session_reaper_loop
 from src.modules.interviews.planning.planner import configured_planner_policy
 from src.modules.job_descriptions import build_module as build_job_descriptions_module
@@ -143,9 +145,15 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             session_reaper = asyncio.create_task(
                 session_reaper_loop(SessionFactory), name="interview-session-reaper"
             )
+            # Pushes pipeline activity to open admin pages (socket.io /admin-pipeline).
+            await pipeline_live_bridge.start()
+            # Turns new AI pipeline problems into admin notifications.
+            await admin_notifier.start()
             try:
                 yield
             finally:
+                await admin_notifier.stop()
+                await pipeline_live_bridge.stop()
                 if session_reaper is not None:
                     session_reaper.cancel()
                     await asyncio.gather(session_reaper, return_exceptions=True)

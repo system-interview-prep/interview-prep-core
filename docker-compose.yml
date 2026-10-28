@@ -50,7 +50,7 @@ services:
       WATCHFILES_FORCE_POLLING: "true"
     ports: ["5000:5000"]
     command: ["sh", "-c", "python -m alembic upgrade head && exec uvicorn src.main:asgi_app --host 0.0.0.0 --port 5000 --reload --reload-dir /app/src"]
-    volumes: ["./src:/app/src", "./tests:/app/tests", "./migrations:/app/migrations", "./trace-logs:/app/trace-logs", "./alembic.ini:/app/alembic.ini:ro", "./pyproject.toml:/app/pyproject.toml:ro"]
+    volumes: ["./src:/app/src", "./tests:/app/tests", "./migrations:/app/migrations", "./trace-logs:/app/trace-logs", "./scripts:/app/scripts", "./alembic.ini:/app/alembic.ini:ro", "./pyproject.toml:/app/pyproject.toml:ro"]
     depends_on:
       rabbitmq: {condition: service_healthy}
       postgres-db: {condition: service_healthy}

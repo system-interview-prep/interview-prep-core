@@ -212,7 +212,8 @@ async def load_question_quality_rows(
                 JOIN users u ON u.id = s.user_id
                 LEFT JOIN interview_session_plans p ON p.session_id = t.session_id
                 LEFT JOIN LATERAL (
-                    SELECT te.score FROM interview_turn_evaluations te
+                    SELECT CASE WHEN te.outcome = 'NOT_GRADABLE' THEN NULL ELSE te.score END AS score
+                    FROM interview_turn_evaluations te
                     WHERE te.turn_id = t.id ORDER BY te.created_at DESC LIMIT 1
                 ) e ON TRUE
                 WHERE {where}

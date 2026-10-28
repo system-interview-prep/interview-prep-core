@@ -38,6 +38,12 @@ class TurnEvaluationInput(BaseModel):
     stage: str = Field(default="")
     source_modality: str = Field(default="TEXT")
     transcript_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    # SKIPPED: every message on this turn was a skip request or "không biết"
+    # with no content. Scored 0 without calling the grader.
+    outcome: str = Field(default="ANSWERED")
+    # Expected points of the question (question snapshot format). When present
+    # the turn is graded as a checklist and the score is computed in code.
+    expected_points: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class TurnEvaluationResult(BaseModel):
@@ -51,6 +57,11 @@ class TurnEvaluationResult(BaseModel):
     weaknesses: List[str] = Field(default_factory=list, description="Các điểm hạn chế cần cải thiện")
     what_good_looks_like: str = Field(default="", description="Gợi ý câu trả lời mẫu đạt điểm 9-10 dựa trên bối cảnh của ứng viên")
     graded: bool = Field(default=True, description="False khi LLM không trả về điểm hợp lệ; điểm khi đó không có ý nghĩa")
+    rubric_points: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Checklist verdicts {key, description, importance, status, quote, adjusted}; empty when graded holistically",
+    )
+    outcome: str = Field(default="ANSWERED", description="ANSWERED | SKIPPED (bỏ qua, tính 0) | NOT_GRADABLE (lỗi âm thanh/hệ thống, không tính điểm)")
 
 
 class CompetencyScore(BaseModel):

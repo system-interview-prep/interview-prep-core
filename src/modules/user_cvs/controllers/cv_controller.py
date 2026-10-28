@@ -107,9 +107,12 @@ async def upload_cv(
         logger.exception("CV upload persisted but parse dispatch failed")
         raise HTTPException(status_code=503, detail="CV parsing queue is unavailable") from exc
     try:
-        return (await _query_service(db).get(user["sub"], result.cv_id)).as_response()
+        record = (await _query_service(db).get(user["sub"], result.cv_id)).as_response()
     except CvNotFoundError as exc:
         raise _not_found() from exc
+    # duplicate: the same file was uploaded before, this is that CV (nothing new stored).
+    # renamedFrom: a different file with this name existed, the new CV got a "(2)" name.
+    return {**record, "duplicate": not result.created, "renamedFrom": result.renamed_from}
 
 
 @router.get("")

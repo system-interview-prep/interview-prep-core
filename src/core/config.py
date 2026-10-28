@@ -14,6 +14,33 @@ class Settings(BaseSettings):
     # None enables traces only in local/development environments.
     trace_logs_enabled: bool | None = None
     trace_logs_dir: str = "trace-logs"
+    # Admin pipeline view (interview_pipeline_events, ai_call_logs). Unlike the
+    # JSONL traces these are kept in every environment. None: on, except
+    # under pytest.
+    pipeline_events_enabled: bool | None = None
+    pipeline_events_retention_days: int = Field(default=90, ge=1, le=3650)
+    # Store truncated model inputs/outputs in ai_call_logs. They contain CV
+    # and answer text, so this is off unless an operator turns it on.
+    ai_call_log_capture_text: bool = False
+    # Langfuse (src/core/llm_tracing.py): one trace per interview turn and per
+    # grading run, with every model call, the engine's decision, guard results
+    # and rule scores. Off unless the keys are set (and the `langfuse` package
+    # is installed). Self-hosted: LANGFUSE_BASE_URL=http://host.docker.internal:3000.
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_base_url: str = "https://cloud.langfuse.com"
+    langfuse_enabled: bool | None = None
+    langfuse_environment: str = ""
+    # Share of sessions whose prompts and answers are sent as text (masked);
+    # flagged turns are always sent. The LLM judge in Langfuse runs on these.
+    langfuse_text_sample_rate: float = Field(default=0.2, ge=0.0, le=1.0)
+    # Annotation queue that receives flagged turns plus a random share of the
+    # text-sampled ones (scripts/langfuse_setup.py prints the id).
+    langfuse_review_queue_id: str = ""
+    langfuse_review_random_rate: float = Field(default=0.05, ge=0.0, le=1.0)
+    # Address of the Langfuse UI for links on the admin pages, when the browser
+    # reaches it differently from the backend (http://localhost:3000 vs host.docker.internal).
+    langfuse_ui_url: str = ""
     # Seeds the curated Question Bank (approved questions, rubrics and taxonomy
     # mappings). Interviews fail closed with question_bank_insufficient on an
     # empty bank, so a demo deployment must turn this on explicitly.

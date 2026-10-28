@@ -28,6 +28,13 @@ async def create_question_bank_schema(engine: AsyncEngine) -> None:
                 "WHERE purpose = 'PRIMARY_COMPETENCY'"
             )
         )
+        # One OPEN suggestion per finding; re-running the analysis refreshes it.
+        await connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_question_bank_suggestion_open "
+                "ON question_bank_suggestions (dedupe_key) WHERE status = 'OPEN'"
+            )
+        )
         await connection.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS ix_question_version_status_difficulty "

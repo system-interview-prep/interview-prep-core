@@ -203,7 +203,8 @@ class TestPersonaBasedSimulations(unittest.IsolatedAsyncioTestCase):
                 "is_sufficient": False,  # Chưa đủ ý -> Cần probe
                 "acknowledgement": "Cảm ơn bạn.",
             },
-            probe_text="Bạn có thể chia sẻ cụ thể bạn dùng công cụ gì để phát hiện query chậm và đã tối ưu bằng kỹ thuật nào không?",
+            # 25/10: one ask under 22 words (the two-part version is now rejected as too long).
+            probe_text="Cụ thể bạn dùng công cụ gì để phát hiện query chậm?",
         )
         engine = InterviewCoreEngine(llm_client=vague_llm)
 

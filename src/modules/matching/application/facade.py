@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import re
+import time
 import unicodedata
 from collections.abc import Callable
 from functools import lru_cache
 
 from src.core.trace_logging import trace_event
 from src.modules.job_descriptions.schemas import CanonicalJobDescription
+from src.modules.matching.application import run_tracking
 from src.modules.matching.application.targeted_reparse import reparse_partial_resume
 from src.modules.matching.domain.adapters import job_description_to_matching_job
 from src.modules.matching.domain.schemas import (
@@ -28,9 +30,18 @@ from src.modules.matching.evaluation.requirement_evaluators import (
     evaluate_unresolved_requirement,
     select_evaluator,
 )
-from src.modules.matching.rag.embedding import EmbeddingAdapter, build_embedding_adapter_from_env
+from src.modules.matching.rag.embedding import (
+    EmbeddingAdapter,
+    build_embedding_adapter_from_env,
+    embed_texts_for,
+    last_embedding_outcome,
+)
 from src.modules.matching.retrieval.bm25 import bm25_similarity
-from src.modules.matching.retrieval.bm25_provider import Bm25Provider, get_bm25_provider
+from src.modules.matching.retrieval.bm25_provider import (
+    Bm25Provider,
+    get_bm25_provider,
+    track_bm25_provider,
+)
 from src.modules.matching.retrieval.evidence_retrieval import retrieve_named_technology_context
 from src.modules.matching.retrieval.semantic import cosine_similarity
 from src.modules.user_cvs.schemas import CanonicalResume
@@ -114,8 +125,10 @@ class MatchingFacade:
         payload = payload.model_copy(
             update={"resume": reparse_partial_resume(payload.resume, payload.job)}
         )
+        started = time.perf_counter()
         requirements = self._evaluate_requirements(payload.resume, payload.job)
         requirements = self._apply_requirement_overrides(requirements, requirement_overrides)
+        self._trace_requirements(payload, requirements, requirement_overrides, started)
         eligibility = self._eligibility(payload, requirements)
         compatibility_results = self._evaluate_compatibility(payload)
         compatibility_status = self._compatibility_status(compatibility_results)
@@ -128,7 +141,7 @@ class MatchingFacade:
             warnings.extend(["semantic_only_estimate", "semantic_only_score_suppressed"])
         suitability = diagnostic_score if eligibility == "eligible" and not semantic_only else None
         decision, fit_band = self._decision(eligibility, suitability, factors)
-        return MatchResult(
+        result = MatchResult(
             resumeId=payload.resume.resume_id,
             jobId=payload.job.job_id,
             jobVersionId=payload.job.job_version_id,
@@ -147,6 +160,8 @@ class MatchingFacade:
             warnings=warnings,
             evidence=self._cited_evidence(payload.resume, requirements, factors),
         )
+        run_tracking.emit_match_scored(result)
+        return result
 
     async def match_async(
         self,
@@ -158,8 +173,10 @@ class MatchingFacade:
         payload = payload.model_copy(
             update={"resume": reparse_partial_resume(payload.resume, payload.job)}
         )
+        started = time.perf_counter()
         requirements = self._evaluate_requirements(payload.resume, payload.job)
         requirements = self._apply_requirement_overrides(requirements, requirement_overrides)
+        self._trace_requirements(payload, requirements, requirement_overrides, started)
         eligibility = self._eligibility(payload, requirements)
         compatibility_results = self._evaluate_compatibility(payload)
         compatibility_status = self._compatibility_status(compatibility_results)
@@ -172,7 +189,7 @@ class MatchingFacade:
             warnings.extend(["semantic_only_estimate", "semantic_only_score_suppressed"])
         suitability = diagnostic_score if eligibility == "eligible" and not semantic_only else None
         decision, fit_band = self._decision(eligibility, suitability, factors)
-        return MatchResult(
+        result = MatchResult(
             resumeId=payload.resume.resume_id,
             jobId=payload.job.job_id,
             jobVersionId=payload.job.job_version_id,
@@ -191,6 +208,31 @@ class MatchingFacade:
             warnings=warnings,
             evidence=self._cited_evidence(payload.resume, requirements, factors),
         )
+        run_tracking.emit_match_scored(result)
+        return result
+
+    @staticmethod
+    def _trace_requirements(
+        payload: MatchRequest,
+        requirements: list[RequirementResult],
+        overrides: dict[str, RequirementResult] | None,
+        started: float,
+    ) -> None:
+        """One ``requirements_evaluated`` event per pass (not one row per requirement)."""
+        if run_tracking.active_run() is None:
+            return
+        try:
+            result_ids = {item.requirement_id for item in requirements}
+            fields = run_tracking.requirements_fields(
+                list(payload.job.requirements),
+                requirements,
+                {key for key in (overrides or {}) if key in result_ids},
+            )
+            run_tracking.emit(
+                "requirements_evaluated", duration_ms=run_tracking.elapsed_ms(started), **fields
+            )
+        except Exception:  # noqa: BLE001 - tracking must never break matching
+            pass
 
     @staticmethod
     def _cited_evidence(
@@ -744,8 +786,40 @@ class MatchingFacade:
         )
 
     def _semantic_factor(
-        self, payload: MatchRequest, policy_weight: float, sparse_score: float | None = None
+        self,
+        payload: MatchRequest,
+        policy_weight: float,
+        sparse_score: float | None = None,
+        *,
+        started: float | None = None,
+        bm25_used: str | None = None,
     ) -> tuple[FactorResult, str | None]:
+        started = time.perf_counter() if started is None else started
+        with track_bm25_provider() as used:
+            factor, warning, outcome = self._semantic_factor_scored(payload, policy_weight, sparse_score)
+        if run_tracking.active_run() is not None:
+            policy = payload.matching_policy
+            run_tracking.emit(
+                "semantic_scored",
+                mode=policy.semantic_mode,
+                bm25_provider_used=(
+                    "in_memory"
+                    if policy.bm25_provider_mode == "in_memory"
+                    else bm25_used or used.get("provider")
+                ),
+                sparse_score=factor.sparse_score,
+                dense_score=factor.dense_score,
+                embedding_outcome=outcome,
+                warning_code=warning,
+                duration_ms=run_tracking.elapsed_ms(started),
+            )
+        return factor, warning
+
+    def _semantic_factor_scored(
+        self, payload: MatchRequest, policy_weight: float, sparse_score: float | None = None
+    ) -> tuple[FactorResult, str | None, str | None]:
+        """The semantic factor, its warning, and the embedding outcome
+        (ok | disk_cache | disabled | error, None when no embedding was needed)."""
         contextual_resume_text = [
             value for value in (payload.resume.profile.headline, payload.resume.profile.summary) if value
         ]
@@ -777,7 +851,7 @@ class MatchingFacade:
         )
         job_text = "\n".join(contextual_job_text) or "\n".join(item.text for item in payload.job.evidence)
         if not resume_text or not job_text:
-            return self._unknown_semantic(policy_weight, "semantic_input_not_evidenced")
+            return (*self._unknown_semantic(policy_weight, "semantic_input_not_evidenced"), None)
 
         if sparse_score is None:
             if payload.matching_policy.bm25_provider_mode == "in_memory":
@@ -803,9 +877,11 @@ class MatchingFacade:
                     sparseScore=sparse_score,
                 ),
                 None,
+                None,
             )
 
         dense_score: float | None = None
+        embedding_outcome = "ok"
         dense_disabled: bool = False
         try:
             # Reuse one provider client for the facade lifetime. Apart from reducing
@@ -814,14 +890,19 @@ class MatchingFacade:
             if self._embedder is None:
                 self._embedder = build_embedding_adapter_from_env()
             embedder = self._embedder
-            vectors = embedder.embed_texts([resume_text, job_text])
+            vectors = embed_texts_for(
+                embedder, [resume_text, job_text], purpose="matching.semantic.embeddings"
+            )
             if len(vectors) != 2:
                 raise ValueError("embedding provider returned an invalid vector count")
             dense_score = cosine_similarity(vectors[0], vectors[1])
+            embedding_outcome = last_embedding_outcome() or "ok"
         except Exception as exc:
             dense_score = None
+            embedding_outcome = "error"
             if "disabled" in str(exc).lower():
                 dense_disabled = True
+                embedding_outcome = "disabled"
 
         if dense_score is not None:
             if mode == "dense_only":
@@ -842,11 +923,12 @@ class MatchingFacade:
                     sparseScore=round(sparse_score, 4),
                 ),
                 None,
+                embedding_outcome,
             )
 
         # When semantic is explicitly disabled, preserve the disabled semantic contract
         if dense_disabled:
-            return self._unknown_semantic(policy_weight, "semantic_scorer_unavailable")
+            return (*self._unknown_semantic(policy_weight, "semantic_scorer_unavailable"), embedding_outcome)
 
         # Dense failed unexpectedly: graceful sparse degradation
         if sparse_score > 0.0:
@@ -862,14 +944,16 @@ class MatchingFacade:
                     sparseScore=round(sparse_score, 4),
                 ),
                 "semantic_dense_provider_fallback_to_sparse",
+                embedding_outcome,
             )
 
-        return self._unknown_semantic(policy_weight, "semantic_scorer_unavailable")
+        return (*self._unknown_semantic(policy_weight, "semantic_scorer_unavailable"), embedding_outcome)
 
     async def _semantic_factor_async(
         self, payload: MatchRequest, policy_weight: float
     ) -> tuple[FactorResult, str | None]:
         """Async equivalent of the semantic factor's sparse-score portion."""
+        started = time.perf_counter()
         contextual_resume_text = [
             value for value in (payload.resume.profile.headline, payload.resume.profile.summary) if value
         ]
@@ -901,19 +985,24 @@ class MatchingFacade:
         )
         job_text = "\n".join(contextual_job_text) or "\n".join(item.text for item in payload.job.evidence)
         if not resume_text or not job_text:
-            return self._unknown_semantic(policy_weight, "semantic_input_not_evidenced")
+            return self._semantic_factor(payload, policy_weight, started=started)
+        bm25_used: str | None = None
         if payload.matching_policy.bm25_provider_mode == "in_memory":
             sparse_score = bm25_similarity(job_text, resume_text)
         else:
-            sparse_score = await self._bm25_provider.score_async(
-                query_text=job_text,
-                doc_text=resume_text,
-                doc_id=payload.resume.document_id or payload.resume.resume_id,
-            )
+            with track_bm25_provider() as used:
+                sparse_score = await self._bm25_provider.score_async(
+                    query_text=job_text,
+                    doc_text=resume_text,
+                    doc_id=payload.resume.document_id or payload.resume.resume_id,
+                )
+            bm25_used = used.get("provider")
 
         # The remaining semantic work is CPU-only and shares the established
         # scoring implementation without touching the database again.
-        return self._semantic_factor(payload, policy_weight, sparse_score=sparse_score)
+        return self._semantic_factor(
+            payload, policy_weight, sparse_score=sparse_score, started=started, bm25_used=bm25_used
+        )
 
     @staticmethod
     def _token_overlap(left: str | None, right: str | None) -> float:
@@ -1131,6 +1220,35 @@ def canonical_job_from_description(
     return job.model_copy(update={"job_version_id": job_version_id})
 
 
-async def evaluate_match(payload: MatchRequest) -> MatchResult:
-    """Public async matching entry point for other business modules."""
-    return await get_matching_facade().match_async(payload)
+async def evaluate_match(payload: MatchRequest, *, user_id: str | None = None) -> MatchResult:
+    """Public async matching entry point for other business modules.
+
+    Cached by request, so every interview session for the same CV and JD is
+    planned from the same match.
+    """
+    from src.modules.matching.application.match_cache import cached_match
+
+    # The interview planner's own run; reuses a run when a caller already opened one.
+    owns_run = run_tracking.active_run() is None
+    with run_tracking.match_run(
+        "planner",
+        user_id=user_id,
+        resume_id=payload.resume.resume_id,
+        job_id=payload.job.job_id,
+        reuse_active=True,
+    ):
+        if owns_run:
+            run_tracking.emit(
+                "match_requested",
+                **run_tracking.request_fields("planner", payload.matching_policy, is_async=False),
+            )
+            run_tracking.emit("inputs_resolved", **run_tracking.inputs_fields(payload.resume, payload.job))
+        try:
+            result = await cached_match(payload, get_matching_facade().match_async)
+        except Exception as exc:
+            if owns_run:
+                run_tracking.emit_match_failed(exc)
+            raise
+        if owns_run:
+            run_tracking.emit_match_completed(result)
+        return result

@@ -11,16 +11,26 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core import llm_tracing
 from src.core.trace_logging import trace_event
+from src.modules.interviews.application import llm_checks
+from src.modules.interviews.evaluation.answer_outcome import (
+    ANSWERED,
+    NOT_GRADABLE,
+    turn_outcome,
+)
 from src.modules.interviews.evaluation.evaluation_engine import (
     EvaluationGradingError,
     InterviewEvaluationEngine,
+    NoGradableTurnsError,
+    grader_version,
 )
 from src.modules.interviews.evaluation.evaluation_types import (
     DecisionRecommendation,
     SessionEvaluationResult,
     TurnEvaluationInput,
 )
+from src.modules.interviews.evaluation.grading_cache import DatabaseVerdictCache
 
 logger = logging.getLogger("InterviewEvaluationService")
 
@@ -92,10 +102,80 @@ async def evaluate_closed_session(
 
     Trả về None khi một request đồng thời đã tạo xong báo cáo trong lúc request
     này chờ lock.
+
+    The grading run is one Langfuse trace (``session_grading``) with every
+    grader call; after it, the checks of ``llm_checks.session_flags`` become
+    session scores (a no-op when Langfuse is not configured).
     """
+    with llm_tracing.trace(
+        llm_tracing.GRADING_TRACE, session_id=str(session_id), input={"session_id": str(session_id)}
+    ) as lf_run:
+        result = await _evaluate_closed_session(db, session_id, engine)
+        if lf_run is not None and result is not None:
+            await _report_grading_checks(db, str(session_id), result, lf_run)
+        return result
+
+
+async def _report_grading_checks(
+    db: AsyncSession, session_id: str, result: SessionEvaluationResult, lf_run: Any
+) -> None:
+    try:
+        turn_rows = await db.execute(
+            text("SELECT id, turn_index FROM interview_turns WHERE session_id = :sid"), {"sid": session_id}
+        )
+        index_by_turn = {str(r["id"]): r["turn_index"] for r in turn_rows.mappings().all()}
+        events = await db.execute(
+            text(
+                "SELECT turn_index, payload->>'sufficiency' AS sufficiency, payload->>'action' AS action "
+                "FROM interview_pipeline_events WHERE session_id = :sid AND event = 'turn_spoken'"
+            ),
+            {"sid": session_id},
+        )
+        verdicts: dict[int, set[str]] = {}
+        for row in events.mappings().all():
+            # "Complete" only when the interview moved on without a follow-up.
+            if row["turn_index"] is not None and row["action"] == "NEXT_QUESTION" and row["sufficiency"]:
+                verdicts.setdefault(int(row["turn_index"]), set()).add(str(row["sufficiency"]))
+        grades = [
+            {
+                "turn_index": index_by_turn.get(str(t.turn_id)),
+                "score": t.score,
+                "rubric_points": t.rubric_points,
+            }
+            for t in result.turn_evaluations
+        ]
+        checks = llm_checks.session_flags(grades, verdicts)
+    except Exception:  # noqa: BLE001 - monitoring must not fail the grading
+        logger.debug("grading checks not computed", exc_info=True)
+        await db.rollback()
+        return
+    flags = [
+        name.removeprefix("check.")
+        for name, value in checks.items()
+        if value and name != "check.graded_questions"
+    ]
+    llm_tracing.finish(
+        lf_run,
+        output={
+            "overall_score": result.overall_score,
+            "decision": getattr(result.decision_recommendation, "value", result.decision_recommendation),
+            **checks,
+        },
+        flags=flags,
+        scores=checks,
+    )
+    for name, value in checks.items():
+        llm_tracing.score_session(session_id, name, value)
+
+
+async def _evaluate_closed_session(
+    db: AsyncSession,
+    session_id: str,
+    engine: InterviewEvaluationEngine | None = None,
+) -> SessionEvaluationResult | None:
     started_at = time.monotonic()
     trace_event("interviewer", "evaluation_pipeline_started", session_id=session_id)
-    eval_engine = engine or InterviewEvaluationEngine()
+    eval_engine = engine or InterviewEvaluationEngine(verdict_cache=DatabaseVerdictCache())
 
     # 1. Kiểm tra session
     sess_res = await db.execute(
@@ -233,6 +313,22 @@ async def evaluate_closed_session(
                 uncovered_competencies.append(str(label))
             continue
         q_prompt = snap.get("questionText") or snap.get("question_text") or "Câu hỏi chuyên môn"
+        turn_telemetry = telemetry_by_turn.get(t_id, [])
+        is_voice = any(
+            str(item.get("transport") or "").lower() == "livekit"
+            or str(item.get("modality") or "").upper() == "VOICE"
+            for item in turn_telemetry
+        )
+        # A skip request or "không biết" is not evidence. A turn made only of
+        # those is scored 0 without the grader; mixed turns are graded on the
+        # real answers alone, so the skip line cannot earn "honesty" points.
+        # A voice turn holding only an empty fragment is NOT_GRADABLE.
+        turn_msgs = msgs_by_turn.get(t_id) or ([ans] if ans else [])
+        outcome, real_answers = turn_outcome(turn_msgs, q_prompt, is_voice=is_voice)
+        if real_answers and len(real_answers) < len(turn_msgs):
+            ans = real_answers[0] + "".join(
+                f"\n\n[Follow-up Answer]: {message}" for message in real_answers[1:]
+            )
         weight = _turn_weight(stage, snap, importance_by_concept)
         competency = (
             (snap.get("taxonomyTarget") or {}).get("label")
@@ -261,12 +357,6 @@ async def evaluate_closed_session(
         if not ans:
             ans = "Ứng viên không trả lời hoặc bỏ qua câu hỏi này."
 
-        turn_telemetry = telemetry_by_turn.get(t_id, [])
-        is_voice = any(
-            str(item.get("transport") or "").lower() == "livekit"
-            or str(item.get("modality") or "").upper() == "VOICE"
-            for item in turn_telemetry
-        )
         confidences = [
             float(item["transcriptConfidence"])
             for item in turn_telemetry
@@ -290,13 +380,15 @@ async def evaluate_closed_session(
                 stage=str(stage or ""),
                 source_modality="VOICE" if is_voice else "TEXT",
                 transcript_confidence=transcript_confidence,
+                outcome=outcome,
+                expected_points=snap.get("expectedPoints") or [],
             )
         )
 
     # WARM_UP carries weight 0, so a session abandoned right after the greeting
     # has turns but nothing scorable. Grading it anyway produced a 0.0/REJECT
     # report for a candidate who was never actually assessed.
-    if not any(t.weight > 0 for t in turns_input):
+    if not any(t.weight > 0 and t.outcome != NOT_GRADABLE for t in turns_input):
         raise EvaluationServiceError(
             f"Phiên phỏng vấn {session_id} chưa có lượt trả lời chuyên môn nào để đánh giá."
         )
@@ -334,6 +426,13 @@ async def evaluate_closed_session(
             return None
         raise EvaluationGradingError("Báo cáo đang được tổng hợp. Vui lòng thử lại sau.")
     await db.commit()
+    trace_event(
+        "interviewer",
+        "evaluation_job_claimed",
+        session_id=session_id,
+        turns_total=len(turns_input),
+        assessed_turns=sum(1 for ti in turns_input if ti.weight > 0),
+    )
 
     # 5. Gọi Evaluation Engine outside a database transaction.
     try:
@@ -352,6 +451,17 @@ async def evaluate_closed_session(
             {"sid": session_id, "error": f"{type(exc).__name__}: {exc}"[:2000]},
         )
         await db.commit()
+        trace_event(
+            "interviewer",
+            "evaluation_pipeline_failed",
+            session_id=session_id,
+            error_type=type(exc).__name__,
+            error_message=str(exc)[:300],
+            duration_ms=int((time.monotonic() - started_at) * 1000),
+        )
+        if isinstance(exc, NoGradableTurnsError):
+            # Permanent: retrying re-grades the same unreadable transcripts.
+            raise EvaluationServiceError(str(exc)) from exc
         raise
 
     if voice_turns_without_confidence:
@@ -399,7 +509,30 @@ async def evaluate_closed_session(
     # candidate being penalised for unasked questions, but it would otherwise
     # also let a session that ended after one good answer produce a confident
     # PASS off a single data point.
-    scored_count = len(turns_input)
+    # Turns that could not be graded (unreadable transcript, a fragment left by
+    # an agent failure) are not the candidate's fault: they stay out of the
+    # score and count against coverage like an unasked question.
+    competency_by_turn = {ti.turn_id: ti.competency for ti in turns_input}
+    not_gradable = [te for te in result.turn_evaluations if te.outcome == NOT_GRADABLE]
+    not_gradable_labels: set[str] = set()
+    for te in not_gradable:
+        label = competency_by_turn.get(te.turn_id)
+        if label and label not in uncovered_competencies:
+            uncovered_competencies.append(label)
+            not_gradable_labels.add(label)
+    if not_gradable:
+        result.red_flags = [
+            (
+                f"{len(not_gradable)} lượt không chấm được do bản chép giọng nói không đọc được hoặc "
+                "lỗi hệ thống; các lượt này không tính vào điểm."
+                if is_vi
+                else f"{len(not_gradable)} turn(s) could not be graded (unreadable voice transcript or a "
+                "system failure) and are left out of the score."
+            ),
+            *(result.red_flags or []),
+        ]
+
+    scored_count = len(turns_input) - len(not_gradable)
     uncovered_count = len(uncovered_competencies)
     if uncovered_count:
         coverage_ratio = scored_count / (scored_count + uncovered_count)
@@ -415,7 +548,13 @@ async def evaluate_closed_session(
 
         existing_topics = list(result.next_round_topics or [])
         for label in uncovered_competencies:
-            if label in dropped_labels:
+            if label in not_gradable_labels:
+                topic = (
+                    f"{label} (chưa chấm được trong phiên này)"
+                    if is_vi
+                    else f"{label} (could not be graded in this session)"
+                )
+            elif label in dropped_labels:
                 topic = (
                     f"{label} (chưa có câu hỏi phù hợp trong phiên này)"
                     if is_vi
@@ -477,10 +616,12 @@ async def evaluate_closed_session(
             """
             INSERT INTO interview_evaluations
             (id, session_id, overall_score, decision_recommendation, competency_scores,
-             recruiter_summary, candidate_feedback, next_round_topics, red_flags, evaluated_at, created_at)
+             recruiter_summary, candidate_feedback, next_round_topics, red_flags, evaluated_at, created_at,
+             grader_version)
             VALUES
             (:id, :sid, :overall_score, :decision, CAST(:comp_scores AS jsonb),
-             :recruiter_summary, :candidate_feedback, :next_round_topics, :red_flags, :evaluated_at, now())
+             :recruiter_summary, :candidate_feedback, :next_round_topics, :red_flags, :evaluated_at, now(),
+             :grader_version)
             """
         ),
         {
@@ -494,6 +635,7 @@ async def evaluate_closed_session(
             "next_round_topics": result.next_round_topics,
             "red_flags": result.red_flags,
             "evaluated_at": now,
+            "grader_version": grader_version(),
         },
     )
 
@@ -506,10 +648,10 @@ async def evaluate_closed_session(
                 """
                 INSERT INTO interview_turn_evaluations
                 (id, evaluation_id, turn_id, score, star_analysis, evidence_quotes,
-                 feedback, strengths, weaknesses, created_at)
+                 feedback, strengths, weaknesses, outcome, rubric_points, created_at)
                 VALUES
                 (:id, :eval_id, :turn_id, :score, CAST(:star_json AS jsonb), :evidence_quotes,
-                 :feedback, :strengths, :weaknesses, now())
+                 :feedback, :strengths, :weaknesses, :outcome, CAST(:rubric_points AS jsonb), now())
                 """
             ),
             {
@@ -522,6 +664,8 @@ async def evaluate_closed_session(
                 "feedback": te.feedback,
                 "strengths": te.strengths,
                 "weaknesses": te.weaknesses,
+                "outcome": te.outcome,
+                "rubric_points": json.dumps(te.rubric_points, ensure_ascii=False),
             },
         )
 
@@ -571,7 +715,9 @@ async def get_session_evaluation(db: AsyncSession, session_id: str) -> dict[str,
         text(
             """
             SELECT ite.id, ite.evaluation_id, ite.turn_id, ite.score, ite.star_analysis,
-                   ite.evidence_quotes, ite.feedback, ite.strengths, ite.weaknesses, ite.created_at,
+                   ite.evidence_quotes, ite.feedback, ite.strengths, ite.weaknesses, ite.outcome,
+                   ite.rubric_points,
+                   ite.created_at,
                    it.turn_index, it.question_snapshot
             FROM interview_turn_evaluations ite
             LEFT JOIN interview_turns it ON it.id = ite.turn_id
@@ -610,6 +756,9 @@ async def get_session_evaluation(db: AsyncSession, session_id: str) -> dict[str,
             "feedback": tr.get("feedback") or "",
             "strengths": tr.get("strengths") or [],
             "weaknesses": tr.get("weaknesses") or [],
+            "outcome": tr.get("outcome") or ANSWERED,
+            "rubric_points": tr.get("rubric_points") or [],
+            "rubricPoints": tr.get("rubric_points") or [],
         }
         turn_evaluations.append(item)
 

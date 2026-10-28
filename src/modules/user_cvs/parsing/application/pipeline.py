@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from src.core.trace_logging import trace_event
+from src.modules.user_cvs.application import run_tracking
 from src.modules.user_cvs.domain.schemas import ParsedResume
 from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
 from src.modules.user_cvs.parsing.domain.source import SourceDocument
@@ -85,6 +86,19 @@ class CvDocument:
     filename: str
     storage_key: str
     checksum: str
+    user_id: str | None = None
+
+
+class EmptyExtractionError(ValueError):
+    """The document extractor returned neither markdown nor content blocks."""
+
+
+def _emit(event: str, **fields) -> None:
+    """One ``cv_parser`` trace event (dev JSONL + admin CV view); never interrupts parsing."""
+    try:
+        trace_event("cv_parser", event, **fields)
+    except Exception:  # noqa: BLE001 - tracking must never break CV parsing
+        pass
 
 
 @dataclass(frozen=True)
@@ -165,22 +179,52 @@ class CvParsingPipeline:
     async def run(self, cv_id: str, *, final_attempt: bool = True) -> PipelineResult:
         started_at = time.monotonic()
         if not cv_id:
-            trace_event("cv_parser", "ignored")
+            _emit("ignored")
             return PipelineResult(status="ignored", cv_id=cv_id)
+        # One parse attempt: events and model calls are stored for the admin
+        # CV-parsing view (the Celery task may already have opened it).
+        with run_tracking.cv_run(cv_id, reuse_active=True):
+            return await self._run(cv_id, started_at=started_at, final_attempt=final_attempt)
+
+    async def _run(self, cv_id: str, *, started_at: float, final_attempt: bool) -> PipelineResult:
         document = await self._repository.claim(cv_id)
         if document is None:
-            trace_event("cv_parser", "not_claimed", cv_id=cv_id)
+            _emit("not_claimed", cv_id=cv_id)
             return PipelineResult(status="not_claimed", cv_id=cv_id)
+        tracked = run_tracking.active_run()
+        if tracked is not None and document.user_id and not tracked.user_id:
+            tracked.user_id = str(document.user_id)[:36]
+        _emit(
+            "cv_parse_claimed",
+            cv_id=document.cv_id,
+            attempt=tracked.attempt if tracked else None,
+            parser_mode=tracked.parser_mode if tracked else None,
+            final_attempt=final_attempt,
+        )
+        # The step a failure belongs to (admin view): extract, source, parse, quality, save.
+        phase = "extract"
         try:
             content = self._storage.read(document.storage_key)
-            trace_event("cv_parser", "extraction_started", cv_id=document.cv_id, bytes=len(content))
+            _emit("extraction_started", cv_id=document.cv_id, bytes=len(content))
+            step_started = time.monotonic()
             artifacts = await self._extractor.extract(content, document.filename, document.cv_id)
             if not artifacts.markdown.strip() and not artifacts.content_list:
-                raise ValueError("document extractor returned no content")
+                raise EmptyExtractionError("document extractor returned no content")
 
             provider_name = str(getattr(self._extractor, "provider_name", "mineru"))
+            _emit(
+                "extraction_completed",
+                cv_id=document.cv_id,
+                provider=provider_name,
+                extractor_version=artifacts.extractor_version,
+                markdown_characters=len(artifacts.markdown or ""),
+                content_blocks=len(artifacts.content_list or []),
+                duration_ms=run_tracking.monotonic_ms(step_started),
+            )
             artifact_key = f"{document.storage_key}.artifacts/{document.checksum}/{provider_name}.json"
             self._storage.write_json(artifact_key, artifacts.as_dict())
+            phase = "source"
+            step_started = time.monotonic()
             source = self._source_builder(
                 artifacts,
                 document_id=document.cv_id,
@@ -190,14 +234,24 @@ class CvParsingPipeline:
                 section: sum(block.section == section for block in source.blocks)
                 for section in sorted({block.section for block in source.blocks})
             }
-            trace_event(
-                "cv_parser",
+            _emit(
+                "source_built",
+                cv_id=document.cv_id,
+                source_characters=len(source.text),
+                block_count=len(source.blocks),
+                source_section_block_counts=source_section_block_counts,
+                duration_ms=run_tracking.monotonic_ms(step_started),
+            )
+            phase = "parse"
+            _emit(
                 "parser_started",
                 cv_id=document.cv_id,
                 extractor_version=artifacts.extractor_version,
                 source_characters=len(source.text),
                 source_section_block_counts=source_section_block_counts,
             )
+            step_started = time.monotonic()
+            calls_before = run_tracking.ai_calls_so_far()
             parsed_or_awaitable = self._parser.parse(
                 source,
                 extraction_version=artifacts.extractor_version or f"{provider_name}-unknown",
@@ -206,6 +260,16 @@ class CvParsingPipeline:
             parsed = (
                 await parsed_or_awaitable if inspect.isawaitable(parsed_or_awaitable) else parsed_or_awaitable
             )
+            _emit(
+                "parser_completed",
+                cv_id=document.cv_id,
+                **run_tracking.parser_completed_fields(
+                    parsed,
+                    duration_ms=run_tracking.monotonic_ms(step_started),
+                    llm_calls_before=calls_before,
+                ),
+            )
+            phase = "quality"
             coverage = _coverage_snapshot(parsed, source)
             if parsed.resume.parsing:
                 parsing = parsed.resume.parsing.model_copy(
@@ -223,8 +287,7 @@ class CvParsingPipeline:
                     update={"resume": parsed.resume.model_copy(update={"parsing": parsing})}
                 )
             parser_version = parsed.resume.parsing.parser_version if parsed.resume.parsing else "unknown"
-            trace_event(
-                "cv_parser",
+            _emit(
                 "quality_gate",
                 cv_id=document.cv_id,
                 status=parsed.resume.parsing.status if parsed.resume.parsing else "review_required",
@@ -233,6 +296,10 @@ class CvParsingPipeline:
                 source_characters=len(source.text),
                 section_counts=coverage["section_counts"],
                 warnings_count=len(parsed.resume.parsing.warnings) if parsed.resume.parsing else 0,
+                # Codes only: a warning's message may quote the CV.
+                warnings=run_tracking.warning_items(
+                    parsed.resume.parsing.warnings if parsed.resume.parsing else []
+                ),
                 checks={
                     "source_text_present": bool(source.text.strip()),
                     "parsing_metadata_present": parsed.resume.parsing is not None,
@@ -253,15 +320,17 @@ class CvParsingPipeline:
                 evidence_index_coverage=coverage["evidence_index_coverage"],
                 coverage_reason_codes=coverage["coverage_reason_codes"],
             )
+            phase = "save"
+            step_started = time.monotonic()
             await self._repository.complete(
                 document,
                 raw_text=source.text,
                 parsed=parsed,
                 parse_source=f"{provider_name}+{parser_version}",
             )
+            _emit("cv_saved", cv_id=document.cv_id, duration_ms=run_tracking.monotonic_ms(step_started))
             canonical_status = parsed.resume.parsing.status if parsed.resume.parsing else None
-            trace_event(
-                "cv_parser",
+            _emit(
                 "completed",
                 cv_id=document.cv_id,
                 canonical_status=canonical_status,
@@ -274,16 +343,26 @@ class CvParsingPipeline:
                 canonical_status=canonical_status,
             )
         except Exception as exc:
+            reason = run_tracking.failure_reason(exc, phase)
             if isinstance(exc, TimeoutError) and not final_attempt:
                 await self._repository.release(document.cv_id)
-                trace_event("cv_parser", "retry_scheduled", cv_id=document.cv_id, error=str(exc)[:300])
+                _emit(
+                    "retry_scheduled",
+                    cv_id=document.cv_id,
+                    error=str(exc)[:300],
+                    error_type=type(exc).__name__,
+                    failed_stage=phase,
+                    reason=reason,
+                    duration_ms=round((time.monotonic() - started_at) * 1000),
+                )
                 raise
             await self._repository.fail(document.cv_id, str(exc)[:1000])
-            trace_event(
-                "cv_parser",
+            _emit(
                 "failed",
                 cv_id=document.cv_id,
                 error_type=type(exc).__name__,
+                failed_stage=phase,
+                reason=reason,
                 duration_ms=round((time.monotonic() - started_at) * 1000),
             )
             raise

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.infrastructure.database import engine
 from src.modules.interviews.planning.question_selector import _load_candidates
-from src.modules.question_bank.router import get_question
+from src.modules.question_bank.router import get_question, list_rubrics
 from src.modules.question_bank.schemas import (
     DEFAULT_TAXONOMY_VERSION,
     AttachRubricRequest,
@@ -141,6 +141,15 @@ async def test_authored_question_reaches_selector_for_skill_and_career_targets()
             assert detail["rubric"]["approved"] is True
             criteria_keys = [c["stableKey"] for c in detail["rubric"]["criteria"]]
             assert criteria_keys == ["accuracy", "depth", "tradeoffs"]
+
+            # The rubric list links each rubric back to the question it is edited on.
+            question_key = detail["stableKey"]
+            rubrics = await list_rubrics(_={}, db=db, q=question_key)
+            owned = [item for item in rubrics["items"] if item["stableKey"].startswith(f"{question_key}@")]
+            assert len(owned) == 1
+            assert owned[0]["questionId"] == str(approved.question_id)
+            assert owned[0]["questionStableKey"] == question_key
+            assert owned[0]["questionVersion"] == approved.version
         finally:
             await transaction.rollback()
 

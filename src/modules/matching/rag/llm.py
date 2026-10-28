@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from src.core.pipeline_events import ai_call_timer
 
 
 class LLMService:
@@ -23,5 +24,7 @@ class LLMService:
 
     def generate_text(self, prompt: str) -> str:
         """Execute a prompt and return its text output."""
-        response = self._client.responses.create(model=self.model, input=prompt, store=False)
+        with ai_call_timer("matching.rag.generate_text", provider="openai", model=self.model) as _ai_call:
+            response = self._client.responses.create(model=self.model, input=prompt, store=False)
+            _ai_call.done(response.output_text, getattr(response, "usage", None))
         return response.output_text

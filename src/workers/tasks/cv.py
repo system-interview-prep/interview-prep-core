@@ -1,6 +1,9 @@
+from contextlib import nullcontext
+
 from src.core.config import get_settings
 from src.infrastructure.database import SessionFactory
 from src.modules.taxonomy.service import load_active_skill_taxonomy
+from src.modules.user_cvs.application import run_tracking
 from src.modules.user_cvs.parsing.application.pipeline import CvParsingPipeline
 from src.modules.user_cvs.parsing.domain.deterministic import DeterministicResumeParser
 from src.modules.user_cvs.parsing.domain.hybrid import HybridResumeParser
@@ -23,13 +26,23 @@ from src.workers.celery_app import celery_app
 def parse_cv(self, payload: dict) -> dict:
     # Only the last attempt may mark the CV FAILED; earlier timeouts are retried.
     final_attempt = self.request.retries >= self.max_retries
-    return worker_async_runner.run(_parse_cv(str(payload.get("cv_id") or ""), final_attempt=final_attempt))
+    attempt = int(self.request.retries or 0) + 1
+    return worker_async_runner.run(
+        _parse_cv(str(payload.get("cv_id") or ""), final_attempt=final_attempt, attempt=attempt)
+    )
 
 
-async def _parse_cv(cv_id: str, *, final_attempt: bool = True) -> dict:
+async def _parse_cv(cv_id: str, *, final_attempt: bool = True, attempt: int | None = None) -> dict:
+    mode = get_settings().cv_parser_mode.casefold().strip()
+    # One parse attempt of the admin CV-parsing view; the pipeline reuses it.
+    tracking = run_tracking.cv_run(cv_id, attempt=attempt, parser_mode=mode) if cv_id else nullcontext()
+    with tracking:
+        return await _parse_cv_in_run(cv_id, mode=mode, final_attempt=final_attempt)
+
+
+async def _parse_cv_in_run(cv_id: str, *, mode: str, final_attempt: bool) -> dict:
     async with SessionFactory() as session:
         taxonomy = await load_active_skill_taxonomy(session)
-        mode = get_settings().cv_parser_mode.casefold().strip()
         if mode == "hybrid":
             parser = HybridResumeParser(taxonomy=taxonomy.skills, taxonomy_version=taxonomy.version)
         elif mode == "deterministic":

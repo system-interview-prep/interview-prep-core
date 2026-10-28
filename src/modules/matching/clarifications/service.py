@@ -29,6 +29,7 @@ from src.modules.matching.clarifications.question_generation import (
     ClarificationPlan,
     ClarificationQuestionService,
     build_clarification_question_service_from_env,
+    question_stats,
 )
 from src.modules.matching.domain.schemas import MatchRequest, MatchResult
 
@@ -90,9 +91,12 @@ def _plans_from_preparation_token(
     requirement_ids: set[str],
     result: MatchResult,
     payload: MatchRequest,
+    status: dict | None = None,
 ) -> list[ClarificationPlan]:
+    status = status if status is not None else {}
     approved_candidates = _decode_clarification_plans(token)
     if approved_candidates is None:
+        status["token_status"] = "invalid_or_expired"
         trace_event("clarification", "preparation_token_rejected", reason="invalid_or_expired")
         return []
 
@@ -100,6 +104,7 @@ def _plans_from_preparation_token(
         str(item.get("requirement_id")): item for item in approved_candidates
     }
     if not requirement_ids.issubset(candidate_by_id):
+        status["token_status"] = "requirement_not_prepared"
         trace_event(
             "clarification",
             "preparation_token_rejected",
@@ -135,7 +140,9 @@ def _plans_from_preparation_token(
                 evidenceTexts=[item.text for item in evidence],
             )
         )
+    status["token_status"] = "accepted"
     if len(selected) != len(requirement_ids):
+        status["token_status"] = "plan_no_longer_unknown"
         trace_event(
             "clarification",
             "preparation_token_rejected",
@@ -149,6 +156,24 @@ def _plans_from_preparation_token(
         requested_requirement_ids=sorted(requirement_ids),
     )
     return selected
+
+
+async def _generate_requests(plans: list[ClarificationPlan], *, token_status: str) -> list:
+    """Question phase plus its ``clarification_questions_completed`` run event."""
+    service = get_clarification_question_service()
+    with question_stats() as stats:
+        requests = await run_in_threadpool(build_clarification_requests_from_plans, plans, service)
+    trace_event(
+        "clarification",
+        "clarification_questions_completed",
+        plan_count=len(plans),
+        generated_count=len(requests),
+        attempts=stats["attempts"],
+        rejection_reasons=dict(stats["rejections"]),
+        token_status=token_status,
+        service_available=service is not None,
+    )
+    return requests
 
 
 @lru_cache
@@ -179,11 +204,7 @@ async def run_match_with_clarifications(payload: MatchRequest) -> MatchClarifica
         result,
         get_ambiguity_analyzer(),
     )
-    requests = await run_in_threadpool(
-        build_clarification_requests_from_plans,
-        plans,
-        get_clarification_question_service(),
-    )
+    requests = await _generate_requests(plans, token_status="not_applicable")
     trace_event(
         "clarification",
         "one_shot_completed",
@@ -253,8 +274,11 @@ async def generate_match_clarifications(
         requested_requirement_ids=sorted(requirement_ids),
     )
     result = await run_in_threadpool(get_matching_facade().match, payload)
+    token_status: dict = {"token_status": "absent"}
     if clarification_token:
-        plans = _plans_from_preparation_token(clarification_token, requirement_ids, result, payload)
+        plans = _plans_from_preparation_token(
+            clarification_token, requirement_ids, result, payload, token_status
+        )
     else:
         # Backward compatibility for non-browser callers that still use the
         # old two-argument service API. The browser flow always sends the
@@ -267,11 +291,7 @@ async def generate_match_clarifications(
             get_ambiguity_analyzer(),
             requirement_ids,
         )
-    requests = await run_in_threadpool(
-        build_clarification_requests_from_plans,
-        plans,
-        get_clarification_question_service(),
-    )
+    requests = await _generate_requests(plans, token_status=token_status["token_status"])
     trace_event(
         "clarification",
         "question_phase_completed",

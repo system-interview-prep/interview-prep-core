@@ -21,53 +21,40 @@ def test_opening_greets_by_call_name_and_states_purpose_length_and_agenda():
     text = _opening(mode="text")
     assert text.startswith("Chào Hiền, mình là người phỏng vấn AI của Intervia.")
     assert "vị trí Software Engineer, Backend, khoảng 25 phút" in text
-    # Only planned stages, in order, each once; closing promised conditionally.
-    assert "dự án trong CV, kiến thức chuyên môn, một vài tình huống khó hơn và cách bạn làm việc nhóm" in text
+    # Only planned stages, in order, each once.
+    assert "Mình sẽ hỏi về dự án trong CV, chuyên môn, vài tình huống và cách bạn làm việc nhóm." in text
     assert text.endswith(warmup_question(is_vi=True, is_demo=False))
-    # The chat room shows the question, suggestions and report link itself.
+    # The room shows the report link itself.
+    assert "báo cáo" not in text
+
+
+def test_every_room_hears_the_same_opening():
     chat = _opening(mode="text")
-    assert "Nếu còn thời gian" not in chat
-    assert "báo cáo" not in chat
+    assert _opening(mode="voice") == chat
+    assert _opening(mode="video") == chat
+    assert "hãy" not in chat.casefold()
+    assert "nói “xong”" not in chat
+    assert "bấm “Trả lời xong”" not in chat
 
 
-def test_how_to_answer_names_only_controls_the_room_has():
-    # Spoken openings do not include a long intro or answer-control instructions.
-    for mode in ("voice", "video"):
-        spoken = _opening(mode=mode)
-        assert "nói “xong”" not in spoken
-        assert "bấm “Trả lời xong”" not in spoken
-        greeting, _, first_question = spoken.partition(". ")
-        assert len(greeting.split()) <= 3
-        assert first_question == warmup_question(is_vi=True, is_demo=False)
-    chat = _opening(mode="text")
-    assert "gợi ý" not in chat
-
-
-def test_opening_is_split_into_short_paragraphs_with_the_question_alone():
+def test_opening_is_one_intro_paragraph_then_the_question():
     demo_question = warmup_question(is_vi=True, is_demo=True)
     for text, question in (
         (_opening(mode="text"), warmup_question(is_vi=True, is_demo=False)),
         (_opening(mode="text", duration_minutes=3, first_question=demo_question), demo_question),
     ):
         paragraphs = text.split("\n\n")
+        assert len(paragraphs) == 2
         assert paragraphs[-1] == question
-        # Each preamble paragraph becomes one transcript bubble: a few short sentences.
-        for paragraph in paragraphs[:-1]:
-            assert len(paragraph.split()) <= 30, paragraph
-            assert paragraph.count(".") <= 3, paragraph
+        # Spoken in about twenty seconds.
+        assert len(paragraphs[0].split()) <= 50, paragraphs[0]
 
 
 def test_demo_opening_stays_short():
     demo = _opening(mode="text", duration_minutes=3, first_question=warmup_question(is_vi=True, is_demo=True))
-    assert "Buổi demo ba phút cho vị trí Software Engineer, Backend" in demo
+    assert "Buổi demo ba phút, mình hỏi nhanh vài câu." in demo
     assert "Mình sẽ hỏi về" not in demo
-    # A three-minute demo: about ten seconds of preliminaries at most.
-    assert len(" ".join(demo.split("\n\n")[:-1]).split()) <= 40
-    spoken_demo = _opening(
-        mode="voice", duration_minutes=3, first_question=warmup_question(is_vi=True, is_demo=True)
-    )
-    assert "nói “xong”" not in spoken_demo
-    assert "bấm “Trả lời xong”" not in spoken_demo
+    assert len(demo.split("\n\n")[0].split()) <= 25
 
 
 def test_warmup_does_not_repeat_the_cv_project_question():
@@ -76,7 +63,12 @@ def test_warmup_does_not_repeat_the_cv_project_question():
 
 def test_spoken_sentences_stay_short():
     for sentence in _opening().replace("\n\n", " ").replace(";", ".").split(". "):
-        assert len(sentence.split()) <= 32, sentence
+        assert len(sentence.split()) <= 25, sentence
+
+
+def test_warmup_refers_to_the_candidate_without_mình():
+    for is_vi, is_demo in ((True, False), (True, True)):
+        assert "về mình" not in warmup_question(is_vi=is_vi, is_demo=is_demo)
 
 
 def test_english_opening():

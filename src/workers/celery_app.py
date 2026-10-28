@@ -1,5 +1,5 @@
 from celery import Celery
-from celery.signals import worker_process_init
+from celery.signals import worker_process_init, worker_process_shutdown
 
 from src.core.config import get_settings
 
@@ -39,3 +39,12 @@ def on_worker_process_init(**kwargs: object) -> None:
     # the pool makes this child establish fresh connections on its own loop.
     engine.sync_engine.dispose(close=False)
     worker_async_runner.reset_after_fork()
+
+
+@worker_process_shutdown.connect
+def on_worker_process_shutdown(**kwargs: object) -> None:
+    # Pipeline events (CV parsing, matching) are written by a daemon thread a
+    # moment after each task; write what is still buffered before the child exits.
+    from src.core import pipeline_events
+
+    pipeline_events.flush_pending()

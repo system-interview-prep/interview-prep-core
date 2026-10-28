@@ -86,3 +86,34 @@ async def test_import_mappings_use_active_taxonomy_kind_validation() -> None:
     ])
     with pytest.raises(HTTPException, match="invalid or inactive concept kind"):
         await QuestionBankService(invalid)._validate_taxonomy_mappings("v1", mappings)
+
+
+@pytest.mark.asyncio
+async def test_seeded_mapping_validates_against_concepts_of_another_active_version() -> None:
+    """A revision of a seeded question keeps its skill PRIMARY_COMPETENCY under a retired version."""
+    from types import SimpleNamespace
+
+    from src.modules.question_bank.service import QuestionBankService
+
+    mappings = [
+        SimpleNamespace(concept_id="skill-javascript", purpose="PRIMARY_COMPETENCY", relevance=1),
+        SimpleNamespace(
+            concept_id="technology.software-engineering.frontend", purpose="TARGET_ROLE", relevance=0.7
+        ),
+    ]
+    db = TaxonomyDb([
+        {"concept_id": "skill-javascript", "kind": "skill", "taxonomy_version": "internal-career-2026.1"},
+        {"concept_id": "technology.software-engineering.frontend", "kind": "competency",
+         "taxonomy_version": "internal-career-2026.1"},
+    ])
+    await QuestionBankService(db)._validate_taxonomy_mappings("internal-2026.1", mappings)
+
+    # The version's own kind wins over another version's.
+    db = TaxonomyDb([
+        {"concept_id": "skill-javascript", "kind": "skill", "taxonomy_version": "other"},
+        {"concept_id": "skill-javascript", "kind": "domain", "taxonomy_version": "internal-2026.1"},
+        {"concept_id": "technology.software-engineering.frontend", "kind": "competency",
+         "taxonomy_version": "other"},
+    ])
+    with pytest.raises(HTTPException, match="invalid or inactive concept kind"):
+        await QuestionBankService(db)._validate_taxonomy_mappings("internal-2026.1", mappings)

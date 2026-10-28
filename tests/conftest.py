@@ -31,6 +31,20 @@ def _no_live_question_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(targeted_reparse, "_default_evidence_searcher", lambda: None)
 
 
+@pytest.fixture(autouse=True)
+def _trace_logs_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Keep test traces out of the developer's trace-logs/.
+
+    With TRACE_LOGS_ENABLED=true in `.env`, every test that ran an interview
+    turn appended to trace-logs/naturalness/trace.jsonl: on 24/10, 320 of its
+    340 lines came from tests (sessions "sess-123"…), which skewed the
+    naturalness numbers read from real sessions.
+    """
+    from src.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "trace_logs_dir", str(tmp_path_factory.mktemp("trace-logs")))
+
+
 @pytest.fixture
 def client() -> Iterator[TestClient]:
     from src.main import create_app

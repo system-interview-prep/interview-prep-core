@@ -1,47 +1,44 @@
-"""Build concise spoken openings and informative chat introductions.
+"""Build the opening of an interview: one script for chat, voice and video.
 
-Built the way structured interviews open: a short introduction, the purpose
-and length of the session, the parts it will go through, and an easy first
-question. Voice sessions use only a brief greeting before that question; chat
-sessions can show the fuller introduction because it is not spoken aloud.
+Built the way structured interviews open: a short introduction, the length of
+the session, the parts it will go through, and an easy first question. Every
+room says the same words (wording in ``interviewer_script.py``); the voice
+agent only cleans it up for speech.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
-# How each planned stage is named in the agenda (WARM_UP is the question that
-# follows; CLOSING is optional and announced separately).
-_STAGE_PHRASES_VI = {
-    "VALIDATE": "dự án trong CV",
-    "DEEP_DIVE": "kiến thức chuyên môn",
-    "CHALLENGE": "một vài tình huống khó hơn",
-    "BEHAVIORAL": "cách bạn làm việc nhóm",
-}
-_STAGE_PHRASES_EN = {
-    "VALIDATE": "a project from your CV",
-    "DEEP_DIVE": "technical knowledge",
-    "CHALLENGE": "a few harder scenarios",
-    "BEHAVIORAL": "how you work with a team",
-}
+from src.modules.interviews.core.interviewer_script import (
+    OPENING_AGENDA_EN,
+    OPENING_AGENDA_VI,
+    OPENING_DEMO_EN,
+    OPENING_DEMO_VI,
+    OPENING_FRAME_EN,
+    OPENING_FRAME_VI,
+    OPENING_GREETING_EN,
+    OPENING_GREETING_VI,
+    OPENING_LENGTH_EN,
+    OPENING_LENGTH_VI,
+    OPENING_ROLE_EN,
+    OPENING_ROLE_VI,
+    OPENING_START_EN,
+    OPENING_START_VI,
+    STAGE_PHRASES_EN,
+    STAGE_PHRASES_VI,
+    WARMUP_QUESTION_DEMO_EN,
+    WARMUP_QUESTION_DEMO_VI,
+    WARMUP_QUESTION_EN,
+    WARMUP_QUESTION_VI,
+)
 
 
 def warmup_question(*, is_vi: bool, is_demo: bool) -> str:
     """The first question: easy to start, with a length and a shape to follow."""
     if is_vi:
-        if is_demo:
-            return "Bạn giới thiệu ngắn về mình trong khoảng ba mươi giây nhé: hiện bạn đang làm gì và vì sao quan tâm vị trí này?"
-        # The CV project is asked right after (VALIDATE), so it is not asked here too.
-        return (
-            "Bạn giới thiệu ngắn về mình trong một, hai phút nhé: "
-            "bạn đang làm gì và vì sao quan tâm vị trí này?"
-        )
-    if is_demo:
-        return "Please introduce yourself in about thirty seconds: what you do now and why this role interests you?"
-    return (
-        "Please introduce yourself in a minute or two: "
-        "what you do now and why this role interests you?"
-    )
+        return WARMUP_QUESTION_DEMO_VI if is_demo else WARMUP_QUESTION_VI
+    return WARMUP_QUESTION_DEMO_EN if is_demo else WARMUP_QUESTION_EN
 
 
 def _join(items: list[str], *, is_vi: bool) -> str:
@@ -52,7 +49,7 @@ def _join(items: list[str], *, is_vi: bool) -> str:
 
 
 def _agenda(stages: Sequence[str], *, is_vi: bool) -> list[str]:
-    phrases = _STAGE_PHRASES_VI if is_vi else _STAGE_PHRASES_EN
+    phrases = STAGE_PHRASES_VI if is_vi else STAGE_PHRASES_EN
     ordered: list[str] = []
     for stage in stages:
         phrase = phrases.get(str(stage or "").upper())
@@ -73,50 +70,27 @@ def build_opening(
 ) -> str:
     """Build the opening message, ending with the first question.
 
-    Paragraphs are separated by a blank line. In voice/video mode, the agent
-    says one short greeting and moves straight to the question. Chat keeps the
-    more detailed introduction for reading.
+    Two paragraphs separated by a blank line: the introduction, then the
+    question. ``mode`` no longer changes the words; it is kept for callers.
     """
-    is_voice = str(mode or "").lower() in {"voice", "video"}
-    if is_voice:
-        greeting = f"Chào {call_name or 'bạn'}." if is_vi else f"Hi {call_name or 'there'}."
-        return f"{greeting} {first_question}"
-
+    del mode
     is_demo = bool(duration_minutes) and int(duration_minutes) <= 3
+    name = call_name or ("bạn" if is_vi else "there")
+    greeting = (OPENING_GREETING_VI if is_vi else OPENING_GREETING_EN).format(name=name)
+    if is_demo:
+        # A three-minute demo cannot spend half a minute on preliminaries.
+        intro = f"{greeting} {OPENING_DEMO_VI if is_vi else OPENING_DEMO_EN}"
+        return f"{intro}\n\n{first_question}"
+
+    role = (OPENING_ROLE_VI if is_vi else OPENING_ROLE_EN).format(job_title=job_title) if job_title else ""
+    length = (
+        (OPENING_LENGTH_VI if is_vi else OPENING_LENGTH_EN).format(minutes=duration_minutes)
+        if duration_minutes
+        else ""
+    )
+    sentences = [greeting, (OPENING_FRAME_VI if is_vi else OPENING_FRAME_EN).format(role=role, length=length)]
     agenda = _agenda(planned_stages, is_vi=is_vi)
-
-    # The chat room already shows the question, the suggestions and the report
-    # link, so the opening only says what the room cannot: who, what, how long.
-    if is_vi:
-        role = f" vị trí {job_title}" if job_title else ""
-        greeting = f"Chào {call_name or 'bạn'}, mình là người phỏng vấn AI của Intervia."
-        if is_demo:
-            # A three-minute demo cannot spend half a minute on preliminaries.
-            for_role = f" cho{role}" if role else ""
-            paragraphs = [f"{greeting} Buổi demo ba phút{for_role}, mình hỏi nhanh vài câu nhé."]
-        else:
-            length = f", khoảng {duration_minutes} phút" if duration_minutes else ""
-            paragraphs = [f"{greeting} Hôm nay mình cùng luyện phỏng vấn{role}{length}."]
-            if agenda:
-                paragraphs.append(f"Mình sẽ hỏi về {_join(agenda, is_vi=True)}.")
-        how = "" if is_demo else "Bạn cứ suy nghĩ vài giây rồi hãy trả lời."
-        start = "" if is_demo else "Mình bắt đầu nhé."
-    else:
-        role = f" for the {job_title} role" if job_title else ""
-        greeting = f"Hi {call_name or 'there'}, I'm the AI interviewer from Intervia."
-        if is_demo:
-            paragraphs = [f"{greeting} This is a three-minute demo{role}, so I'll ask a few quick questions."]
-        else:
-            length = f", for about {duration_minutes} minutes" if duration_minutes else ""
-            paragraphs = [f"{greeting} Today we'll practise an interview{role}{length}."]
-            if agenda:
-                paragraphs.append(f"I'll ask about {_join(agenda, is_vi=False)}.")
-        how = "" if is_demo else "Take a few seconds to think before you answer."
-        start = "" if is_demo else "Let's begin."
-
-    if how:
-        paragraphs.append(how)
-    # "Let's begin" closes the preamble rather than standing as its own bubble.
-    if start:
-        paragraphs[-1] = f"{paragraphs[-1]} {start}"
-    return "\n\n".join([*paragraphs, first_question])
+    if agenda:
+        sentences.append((OPENING_AGENDA_VI if is_vi else OPENING_AGENDA_EN).format(agenda=_join(agenda, is_vi=is_vi)))
+    sentences.append(OPENING_START_VI if is_vi else OPENING_START_EN)
+    return f"{' '.join(sentences)}\n\n{first_question}"

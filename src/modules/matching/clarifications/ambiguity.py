@@ -9,10 +9,16 @@ recommend which factual detail to ask the candidate for next. It never changes
 from __future__ import annotations
 
 import logging
+import time
+from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Literal, Protocol, runtime_checkable
 
 import httpx
 
+from src.core.pipeline_events import ai_call_timer
 from src.core.trace_logging import trace_event
 from src.modules.matching.clarifications.question_generation import (
     ClarificationPlan,
@@ -35,6 +41,33 @@ logger = logging.getLogger(__name__)
 _DEFAULT_BASE_URL = "https://api.typesafe.ai"
 _DEFAULT_MODEL = "jev-latest"
 _PRIVATE_SECTIONS = {"identity", "contact", "personal", "pii"}
+
+# Outcome counts of one gate pass (``gate_stats``), for the admin matching view.
+_gate_stats: ContextVar[dict | None] = ContextVar("clarification_gate_stats", default=None)
+
+
+def _note_gate(reason: str | None = None, *, failure: bool = False, approved: bool = False) -> None:
+    stats = _gate_stats.get()
+    if stats is None:
+        return
+    if approved:
+        stats["approved"] += 1
+    if failure:
+        stats["failures"] += 1
+    if reason:
+        stats["rejected"][reason] += 1
+
+
+@contextmanager
+def gate_stats() -> Iterator[dict]:
+    """Collect the gate's outcomes across threadpool calls made inside the block."""
+    stats: dict = {"approved": 0, "failures": 0, "rejected": Counter(), "analyzed": 0, "unknown": 0}
+    token = _gate_stats.set(stats)
+    try:
+        yield stats
+    finally:
+        _gate_stats.reset(token)
+
 
 MissingDimension = Literal[
     "duration",
@@ -183,10 +216,16 @@ class JevAmbiguityAnalyzer:
         }
 
         try:
-            response = self._client.post("/v1/systemone", json=payload)
-            response.raise_for_status()
-            answers = response.json().get("answers", {})
+            with ai_call_timer(
+                "matching.clarification.jev_gate", provider="typesafe", model=self._model
+            ) as _ai_call:
+                response = self._client.post("/v1/systemone", json=payload)
+                response.raise_for_status()
+                body = response.json()
+                _ai_call.done(None)
+            answers = body.get("answers", {})
             if not isinstance(answers, dict):
+                _note_gate("invalid_answers_payload")
                 logger.warning("Jev clarification response returned invalid answers payload")
                 trace_event(
                     "clarification",
@@ -204,6 +243,7 @@ class JevAmbiguityAnalyzer:
                 or next_action.get("type") != "choice"
                 or missing_dimension.get("type") != "choice"
             ):
+                _note_gate("unexpected_answer_types")
                 logger.warning("Jev clarification response returned unexpected answer types")
                 trace_event(
                     "clarification",
@@ -213,6 +253,7 @@ class JevAmbiguityAnalyzer:
                 )
                 return None
             if next_action.get("choice") != "ask_candidate":
+                _note_gate("next_action_not_ask_candidate")
                 trace_event(
                     "clarification",
                     "jev_analysis_rejected",
@@ -227,6 +268,7 @@ class JevAmbiguityAnalyzer:
             dimension_confidence = float(missing_dimension.get("confidence", 0.0))
             confidence = min(action_confidence, dimension_confidence)
             if confidence < self._confidence_threshold:
+                _note_gate("confidence_below_threshold")
                 trace_event(
                     "clarification",
                     "jev_analysis_rejected",
@@ -263,6 +305,7 @@ class JevAmbiguityAnalyzer:
                 subjectTerms=self._subject_terms(requirement),
                 evidenceTexts=[item.text for item in evidence],
             )
+            _note_gate(approved=True)
             trace_event(
                 "clarification",
                 "jev_analysis_approved",
@@ -274,6 +317,7 @@ class JevAmbiguityAnalyzer:
             return plan
         except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError) as exc:
             logger.warning("Jev clarification analysis failed: %s", exc)
+            _note_gate("jev_failed", failure=True)
             trace_event(
                 "clarification",
                 "jev_analysis_failed",
@@ -344,24 +388,47 @@ def build_clarification_plans(
     no scores, statuses, eligibility, or fit-band values are changed.
     """
 
+    started = time.perf_counter()
     results_by_id = {item.requirement_id: item for item in result.requirement_results}
     plans: list[ClarificationPlan] = []
-    for requirement in payload.job.requirements:
-        if requirement_ids is not None and requirement.requirement_id not in requirement_ids:
-            continue
-        requirement_result = results_by_id.get(requirement.requirement_id)
-        if requirement_result is None or requirement_result.status != "unknown":
-            continue
-        plan = analyzer.analyze(requirement, payload.resume)
-        if plan is not None:
-            plans.append(plan)
-        else:
-            trace_event(
-                "clarification",
-                "jev_plan_unavailable",
-                requirement_id=requirement.requirement_id,
-                reason="no_approved_plan",
-            )
+    with gate_stats() as stats:
+        stats["unknown"] = sum(item.status == "unknown" for item in result.requirement_results)
+        for requirement in payload.job.requirements:
+            if requirement_ids is not None and requirement.requirement_id not in requirement_ids:
+                continue
+            requirement_result = results_by_id.get(requirement.requirement_id)
+            if requirement_result is None or requirement_result.status != "unknown":
+                continue
+            stats["analyzed"] += 1
+            noted = sum(stats["rejected"].values()) + stats["approved"]
+            plan = analyzer.analyze(requirement, payload.resume)
+            if plan is not None:
+                plans.append(plan)
+                if sum(stats["rejected"].values()) + stats["approved"] == noted:
+                    _note_gate(approved=True)
+            else:
+                if sum(stats["rejected"].values()) + stats["approved"] == noted:
+                    _note_gate(
+                        "analyzer_disabled"
+                        if isinstance(analyzer, NoopAmbiguityAnalyzer)
+                        else "no_approved_plan"
+                    )
+                trace_event(
+                    "clarification",
+                    "jev_plan_unavailable",
+                    requirement_id=requirement.requirement_id,
+                    reason="no_approved_plan",
+                )
+        trace_event(
+            "clarification",
+            "clarification_gate_completed",
+            unknown_count=stats["unknown"],
+            analyzed_count=stats["analyzed"],
+            approved_count=len(plans),
+            rejected_by_reason=dict(stats["rejected"]),
+            jev_failures=stats["failures"],
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
     return plans
 
 

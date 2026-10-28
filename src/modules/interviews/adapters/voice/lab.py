@@ -16,7 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
 from src.core.security import bearer_scheme, current_user
+from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
+from src.modules.interviews.adapters.voice.voice_events import VOICE_EVENTS, sanitize_fields
 from src.modules.interviews.api.rate_limit import interview_rate_limiter
 from src.modules.interviews.application.chat_runtime import build_session_state_from_db
 from src.modules.interviews.application.facade import (
@@ -48,6 +50,16 @@ class VoiceRuntimeMessage(BaseModel):
     preview_token: str | None = Field(default=None, alias="previewToken", max_length=12000)
 
     model_config = {"populate_by_name": True}
+
+
+class VoiceRuntimeEvent(BaseModel):
+    event: str = Field(min_length=1, max_length=64)
+    at: datetime | None = None
+    fields: dict[str, Any] = Field(default_factory=dict)
+
+
+class VoiceRuntimeEvents(BaseModel):
+    events: list[VoiceRuntimeEvent] = Field(default_factory=list, max_length=50)
 
 
 class LabSpeechRequest(LabSessionRequest):
@@ -232,6 +244,8 @@ async def start_livekit_runtime(
     )
     if not opening:
         raise HTTPException(status_code=409, detail="Interview runtime has no opening question")
+    # The candidate is (back) in the room: the session reaper must not close it as abandoned.
+    await _set_candidate_left(db, str(session["id"]), left=False)
     return {
         "sessionId": session["id"],
         "openingMessage": opening,
@@ -298,6 +312,39 @@ async def preview_livekit_runtime_answer(
     return {"previewToken": preview_token, "reason": "ready"}
 
 
+async def _set_candidate_left(db: AsyncSession, session_id: str, *, left: bool) -> bool:
+    """Mark (or clear) that the candidate left the room; the reaper closes it as CANDIDATE_LEFT later."""
+    sql = (
+        "UPDATE interview_sessions SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), "
+        "'{candidate_left_at}', to_jsonb(now()::text)), updated_at = now() "
+        "WHERE id = :sid AND status = 'OPEN' AND metadata->>'candidate_left_at' IS NULL"
+        if left
+        else "UPDATE interview_sessions SET metadata = metadata - 'candidate_left_at' "
+        "WHERE id = :sid AND metadata->>'candidate_left_at' IS NOT NULL"
+    )
+    try:
+        result = await db.execute(text(sql), {"sid": session_id})
+        await db.commit()
+        return bool(result.rowcount)
+    except Exception:  # noqa: BLE001 - never fail the room over this marker
+        await db.rollback()
+        return False
+
+
+@router.post("/livekit/runtime/left")
+async def mark_livekit_candidate_left(
+    claims: dict[str, str] = Depends(_voice_runtime_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The agent saw the candidate leave and not come back within its grace period.
+
+    The session stays OPEN so the candidate can still rejoin (that clears the
+    mark); the session reaper closes it with CANDIDATE_LEFT if they do not.
+    """
+    marked = await _set_candidate_left(db, claims["session_id"], left=True)
+    return {"marked": marked}
+
+
 @router.post("/livekit/runtime/message")
 async def send_livekit_runtime_message(
     payload: VoiceRuntimeMessage,
@@ -353,6 +400,47 @@ async def send_livekit_runtime_message(
     except ChatRuntimeError as exc:
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/livekit/runtime/events", status_code=202)
+async def record_livekit_runtime_events(
+    payload: VoiceRuntimeEvents,
+    claims: dict[str, str] = Depends(_voice_runtime_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Voice-room state and incidents from the LiveKit agent, for the admin view.
+
+    The session comes from the runtime credential, never from the body. Events
+    are attached to the question being asked and stored like any other
+    interview event; unknown names and anything that is not a number, flag or
+    short code are dropped (adapters/voice/voice_events.py).
+    """
+    session_id = claims["session_id"]
+    accepted = [item for item in payload.events if item.event in VOICE_EVENTS]
+    if not accepted:
+        return {"accepted": 0}
+    turn_index = (
+        await db.execute(
+            text(
+                "SELECT turn_index FROM interview_turns WHERE session_id = :sid AND status = 'ASKED' "
+                "ORDER BY turn_index LIMIT 1"
+            ),
+            {"sid": session_id},
+        )
+    ).scalar_one_or_none()
+    for item in accepted:
+        fields = sanitize_fields(item.fields)
+        fields.pop("session_id", None)
+        fields.pop("turn_index", None)
+        trace_event(
+            "voice",
+            item.event,
+            session_id=session_id,
+            turn_index=turn_index,
+            agent_at=item.at.isoformat() if item.at else None,
+            **fields,
+        )
+    return {"accepted": len(accepted)}
 
 
 @router.post("/livekit-token")
