@@ -44,6 +44,7 @@ def database_operations(*, db: AsyncSession, user: dict, session_row: dict) -> I
             telemetry={k: v for k, v in payload.get("telemetry", {}).items() if k != "video_observations"},
             modality=payload.get("modality", "CHAT"),
             duration_seconds=payload.get("duration_seconds", 0.0),
+            precomputed_evaluation=payload.get("precomputed_evaluation"),
         )
 
     async def finish(payload: dict) -> dict:

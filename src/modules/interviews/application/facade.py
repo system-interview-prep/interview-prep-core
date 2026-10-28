@@ -25,6 +25,7 @@ async def submit_voice_answer(
     telemetry: dict[str, Any] | None = None,
     duration_seconds: float = 0.0,
     modality: str = "VOICE",
+    precomputed_evaluation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Submit a final media transcript to the modality-neutral Interview Core."""
     return await run_interview_command(
@@ -32,7 +33,8 @@ async def submit_voice_answer(
         operations=database_operations(db=db, user={}, session_row=session_row),
         payload={"client_message_id": client_message_id, "content": content,
                  "telemetry": telemetry or {}, "modality": modality,
-                 "duration_seconds": duration_seconds},
+                 "duration_seconds": duration_seconds,
+                 "precomputed_evaluation": precomputed_evaluation},
     )
 
 

@@ -832,6 +832,7 @@ async def process_candidate_message(
     telemetry: dict[str, Any] | None = None,
     modality: str = "CHAT",
     duration_seconds: float = 0.0,
+    precomputed_evaluation: dict[str, Any] | None = None,
     elapsed_override_seconds: float | None = None,
     core_engine: InterviewCoreEngine | None = None,
 ) -> dict[str, Any]:
@@ -1184,6 +1185,7 @@ async def process_candidate_message(
         modality=modality,
         duration_seconds=duration_seconds,
         telemetry=telemetry or {},
+        precomputed_evaluation=precomputed_evaluation,
     )
 
     try:
