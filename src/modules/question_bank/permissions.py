@@ -8,9 +8,10 @@ lets the list answer "what is waiting for me".
 Roles (``src/core/roles.py``):
 
 * QUESTION_AUTHOR: write drafts, edit and submit their own, start revisions.
-* QUESTION_REVIEWER: record a review on someone else's version in review.
-* QUESTION_BANK_ADMIN: final approval (needs at least one APPROVE review).
-* ADMIN: every role, but never on their own version (four-eyes rule).
+* ADMIN: also reviews someone else's version in review and gives the final
+  approval (needs at least one APPROVE review), but never on their own version
+  (four-eyes rule). Since 28/10 the former QUESTION_REVIEWER and
+  QUESTION_BANK_ADMIN roles are folded into ADMIN and grant nothing.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from src.core.roles import ADMIN, QUESTION_AUTHOR, QUESTION_BANK_ADMIN, QUESTION_REVIEWER
+from src.core.roles import ADMIN, QUESTION_AUTHOR
 
 EDITABLE_STATUSES = frozenset({"DRAFT", "NEEDS_REVISION"})
 REVIEW_STATUSES = frozenset({"IN_REVIEW", "PILOT_READY"})
@@ -62,8 +63,7 @@ def version_actions(
     status = str(status or "").upper()
     own = bool(created_by) and str(created_by) == str(actor_id)
     author = _has(roles, QUESTION_AUTHOR)
-    reviewer = _has(roles, QUESTION_REVIEWER)
-    approver = _has(roles, QUESTION_BANK_ADMIN)
+    reviewer = approver = _has(roles)
 
     def author_action(*, needs_rubric: bool) -> dict[str, Any]:
         if not author:
@@ -139,8 +139,6 @@ def work_buckets_for(roles: Iterable[str]) -> list[str]:
     buckets: list[str] = []
     if _has(roles, QUESTION_AUTHOR):
         buckets += ["drafts", "changes"]
-    if _has(roles, QUESTION_REVIEWER):
-        buckets.append("review")
-    if _has(roles, QUESTION_BANK_ADMIN):
-        buckets.append("approve")
+    if _has(roles):
+        buckets += ["review", "approve"]
     return buckets
