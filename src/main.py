@@ -175,6 +175,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
+        expose_headers=["X-Voice-Lab-Elapsed-Ms", "X-Speech-Provider", "X-Speech-Model"],
     )
 
     @app.exception_handler(HTTPException)
