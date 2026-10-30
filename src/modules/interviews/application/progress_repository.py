@@ -66,7 +66,7 @@ async def load_progress(
             await db.execute(
                 text(
                     """
-                SELECT s.id, s.job_id, j.title AS job_title, s.started_at,
+                    SELECT s.id, s.job_id, j.title AS job_title, s.started_at, s.mode, s.end_reason,
                        s.resume_id, c.filename AS resume_name,
                        p.source_context->>'practiceTier' AS tier,
                        p.plan_payload->'difficulty'->>'level' AS difficulty,
@@ -108,6 +108,8 @@ async def load_progress(
             resume_id=str(row["resume_id"]) if row["resume_id"] else None,
             resume_name=row["resume_name"],
             grader_version=row.get("grader_version"),
+            mode=str(row.get("mode") or "text"),
+            end_reason=row.get("end_reason"),
         )
         for row in evaluated
     ]

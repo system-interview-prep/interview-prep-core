@@ -41,10 +41,10 @@ async def load_overview_metrics(db: AsyncSession) -> dict[str, Any]:
     score = await db.execute(text("SELECT AVG(overall_score) FROM interview_evaluations"))
     trend = await db.execute(
         text(
-            "SELECT TO_CHAR(started_at, 'Mon') AS mon, EXTRACT(MONTH FROM started_at) AS m_num, "
-            "COUNT(*) AS count FROM interview_sessions "
+            "SELECT date_trunc('month', started_at) AS bucket, COUNT(*) AS count "
+            "FROM interview_sessions "
             "WHERE started_at >= NOW() - INTERVAL '6 months' "
-            "GROUP BY TO_CHAR(started_at, 'Mon'), EXTRACT(MONTH FROM started_at) ORDER BY m_num ASC"
+            "GROUP BY 1 ORDER BY 1 ASC"
         )
     )
     return {

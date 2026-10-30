@@ -20,6 +20,9 @@ from src.modules.interviews.application.progress_skills import (
     LEVEL_EDGES,
     LEVEL_MARGIN,
     PROCESS_SD,
+    OVERVIEW_MIN_SESSIONS,
+    ROOM_KEYS,
+    ROOMS,
     READY_LEVEL_INDEX,
     RECENT_QUESTIONS,
     RECOVERED_COVERAGE,
@@ -105,6 +108,47 @@ def valid_session(turns: list[TurnRow]) -> bool:
     """
     answered = [t for t in turns if t.outcome == "ANSWERED" and is_tracked(t.concept_id, t.stage) and t.stage]
     return len(answered) >= VALID_MIN_ANSWERS
+
+
+def room_of(mode: str | None) -> str:
+    """The practice room of a session: voice for voice and video, else chat."""
+    return "voice" if (mode or "").lower() in {"voice", "video"} else "chat"
+
+
+def score_overview(session_items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compare the first and latest non-overlapping groups of valid sessions."""
+    scores = [
+        float(item["overallScore"])
+        for item in session_items
+        if item.get("valid") and item.get("overallScore") is not None
+    ]
+    n = len(scores)
+    k = 3 if n >= 6 else 2 if n >= OVERVIEW_MIN_SESSIONS else 0
+    latest = round(scores[-1], 1) if scores else None
+    if not k:
+        return {"sessions": n, "window": 0, "start": None, "recent": None, "change": None, "latest": latest}
+    start = statistics.mean(scores[:k])
+    recent = statistics.mean(scores[-k:])
+    return {
+        "sessions": n,
+        "window": k,
+        "start": round(start, 1),
+        "recent": round(recent, 1),
+        "change": round(recent - start, 1),
+        "latest": latest,
+    }
+
+
+TECHNICAL_FAILURE = "TECHNICAL_FAILURE"
+
+
+def invalid_reason(session: SessionRow, turns: list[TurnRow]) -> str | None:
+    """Return why a session is excluded from progress, or None when it counts."""
+    if (session.end_reason or "").upper() == TECHNICAL_FAILURE:
+        return "technical_failure"
+    if not valid_session(turns):
+        return "too_few_answers"
+    return None
 
 
 RETRY_SESSIONS = 30
@@ -332,8 +376,9 @@ def build_progress(
     weekly_goal: int = DEFAULT_WEEKLY_GOAL,
     all_session_starts: list[datetime] | None = None,
     calibration: Calibration | None = None,
+    split_rooms: bool = True,
 ) -> dict[str, Any]:
-    """``sessions``: evaluated sessions, oldest first. ``turns``: their graded turns."""
+    """Build progress views; optionally split comparable metrics by practice room."""
     calibration = calibration or Calibration()
     sessions = sorted(sessions, key=lambda s: s.started_at)
     turns_by_session: dict[str, list[TurnRow]] = defaultdict(list)
@@ -357,9 +402,14 @@ def build_progress(
                 "resumeName": s.resume_name,
                 "graderVersion": s.grader_version,
                 "behavior": _session_behavior(turns_by_session.get(s.session_id, [])),
-                "valid": valid_session(turns_by_session.get(s.session_id, [])),
+                "valid": invalid_reason(s, turns_by_session.get(s.session_id, [])) is None,
+                "invalidReason": invalid_reason(s, turns_by_session.get(s.session_id, [])),
+                "mode": s.mode,
+                "room": room_of(s.mode),
+                "camera": s.mode == "video",
             }
         )
+    valid_ids = {item["sessionId"] for item in session_items if item["valid"]}
 
     # Skills, by canonical concept id: one point per session (mean of its turns).
     # A candidate practises many skills across several CVs and positions, so
@@ -409,6 +459,7 @@ def build_progress(
                     "jobId": s.job_id,
                     "resumeId": s.resume_id,
                     "graderVersion": s.grader_version,
+                    "valid": s.session_id in valid_ids,
                 }
             )
     skills = []
@@ -534,7 +585,7 @@ def build_progress(
         )
     timeline = session_timeline(session_items, readiness, turns_by_session, calibration)
 
-    return {
+    result = {
         "generatedAt": _iso(now),
         "weeklyGoal": weekly_goal,
         "resumes": sorted(resumes.values(), key=lambda r: -r["sessions"]),
@@ -563,7 +614,28 @@ def build_progress(
             "processSd": PROCESS_SD,
         },
         "calibration": calibration.to_public(),
+        "overview": score_overview(session_items),
     }
+    if split_rooms:
+        rooms: dict[str, Any] = {}
+        for room in ROOMS:
+            room_sessions = [s for s in sessions if room_of(s.mode) == room]
+            ids = {s.session_id for s in room_sessions}
+            sub = build_progress(
+                room_sessions,
+                [t for t in turns if t.session_id in ids],
+                now=now,
+                tz_offset_minutes=tz_offset_minutes,
+                weekly_goal=weekly_goal,
+                calibration=calibration,
+                split_rooms=False,
+            )
+            view = {key: sub[key] for key in ROOM_KEYS}
+            view["count"] = len(ids)
+            view["cameraSessions"] = sum(1 for s in room_sessions if s.mode == "video")
+            rooms[room] = view
+        result["rooms"] = rooms
+    return result
 
 
 def _skill_view(
@@ -841,6 +913,10 @@ def small_wins(session_items: list[dict[str, Any]], events: list[dict[str, Any]]
 __all__ = [
     "_session_behavior",
     "valid_session",
+    "room_of",
+    "score_overview",
+    "TECHNICAL_FAILURE",
+    "invalid_reason",
     "RETRY_SESSIONS",
     "WINS_LIMIT",
     "retries_by_session",

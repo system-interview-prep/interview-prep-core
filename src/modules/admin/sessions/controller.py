@@ -124,6 +124,14 @@ async def observe_interview_room(
         admin_id=str(admin["sub"]),
         admin_name=admin.get("name") or admin.get("email"),
     )
+    # The candidate sees a notice that an admin is listening.
+    announced = await room_observer.announce_observer(
+        api,
+        url=settings.livekit_url,
+        key=settings.livekit_api_key,
+        secret=settings.livekit_api_secret,
+        session_id=session_id,
+    )
     return {
         "success": True,
         "serverUrl": settings.livekit_url,
@@ -131,6 +139,7 @@ async def observe_interview_room(
         "roomName": room_observer.room_name(session_id),
         "mode": row["mode"],
         "logged": True,
+        "candidateNotified": announced,
     }
 
 @router.get("/sessions/{session_id}/turns/{turn_id}/answers")

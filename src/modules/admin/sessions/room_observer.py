@@ -10,15 +10,23 @@ dispatch, so joining never starts a second interviewer.
 
 Every seat issued is written to ``admin_access_logs`` (OBSERVE_INTERVIEW_ROOM);
 no log, no token.
+
+The candidate is told: when a seat is issued the server sends a reliable data
+message on ``OBSERVER_TOPIC`` to the room, and the candidate's room shows a
+notice that an admin may be listening (useLiveKitRoom). The seat stays
+hidden from the participant list; only the notice is visible.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from typing import Any
 
 OBSERVER_TTL = timedelta(minutes=10)
 LIVE_MODES = frozenset({"voice", "video"})
+OBSERVER_TOPIC = "intervia.observer"
+_RELIABLE = 0  # livekit DataPacket.Kind.RELIABLE
 
 
 def room_name(session_id: str) -> str:
@@ -86,6 +94,41 @@ async def close_room(api: Any, *, url: str, key: str, secret: str, session_id: s
         return True
     except Exception:  # noqa: BLE001
         return None
+    finally:
+        try:
+            await client.aclose()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def observer_notice() -> bytes:
+    """The data message the candidate's room turns into a visible notice."""
+    minutes = int(OBSERVER_TTL.total_seconds() // 60)
+    return json.dumps({"type": "observer_joined", "minutes": minutes}).encode()
+
+
+async def announce_observer(api: Any, *, url: str, key: str, secret: str, session_id: str) -> bool:
+    """Tell the people in the room that an admin is listening. Never raises.
+
+    False when LiveKit could not be reached; the seat is still issued, the
+    room's pre-join notice already says sessions may be observed.
+    """
+    try:
+        client = api.LiveKitAPI(url, key, secret)
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        await client.room.send_data(
+            api.SendDataRequest(
+                room=room_name(session_id),
+                data=observer_notice(),
+                kind=_RELIABLE,
+                topic=OBSERVER_TOPIC,
+            )
+        )
+        return True
+    except Exception:  # noqa: BLE001
+        return False
     finally:
         try:
             await client.aclose()

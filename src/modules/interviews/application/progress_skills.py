@@ -54,6 +54,12 @@ STREAK_HISTORY_WEEKS = 12
 # (not the greeting or the closing Q&A). An effort floor, not a score floor:
 # a score floor would punish practising the hard rounds (research 24/10).
 VALID_MIN_ANSWERS = 3
+ROOMS = ("chat", "voice")
+OVERVIEW_MIN_SESSIONS = 4
+ROOM_KEYS = (
+    "overview", "sessions", "skills", "gaps", "readiness", "timeline",
+    "jobs", "behavior", "wins", "retries", "milestones",
+)
 ACTIVITY_WEEKS = 12
 # Computed on request from raw rows. About 10 graded turns per session, so 1000
 # sessions is about 10k rows: fine today. Past that, keep a per-session summary
@@ -89,6 +95,8 @@ class SessionRow:
     resume_id: str | None = None
     resume_name: str | None = None
     grader_version: str | None = None
+    mode: str = "text"
+    end_reason: str | None = None
 
 
 @dataclass
@@ -649,7 +657,7 @@ def round_readiness(
     for skill in skills:
         if skill.get("minor"):
             continue
-        points = [p for p in skill["points"] if p.get("jobId") == job_id]
+        points = [p for p in skill["points"] if p.get("jobId") == job_id and p.get("valid", True)]
         if not points:
             continue
         last = points[-1]
@@ -765,6 +773,9 @@ __all__ = [
     "FLAT_DELTA",
     "STREAK_HISTORY_WEEKS",
     "VALID_MIN_ANSWERS",
+    "ROOMS",
+    "OVERVIEW_MIN_SESSIONS",
+    "ROOM_KEYS",
     "ACTIVITY_WEEKS",
     "MAX_SESSIONS",
     "_TIER_RANK",

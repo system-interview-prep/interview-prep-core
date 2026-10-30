@@ -8,6 +8,23 @@ from src.modules.admin.overview import practice_stats
 from src.modules.admin.overview.repository import load_overview_metrics
 
 
+def monthly_trend_items(rows: list[dict]) -> list[dict]:
+    """Format monthly session counts with a year-aware chronological key."""
+    items = []
+    for row in rows:
+        bucket = row["bucket"]
+        if bucket is None:
+            continue
+        items.append(
+            {
+                "month": f"{bucket.month:02d}/{bucket.year}",
+                "key": f"{bucket.year}-{bucket.month:02d}",
+                "count": int(row["count"] or 0),
+            }
+        )
+    return sorted(items, key=lambda item: item["key"])
+
+
 async def get_overview(db: AsyncSession) -> dict:
     metrics = await load_overview_metrics(db)
     sessions = metrics["sessions"]
@@ -24,9 +41,7 @@ async def get_overview(db: AsyncSession) -> dict:
             "averageScore": round(float(raw_score) * 10, 1) if raw_score is not None else None,
             "averageTurnaround": round(float(avg_duration), 1) if avg_duration else None,
             "sentimentScore": None,
-            "monthlyTrend": [
-                {"month": row["mon"], "count": row["count"]} for row in metrics["monthly_trend"]
-            ],
+            "monthlyTrend": monthly_trend_items(metrics["monthly_trend"]),
             "modes": {
                 "chat": sessions.get("chat_count") or 0,
                 "voice": sessions.get("voice_count") or 0,
