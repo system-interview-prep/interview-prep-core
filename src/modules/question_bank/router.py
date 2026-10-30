@@ -36,6 +36,10 @@ from src.modules.question_bank.service import QuestionBankService
 router = APIRouter(prefix="/admin/question-bank", tags=["question-bank"])
 
 
+class RetireQuestionsRequest(BaseModel):
+    question_ids: list[UUID] = Field(alias="questionIds", min_length=1, max_length=100)
+
+
 def _import_response(import_run: object) -> dict:
     return {
         "importId": str(import_run.id),
@@ -219,6 +223,33 @@ async def create_draft(
     return _version_response(version)
 
 
+@router.post("/questions/retire")
+async def retire_questions(
+    payload: RetireQuestionsRequest,
+    actor: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Soft-remove questions from the active bank while preserving interview history."""
+    question_ids = list(dict.fromkeys(payload.question_ids))
+    result = await db.execute(
+        text(
+            "UPDATE interview_questions SET retired_at = now() "
+            "WHERE id = ANY(CAST(:ids AS uuid[])) AND retired_at IS NULL RETURNING id"
+        ),
+        {"ids": question_ids},
+    )
+    retired_ids = [str(row["id"]) for row in result.mappings().all()]
+    await db.commit()
+    await record_admin_action(
+        db,
+        actor,
+        "RETIRE_QUESTIONS",
+        target_id=retired_ids[0] if len(retired_ids) == 1 else None,
+        detail={"questionIds": retired_ids, "retiredCount": len(retired_ids)},
+    )
+    return {"retiredQuestionIds": retired_ids, "retiredCount": len(retired_ids)}
+
+
 @router.get("/questions")
 async def list_questions(
     actor: dict = Depends(require_roles(QUESTION_AUTHOR)),
@@ -236,7 +267,7 @@ async def list_questions(
     ``mine`` narrows to the signed-in person's work (permissions.work_filter);
     ``source=ai`` to drafts the system generated.
     """
-    filters = ["1 = 1"]
+    filters = ["q.retired_at IS NULL"]
     params: dict[str, object] = {"limit": page_size, "offset": (page - 1) * page_size}
     work = work_filter(mine)
     if work:
@@ -416,8 +447,12 @@ async def _version_rubric(db: AsyncSession, version_id: object) -> dict | None:
         return None
     criteria = await db.execute(
         text(
-            "SELECT stable_key, name, description, weight, critical FROM rubric_criteria "
-            "WHERE rubric_version_id = :rubric_version_id ORDER BY display_order"
+            "SELECT rc.stable_key, rc.name, rc.description, rc.weight, rc.critical, "
+            "COALESCE(json_agg(json_build_object('level', ra.level, 'description', ra.description) "
+            "ORDER BY ra.level) FILTER (WHERE ra.level IS NOT NULL), '[]'::json) AS anchors "
+            "FROM rubric_criteria rc LEFT JOIN rubric_anchors ra ON ra.criterion_id = rc.id "
+            "WHERE rc.rubric_version_id = :rubric_version_id "
+            "GROUP BY rc.id ORDER BY rc.display_order"
         ),
         {"rubric_version_id": rubric["id"]},
     )
@@ -434,6 +469,7 @@ async def _version_rubric(db: AsyncSession, version_id: object) -> dict | None:
                 "description": row["description"],
                 "weight": float(row["weight"]),
                 "critical": row["critical"],
+                "anchors": row["anchors"],
             }
             for row in criteria.mappings().all()
         ],
