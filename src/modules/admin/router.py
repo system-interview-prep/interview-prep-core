@@ -1,7 +1,7 @@
 import asyncio
 import json
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -46,6 +46,26 @@ from src.modules.interviews.facade import (
 from src.modules.user_cvs.facade import CvAdminReparseError, reparse_cv_as_admin
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+def monthly_trend_items(rows: list[Any]) -> list[dict[str, Any]]:
+    """Dashboard bars from (bucket = first day of the month, count) rows.
+
+    ``month`` is the label shown ("10/2026"), ``key`` sorts across years.
+    """
+    items = []
+    for row in rows:
+        bucket = row["bucket"]
+        if bucket is None:
+            continue
+        items.append(
+            {
+                "month": f"{bucket.month:02d}/{bucket.year}",
+                "key": f"{bucket.year}-{bucket.month:02d}",
+                "count": int(row["count"] or 0),
+            }
+        )
+    return sorted(items, key=lambda item: item["key"])
 
 
 def _calc_initials(name: str | None, email: str) -> str:
@@ -115,26 +135,20 @@ async def get_admin_overview(
     # was a constant (92) or derived from the score; report it as unavailable.
     sentiment_ratio = None
 
-    # 5. Monthly Trend (last 6 months distribution)
+    # 5. Monthly Trend (last 6 months distribution). Grouped by year and
+    # month, so a window across New Year keeps 12/2026 before 01/2027.
     trend_res = await db.execute(
         text(
             """
-            SELECT 
-                TO_CHAR(started_at, 'Mon') as mon,
-                EXTRACT(MONTH FROM started_at) as m_num,
-                COUNT(*) as count
+            SELECT date_trunc('month', started_at) AS bucket, COUNT(*) AS count
             FROM interview_sessions
             WHERE started_at >= NOW() - INTERVAL '6 months'
-            GROUP BY TO_CHAR(started_at, 'Mon'), EXTRACT(MONTH FROM started_at)
-            ORDER BY m_num ASC
+            GROUP BY 1
+            ORDER BY 1 ASC
             """
         )
     )
-    trend_rows = trend_res.mappings().all()
-    monthly_trend = [
-        {"month": r["mon"], "count": r["count"]}
-        for r in trend_rows
-    ]
+    monthly_trend = monthly_trend_items(trend_res.mappings().all())
 
     # 6. Top Cohorts / Tracks: no per-track analytics exist yet. Return none
     # rather than a hardcoded showcase that reads as real data.
@@ -395,6 +409,14 @@ async def observe_interview_room(
         admin_id=str(admin["sub"]),
         admin_name=admin.get("name") or admin.get("email"),
     )
+    # The candidate sees a notice that an admin is listening.
+    announced = await room_observer.announce_observer(
+        api,
+        url=settings.livekit_url,
+        key=settings.livekit_api_key,
+        secret=settings.livekit_api_secret,
+        session_id=session_id,
+    )
     return {
         "success": True,
         "serverUrl": settings.livekit_url,
@@ -402,6 +424,7 @@ async def observe_interview_room(
         "roomName": room_observer.room_name(session_id),
         "mode": row["mode"],
         "logged": True,
+        "candidateNotified": announced,
     }
 
 

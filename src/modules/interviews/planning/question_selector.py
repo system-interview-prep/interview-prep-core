@@ -95,6 +95,37 @@ class _Candidate:
     localized_from: str | None = None
 
 
+# AI-generated drafts nobody has reviewed yet (the last rung of the ladder):
+# none in the challenge tier, where the difficulty of each question matters
+# most, and at most this many in any other session.
+MAX_UNREVIEWED_PER_SESSION = 1
+GENERATED_SOURCE = "generated_unreviewed"
+
+
+def unreviewed_budget(payload: Any) -> int:
+    """How many unreviewed generated drafts this session's plan may ask."""
+    tier = payload.get("practiceTier") if isinstance(payload, dict) else None
+    return 0 if tier == "challenge" else MAX_UNREVIEWED_PER_SESSION
+
+
+def limit_unreviewed(candidates: list[_Candidate], budget: int) -> tuple[list[_Candidate], int]:
+    """Keep every reviewed candidate and at most ``budget`` generated drafts.
+
+    Order is kept. Returns the kept list and how many drafts were dropped.
+    """
+    kept: list[_Candidate] = []
+    dropped = 0
+    left = max(0, budget)
+    for candidate in candidates:
+        if candidate.source == GENERATED_SOURCE:
+            if left <= 0:
+                dropped += 1
+                continue
+            left -= 1
+        kept.append(candidate)
+    return kept, dropped
+
+
 def _allowed_purposes(target: dict[str, Any]) -> tuple[str, ...]:
     source = (target.get("rationale") or {}).get("source")
     if source == "career_classification_fallback":
@@ -1128,6 +1159,9 @@ async def select_and_freeze_questions(
     # Targets the ladder could not cover at all, and targets served with fewer
     # questions than planned. Both reach the report as uncovered competencies.
     uncovered_targets: list[dict[str, Any]] = []
+    unreviewed_cap = unreviewed_budget(payload)
+    unreviewed_left = unreviewed_cap
+    plan_tier = payload.get("practiceTier") if isinstance(payload, dict) else None
 
     if is_dynamic:
         # -------------------------------------------------------------------
@@ -1216,6 +1250,7 @@ async def select_and_freeze_questions(
                 )
 
             feasible_subsets = _subsets(candidates)
+            blocked_drafts = 0
             if not feasible_subsets:
                 seen = {item.question_version_id for item in candidates}
                 extra = await _fallback_candidates(
@@ -1229,7 +1264,13 @@ async def select_and_freeze_questions(
                     exposure=exposure,
                     spoken_only=spoken_only,
                 )
-                feasible_subsets = _subsets(candidates + [c for c in extra if c.question_version_id not in seen])
+                extra, blocked_drafts = limit_unreviewed(
+                    [c for c in extra if c.question_version_id not in seen], unreviewed_left
+                )
+                # Offered drafts count against the budget even if the global
+                # assignment ends up not using them: the cap stays a hard one.
+                unreviewed_left -= sum(c.source == GENERATED_SOURCE for c in extra)
+                feasible_subsets = _subsets(candidates + extra)
             if not feasible_subsets:
                 missing_targets.append(
                     {
@@ -1238,7 +1279,9 @@ async def select_and_freeze_questions(
                         "targetArchetype": target["targetArchetype"],
                         "floorSeconds": target["floorSeconds"],
                         "timeEnvelopeSeconds": target["timeEnvelopeSeconds"],
-                        "reason": "no_feasible_qualifying_subset",
+                        "reason": (
+                            "unreviewed_not_allowed" if blocked_drafts else "no_feasible_qualifying_subset"
+                        ),
                     }
                 )
             else:
@@ -1337,6 +1380,7 @@ async def select_and_freeze_questions(
             # a planner/Question-Bank concern, not something P2 may re-decide.
             needed = max(1, int(target["targetQuestionCount"]))
             selected = available[:needed]
+            blocked_drafts = 0
 
             if len(selected) < needed:
                 # Fallback ladder: broader skill -> role question -> generated draft.
@@ -1352,7 +1396,14 @@ async def select_and_freeze_questions(
                     exposure=exposure,
                     spoken_only=spoken_only,
                 )
-                selected += [c for c in extra if c.question_version_id not in taken][: needed - len(selected)]
+                room = needed - len(selected)
+                fresh = [c for c in extra if c.question_version_id not in taken]
+                usable, blocked_drafts = limit_unreviewed(fresh, unreviewed_left)
+                picked = usable[:room]
+                # A draft dropped by the cap only matters if it would have been asked.
+                blocked_drafts = min(blocked_drafts, max(0, room - len(picked)))
+                unreviewed_left -= sum(c.source == GENERATED_SOURCE for c in picked)
+                selected += picked
 
             if len(selected) < needed:
                 # Covered partially or not at all: interview what we can and
@@ -1364,7 +1415,9 @@ async def select_and_freeze_questions(
                         "label": target["label"],
                         "needed": needed,
                         "available": len(selected),
-                        "reason": "no_question_after_fallback",
+                        "reason": (
+                            "unreviewed_not_allowed" if blocked_drafts else "no_question_after_fallback"
+                        ),
                     }
                 )
 
@@ -1748,6 +1801,8 @@ async def select_and_freeze_questions(
                         "fallbackQuestionCount": sum(candidate is None for candidate, _, _, _ in frozen),
                         "questionSources": source_counts,
                         "generatedQuestionCount": source_counts.get("generated_unreviewed", 0),
+                        "unreviewedBudget": unreviewed_cap,
+                        "practiceTier": plan_tier if isinstance(plan_tier, str) else None,
                         "uncoveredTargets": uncovered_targets,
                     }
                 }

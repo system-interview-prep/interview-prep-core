@@ -172,8 +172,14 @@ def review_items(
     generated: dict[str, Any] | None,
     lessons: list[dict[str, Any]],
     suggestions: dict[str, Any] | None,
+    uncovered: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Notifications for work waiting on an admin's decision.
+
+    ``uncovered`` are sessions frozen with skills the bank could not serve
+    (``questionSelection.uncoveredTargets``): in the challenge tier no
+    unreviewed draft may stand in, so the admin is told which skills need
+    reviewed questions.
 
     Pure (unit tested). Each question submission and each proposed lesson gives
     one item; AI-generated questions and bank suggestions arrive in batches, so
@@ -240,6 +246,38 @@ def review_items(
                     "kind": "review_suggestions",
                     "severity": "info",
                     "link": "/admin/question-bank/insights",
+                },
+            }
+        )
+    for row in uncovered or []:
+        session_id = str(row.get("session_id") or "")
+        targets = [t for t in (row.get("targets") or []) if isinstance(t, dict)]
+        if not session_id or not targets:
+            continue
+        labels = ", ".join(str(t.get("label") or t.get("conceptId") or "?") for t in targets[:5])
+        blocked = any(t.get("reason") == "unreviewed_not_allowed" for t in targets)
+        job = row.get("job_title")
+        challenge = row.get("tier") == "challenge"
+        items.append(
+            {
+                "dedupe_key": f"review:uncovered:{session_id}"[:160],
+                "title": ("Thiếu câu đã duyệt" if blocked else "Ngân hàng thiếu câu")
+                + (f" · {job}" if job else ""),
+                "message": (
+                    ("Buổi mức Thử thách" if challenge else "Một buổi")
+                    + f" không có câu đã duyệt cho: {labels}. "
+                    + (
+                        "Câu AI sinh đang chờ duyệt nên không được dùng."
+                        if blocked
+                        else "Cần thêm câu cho các kỹ năng này."
+                    )
+                ),
+                "exclude": "",
+                "data": {
+                    "kind": "review_uncovered",
+                    "severity": "warning",
+                    "sessionId": session_id,
+                    "link": "/admin/question-bank",
                 },
             }
         )
@@ -317,11 +355,33 @@ async def load_review_work(db: AsyncSession) -> list[dict[str, Any]]:
         .mappings()
         .first()
     )
+    uncovered = (
+        (
+            await db.execute(
+                text(
+                    "SELECT p.session_id, "
+                    "p.plan_payload->'questionSelection'->'uncoveredTargets' AS targets, "
+                    "p.plan_payload->>'practiceTier' AS tier, j.title AS job_title "
+                    "FROM interview_session_plans p JOIN interview_sessions s ON s.id = p.session_id "
+                    "LEFT JOIN job_descriptions j ON j.id = s.job_id "
+                    "WHERE p.status = 'LOCKED' "
+                    "AND jsonb_typeof(p.plan_payload->'questionSelection'->'uncoveredTargets') = 'array' "
+                    "AND jsonb_array_length(p.plan_payload->'questionSelection'->'uncoveredTargets') > 0 "
+                    f"AND p.updated_at >= {since} "
+                    "ORDER BY p.updated_at DESC LIMIT :limit"
+                ),
+                window,
+            )
+        )
+        .mappings()
+        .all()
+    )
     return review_items(
         questions=[dict(row) for row in questions],
         generated=dict(generated) if generated else None,
         lessons=[dict(row) for row in lessons],
         suggestions=dict(suggestions) if suggestions else None,
+        uncovered=[dict(row) for row in uncovered],
     )
 
 

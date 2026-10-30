@@ -58,6 +58,18 @@ STREAK_HISTORY_WEEKS = 12
 # (not the greeting or the closing Q&A). An effort floor, not a score floor:
 # a score floor would punish practising the hard rounds (research 24/10).
 VALID_MIN_ANSWERS = 3
+# The two practice rooms (research 29/10, PROGRESS_PAGE_V3_DESIGN). Scores of one
+# room are never compared with the other: answering aloud and typing are graded
+# on the same rubric but are not the same task. The camera is an option of the
+# Voice room, not a room of its own: it adds presentation notes, not points.
+ROOMS = ("chat", "voice")
+# The overview compares the first and the latest valid sessions only from this
+# many on, in two groups that never share a session (k = 2 below 6, 3 from 6).
+OVERVIEW_MIN_SESSIONS = 4
+ROOM_KEYS = (
+    "overview", "sessions", "skills", "gaps", "readiness", "timeline",
+    "jobs", "behavior", "wins", "retries", "milestones",
+)
 ACTIVITY_WEEKS = 12
 # Computed on request from raw rows. About 10 graded turns per session, so 1000
 # sessions is about 10k rows: fine today. Past that, keep a per-session summary
@@ -93,6 +105,11 @@ class SessionRow:
     resume_id: str | None = None
     resume_name: str | None = None
     grader_version: str | None = None
+    # interview_sessions.mode: text (Phòng Chat), voice, or video (Voice with the camera on).
+    mode: str = "text"
+    # interview_sessions.end_reason: TECHNICAL_FAILURE marks a session that broke
+    # (no interviewer, a dead microphone or voice service, closed by an admin).
+    end_reason: str | None = None
 
 
 @dataclass
@@ -675,7 +692,8 @@ def round_readiness(
     for skill in skills:
         if skill.get("minor"):
             continue
-        points = [p for p in skill["points"] if p.get("jobId") == job_id]
+        # A session that failed (too few real answers) neither moves nor resets a level.
+        points = [p for p in skill["points"] if p.get("jobId") == job_id and p.get("valid", True)]
         if not points:
             continue
         last = points[-1]
@@ -824,6 +842,59 @@ def _session_behavior(turns: list[TurnRow]) -> dict[str, Any]:
         "starComplete": sum(1 for t in star_turns if t.star.get("is_star_complete")),
         "measurableResult": sum(1 for t in star_turns if _NUMBER.search(str(t.star.get("result") or ""))),
     }
+
+
+def room_of(mode: str | None) -> str:
+    """The practice room of a session: ``voice`` for voice and video, else ``chat``."""
+    return "voice" if (mode or "").lower() in {"voice", "video"} else "chat"
+
+
+def score_overview(session_items: list[dict[str, Any]]) -> dict[str, Any]:
+    """The candidate's average now against the start, from valid sessions only.
+
+    The two groups never share a session: the first k and the latest k of n
+    valid sessions, k = 3 from 6 sessions and 2 from 4. Below 4 there is no
+    comparison (``window`` 0), only the latest score. A session that failed
+    (too few real answers, for example a microphone that cut out) is left out.
+    """
+    scores = [
+        float(item["overallScore"])
+        for item in session_items
+        if item.get("valid") and item.get("overallScore") is not None
+    ]
+    n = len(scores)
+    k = 3 if n >= 6 else 2 if n >= OVERVIEW_MIN_SESSIONS else 0
+    latest = round(scores[-1], 1) if scores else None
+    if not k:
+        return {"sessions": n, "window": 0, "start": None, "recent": None, "change": None, "latest": latest}
+    start = statistics.mean(scores[:k])
+    recent = statistics.mean(scores[-k:])
+    return {
+        "sessions": n,
+        "window": k,
+        "start": round(start, 1),
+        "recent": round(recent, 1),
+        "change": round(recent - start, 1),
+        "latest": latest,
+    }
+
+
+# Why a graded session does not count toward scores, levels and streak runs.
+TECHNICAL_FAILURE = "TECHNICAL_FAILURE"
+
+
+def invalid_reason(session: SessionRow, turns: list[TurnRow]) -> str | None:
+    """``technical_failure``, ``too_few_answers``, or None for a session that counts.
+
+    A session that ended in a technical failure is left out even when it has
+    enough answers: the answers given while the microphone or the voice
+    service was failing say little about the candidate.
+    """
+    if (session.end_reason or "").upper() == TECHNICAL_FAILURE:
+        return "technical_failure"
+    if not valid_session(turns):
+        return "too_few_answers"
+    return None
 
 
 def valid_session(turns: list[TurnRow]) -> bool:
@@ -1061,8 +1132,15 @@ def build_progress(
     weekly_goal: int = DEFAULT_WEEKLY_GOAL,
     all_session_starts: list[datetime] | None = None,
     calibration: Calibration | None = None,
+    split_rooms: bool = True,
 ) -> dict[str, Any]:
-    """``sessions``: evaluated sessions, oldest first. ``turns``: their graded turns."""
+    """``sessions``: evaluated sessions, oldest first. ``turns``: their graded turns.
+
+    With ``split_rooms`` the result also has ``rooms``: the same views
+    (``ROOM_KEYS``) computed from the sessions of each room alone, so the page
+    never mixes Chat and Voice scores. The streak and the activity stay global:
+    practising in either room keeps them.
+    """
     calibration = calibration or Calibration()
     sessions = sorted(sessions, key=lambda s: s.started_at)
     turns_by_session: dict[str, list[TurnRow]] = defaultdict(list)
@@ -1086,9 +1164,14 @@ def build_progress(
                 "resumeName": s.resume_name,
                 "graderVersion": s.grader_version,
                 "behavior": _session_behavior(turns_by_session.get(s.session_id, [])),
-                "valid": valid_session(turns_by_session.get(s.session_id, [])),
+                "valid": invalid_reason(s, turns_by_session.get(s.session_id, [])) is None,
+                "invalidReason": invalid_reason(s, turns_by_session.get(s.session_id, [])),
+                "mode": s.mode,
+                "room": room_of(s.mode),
+                "camera": s.mode == "video",
             }
         )
+    valid_ids = {item["sessionId"] for item in session_items if item["valid"]}
 
     # Skills, by canonical concept id: one point per session (mean of its turns).
     # A candidate practises many skills across several CVs and positions, so
@@ -1138,6 +1221,8 @@ def build_progress(
                     "jobId": s.job_id,
                     "resumeId": s.resume_id,
                     "graderVersion": s.grader_version,
+                    # The ladder skips sessions that do not count (round_readiness).
+                    "valid": s.session_id in valid_ids,
                 }
             )
     skills = []
@@ -1252,7 +1337,7 @@ def build_progress(
         )
     timeline = session_timeline(session_items, readiness, turns_by_session, calibration)
 
-    return {
+    result = {
         "generatedAt": _iso(now),
         "weeklyGoal": weekly_goal,
         "resumes": sorted(resumes.values(), key=lambda r: -r["sessions"]),
@@ -1281,7 +1366,27 @@ def build_progress(
             "processSd": PROCESS_SD,
         },
         "calibration": calibration.to_public(),
+        "overview": score_overview(session_items),
     }
+    if split_rooms:
+        rooms: dict[str, Any] = {}
+        for room in ROOMS:
+            ids = {s.session_id for s in sessions if room_of(s.mode) == room}
+            sub = build_progress(
+                [s for s in sessions if s.session_id in ids],
+                [t for t in turns if t.session_id in ids],
+                now=now,
+                tz_offset_minutes=tz_offset_minutes,
+                weekly_goal=weekly_goal,
+                calibration=calibration,
+                split_rooms=False,
+            )
+            view = {key: sub[key] for key in ROOM_KEYS}
+            view["count"] = len(ids)
+            view["cameraSessions"] = sum(1 for s in sessions if s.session_id in ids and s.mode == "video")
+            rooms[room] = view
+        result["rooms"] = rooms
+    return result
 
 
 def _skill_view(
@@ -1539,7 +1644,7 @@ async def load_progress(
         await db.execute(
             text(
                 """
-                SELECT s.id, s.job_id, j.title AS job_title, s.started_at,
+                SELECT s.id, s.job_id, j.title AS job_title, s.started_at, s.mode, s.end_reason,
                        s.resume_id, c.filename AS resume_name,
                        p.source_context->>'practiceTier' AS tier,
                        p.plan_payload->'difficulty'->>'level' AS difficulty,
@@ -1578,6 +1683,8 @@ async def load_progress(
             resume_id=str(row["resume_id"]) if row["resume_id"] else None,
             resume_name=row["resume_name"],
             grader_version=row.get("grader_version"),
+            mode=str(row.get("mode") or "text"),
+            end_reason=row.get("end_reason"),
         )
         for row in evaluated
     ]

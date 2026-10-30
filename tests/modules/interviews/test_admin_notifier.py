@@ -201,3 +201,28 @@ def test_a_resubmitted_question_notifies_again_and_long_text_is_cut():
     assert "…" in first[0]["message"] and len(first[0]["message"]) < 200
     assert first[1]["title"] == "4 đề xuất cho ngân hàng câu hỏi"
     assert first[1]["data"]["link"] == "/admin/question-bank/insights"
+
+
+def test_sessions_short_of_reviewed_questions_tell_the_admin_which_skills():
+    items = notifier.review_items(
+        questions=[],
+        generated=None,
+        lessons=[],
+        suggestions=None,
+        uncovered=[
+            {
+                "session_id": "s9",
+                "tier": "challenge",
+                "job_title": "Backend",
+                "targets": [{"conceptId": "docker", "label": "Docker", "reason": "unreviewed_not_allowed"}],
+            },
+            {"session_id": "s10", "tier": "standard", "job_title": None, "targets": [{"label": "Redis"}]},
+            {"session_id": "s11", "targets": []},
+        ],
+    )
+    assert [i["dedupe_key"] for i in items] == ["review:uncovered:s9", "review:uncovered:s10"]
+    assert items[0]["title"] == "Thiếu câu đã duyệt · Backend"
+    assert items[0]["message"].startswith("Buổi mức Thử thách không có câu đã duyệt cho: Docker.")
+    assert items[0]["data"]["severity"] == "warning"
+    assert items[1]["title"] == "Ngân hàng thiếu câu"
+    assert "Redis" in items[1]["message"]

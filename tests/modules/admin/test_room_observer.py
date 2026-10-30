@@ -105,3 +105,59 @@ def test_close_room_deletes_the_session_room_and_never_raises() -> None:
     # LiveKit down: the session close still goes through.
     down = _DeletableRooms(error=RuntimeError("unreachable"))
     assert _close(down) is None
+
+
+def test_announce_observer_sends_a_reliable_notice_on_the_observer_topic() -> None:
+    import json as _json
+
+    sent = []
+
+    class Rooms:
+        async def send_data(self, request):
+            sent.append(request)
+
+    class Client:
+        def __init__(self, *args):
+            self.room = Rooms()
+
+        async def aclose(self):
+            return None
+
+    ok = asyncio.run(
+        room_observer.announce_observer(
+            SimpleNamespace(LiveKitAPI=Client, SendDataRequest=api.SendDataRequest),
+            url="wss://x",
+            key="k",
+            secret="s",
+            session_id="s1",
+        )
+    )
+    assert ok is True
+    [request] = sent
+    assert request.room == "interview-s1"
+    assert request.topic == room_observer.OBSERVER_TOPIC
+    assert _json.loads(request.data) == {"type": "observer_joined", "minutes": 10}
+
+
+def test_announce_observer_never_raises() -> None:
+    class Rooms:
+        async def send_data(self, request):
+            raise RuntimeError("down")
+
+    class Client:
+        def __init__(self, *args):
+            self.room = Rooms()
+
+        async def aclose(self):
+            return None
+
+    ok = asyncio.run(
+        room_observer.announce_observer(
+            SimpleNamespace(LiveKitAPI=Client, SendDataRequest=api.SendDataRequest),
+            url="wss://x",
+            key="k",
+            secret="s",
+            session_id="s1",
+        )
+    )
+    assert ok is False

@@ -1853,3 +1853,117 @@ async def test_dynamic_plan_without_targets_locks_preset_only_queue():
         if "INSERT INTO interview_turns" in str(call.args[0])
     ]
     assert inserted == ["WARM_UP", "VALIDATE", "BEHAVIORAL"]
+
+
+def test_unreviewed_budget_is_zero_in_challenge_and_one_otherwise():
+    from src.modules.interviews.planning.question_selector import unreviewed_budget
+
+    assert unreviewed_budget({"practiceTier": "challenge"}) == 0
+    assert unreviewed_budget({"practiceTier": "standard"}) == 1
+    assert unreviewed_budget({"practiceTier": "basic"}) == 1
+    assert unreviewed_budget({}) == 1
+    assert unreviewed_budget(None) == 1
+
+
+def test_limit_unreviewed_keeps_reviewed_and_order():
+    from src.modules.interviews.planning.question_selector import limit_unreviewed
+
+    pool = [
+        candidate(question_version_id="broad", source="broader_skill"),
+        candidate(question_version_id="draft-1", source="generated_unreviewed"),
+        candidate(question_version_id="draft-2", source="generated_unreviewed"),
+        candidate(question_version_id="role", source="role"),
+    ]
+    kept, dropped = limit_unreviewed(pool, 1)
+    assert [c.question_version_id for c in kept] == ["broad", "draft-1", "role"]
+    assert dropped == 1
+    kept, dropped = limit_unreviewed(pool, 0)
+    assert [c.question_version_id for c in kept] == ["broad", "role"]
+    assert dropped == 2
+
+
+def _draft_only_selector_db(tier, concepts):
+    plan_result = MagicMock()
+    plan_result.mappings.return_value.one_or_none.return_value = {
+        "status": "READY",
+        "plan_payload": {
+            "policyVersion": "interview-planner-v1",
+            "difficulty": {"level": "advanced"},
+            "practiceTier": tier,
+        },
+    }
+    targets_result = MagicMock()
+    targets_result.mappings.return_value.all.return_value = [
+        {
+            "selection_rank": rank,
+            "taxonomy_version": "internal-2026.1",
+            "concept_id": concept,
+            "label": concept,
+            "importance": 1.0,
+            "target_question_count": 1,
+            "rationale": None,
+        }
+        for rank, concept in enumerate(concepts)
+    ]
+
+    async def execute(query, params=None):
+        if "SELECT status, plan_payload" in str(query):
+            return plan_result
+        if "FROM session_competency_targets" in str(query):
+            return targets_result
+        result = MagicMock()
+        result.mappings.return_value.all.return_value = []
+        return result
+
+    db = AsyncMock()
+    db.execute.side_effect = execute
+    return db
+
+
+def _patch_bank(monkeypatch, approved):
+    from src.modules.interviews.planning import question_selector
+
+    async def load_candidates(db, *, target, **kwargs):
+        if target["conceptId"] in approved:
+            return [candidate(question_version_id=f"{target['conceptId']}-approved")]
+        return []
+
+    async def fallback(db, *, target, **kwargs):
+        return [
+            candidate(question_version_id=f"{target['conceptId']}-draft", source="generated_unreviewed"),
+        ]
+
+    async def no_preflight(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(question_selector, "_load_candidates", load_candidates)
+    monkeypatch.setattr(question_selector, "_fallback_candidates", fallback)
+    monkeypatch.setattr(question_selector, "_generate_missing_questions", no_preflight)
+    monkeypatch.setattr(question_selector, "add_spoken_versions", no_preflight)
+
+
+@pytest.mark.asyncio
+async def test_challenge_tier_never_asks_an_unreviewed_draft(monkeypatch):
+    _patch_bank(monkeypatch, approved={"sql"})
+    db = _draft_only_selector_db("challenge", ["sql", "docker"])
+    result = await select_and_freeze_questions(
+        db=db, session_row={"id": "challenge-session", "plan_id": "plan", "locale": "en-US"}
+    )
+    assert result["generatedQuestionCount"] == 0
+    assert result["technicalQuestionCount"] == 1
+    [missing] = result["uncoveredTargets"]
+    assert missing["conceptId"] == "docker"
+    assert missing["reason"] == "unreviewed_not_allowed"
+
+
+@pytest.mark.asyncio
+async def test_other_tiers_ask_at_most_one_unreviewed_draft(monkeypatch):
+    _patch_bank(monkeypatch, approved={"sql"})
+    db = _draft_only_selector_db("standard", ["sql", "docker", "redis"])
+    result = await select_and_freeze_questions(
+        db=db, session_row={"id": "standard-session", "plan_id": "plan", "locale": "en-US"}
+    )
+    assert result["generatedQuestionCount"] == 1
+    assert result["technicalQuestionCount"] == 2
+    assert [t["conceptId"] for t in result["uncoveredTargets"]] == ["redis"]
+    assert result["uncoveredTargets"][0]["reason"] == "unreviewed_not_allowed"
