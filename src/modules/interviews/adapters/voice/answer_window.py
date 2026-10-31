@@ -27,8 +27,6 @@ from types import ModuleType
 COMMIT_SILENCE_SECONDS = 2.5
 SHORT_COMMIT_SILENCE_SECONDS = 2.5
 SHORT_ANSWER_WORDS = 8
-# Speak a short filler only when Interview Core takes longer than this.
-PROCESSING_FILLER_SECONDS = 1.2
 # Gently re-prompt once per question after this much silence.
 REPROMPT_AFTER_SECONDS = 30.0
 
@@ -160,8 +158,6 @@ def _load_script() -> ModuleType:
 SCRIPT = _load_script()
 
 # Câu chỉ có ở kênh nói. Câu chữ nằm ở core/interviewer_script.py.
-PROCESSING_FILLERS_VI: tuple[str, ...] = SCRIPT.PROCESSING_FILLERS_VI
-PROCESSING_FILLERS_EN: tuple[str, ...] = SCRIPT.PROCESSING_FILLERS_EN
 NOT_HEARD_VI: tuple[str, ...] = SCRIPT.NOT_HEARD_VI
 NOT_HEARD_EN: tuple[str, ...] = SCRIPT.NOT_HEARD_EN
 
@@ -174,35 +170,9 @@ def not_heard_lines(locale: str) -> tuple[str, ...]:
     return NOT_HEARD_VI if _is_vi(locale) else NOT_HEARD_EN
 
 
-def processing_fillers(locale: str) -> tuple[str, ...]:
-    return PROCESSING_FILLERS_VI if _is_vi(locale) else PROCESSING_FILLERS_EN
-
-
-def processing_filler(locale: str, index: int = 0) -> str:
-    pool = processing_fillers(locale)
-    return pool[index % len(pool)]
-
-
 def speech_v2_enabled() -> bool:
     """Same switch as core.interviewer_voice.speech_v2_enabled (the agent cannot import src)."""
     return os.getenv("INTERVIEWER_SPEECH_V2", "1").strip().lower() not in {"0", "false", "no", "off"}
-
-
-def pick_processing_filler(locale: str, seed: str, avoid: str | None = None) -> str:
-    """A filler chosen by session and turn, never the one said last (speech v2).
-
-    The old rotation (``filler_count % 4``) said the same four lines in the same
-    order every session.
-    """
-    import hashlib
-
-    pool = processing_fillers(locale)
-    start = int(hashlib.sha256(seed.encode("utf-8")).hexdigest(), 16) % len(pool)
-    for offset in range(len(pool)):
-        line = pool[(start + offset) % len(pool)]
-        if line != avoid:
-            return line
-    return pool[start]
 
 
 def voice_dialect() -> str:
@@ -212,7 +182,7 @@ def voice_dialect() -> str:
 
 
 def localize_particles(text: str) -> str:
-    """Southern voice: "nhé" → "nha", "nhỉ" → "hen" for the lines only the room says (fillers…)."""
+    """Southern voice: "nhé" → "nha", "nhỉ" → "hen" for the lines only the room says."""
     value = str(text or "")
     if not speech_v2_enabled() or voice_dialect() != "nam":
         return value
@@ -230,7 +200,7 @@ def scripted_reply_lines(locale: str) -> tuple[str, ...]:
     """Scripted acknowledgements Core may send as the first paragraph of a turn.
 
     Since 25/10 the room synthesizes a turn paragraph by paragraph, so these
-    lines are cached on disk like the fillers: same audio every session, no
+    lines are cached on disk like the other fixed lines: same audio every session, no
     synthesis wait for the first words of a reply.
     """
     suffix = "_VI" if _is_vi(locale) else "_EN"
@@ -238,25 +208,6 @@ def scripted_reply_lines(locale: str) -> tuple[str, ...]:
     for name in _SCRIPTED_REPLY_POOLS:
         lines += [localize_particles(line) for line in getattr(SCRIPT, name + suffix, ())]
     return tuple(lines)
-
-
-_LEADING_INTERJECTION_RE = re.compile(
-    r"^\W*(?:à|ừ|ừm|ok|okay|vâng|dạ|ồ|oh|ah|mm|right)\b[\s,.!…-]*", re.IGNORECASE
-)
-
-
-def without_leading_interjection(content: str) -> str:
-    """After a filler ("Ừm, chờ mình…"), drop the interjection that opens the reply.
-
-    Only the first paragraph's opening word changes: "Ừm, mình hiểu ý bạn.\n\nCâu
-    hỏi…" → "Mình hiểu ý bạn.\n\nCâu hỏi…". A reply that is only "Ok." stays.
-    """
-    value = str(content or "")
-    head, sep, tail = value.partition("\n\n")
-    rest = _LEADING_INTERJECTION_RE.sub("", head.lstrip(), count=1)
-    if not rest.strip() or rest == head.lstrip():
-        return value
-    return rest[0].upper() + rest[1:] + sep + tail
 
 
 def silence_reprompt(locale: str) -> str:

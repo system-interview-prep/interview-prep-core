@@ -39,7 +39,7 @@ from src.modules.interviews.core import interviewer_script as script
 
 POOLS = (
     "ACK_FALLBACK_VI", "INTRO_ACK_VI", "NON_ANSWER_ACK_VI", "GIVE_UP_ACK_VI", "SKIP_ACK_VI", "PROBE_ACK_VI",
-    "PROBE_FALLBACK_VI", "PROCESSING_FILLERS_VI", "NOT_HEARD_VI", "CLOSE_COMPLETED_VI", "QNA_MORE_VI",
+    "PROBE_FALLBACK_VI", "NOT_HEARD_VI", "CLOSE_COMPLETED_VI", "QNA_MORE_VI",
 )
 # Technical sentences of the kind the interviewer asks, heavy on English terms.
 SAMPLE_QUESTIONS = (

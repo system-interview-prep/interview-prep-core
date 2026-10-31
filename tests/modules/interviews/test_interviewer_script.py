@@ -18,7 +18,6 @@ from src.modules.interviews.core import interviewer_script as script
 
 # Lines only the spoken rooms need; they may talk about hearing and speaking.
 VOICE_ONLY = {
-    "PROCESSING_FILLERS_VI",
     "NOT_HEARD_VI",
     "UNCLEAR_TRANSCRIPT_VI",
     "CORE_ERROR_VI",
@@ -57,7 +56,7 @@ def test_script_has_every_situation() -> None:
     for expected in (
         "OPENING_GREETING_VI", "WARMUP_QUESTION_VI", "ACK_FALLBACK_VI", "SKIP_ACK_VI", "GIVE_UP_ACK_VI",
         "QUESTION_RESPONSES_VI", "ABORT_CONFIRMATION_VI", "CLOSE_COMPLETED_VI", "USER_ENDED_VI",
-        "PROCESSING_FILLERS_VI", "NOT_HEARD_VI", "SILENCE_REPROMPT_VI",
+        "NOT_HEARD_VI", "SILENCE_REPROMPT_VI",
     ):
         assert expected in names
 
@@ -91,7 +90,6 @@ def test_core_and_voice_agent_use_the_same_lines() -> None:
     from src.modules.interviews.adapters.voice import answer_window, interruption
     from src.modules.interviews.core import interviewer_voice
 
-    assert answer_window.PROCESSING_FILLERS_VI == script.PROCESSING_FILLERS_VI
     assert answer_window.not_heard_lines("vi-VN") == script.NOT_HEARD_VI
     assert answer_window.silence_reprompt("vi-VN") == script.SILENCE_REPROMPT_VI
     assert answer_window.turn_taking_tip("vi-VN") == script.TURN_TAKING_TIP_VI

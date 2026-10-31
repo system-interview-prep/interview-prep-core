@@ -490,24 +490,8 @@ LAST_QNA_CLOSING_EN: tuple[str, ...] = (
 # Chỉ có ở kênh nói (voice, video): do bản chất kênh, chat không cần
 # --------------------------------------------------------------------------- #
 
-# Nói khi Interview Core xử lý lâu; xoay vòng để không lặp sau mỗi câu.
-# Từ 25/10: chọn theo mã buổi, tránh câu đệm lần trước; nửa nhóm không mở bằng
-# tiếng đệm, và tiếng đệm đầu câu ghi nhận ngay sau đó bị bỏ (không "Ừm… Ừm…").
-PROCESSING_FILLERS_VI: tuple[str, ...] = (
-    "Ừm, chờ mình một chút nhé.",
-    "Ừm, để mình xem lại ý bạn vừa nói.",
-    "Ok, bạn chờ mình vài giây nhé.",
-    "Mình đang xem câu trả lời của bạn, chờ chút nhé.",
-    "Để mình xem lại ý bạn một chút.",
-    "Bạn chờ mình vài giây.",
-    "Mình xem lại câu trả lời một chút nhé.",
-    "À, chờ mình chút.",
-)
-PROCESSING_FILLERS_EN: tuple[str, ...] = (
-    "Got it. Give me a moment.",
-    "Okay, let me think about that for a second.",
-    "Right, one moment please.",
-)
+# Từ 31/10 không còn câu đệm lúc chờ Interview Core xử lý ("Ừm, chờ mình một
+# chút nhé"): phòng chỉ hiện trạng thái đang xử lý, AI im lặng cho đến khi có câu trả lời.
 
 # Bản ghi rỗng hoặc quá nhiễu.
 NOT_HEARD_VI: tuple[str, ...] = (

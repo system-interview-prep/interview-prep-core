@@ -1,5 +1,7 @@
 """One spoken answer = one Interview Core turn, however many STT fragments it has."""
 
+from pathlib import Path
+
 import pytest
 
 from src.modules.interviews.adapters.voice.answer_window import (
@@ -50,31 +52,15 @@ def test_voice_guidance_is_hands_free(locale: str) -> None:
     assert "press" not in guidance
 
 
-def test_processing_filler_rotates_between_answers() -> None:
-    from src.modules.interviews.adapters.voice.answer_window import processing_filler, processing_fillers
+def test_room_never_speaks_a_waiting_filler() -> None:
+    """No "Ừm, chờ mình một chút nhé" while Core works (removed 31/10)."""
+    from src.modules.interviews.adapters.voice import answer_window
+    from src.modules.interviews.core import interviewer_script as script
 
-    lines = [processing_filler("vi-VN", i) for i in range(len(processing_fillers("vi-VN")))]
-    assert len(set(lines)) == len(lines) >= 3
-    assert processing_filler("vi-VN") == "Ừm, chờ mình một chút nhé."
-    assert processing_filler("en-US", 1) != processing_filler("en-US", 0)
-
-
-def test_filler_varies_by_session_and_the_reply_does_not_repeat_its_interjection() -> None:
-    from src.modules.interviews.adapters.voice.answer_window import (
-        PROCESSING_FILLERS_VI,
-        pick_processing_filler,
-        without_leading_interjection,
-    )
-
-    picks = {pick_processing_filler("vi-VN", f"session-{i}:1") for i in range(40)}
-    assert len(picks) >= 4  # not always the same first line
-    for i in range(20):
-        last = pick_processing_filler("vi-VN", f"s:{i}")
-        assert pick_processing_filler("vi-VN", f"s:{i}", avoid=last) != last
-    assert sum(not line.startswith(("Ừm", "Ok", "À")) for line in PROCESSING_FILLERS_VI) >= 4
-    assert without_leading_interjection("Ừm, mình hiểu ý bạn.\n\nCâu hỏi?") == "Mình hiểu ý bạn.\n\nCâu hỏi?"
-    assert without_leading_interjection("Ok.") == "Ok."
-    assert without_leading_interjection("Giờ mình qua Docker.") == "Giờ mình qua Docker."
+    assert not hasattr(script, "PROCESSING_FILLERS_VI")
+    assert not hasattr(answer_window, "processing_filler")
+    agent = Path(answer_window.__file__).with_name("livekit_agent.py").read_text(encoding="utf-8")
+    assert 'kind="filler"' not in agent
 
 
 def test_room_lines_follow_the_voice_dialect_and_acknowledgements_are_cached(monkeypatch) -> None:
