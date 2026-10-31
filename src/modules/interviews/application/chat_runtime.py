@@ -28,6 +28,7 @@ from src.core.pipeline_events import current_session_id
 from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
 from src.modules.interviews.application import interviewer_playbook, llm_checks
+from src.modules.interviews.core.interview_blueprint import InterviewBlueprint, blueprint_from_payload
 from src.modules.interviews.core import playbook, speech_checks
 from src.modules.interviews.core.opening_script import build_opening, warmup_question
 from src.modules.interviews.core.demo_mode import is_demo_duration
@@ -104,6 +105,15 @@ class ChatRuntimeError(RuntimeError):
 # A turn that reached any of these never needs to be asked again.
 _SETTLED_TURN_STATUSES = frozenset({"ANSWERED", "COMPLETED", "EVALUATED", "SKIPPED"})
 _TECHNICAL_STAGES = frozenset({"VALIDATE", "DEEP_DIVE", "CHALLENGE"})
+
+
+def session_blueprint(turns: list[dict[str, Any]]) -> InterviewBlueprint:
+    """The blueprint the selector froze on the session's opening turn."""
+    for turn in turns:
+        record = (turn.get("question_snapshot") or {}).get("blueprint")
+        if isinstance(record, dict):
+            return blueprint_from_payload(record.get("policy"))
+    return blueprint_from_payload(None)
 # A candidate message with no reply after it means another request is still
 # generating that reply. Past this age the request is assumed dead (worker
 # crash) so the session cannot wedge forever.
@@ -975,11 +985,16 @@ def build_session_state_from_db(
 
     target_duration_minutes = session_row.get("duration_minutes") or 25
     session_seconds = int(target_duration_minutes) * 60
+    # The stage policy frozen on the opening turn (core.interview_blueprint);
+    # sessions planned before blueprints existed get the default.
+    blueprint = session_blueprint(turns)
+    behavioral_reserve = blueprint.behavioral.reserve_seconds if blueprint.behavioral.enabled else 0
     closing_reserve_seconds = int(
-        metadata_json.get("closing_reserve_seconds") or pacing_seconds(60, session_seconds)
+        metadata_json.get("closing_reserve_seconds")
+        or pacing_seconds(blueprint.closing.reserve_seconds, session_seconds)
     )
     behavioral_reserve_seconds = int(
-        metadata_json.get("behavioral_reserve_seconds") or pacing_seconds(180, session_seconds)
+        metadata_json.get("behavioral_reserve_seconds") or pacing_seconds(behavioral_reserve, session_seconds)
     )
 
     now = datetime.now(UTC)
@@ -1057,6 +1072,7 @@ def build_session_state_from_db(
         "clarify_count": clarify_count,
         "closing_reserve_seconds": closing_reserve_seconds,
         "behavioral_reserve_seconds": behavioral_reserve_seconds,
+        "blueprint": blueprint.to_payload(),
         "working_memory": working_memory,
         "current_question_context": {
             "question_id": str(current_turn.get("question_version_id") or current_turn["id"]) if current_turn else "",
