@@ -23,8 +23,9 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.core.trace_logging import trace_event
-from src.modules.interviews.core.demo_mode import is_demo_duration
+from src.modules.interviews.core.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
 from src.modules.interviews.core.opening_script import warmup_question
 from src.modules.interviews.planning.spoken_questions import add_spoken_versions
 from src.modules.interviews.core.interviewer_voice import speech_v2_enabled
@@ -97,15 +98,18 @@ class _Candidate:
 
 # AI-generated drafts nobody has reviewed yet (the last rung of the ladder):
 # none in the challenge tier, where the difficulty of each question matters
-# most, and at most this many in any other session.
-MAX_UNREVIEWED_PER_SESSION = 1
+# most, and at most settings.interview_max_unreviewed_generated in any other
+# session. A demo session may use one per technical slot (demo_mode).
 GENERATED_SOURCE = "generated_unreviewed"
 
 
-def unreviewed_budget(payload: Any) -> int:
+def unreviewed_budget(payload: Any, *, demo: bool = False) -> int:
     """How many unreviewed generated drafts this session's plan may ask."""
+    settings = get_settings()
+    if demo and settings.demo_allow_unreviewed_generated:
+        return DEMO_TECHNICAL_QUESTIONS
     tier = payload.get("practiceTier") if isinstance(payload, dict) else None
-    return 0 if tier == "challenge" else MAX_UNREVIEWED_PER_SESSION
+    return 0 if tier == "challenge" else settings.interview_max_unreviewed_generated
 
 
 def limit_unreviewed(candidates: list[_Candidate], budget: int) -> tuple[list[_Candidate], int]:
@@ -1159,7 +1163,7 @@ async def select_and_freeze_questions(
     # Targets the ladder could not cover at all, and targets served with fewer
     # questions than planned. Both reach the report as uncovered competencies.
     uncovered_targets: list[dict[str, Any]] = []
-    unreviewed_cap = unreviewed_budget(payload)
+    unreviewed_cap = unreviewed_budget(payload, demo=is_demo_duration(session_row.get("duration_minutes")))
     unreviewed_left = unreviewed_cap
     plan_tier = payload.get("practiceTier") if isinstance(payload, dict) else None
 

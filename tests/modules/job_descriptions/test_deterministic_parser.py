@@ -650,3 +650,64 @@ def test_two_aliases_of_one_concept_do_not_crash_the_requirement_group() -> None
 
     requirement = next(item for item in parsed.requirements if item.atomic_concepts)
     assert [item.label for item in requirement.atomic_concepts] == ["Monitoring", "Kotlin"]
+
+
+def _parse_lines(job_id: str, lines: list[str]):
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown="fallback",
+            content_list=[{"type": "text", "text": line, "page_idx": 0} for line in lines],
+        ),
+        document_id=job_id,
+        document_sha256="b" * 64,
+    )
+    return DeterministicJobDescriptionParser().parse(source, extraction_version="mineru-test")
+
+
+@pytest.mark.parametrize(
+    ("title", "requirements", "skills", "specialization"),
+    [
+        (
+            "Embedded Software Engineer",
+            ["- Proficient in C/C++ programming", "- Experience with STM32 microcontroller and FreeRTOS"],
+            {"skill-c", "skill-cpp", "skill-microcontroller", "skill-rtos"},
+            "technology.software-engineering.embedded",
+        ),
+        (
+            "QA Engineer",
+            ["- Write test cases and manual testing", "- Automation testing with Selenium, Postman"],
+            {"skill-manual-testing", "skill-automation-testing", "skill-selenium", "skill-api-testing"},
+            "technology.quality-assurance",
+        ),
+        (
+            "Data Engineer",
+            ["- Build ETL pipelines with Apache Spark and Airflow", "- SQL, Power BI"],
+            {"skill-etl", "skill-spark", "skill-airflow", "skill-sql", "skill-power-bi"},
+            "technology.data-engineering",
+        ),
+        (
+            "Security Engineer",
+            ["- Penetration testing and OWASP Top 10", "- Network security, SIEM (Splunk)"],
+            {"skill-penetration-testing", "skill-web-security", "skill-network-security", "skill-siem"},
+            "technology.cybersecurity",
+        ),
+    ],
+)
+def test_parser_maps_it_specializations_beyond_web(title, requirements, skills, specialization) -> None:
+    """Demo examiners may pick any IT JD: each specialization must yield skills and a competency."""
+    parsed = _parse_lines("jd-it", [f"Job Title: {title}", "Requirements", *requirements])
+
+    assert skills <= _requirement_concept_ids(parsed)
+    assert parsed.career_classifications[0].code == specialization
+
+
+def test_bare_c_alias_does_not_match_csharp_cpp_or_prose() -> None:
+    parsed = _parse_lines(
+        "jd-c",
+        ["Job Title: Backend Engineer", "Requirements", "- C#, C++ and .NET", "- Plan C: go to the office"],
+    )
+
+    concepts = _requirement_concept_ids(parsed)
+    assert {"skill-csharp", "skill-cpp"} <= concepts
+    assert "skill-c" not in concepts
+    assert "skill-go" not in concepts
