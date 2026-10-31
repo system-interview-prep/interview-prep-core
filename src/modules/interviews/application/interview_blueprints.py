@@ -19,14 +19,17 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.roles import ADMIN
+from src.core.roles import ADMIN, CANDIDATE
 from src.modules.interviews.core.interview_blueprint import (
     InterviewBlueprint,
     blueprint_from_payload,
     default_blueprint,
 )
+from src.modules.notifications.service import notify_role, notify_user
 
 DEFAULT_NAME = "Mặc định hệ thống"
+NOTIFICATION_TYPE = "admin.blueprint"
+CANDIDATE_NOTIFICATION_TYPE = "interview.flow_updated"
 _COLUMNS = (
     "id, version, name, status, definition, change_summary, based_on_id, created_by, submitted_at, "
     "reviewed_by, reviewed_at, review_note, activated_at, created_at, updated_at"
@@ -227,6 +230,17 @@ async def submit(db: AsyncSession, version_id: str, *, actor_id: str, roles: lis
         ),
         {"id": version_id},
     )
+    # Every admin but the author can activate it (four-eyes rule).
+    await notify_role(
+        db,
+        ADMIN,
+        type_=NOTIFICATION_TYPE,
+        title="Khung phỏng vấn chờ duyệt",
+        message=f"Phiên bản {row['version']} · {row['name']} đã được gửi duyệt.",
+        data={"kind": "blueprint_submitted", "versionId": version_id, "link": _link(version_id)},
+        dedupe_key=f"blueprint:{version_id}:submitted",
+        exclude_user_id=str(row["created_by"]),
+    )
     await db.commit()
     return await get_version(db, version_id, actor_id=actor_id, roles=roles)
 
@@ -276,5 +290,41 @@ async def decide(
             "activated_at": now if activate else None,
         },
     )
+    await _notify_decision(db, row, activate=activate, note=(note or "").strip())
     await db.commit()
     return await get_version(db, version_id, actor_id=actor_id, roles=roles)
+
+
+def _link(version_id: str) -> str:
+    return f"/admin/interview-blueprints/{version_id}"
+
+
+async def _notify_decision(db: AsyncSession, row: dict[str, Any], *, activate: bool, note: str) -> None:
+    """Tell the author the outcome; on activation, tell candidates the interview flow changed."""
+    label = f"Phiên bản {row['version']} · {row['name']}"
+    await notify_user(
+        db,
+        str(row["created_by"]),
+        type_=NOTIFICATION_TYPE,
+        title="Khung phỏng vấn đã được kích hoạt" if activate else "Khung phỏng vấn bị từ chối",
+        message=f"{label} đang được dùng cho các buổi phỏng vấn mới."
+        if activate
+        else f"{label} bị từ chối. Lý do: {note}",
+        data={
+            "kind": "blueprint_activated" if activate else "blueprint_rejected",
+            "versionId": row["id"],
+            "link": _link(row["id"]),
+        },
+        dedupe_key=f"blueprint:{row['id']}:{'activated' if activate else 'rejected'}",
+    )
+    if activate:
+        # Candidates only need to know the format changed; sessions already planned keep theirs.
+        await notify_role(
+            db,
+            CANDIDATE,
+            type_=CANDIDATE_NOTIFICATION_TYPE,
+            title="Quy trình phỏng vấn đã được cập nhật",
+            message="Các buổi luyện phỏng vấn mới sẽ theo quy trình mới. Buổi đã tạo trước đó giữ nguyên.",
+            data={"kind": "interview_flow_updated", "link": "/interview/select"},
+            dedupe_key=f"blueprint:{row['id']}:candidates",
+        )
