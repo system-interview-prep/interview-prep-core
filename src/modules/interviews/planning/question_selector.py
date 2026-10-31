@@ -1627,6 +1627,8 @@ async def select_and_freeze_questions(
         "rubric": None,
         # Every turn of the session reads its stage policy from here (chat_runtime).
         "blueprint": {
+            "blueprintId": (blueprint_record or {}).get("blueprintId"),
+            "blueprintName": (blueprint_record or {}).get("blueprintName"),
             "versionId": (blueprint_record or {}).get("versionId"),
             "version": (blueprint_record or {}).get("version"),
             "name": (blueprint_record or {}).get("name"),

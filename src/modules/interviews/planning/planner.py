@@ -20,7 +20,7 @@ from src.core.config import get_settings
 from src.core.trace_logging import trace_event
 from src.modules.interviews.core.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
 from src.modules.interviews.application.interview_blueprints import DEFAULT_NAME as DEFAULT_BLUEPRINT_NAME
-from src.modules.interviews.application.interview_blueprints import active_blueprint
+from src.modules.interviews.application.interview_blueprints import resolve_blueprint
 from src.modules.interviews.core.interview_blueprint import InterviewBlueprint, default_blueprint
 from src.modules.interviews.core.interview_rounds import FOCUSABLE_AREAS, area_of, is_minor, spread_key
 from src.modules.interviews.planning.plan_structure import (
@@ -1062,6 +1062,17 @@ async def _load_job_listing_hints(db: AsyncSession, *, job_id: str) -> dict[str,
     return dict(row) if row else {}
 
 
+async def _requested_blueprint(db: AsyncSession, *, plan_id: str) -> str | None:
+    """The interview type the candidate chose, stored when the session was created."""
+    value = (
+        await db.execute(
+            text("SELECT source_context->>'blueprintId' FROM interview_session_plans WHERE id = :id"),
+            {"id": plan_id},
+        )
+    ).scalar_one_or_none()
+    return str(value) if value else None
+
+
 async def _focus_area(db: AsyncSession, *, plan_id: str) -> str | None:
     """The round the candidate chose to practise, stored when the session was created."""
     value = (
@@ -1177,7 +1188,8 @@ async def build_and_persist_session_plan(
     if is_demo_duration(session_row["duration_minutes"]):
         blueprint_ref, blueprint = None, default_blueprint()
     else:
-        blueprint_ref, blueprint = await active_blueprint(db)
+        # The interview type the candidate chose; the default type when none (or it is gone).
+        blueprint_ref, blueprint = await resolve_blueprint(db, await _requested_blueprint(db, plan_id=str(plan_id)))
     plan = derive_competency_plan(
         job=job,
         match=match,
@@ -1195,6 +1207,8 @@ async def build_and_persist_session_plan(
     plan["difficulty"] = fit_adjusted_difficulty(plan.get("difficulty") or {}, entry)
     plan["practiceTier"] = entry.tier
     plan["blueprint"] = {
+        "blueprintId": (blueprint_ref or {}).get("blueprintId"),
+        "blueprintName": (blueprint_ref or {}).get("blueprintName"),
         "versionId": (blueprint_ref or {}).get("versionId"),
         "version": (blueprint_ref or {}).get("version"),
         "name": (blueprint_ref or {}).get("name") or DEFAULT_BLUEPRINT_NAME,
@@ -1256,6 +1270,7 @@ async def build_and_persist_session_plan(
         "practiceTier": entry.tier,
         "plannerPolicyVersion": plan["policyVersion"],
         "blueprintVersionId": plan["blueprint"]["versionId"],
+        "blueprintId": plan["blueprint"]["blueprintId"],
         "questionBudget": plan.get("questionBudget"),
         "nonCompetencyRequirementIds": plan["nonCompetencyRequirementIds"],
         "projectEvidences": [p.to_dict() for p in extract_project_evidences(

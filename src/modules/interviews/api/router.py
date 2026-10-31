@@ -21,6 +21,8 @@ from src.infrastructure.database import get_db
 from src.modules.interviews.api.rate_limit import interview_rate_limiter
 from src.modules.interviews.application.agent_runtime import database_operations, run_interview_command
 from src.modules.interviews.application.session_reaper import CANDIDATE_LEFT_GRACE_MINUTES
+from src.modules.interviews.application.interview_blueprints import BlueprintError, resolve_blueprint
+from src.modules.interviews.core.demo_mode import is_demo_duration
 from src.modules.interviews.application.chat_runtime import (
     ChatRuntimeError,
     get_chat_runtime,
@@ -152,6 +154,8 @@ class CreateInterviewSession(BaseModel):
     # "Luyện lại ý này": a skill (concept id) to ask again in this session,
     # with a question the candidate has not seen (planner._due_reask).
     reask_concept_id: str | None = Field(default=None, alias="reaskConceptId", max_length=120)
+    # The interview type the candidate chose (interview_blueprints); None: the default type.
+    blueprint_id: str | None = Field(default=None, alias="blueprintId", max_length=36)
 
     model_config = {"populate_by_name": True}
 
@@ -443,6 +447,15 @@ async def create_interview_session(
             )
         await _validate_context(db, user, payload.resume_id, payload.job_id)
         await _require_match_threshold(db, user, payload.resume_id, payload.job_id)
+        if payload.blueprint_id and not is_demo_duration(payload.duration_minutes):
+            # Ask the candidate to choose again rather than switching their choice silently.
+            try:
+                await resolve_blueprint(db, payload.blueprint_id, strict=True)
+            except BlueprintError as exc:
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail={"errorCode": exc.code, "message": "Interview type is no longer available."},
+                ) from exc
 
         session_id = str(uuid4())
         plan_id = str(uuid4())
@@ -484,6 +497,7 @@ async def create_interview_session(
                         "source": "p0-session-context",
                         "focusArea": payload.focus_area,
                         "reaskConceptId": payload.reask_concept_id,
+                        "blueprintId": payload.blueprint_id,
                     }
                 ),
             },

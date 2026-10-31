@@ -209,3 +209,13 @@ def test_preview_endpoint_logic_reports_overflow() -> None:
     with pytest.raises(BlueprintError) as excinfo:
         _parse({"warmUp": {"softAnswerSeconds": 300, "hardAnswerSeconds": 100}})
     assert excinfo.value.code == "invalid_blueprint" and excinfo.value.detail
+
+
+def test_interview_type_endpoints_are_guarded(client) -> None:
+    """Candidates read the listed types only when signed in; only admins list, hide or reorder types."""
+    assert client.get("/interview-types").status_code == 401
+    assert client.post("/admin/interview-blueprints/types", json={"name": "x"}).status_code == 401
+    from src.modules.interviews.api.blueprint_router import router
+
+    patch_types = next(r for r in router.routes if r.path.endswith("/types/{blueprint_id}"))
+    assert any("require_admin" in dep.call.__qualname__ for dep in patch_types.dependant.dependencies)
