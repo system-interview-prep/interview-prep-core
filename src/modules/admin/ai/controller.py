@@ -454,7 +454,10 @@ async def admin_speech_test_transcribe(
 ) -> dict:
     from livekit import rtc
     from livekit.agents import inference, stt
-    from src.modules.interviews.adapters.voice.language import assemblyai_stream_options
+    from src.modules.interviews.adapters.voice.language import (
+        assemblyai_stream_options,
+        normalize_transcript_for_locale,
+    )
     from src.modules.interviews.adapters.voice.qwen_streaming_stt import QwenStreamingSTT
     from src.modules.interviews.adapters.voice.stt_provider import stt_provider_settings
 
@@ -486,6 +489,10 @@ async def admin_speech_test_transcribe(
         raise HTTPException(status_code=422, detail="Audio is empty")
 
     provider_settings = stt_provider_settings()
+    language = os.getenv("LIVEKIT_STT_LANGUAGE", "vi").strip().lower() or "vi"
+    if language in {"session", "auto", "multi"}:
+        # The admin tester has no interview locale to inherit from.
+        language = "vi"
     if provider_settings.provider == "qwen":
         provider = QwenStreamingSTT(
             base_url=provider_settings.base_url or "",
@@ -495,7 +502,6 @@ async def admin_speech_test_transcribe(
             silence_rms_threshold=provider_settings.silence_rms_threshold,
         )
     else:
-        language = os.getenv("LIVEKIT_STT_LANGUAGE", "vi").strip() or "vi"
         provider = inference.STT(
             model=provider_settings.model,
             language=language,
@@ -503,7 +509,7 @@ async def admin_speech_test_transcribe(
         )
 
     started = perf_counter()
-    stream = provider.stream(language=os.getenv("LIVEKIT_STT_LANGUAGE", "vi"))
+    stream = provider.stream(language=language)
 
     async def final_transcript() -> str:
         async for event in stream:
@@ -520,6 +526,7 @@ async def admin_speech_test_transcribe(
         silence = np.zeros(40_000, dtype=np.int16)
         stream.push_frame(rtc.AudioFrame(silence.tobytes(), 16_000, 1, len(silence)))
         transcript = await asyncio.wait_for(task, timeout=60)
+        transcript = normalize_transcript_for_locale(transcript, locale=language)
     except asyncio.TimeoutError as exc:
         task.cancel()
         raise HTTPException(status_code=504, detail="Speech adapter did not return a transcript in time") from exc
@@ -545,11 +552,18 @@ async def admin_speech_test_transcribe_stream(
 
     from livekit import rtc
     from livekit.agents import inference, stt
-    from src.modules.interviews.adapters.voice.language import assemblyai_stream_options
+    from src.modules.interviews.adapters.voice.language import (
+        assemblyai_stream_options,
+        normalize_transcript_for_locale,
+    )
     from src.modules.interviews.adapters.voice.qwen_streaming_stt import QwenStreamingSTT
     from src.modules.interviews.adapters.voice.stt_provider import stt_provider_settings
 
     provider_settings = stt_provider_settings()
+    language = os.getenv("LIVEKIT_STT_LANGUAGE", "vi").strip().lower() or "vi"
+    if language in {"session", "auto", "multi"}:
+        # The admin tester has no interview locale to inherit from.
+        language = "vi"
     if provider_settings.provider == "qwen":
         provider = QwenStreamingSTT(
             base_url=provider_settings.base_url or "",
@@ -559,14 +573,13 @@ async def admin_speech_test_transcribe_stream(
             silence_rms_threshold=provider_settings.silence_rms_threshold,
         )
     else:
-        language = os.getenv("LIVEKIT_STT_LANGUAGE", "vi").strip() or "vi"
         provider = inference.STT(
             model=provider_settings.model,
             language=language,
             extra_kwargs=assemblyai_stream_options(language),
         )
 
-    stream = provider.stream(language=os.getenv("LIVEKIT_STT_LANGUAGE", "vi"))
+    stream = provider.stream(language=language)
     await websocket.send_json(
         {"type": "ready", "provider": provider_settings.provider, "model": provider_settings.model}
     )
@@ -577,10 +590,14 @@ async def admin_speech_test_transcribe_stream(
                 continue
             if not event.alternatives:
                 continue
+            transcript = normalize_transcript_for_locale(
+                event.alternatives[0].text,
+                locale=language,
+            )
             await websocket.send_json(
                 {
                     "type": "final" if event.type == stt.SpeechEventType.FINAL_TRANSCRIPT else "interim",
-                    "text": event.alternatives[0].text,
+                    "text": transcript,
                 }
             )
 
