@@ -55,11 +55,12 @@ def _import_response(import_run: object) -> dict:
 @router.get("/imports/template")
 async def import_template(
     _: dict = Depends(require_roles(QUESTION_AUTHOR)),
-    format: str = Query(default="csv"),
+    db: AsyncSession = Depends(get_db),
+    format: str = Query(default="xlsx"),
 ) -> Response:
     if format == "xlsx":
         return Response(
-            content=xlsx_template(),
+            content=xlsx_template(await QuestionImportService(db).template_catalog()),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": "attachment; filename=question-bank-import-v1.xlsx"},
         )
@@ -145,7 +146,9 @@ async def import_report(
 async def commit_import(
     import_id: UUID,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    actor: dict = Depends(require_admin),
+    # Authors stage and commit their own imports: commit only creates DRAFT
+    # versions, which still need an admin review and final approval.
+    actor: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     if not idempotency_key:

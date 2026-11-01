@@ -42,6 +42,8 @@ FLAG_LABELS = (
     "answer_off_question",
     "probe_off_target",
     "system_leak",
+    "system_probe",
+    "canary_leak",
 )
 
 
@@ -55,6 +57,8 @@ def decision_rule(action: str, meta: dict[str, Any]) -> str:
     action = str(action or "").upper()
     if meta.get("skipped_turn"):
         return "skip_request"
+    if meta.get("candidate_question_intent") == "SYSTEM_PROBE":
+        return "system_probe"
     if meta.get("clarify_used") or action == "CLARIFY":
         return "clarify_request"
     if action == "CONFIRM_ABORT" or meta.get("candidate_abort_intent"):
@@ -120,6 +124,12 @@ def turn_flags(
             flags.append("probe_off_target")
     if _SYSTEM_LEAK_RE.search(str(reply or "")):
         flags.append("system_leak")
+    # Layer 7: the evaluator, not the patterns, recognised an attempt on the system.
+    if meta.get("system_probe_source") == "evaluation":
+        flags.append("system_probe")
+    # Layer 8: a line the model wrote repeated the session's canary code (it was not said).
+    if meta.get("canary_leak") or any(check.get("reason") == "canary_leak" for check in checks):
+        flags.append("canary_leak")
     return flags
 
 

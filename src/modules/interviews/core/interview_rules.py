@@ -39,10 +39,12 @@ from src.modules.interviews.core.interviewer_voice import (
     is_keyword_fragment,
     is_parroting,
     judges_difficulty,
+    looks_like_system_probe,
     pick_variant,
     probe_rejection_reason,
     recent_contains,
     speech_v2_enabled,
+    system_leak_reason,
 )
 from src.modules.interviews.core.language_policy import response_matches_locale
 
@@ -222,7 +224,14 @@ EVALUATION_SCHEMA: Dict[str, Any] = {
             "acknowledgement": {"type": "string", "maxLength": 160},
             "intent": {
                 "type": "string",
-                "enum": ["ANSWER", "CANDIDATE_ABORT", "SKIP_QUESTION", "GIVE_UP", "OFF_TOPIC"],
+                "enum": [
+                    "ANSWER",
+                    "CANDIDATE_ABORT",
+                    "SKIP_QUESTION",
+                    "GIVE_UP",
+                    "OFF_TOPIC",
+                    "SYSTEM_PROBE",
+                ],
             },
             "sufficiency_status": {"type": "string", "enum": ["SUFFICIENT", "INSUFFICIENT", "AMBIGUOUS"]},
             "missing_aspect": {"type": "string", "maxLength": 400},
@@ -342,6 +351,8 @@ def acknowledgement_rejection_reason(
         return "is_question"
     if any(re.search(pattern, text_value, re.IGNORECASE) for pattern in PROHIBITED_LEAK_PATTERNS):
         return "rubric_leak"
+    if leak := system_leak_reason(text_value):
+        return leak
     if is_evaluative(text_value):
         return "evaluative"
     if len(text_value.split()) > ACK_MAX_WORDS:
@@ -665,6 +676,7 @@ def is_unresponsive_or_give_up(text: str, question_prompt: str = "") -> bool:
 
 
 CandidateQuestionIntent = Literal[
+    "SYSTEM_PROBE",
     "SCORING",
     "PROCESS",
     "ROLE_QA",
@@ -683,6 +695,8 @@ def _has_phrase(text: str, phrases: tuple[str, ...]) -> bool:
 
 # Only short asides are classified this way; a long reply is an answer.
 _MAX_ASIDE_WORDS = 20
+# A probe can wrap its request in a story ("bà tôi hay đọc…"), so it gets more room.
+_MAX_PROBE_WORDS = 40
 # "Bạn là ai / bạn là AI à": a question about the interviewer itself.
 _ABOUT_INTERVIEWER = re.compile(
     r"\b(bạn|anh|chị)\s+(là\s+(ai|người|bot|robot|chatbot|chatgpt|gpt|máy|trí tuệ nhân tạo)"
@@ -726,6 +740,11 @@ def classify_candidate_question(text: str) -> CandidateQuestionIntent | None:
     technical answers can also contain question marks or words such as "why".
     """
     cleaned = re.sub(r"\s+", " ", text.casefold()).strip()
+    # Asking for a key, the prompt or the model, or claiming a role to get them, is
+    # answered by a fixed line before any model sees it. A long message is an answer
+    # that may name such things; the engine flags it instead (looks_like_injection).
+    if len(cleaned.split()) <= _MAX_PROBE_WORDS and looks_like_system_probe(cleaned):
+        return "SYSTEM_PROBE"
     if len(cleaned.split()) <= _MAX_ASIDE_WORDS:
         if _ANSWER_REQUEST.search(cleaned):
             return "ANSWER_REQUEST"

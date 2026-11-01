@@ -362,6 +362,8 @@ QUESTION_RESPONSES_VI: dict[str, str] = {
     # Buổi thật 17/10: lời đáp lạc đề từng bị trả lời như một câu hỏi ngoài lề.
     "OFF_TOPIC_REPLY": "Hình như mình chưa nắm được ý bạn cho câu này.",
     "OFF_TOPIC": "Câu này nằm ngoài buổi phỏng vấn nên mình xin phép không trả lời.",
+    # 01/11: hỏi khoá, system prompt, model, hoặc giả danh để xin. Không xác nhận, không giải thích.
+    "SYSTEM_PROBE": "Phần này mình không chia sẻ được.",
 }
 QUESTION_RESPONSES_EN: dict[str, str] = {
     "SCORING": (
@@ -378,6 +380,7 @@ QUESTION_RESPONSES_EN: dict[str, str] = {
     "ANSWER_REQUEST": "I cannot answer for you: this session is your practice. Share what you know, even if unsure.",
     "OFF_TOPIC_REPLY": "I'm not sure I followed your answer to this one.",
     "OFF_TOPIC": "That is outside this interview, so I will leave it there.",
+    "SYSTEM_PROBE": "That is not something I can share.",
 }
 QUESTION_RETURN_VI = "Mình hỏi lại nhé: {question}"
 QUESTION_RETURN_EN = "Let me ask again: {question}"
