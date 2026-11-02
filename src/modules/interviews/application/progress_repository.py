@@ -120,7 +120,7 @@ async def load_progress(
                 await db.execute(
                     text(
                         """
-                    SELECT t.session_id, t.turn_index, t.question_snapshot, te.score, te.outcome,
+                    SELECT t.session_id, t.turn_index, t.question_snapshot, t.question_version_id, te.score, te.outcome,
                            te.rubric_points, te.star_analysis,
                            EXISTS (
                                SELECT 1 FROM interview_chat_messages m
@@ -155,6 +155,7 @@ async def load_progress(
                     rubric_points=[p for p in (_json(row.get("rubric_points")) or []) if isinstance(p, dict)],
                     star=_json(row.get("star_analysis")) or {},
                     question=str(snap.get("questionText") or snap.get("question_text") or ""),
+                    question_version_id=str(row["question_version_id"]) if row.get("question_version_id") else None,
                 )
             )
     return build_progress(

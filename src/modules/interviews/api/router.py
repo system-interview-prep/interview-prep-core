@@ -152,6 +152,8 @@ class CreateInterviewSession(BaseModel):
     # "Luyện lại ý này": a skill (concept id) to ask again in this session,
     # with a question the candidate has not seen (planner._due_reask).
     reask_concept_id: str | None = Field(default=None, alias="reaskConceptId", max_length=120)
+    # Repeat yesterday's exact missed question once; the grader closes it after a covered answer.
+    reask_question_version_id: str | None = Field(default=None, alias="reaskQuestionVersionId", max_length=64)
 
     model_config = {"populate_by_name": True}
 
@@ -484,6 +486,7 @@ async def create_interview_session(
                         "source": "p0-session-context",
                         "focusArea": payload.focus_area,
                         "reaskConceptId": payload.reask_concept_id,
+                        "reaskQuestionVersionId": payload.reask_question_version_id,
                     }
                 ),
             },

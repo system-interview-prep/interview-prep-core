@@ -2,6 +2,7 @@ from src.modules.interviews.planning.question_selector import (
     _allowed_purposes,
     _Candidate,
     _candidate_rank,
+    _prioritize_repeat,
     _snapshot,
 )
 
@@ -60,6 +61,15 @@ def test_rank_prefers_exact_locale_then_nearest_difficulty():
         key=lambda item: _candidate_rank(item, difficulty="intermediate", locale="vi-VN"),
     )
     assert [item.question_version_id for item in ranked] == ["exact", "hard", "lang"]
+
+
+def test_due_question_is_prioritized_and_missing_due_question_keeps_fresh_pool():
+    old = candidate(question_version_id="due-question")
+    new = candidate(question_version_id="new-question")
+    assert [item.question_version_id for item in _prioritize_repeat([new, old], "due-question")] == [
+        "due-question", "new-question"
+    ]
+    assert _prioritize_repeat([new, old], "retired-question") == [new, old]
 
 
 def test_snapshot_freezes_question_rubric_expected_points_and_target():

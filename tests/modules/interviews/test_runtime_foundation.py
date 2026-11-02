@@ -21,6 +21,19 @@ def test_create_interview_session_contract_accepts_camel_case() -> None:
     assert payload.duration_minutes == 30
 
 
+def test_create_interview_session_accepts_an_exact_due_question_to_repeat() -> None:
+    payload = CreateInterviewSession.model_validate(
+        {
+            "resumeId": "cv-1",
+            "jobId": "job-1",
+            "reaskConceptId": "skill-ai",
+            "reaskQuestionVersionId": "question-version-1",
+        }
+    )
+    assert payload.reask_concept_id == "skill-ai"
+    assert payload.reask_question_version_id == "question-version-1"
+
+
 def test_create_interview_session_defaults_are_safe() -> None:
     payload = CreateInterviewSession.model_validate(
         {"resumeId": "cv-1", "jobId": "job-1"}

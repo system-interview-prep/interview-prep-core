@@ -116,6 +116,7 @@ class TurnRow:
     # STAR analysis of the grader: {situation, task, action, result, is_star_complete}.
     star: dict[str, Any] = field(default_factory=dict)
     question: str = ""
+    question_version_id: str | None = None
 
 
 def _iso(value: datetime) -> str:
@@ -402,14 +403,14 @@ _STAR_PARTS = (
 
 GAP_OPEN_LIMIT = 12
 GAP_FIXED_LIMIT = 6
-# Spaced re-ask of a missed point (research 24/10): days after it was last
-# asked, by how many times it has been asked.
-REASK_AFTER_DAYS = {1: 7, 2: 14}
-REASK_AFTER_DAYS_LATER = 30
+# Revisit an incomplete answer the next day. If it is still incomplete, keep
+# the daily practice loop; a covered point leaves ``open`` and is not re-asked.
+REASK_AFTER_DAYS = 1
 
 
 def reask_after_days(times_asked: int) -> int:
-    return REASK_AFTER_DAYS.get(times_asked, REASK_AFTER_DAYS_LATER)
+    del times_asked  # daily until the candidate covers the point
+    return REASK_AFTER_DAYS
 
 
 def _point_states(turn: TurnRow) -> list[tuple[str, str]]:
@@ -444,7 +445,7 @@ def gap_notebook(
 
     * ``open``: missed or partly covered the last time it was judged. With
       ``now``, ``dueAt``/``due`` say when it is time to practise it again
-      (7, 14, then 30 days after it was last asked).
+      (the next day after it was last asked; still-open points stay in the daily queue).
     * ``fixed``: missed at least once before and covered the last time.
     * ``events``: each time a missed point is covered, oldest first, with
       ``newQuestion`` when it was covered in a different question than the one
@@ -500,6 +501,7 @@ def gap_notebook(
                     "question": t.question[:240],
                     "jobId": s.job_id,
                     "resumeId": s.resume_id,
+                    "questionVersionId": t.question_version_id,
                 }
                 if status != "COVERED":
                     entry["timesMissed"] += 1
@@ -811,7 +813,6 @@ __all__ = [
     "GAP_OPEN_LIMIT",
     "GAP_FIXED_LIMIT",
     "REASK_AFTER_DAYS",
-    "REASK_AFTER_DAYS_LATER",
     "reask_after_days",
     "_point_states",
     "gap_notebook",

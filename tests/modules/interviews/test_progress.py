@@ -17,7 +17,9 @@ from src.modules.interviews.application.progress import (
     skill_levels,
     trend,
     baseline_label,
+    gap_notebook,
     round_ladder,
+    reask_after_days,
     weekly_streak,
 )
 from src.modules.interviews.application.progress_calibration import (
@@ -412,6 +414,32 @@ def test_gap_notebook_follows_a_point_across_sessions() -> None:
     assert next(s for s in progress["skills"] if s["conceptId"] == "skill-xml")["minor"] is True
 
 
+def test_missed_question_is_due_the_next_day_and_leaves_queue_when_covered() -> None:
+    point = [{"importance": "CORE", "status": "MISSING", "description": "Nêu cách đo hiệu quả"}]
+    session = _session(1, days_ago=1)
+    question_id = "question-version-1"
+    missed = TurnRow(
+        "s1", "DEEP_DIVE", "skill-ai", "AI", None, 4.0, "ANSWERED",
+        rubric_points=point, question="Bạn đánh giá mô hình này thế nào?", question_version_id=question_id,
+    )
+    gaps = gap_notebook([session], {"s1": [missed]}, {"skill-ai": "AI"}, limited=False, now=NOW)
+    assert reask_after_days(9) == 1
+    assert gaps["open"][0]["due"] is True
+    assert gaps["open"][0]["lastSeen"]["questionVersionId"] == question_id
+
+    covered = TurnRow(
+        "s2", "DEEP_DIVE", "skill-ai", "AI", None, 8.0, "ANSWERED",
+        rubric_points=[{**point[0], "status": "COVERED"}],
+        question="Bạn đánh giá mô hình này thế nào?", question_version_id=question_id,
+    )
+    later = _session(2, days_ago=0)
+    resolved = gap_notebook(
+        [session, later], {"s1": [missed], "s2": [covered]}, {"skill-ai": "AI"}, limited=False, now=NOW
+    )
+    assert resolved["open"] == []
+    assert resolved["fixed"][0]["status"] == "COVERED"
+
+
 def test_readiness_is_shown_by_interview_round() -> None:
     sessions = [_session(1), _session(2), _session(3)]
     turns = []
@@ -490,13 +518,13 @@ def test_wins_and_progress_weeks_come_from_points_fixed_in_a_new_question() -> N
     assert progress["activity"]["days"][-1]["fixed"] >= 1
 
 
-def test_a_missed_point_is_due_for_practice_after_a_week() -> None:
+def test_a_missed_point_is_due_the_next_day() -> None:
     turns = [TurnRow("s1", "DEEP_DIVE", "skill-redis", "Redis", None, 4.0, "ANSWERED", rubric_points=[
         {"importance": "CORE", "status": "MISSING", "description": "TTL"}])]
-    asked = _session(1, days_ago=8)
+    asked = _session(1, days_ago=1)
     gap = build_progress([asked], turns, now=NOW)["gaps"]["open"][0]
     assert gap["due"] is True
-    fresh = build_progress([_session(1, days_ago=2)], turns, now=NOW)["gaps"]["open"][0]
+    fresh = build_progress([_session(1, days_ago=0)], turns, now=NOW)["gaps"]["open"][0]
     assert fresh["due"] is False
 
 

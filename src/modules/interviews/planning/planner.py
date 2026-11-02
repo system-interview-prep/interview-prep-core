@@ -426,7 +426,11 @@ def _derive_competency_plan_legacy(
             "focusArea": focus_area,
             # Spaced re-ask: the skill asked again and the points due (research 24/10).
             "reask": [
-                {"conceptId": str(item["conceptId"]), "points": list(item.get("points") or [])[:3]}
+                {
+                    "conceptId": str(item["conceptId"]),
+                    "points": list(item.get("points") or [])[:3],
+                    **({"questionVersionId": item["questionVersionId"]} if item.get("questionVersionId") else {}),
+                }
                 for item in reask
                 if item.get("conceptId") in {target.concept.concept_id for target in selected}
             ][:1],
@@ -1075,22 +1079,36 @@ async def _requested_reask(db: AsyncSession, *, plan_id: str) -> list[dict[str, 
     try:
         value = (
             await db.execute(
-                text("SELECT source_context->>'reaskConceptId' FROM interview_session_plans WHERE id = :id"),
+                text(
+                    "SELECT source_context->>'reaskConceptId' AS concept_id, "
+                    "source_context->>'reaskQuestionVersionId' AS question_version_id "
+                    "FROM interview_session_plans WHERE id = :id"
+                ),
                 {"id": plan_id},
             )
-        ).scalar_one_or_none()
+        ).mappings().one_or_none()
     except Exception:  # noqa: BLE001 - a hint for the plan, never a blocker
         await db.rollback()
         return []
-    return [{"conceptId": str(value), "points": []}] if value else []
+    if not value:
+        return []
+    concept_id = value.get("concept_id") if hasattr(value, "get") else value
+    question_version_id = value.get("question_version_id") if hasattr(value, "get") else None
+    if not concept_id:
+        return []
+    return [{
+        "conceptId": str(concept_id),
+        "questionVersionId": str(question_version_id) if question_version_id else None,
+        "points": [],
+    }]
 
 
 async def _due_reask(db: AsyncSession, *, user_id: str, job_id: str) -> list[dict[str, Any]]:
     """Skills of this position with a missed point due for practice again.
 
-    From the progress Sổ ôn tập (``progress.gap_notebook``: 7, 14, then 30 days
-    after the point was last asked). Most often missed first. Never blocks a
-    plan: on any error the session is planned without a re-ask.
+    From the progress Sổ ôn tập (``progress.gap_notebook``: due the next day).
+    Most often missed first. Never blocks a plan: on any error the session is
+    planned without a re-ask.
     """
     try:
         from src.modules.interviews.application.progress import load_progress
@@ -1104,11 +1122,26 @@ async def _due_reask(db: AsyncSession, *, user_id: str, job_id: str) -> list[dic
         key = str(gap.get("skillKey") or "")
         if not gap.get("due") or key.startswith("label:") or gap["lastSeen"].get("jobId") != job_id:
             continue
-        entry = by_concept.setdefault(key, {"conceptId": key, "points": [], "missed": 0})
+        entry = by_concept.setdefault(
+            key,
+            {
+                "conceptId": key,
+                "points": [],
+                "missed": 0,
+                "questionVersionId": gap.get("lastSeen", {}).get("questionVersionId"),
+            },
+        )
         entry["points"].append(gap["point"])
         entry["missed"] = max(entry["missed"], int(gap.get("timesMissed") or 0))
     ranked = sorted(by_concept.values(), key=lambda item: -item["missed"])
-    return [{"conceptId": item["conceptId"], "points": item["points"]} for item in ranked]
+    return [
+        {
+            "conceptId": item["conceptId"],
+            "points": item["points"],
+            "questionVersionId": item.get("questionVersionId"),
+        }
+        for item in ranked
+    ]
 
 
 async def evaluate_session_match(

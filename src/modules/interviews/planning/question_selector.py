@@ -196,6 +196,13 @@ def _candidate_rank(
     )
 
 
+def _prioritize_repeat(candidates: list[_Candidate], question_version_id: str | None) -> list[_Candidate]:
+    """Put the due exact question first; otherwise keep the approved pool order."""
+    if not question_version_id:
+        return candidates
+    return sorted(candidates, key=lambda item: item.question_version_id != question_version_id)
+
+
 async def _load_candidates(
     db: AsyncSession,
     *,
@@ -1221,6 +1228,11 @@ async def select_and_freeze_questions(
                 t["conceptId"],
             )
         )
+        reask_version_by_concept = {
+            str(item.get("conceptId")): str(item.get("questionVersionId"))
+            for item in ((payload.get("selection") or {}).get("reask") or [])
+            if item.get("conceptId") and item.get("questionVersionId")
+        }
 
         # Layer A: Load candidate pools and generate feasible subsets per target
         target_domains: dict[str, list[tuple[tuple[int, float, float, float, int, str], list[_Candidate]]]] = {}
@@ -1250,6 +1262,19 @@ async def select_and_freeze_questions(
                 )
 
             feasible_subsets = _subsets(candidates)
+            # If yesterday's exact question is still approved and mapped to the
+            # same competency, include it in today's session. If it was retired,
+            # keep the approved fresh-question fallback for that competency.
+            repeat_id = reask_version_by_concept.get(str(target["conceptId"]))
+            candidates = _prioritize_repeat(candidates, repeat_id)
+            if repeat_id and feasible_subsets:
+                repeat_subsets = [
+                    subset
+                    for subset in feasible_subsets
+                    if any(q.question_version_id == repeat_id for q in subset)
+                ]
+                if repeat_subsets:
+                    feasible_subsets = repeat_subsets
             blocked_drafts = 0
             if not feasible_subsets:
                 seen = {item.question_version_id for item in candidates}
@@ -1367,6 +1392,16 @@ async def select_and_freeze_questions(
                 spoken_only=spoken_only,
             )
             available = [item for item in candidates if item.question_version_id not in used_versions]
+            repeat_id = next(
+                (
+                    str(item.get("questionVersionId"))
+                    for item in ((payload.get("selection") or {}).get("reask") or [])
+                    if str(item.get("conceptId")) == str(target["conceptId"])
+                    and item.get("questionVersionId")
+                ),
+                None,
+            )
+            available = _prioritize_repeat(available, repeat_id)
             # Honour the planner's per-target count exactly. P1 already guarantees
             # a floor of one question per competency and caps the sum at
             # questionBudget, so the old `max(count, 2)` floor silently doubled
