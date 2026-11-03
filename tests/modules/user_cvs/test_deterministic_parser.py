@@ -237,7 +237,7 @@ def test_deterministic_parser_uses_explicit_profile_headline_for_ai_primary_clas
 
     assert result.resume.profile.headline == "AI Engineer Intern | NLP | GenAI | LLM/RAG"
     primary = next(item for item in result.resume.career_classifications if item.is_primary)
-    assert primary.code == "technology.artificial-intelligence"
+    assert primary.code == "technology.ai-engineering"
     assert primary.evidence_refs
 
 
@@ -478,7 +478,7 @@ def test_deterministic_parser_regression_education_and_projects() -> None:
     assert "skill-large-language-models" in skill_ids
     assert "skill-retrieval-augmented-generation" in skill_ids
     primary = next(item for item in result.resume.career_classifications if item.is_primary)
-    assert primary.code == "technology.artificial-intelligence"
+    assert primary.code == "technology.ai-engineering"
 
     # 5. 100% of extracted claims have valid, resolvable evidence refs
     evidence_map = {ev.evidence_id: ev for ev in result.resume.evidence}

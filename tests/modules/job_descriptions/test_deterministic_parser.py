@@ -247,7 +247,7 @@ def test_parser_handles_decorated_vietnamese_headings_and_ai_requirements() -> N
     assert _requirement_concept_ids(parsed) == {
         "skill-natural-language-processing", "skill-generative-ai", "skill-large-language-models"
     }
-    assert parsed.career_classifications[0].code == "technology.artificial-intelligence"
+    assert parsed.career_classifications[0].code == "technology.ai-engineering"
     evidence_ids = {item.evidence_id for item in parsed.evidence}
     assert all(set(item.evidence_refs).issubset(evidence_ids) for item in [*parsed.requirements, *parsed.benefits])
 

@@ -68,10 +68,81 @@ _NODES = (
     CareerTaxonomyNode(
         "technology.artificial-intelligence", "Artificial Intelligence", "specialization", "technology"
     ),
+    CareerTaxonomyNode("technology.ai-engineering", "AI Engineering", "specialization", "technology"),
+    CareerTaxonomyNode("technology.data-engineering", "Data Engineering", "specialization", "technology"),
+    CareerTaxonomyNode("technology.data-science", "Data Science", "specialization", "technology"),
+    CareerTaxonomyNode("technology.cybersecurity", "Cybersecurity", "specialization", "technology"),
+    CareerTaxonomyNode("technology.qa-automation", "QA & Test Automation", "specialization", "technology"),
+    CareerTaxonomyNode("technology.ux-ui-design", "UX/UI Design", "specialization", "technology"),
+    CareerTaxonomyNode("technology.business-analysis", "Business Analysis", "specialization", "technology"),
     CareerTaxonomyNode("technology.game-development", "Game Development", "specialization", "technology"),
 )
 
 _RULES = (
+    CareerRule(
+        "technology.ai-engineering",
+        "AI Engineering",
+        (
+            "ai engineer",
+            "ai engineering",
+            "llm engineer",
+            "generative ai engineer",
+            "machine learning engineer",
+        ),
+        frozenset(
+            {
+                "skill-machine-learning",
+                "skill-natural-language-processing",
+                "skill-generative-ai",
+                "skill-large-language-models",
+                "skill-retrieval-augmented-generation",
+                "skill-langgraph",
+            }
+        ),
+        "technology",
+    ),
+    CareerRule(
+        "technology.data-engineering",
+        "Data Engineering",
+        ("data engineer", "data engineering", "analytics engineer"),
+        frozenset(),
+        "technology",
+    ),
+    CareerRule(
+        "technology.data-science",
+        "Data Science",
+        ("data scientist", "data science", "research scientist"),
+        frozenset(),
+        "technology",
+    ),
+    CareerRule(
+        "technology.cybersecurity",
+        "Cybersecurity",
+        ("cybersecurity", "cyber security", "security engineer", "penetration tester", "penetration testing"),
+        frozenset(),
+        "technology",
+    ),
+    CareerRule(
+        "technology.qa-automation",
+        "QA & Test Automation",
+        ("qa engineer", "quality assurance", "test automation", "software tester", "sdet"),
+        frozenset(),
+        "technology",
+    ),
+    CareerRule(
+        "technology.ux-ui-design",
+        "UX/UI Design",
+        ("ux designer", "ui designer", "ux/ui designer", "product designer"),
+        frozenset(),
+        "technology",
+    ),
+    CareerRule(
+        "technology.business-analysis",
+        "Business Analysis",
+        ("business analyst", "business analysis", "systems analyst"),
+        frozenset(),
+        "technology",
+    ),
     CareerRule(
         "technology.game-development",
         "Game Development",
@@ -82,7 +153,7 @@ _RULES = (
     CareerRule(
         "technology.artificial-intelligence",
         "Artificial Intelligence",
-        ("ai engineer", "machine learning", "data scientist"),
+        ("artificial intelligence", "machine learning"),
         role_skill_ids(AI),
         "technology",
     ),

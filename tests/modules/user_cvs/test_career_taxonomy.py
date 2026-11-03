@@ -12,6 +12,13 @@ def test_career_taxonomy_has_stable_hierarchy_for_frontend() -> None:
 
     assert TAXONOMY_VERSION == "internal-career-2026.1"
     assert nodes["technology"].parent_code is None
+    assert nodes["technology.ai-engineering"].label == "AI Engineering"
+    assert nodes["technology.data-engineering"].label == "Data Engineering"
+    assert nodes["technology.data-science"].label == "Data Science"
+    assert nodes["technology.cybersecurity"].label == "Cybersecurity"
+    assert nodes["technology.qa-automation"].label == "QA & Test Automation"
+    assert nodes["technology.ux-ui-design"].label == "UX/UI Design"
+    assert nodes["technology.business-analysis"].label == "Business Analysis"
     assert nodes["technology.software-engineering"].parent_code == "technology"
     assert (
         nodes["technology.software-engineering.backend"].parent_code
@@ -51,7 +58,7 @@ def test_ai_title_and_ai_skills_take_primary_over_backend_implementation_stack()
         include_ancestors=False,
     )
 
-    assert classifications[0].code == "technology.artificial-intelligence"
+    assert classifications[0].code == "technology.ai-engineering"
     assert classifications[0].is_primary is True
 
 
