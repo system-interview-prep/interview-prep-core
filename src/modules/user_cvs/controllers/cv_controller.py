@@ -1,4 +1,7 @@
 import logging
+import re
+import unicodedata
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import Response, StreamingResponse
@@ -39,6 +42,16 @@ from src.modules.user_cvs.parsing.domain.classification import TAXONOMY_VERSION,
 
 router = APIRouter(prefix="/users/me/cvs", tags=["user-cvs"])
 logger = logging.getLogger(__name__)
+
+
+def content_disposition_attachment(filename: str) -> str:
+    """Build an ASCII-safe RFC 6266 header while preserving Unicode filenames."""
+    safe_name = "".join("_" if ord(char) < 32 or ord(char) == 127 else char for char in filename)
+    safe_name = safe_name.replace("/", "_").replace("\\", "_").lstrip(".").strip() or "cv-file"
+    ascii_name = unicodedata.normalize("NFKD", safe_name).encode("ascii", "ignore").decode("ascii")
+    ascii_name = re.sub(r"[^A-Za-z0-9._-]+", "_", ascii_name).strip("._-") or "cv-file"
+    encoded_name = quote(safe_name, safe="-_.~")
+    return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{encoded_name}'
 
 
 class ParsedDataPatch(BaseModel):
@@ -255,7 +268,7 @@ async def download_cv(
     return Response(
         content,
         media_type=cv.content_type,
-        headers={"Content-Disposition": f'attachment; filename="{cv.filename}"'},
+        headers={"Content-Disposition": content_disposition_attachment(cv.filename)},
     )
 
 
