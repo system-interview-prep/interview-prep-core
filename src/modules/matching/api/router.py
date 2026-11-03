@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.security import current_user
 from src.infrastructure.database import get_db
 from src.modules.matching.application import run_tracking
+from src.modules.matching.application.fit_history import list_latest_fits, persist_candidate_fit
 from src.modules.matching.application.input_resolver import resolve_job as _resolve_job
 from src.modules.matching.application.input_resolver import resolve_resume as _resolve_resume
 from src.modules.matching.application.input_resolver import resume_owner_scope
@@ -222,7 +223,23 @@ async def _handle_match_ids(
                 endpoint, payload.matching_policy, is_async=payload.async_processing
             ),
         )
-        return await _match_ids_in_run(payload, response, db, user, run, cv_id, job_id)
+        result = await _match_ids_in_run(payload, response, db, user, run, cv_id, job_id)
+
+    # Candidate summaries belong to the signed-in account. Admin evaluations
+    # of arbitrary CVs must not be written into an admin's candidate history.
+    if isinstance(result, MatchResult):
+        await persist_candidate_fit(db, user=user, result=result)
+    return result
+
+
+@api_router.get("/fit-history")
+async def get_fit_history(
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(current_user),
+) -> dict[str, list[dict[str, object]]]:
+    """Return only this account's saved latest CV–JD fit per job."""
+    items = await list_latest_fits(db, user_id=str(user["sub"]))
+    return {"items": items}
 
 
 async def _match_ids_in_run(

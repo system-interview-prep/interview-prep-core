@@ -50,6 +50,11 @@ def test_matching_endpoints_reject_anonymous_callers(anonymous_client, path: str
     assert response.status_code == 401
 
 
+def test_fit_history_rejects_anonymous_callers(anonymous_client) -> None:
+    response = anonymous_client.get("/api/v1/matching/fit-history")
+    assert response.status_code == 401
+
+
 class _CapturingDb:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
