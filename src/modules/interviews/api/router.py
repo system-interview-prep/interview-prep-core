@@ -534,20 +534,28 @@ async def get_interview_session(
 async def list_interview_sessions(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
+    limit: int = Query(default=100, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
 ) -> dict:
     result = await db.execute(
         text(
-            _SESSION_SELECT
+            _SESSION_SELECT.replace(
+                "p.status AS plan_status",
+                "p.status AS plan_status, COUNT(*) OVER() AS total_count",
+            )
             + " WHERE s.user_id = :uid AND " + _STRUCTURED_SESSION
-            + " ORDER BY s.started_at DESC LIMIT 100"
+            + " ORDER BY s.started_at DESC, s.id DESC LIMIT :limit OFFSET :offset"
         ),
-        {"uid": user["sub"]},
+        {"uid": user["sub"], "limit": limit, "offset": offset},
     )
-    sessions = [_session_payload(dict(row)) for row in result.mappings().all()]
+    rows = [dict(row) for row in result.mappings().all()]
+    total = int(rows[0].get("total_count", len(rows))) if rows else 0
+    sessions = [_session_payload(row) for row in rows]
     summaries = await _session_summaries(db, [item["sessionId"] for item in sessions])
     for item in sessions:
         item.update(summaries.get(item["sessionId"], _EMPTY_SUMMARY))
-    return {"sessions": sessions}
+    next_offset = offset + len(sessions) if offset + len(sessions) < total else None
+    return {"sessions": sessions, "total": total, "offset": offset, "nextOffset": next_offset}
 
 
 _EMPTY_SUMMARY = {

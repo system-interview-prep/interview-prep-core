@@ -31,6 +31,7 @@ class _Db:
     def __init__(self, sessions: list[dict], summaries: list[dict]) -> None:
         self.sessions = sessions
         self.summaries = summaries
+        self.list_params: dict | None = None
         self.summary_params: dict | None = None
 
     async def execute(self, statement, params):
@@ -39,6 +40,8 @@ class _Db:
         if "LEFT JOIN LATERAL" in sql:
             self.summary_params = params
             rows = self.summaries
+        elif "COUNT(*) OVER()" in sql:
+            self.list_params = params
         return SimpleNamespace(mappings=lambda: SimpleNamespace(all=lambda: rows))
 
 
@@ -58,10 +61,12 @@ async def test_session_list_includes_latest_score_and_answered_turns() -> None:
         ],
     )
 
-    body = await interview_router.list_interview_sessions(user={"sub": "user-a"}, db=db)
+    body = await interview_router.list_interview_sessions(user={"sub": "user-a"}, db=db, limit=100, offset=0)
 
     first, second = body["sessions"]
     assert db.summary_params == {"ids": ["ses-1", "ses-2"]}
+    assert db.list_params == {"uid": "user-a", "limit": 100, "offset": 0}
+    assert (body["total"], body["offset"], body["nextOffset"]) == (2, 0, None)
     assert (first["overallScore"], first["totalTurns"], first["answeredTurns"]) == (6.4, 5, 4)
     assert first["evaluatedAt"].startswith("2026-10-09T09:25")
     # Competency scores come from the latest evaluation; malformed entries are dropped.
@@ -76,6 +81,19 @@ async def test_session_list_includes_latest_score_and_answered_turns() -> None:
 
 async def test_empty_session_list_skips_the_summary_query() -> None:
     db = _Db([], [])
-    body = await interview_router.list_interview_sessions(user={"sub": "user-a"}, db=db)
-    assert body == {"sessions": []}
+    body = await interview_router.list_interview_sessions(user={"sub": "user-a"}, db=db, limit=100, offset=0)
+    assert body == {"sessions": [], "total": 0, "offset": 0, "nextOffset": None}
     assert db.summary_params is None
+
+
+async def test_session_list_returns_pagination_metadata_for_full_history() -> None:
+    rows = [_session_row("ses-1"), _session_row("ses-2")]
+    for row in rows:
+        row["total_count"] = 3
+    db = _Db(rows, [])
+
+    body = await interview_router.list_interview_sessions(user={"sub": "user-a"}, db=db, limit=2, offset=0)
+
+    assert [item["sessionId"] for item in body["sessions"]] == ["ses-1", "ses-2"]
+    assert (body["total"], body["offset"], body["nextOffset"]) == (3, 0, 2)
+    assert db.list_params == {"uid": "user-a", "limit": 2, "offset": 0}
