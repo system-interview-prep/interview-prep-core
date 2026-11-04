@@ -36,6 +36,17 @@ _DATE_RANGE_RE = re.compile(
     rf"(?P<end>{_DATE}|present|current|now|hi\u1ec7n\s*t\u1ea1i|hi\u1ec7n\s*nay|nay)",
     re.IGNORECASE,
 )
+_PROJECT_DATE_SUFFIX_RE = re.compile(
+    rf"(?:"
+    # Month/day ranges are common in student CVs and often OCR-extracted as
+    # part of the project title, e.g. "April 28 - June 22, 2026".
+    rf"\s+{_MONTH_EN}\.?\s+\d{{1,2}}\s*(?:-|\u2013|\u2014|to)\s*"
+    rf"{_MONTH_EN}\.?\s+\d{{1,2}},?\s*{_YEAR}"
+    rf"|\s*(?:{_MONTH_EN})?\.?\s*{_YEAR}\s*(?:-|\u2013|\u2014|to)\s*"
+    rf"(?:(?:{_MONTH_EN})?\.?\s*)?{_YEAR}"
+    rf")$",
+    re.IGNORECASE,
+)
 _COMPANY_RE = re.compile(
     r"\b(organization|t\u1ed5 ch\u1ee9c|company|c\u00f4ng ty|t\u1eadp \u0111o\u00e0n|"
     r"corporation|corp|inc|ltd|llc|tnhh|jsc)\b",
@@ -185,12 +196,20 @@ def _is_section_title(value: str) -> bool:
     stripped = value.strip()
     if not stripped:
         return False
-    if _section_for_heading(stripped) is not None:
-        return True
     cleaned = unicodedata.normalize("NFD", stripped.casefold())
     without_marks = "".join(c for c in cleaned if unicodedata.category(c) != "Mn")
     raw = stripped.casefold()
-    return raw in _SECTION_TITLES or without_marks in _SECTION_TITLES
+    if raw in _SECTION_TITLES or without_marks in _SECTION_TITLES:
+        return True
+    # The broad source heading classifier is useful for headings such as
+    # "RESEARCH & AI PROJECTS", but must not swallow project names that merely
+    # mention research (e.g. "... (Scientific Research)").
+    return (
+        _section_for_heading(stripped) is not None
+        and stripped.upper() == stripped
+        and any(char.isalpha() for char in stripped)
+        and len(stripped.split()) <= 7
+    )
 
 
 def _skill_ids_for_blocks(draft, blocks: Iterable[SourceBlock]) -> list[str]:
@@ -548,19 +567,124 @@ _DATE_OR_STATUS_ONLY_RE = re.compile(
     re.IGNORECASE,
 )
 
+_PROJECT_SENTENCE_START_RE = re.compile(
+    r"^(?:built|developed|designed|implemented|created|engineered|architected|optimized|"
+    r"evaluated|trained|automated|analyzed|applied|cv|jd|configured|deployed|integrated|"
+    r"processed|conducted|led|managed|"
+    r"worked|responsible|experienced|proficient|using|utilized|leveraged|"
+    r"the|this|these|those|which|while|with|by|for|from|in|as|and|or)\b",
+    re.IGNORECASE,
+)
+_PROJECT_TITLE_STOPWORDS = {"a", "an", "and", "as", "for", "in", "of", "the", "to", "with"}
 
-def _is_project_header(block_text: str) -> bool:
+
+def _looks_like_project_title(value: str, *, explicit_heading: bool = False) -> bool:
+    """Avoid treating wrapped description lines as separate project names."""
+    text = value.strip()
+    words = re.findall(r"[A-Za-zÀ-ỹ0-9]+(?:['’][A-Za-z]+)?", text)
+    if not words or len(words) > 16:
+        return False
+    if not any(char.isalpha() for word in words for char in word):
+        return False
+    # Comma-heavy lines are usually a technology stack or a wrapped list of
+    # tools, even when OCR marks the line as a title.
+    if text.count(",") >= 2:
+        return False
+    if re.search(r"[.!?;]$", text) or _PROJECT_SENTENCE_START_RE.match(text):
+        return False
+    if explicit_heading:
+        return True
+    meaningful = [word for word in words if word.casefold() not in _PROJECT_TITLE_STOPWORDS]
+    if not meaningful:
+        return False
+    if re.search(r"\b(?:19|20)\d{2}\b", text):
+        return True
+    title_case = sum(
+        word[0].isupper() or word.isupper() or any(char.isdigit() for char in word)
+        for word in meaningful
+    )
+    # Short standalone product names such as "HamTech" are valid titles;
+    # ordinary lowercase words like "feedback" and "environment" are not.
+    if len(meaningful) == 1:
+        word = meaningful[0]
+        if not any(char.isalpha() for char in word):
+            return False
+        return (
+            word.isupper()
+            or any(char.isupper() for char in word[1:])
+            or any(char.isdigit() for char in word)
+        )
+    return title_case / len(meaningful) >= 0.6
+
+
+def _project_name_key(value: str) -> str:
+    normalized = unicodedata.normalize("NFD", value.casefold())
+    normalized = "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+    normalized = re.sub(r"\([^)]*\)", " ", normalized)
+    normalized = re.sub(
+        r"\b(?:currently researching|currently in progress|in progress|ongoing|completed)\b.*$",
+        " ",
+        normalized,
+    )
+    normalized = _PROJECT_DATE_SUFFIX_RE.sub(" ", normalized)
+    return re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+
+
+def _project_names_match(left: str, right: str) -> bool:
+    left_key, right_key = _project_name_key(left), _project_name_key(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    shorter, longer = sorted((left_key.split(), right_key.split()), key=len)
+    # Merge a short repeated alias only when it is a complete leading part of
+    # a longer title (e.g. "HamTech" and "HamTech — OTT Chat Platform").
+    return len(shorter) <= 3 and len(shorter) < len(longer) and longer[: len(shorter)] == shorter
+
+
+def _project_title_in_quote(name: str, quote: str) -> bool:
+    title_tokens = _project_name_key(name).split()
+    quote_tokens = _project_name_key(quote).split()
+    if not title_tokens or len(title_tokens) > len(quote_tokens):
+        return False
+    return any(
+        quote_tokens[index : index + len(title_tokens)] == title_tokens
+        for index in range(len(quote_tokens) - len(title_tokens) + 1)
+    )
+
+
+def _is_founder_employer_project(name: str, employment: list[EmploymentEntry]) -> bool:
+    """Avoid counting a founder's company product again as a separate project."""
+    project_key = _project_name_key(name).split()
+    if not project_key:
+        return False
+    for item in employment:
+        if not re.search(r"\b(founder|co-founder|cofounder|owner)\b", item.job_title, re.IGNORECASE):
+            continue
+        organization = item.organization or ""
+        if not organization:
+            role_parts = re.split(r"\s*[·|]\s*", item.job_title)
+            organization = role_parts[-1] if len(role_parts) > 1 else ""
+        organization_key = _project_name_key(organization).split()
+        if organization_key and project_key[: len(organization_key)] == organization_key:
+            return True
+    return False
+
+
+def _is_project_header(block_text: str, *, explicit_heading: bool = False) -> bool:
     stripped = block_text.strip()
     if not stripped or _is_section_title(stripped):
         return False
     if re.match(r"^[-*•–—+]\s+", stripped):
         return False
     without_bullet = re.sub(r"^[-*•–—+]\s*", "", stripped)
+    if re.match(r"^(?:team\s*size|team\b|technology\s+in\s+use\b|github\b)", without_bullet, re.IGNORECASE):
+        return False
     if _PROJECT_DETAIL_PREFIX_RE.search(without_bullet):
         return False
     if _DATE_OR_STATUS_ONLY_RE.fullmatch(without_bullet):
         return False
-    return True
+    return _looks_like_project_title(without_bullet, explicit_heading=explicit_heading)
 
 
 class ProjectExtractor:
@@ -575,7 +699,14 @@ class ProjectExtractor:
         for block in blocks:
             if _is_section_title(block.text):
                 continue
-            if _is_project_header(block.text):
+            is_header = _is_project_header(
+                block.text, explicit_heading=block.block_type.casefold() in {"title", "heading"}
+            )
+            if is_header and current_group and re.search(
+                r"(?:\band|,|/|[-\u2013\u2014])\s*$", current_group[-1].text.strip(), re.IGNORECASE
+            ):
+                is_header = False
+            if is_header:
                 if current_group:
                     groups.append(current_group)
                 current_group = [block]
@@ -600,12 +731,25 @@ class ProjectExtractor:
             name_raw = lines[0]
             if _PROJECT_DETAIL_PREFIX_RE.search(name_raw):
                 continue
-            name_clean = re.sub(r"\s*\((?:19|20)\d{2}[^)]*\)$", "", name_raw).strip()
+            name_clean = _PROJECT_DATE_SUFFIX_RE.sub("", name_raw).strip()
+            name_clean = re.sub(r"\s*\((?:19|20)\d{2}[^)]*\)$", "", name_clean).strip()
             name_clean = re.sub(r"\s*(?:\||\b(?:github|website)\b).*$", "", name_clean, flags=re.I).strip(
                 " -–—|,"
             )
             if not name_clean:
                 name_clean = name_raw
+
+            if any(_project_names_match(name_clean, item.name) for item in draft.projects):
+                continue
+            if any(
+                _project_name_key(name_clean) == _project_name_key(item.job_title)
+                for item in draft.employment
+            ):
+                # Freelance work is often listed under Experience and then
+                # repeated in a project portfolio; keep one canonical entry.
+                continue
+            if _is_founder_employer_project(name_clean, draft.employment):
+                continue
 
             match = _DATE_RANGE_RE.search(header.text)
             start_date = None

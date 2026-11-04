@@ -9,12 +9,16 @@ class RecordingSession:
     def __init__(self) -> None:
         self.calls = []
         self.commits = 0
+        self.rollbacks = 0
 
     async def execute(self, statement, parameters):
         self.calls.append((str(statement), parameters))
 
     async def commit(self) -> None:
         self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
 
 
 class MappingResult:
@@ -79,4 +83,17 @@ async def test_complete_serializes_canonical_resume_into_parsed_data_jsonb() -> 
     assert "parsed_data = CAST(:parsed_data AS jsonb)" in statement
     assert parameters["id"] == "cv-1"
     assert json.loads(parameters["parsed_data"])["schemaVersion"] == "2.1"
+    assert session.commits == 1
+
+
+async def test_fail_rolls_back_aborted_transaction_before_persisting_failure() -> None:
+    session = RecordingSession()
+    repository = SqlAlchemyCvParseRepository(session)  # type: ignore[arg-type]
+
+    await repository.fail("cv-1", "database write failed")
+
+    statement, parameters = session.calls[0]
+    assert "status = 'FAILED'" in statement
+    assert parameters == {"id": "cv-1", "error": "database write failed"}
+    assert session.rollbacks == 1
     assert session.commits == 1

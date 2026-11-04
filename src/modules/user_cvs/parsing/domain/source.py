@@ -218,6 +218,10 @@ def _repair_utf8_mojibake(value: str) -> str:
 
 
 def normalize_text(value: str) -> str:
+    # PostgreSQL text and jsonb values cannot contain the NUL code point. Some
+    # PDF/OCR extractors preserve it as a control character, which would make
+    # both raw_text persistence and evidence JSON fail at save time.
+    value = value.replace("\x00", "")
     value = _repair_utf8_mojibake(value)
     value = unicodedata.normalize("NFC", value.replace("\r\n", "\n").replace("\r", "\n"))
     value = re.sub(r"[\t\f\v ]+", " ", value)

@@ -85,6 +85,63 @@ async def test_hybrid_resume_falls_back_without_losing_deterministic_result() ->
     assert parsed.identity.emails[0].value == "jane@example.com"
 
 
+async def test_hybrid_resume_rejects_description_fragment_as_project_name() -> None:
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown=(
+                "Experience\nFounder & Fullstack Developer at IVORA 2025 - Present\n"
+                "Projects\nOnline Bookstore System\nDescription: feedback\n"
+                "IVORA — Online Wedding Invitation Platform"
+            ),
+            content_list=[
+                {"type": "title", "text": "EXPERIENCE"},
+                {"type": "text", "text": "Founder & Fullstack Developer at IVORA 2025 - Present"},
+                {"type": "title", "text": "PROJECTS"},
+                {"type": "text", "text": "Online Bookstore System"},
+                {"type": "text", "text": "Description: feedback"},
+                {"type": "text", "text": "feedback"},
+                {"type": "text", "text": "IVORA — Online Wedding Invitation Platform"},
+                {"type": "text", "text": "– Architected a multi-stage RAG system."},
+                {"type": "title", "text": "Python, PyTorch, YOLOv8, OpenCV, EasyOCR"},
+            ],
+        ),
+        document_id="cv-project-fragment",
+        document_sha256="c" * 64,
+    )
+    candidate = {
+        "headline": None,
+        "summary": None,
+        "employment": [],
+        "education": [],
+        "projects": [
+            {"name": "feedback", "description": None, "quote": "feedback"},
+            {
+                "name": "IVORA — Online Wedding Invitation Platform",
+                "description": None,
+                "quote": "IVORA — Online Wedding Invitation Platform",
+            },
+            {
+                "name": "Architected a multi-stage RAG system",
+                "description": None,
+                "quote": "Architected a multi-stage RAG system",
+            },
+            {
+                "name": "Python, PyTorch, YOLOv8",
+                "description": None,
+                "quote": "Python, PyTorch, YOLOv8, OpenCV, EasyOCR",
+            },
+            {"name": "Advanced Multi-Stage RAG Pipeline", "description": None, "quote": "feedback"},
+        ],
+        "certifications": [],
+    }
+
+    parsed = await HybridResumeParser(client=FakeClient(json.dumps(candidate))).parse(
+        source, extraction_version="test"
+    )
+
+    assert [project.name for project in parsed.resume.projects] == ["Online Bookstore System"]
+
+
 async def test_hybrid_resume_falls_back_when_grounded_candidate_breaks_domain_invariants() -> None:
     candidate = {
         "headline": None,

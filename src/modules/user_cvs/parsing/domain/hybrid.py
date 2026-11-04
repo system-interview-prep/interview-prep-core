@@ -25,6 +25,13 @@ from src.modules.user_cvs.domain.schemas import (
 from src.modules.user_cvs.parsing.domain.deterministic import DeterministicResumeParser
 from src.modules.user_cvs.parsing.domain.llm_candidate import CV_EXTRACTION_INSTRUCTIONS, ResumeCandidate
 from src.modules.user_cvs.parsing.domain.source import EvidenceMapper, SourceDocument
+from src.modules.user_cvs.parsing.domain.structured import (
+    _is_founder_employer_project,
+    _looks_like_project_title,
+    _project_name_key,
+    _project_names_match,
+    _project_title_in_quote,
+)
 
 PARSER_VERSION = "hybrid-resume-v2"
 
@@ -407,9 +414,21 @@ class HybridResumeParser:
         projects = list(baseline.resume.projects)
         seen_projects = {self._key(item.name) for item in projects}
         for index, item in enumerate(candidate.projects, start=1):
-            ref = ground("project", item.quote)
             key = self._key(item.name)
-            if not ref or key in seen_projects:
+            if (
+                not _looks_like_project_title(item.name)
+                or not _project_title_in_quote(item.name, item.quote)
+                or key in seen_projects
+                or any(_project_names_match(item.name, existing.name) for existing in projects)
+                or any(
+                    _project_name_key(item.name) == _project_name_key(job.job_title)
+                    for job in baseline.resume.employment
+                )
+                or _is_founder_employer_project(item.name, baseline.resume.employment)
+            ):
+                continue
+            ref = ground("project", item.quote)
+            if not ref:
                 continue
             projects.append(
                 ProjectEntry(

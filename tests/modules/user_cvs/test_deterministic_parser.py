@@ -20,6 +20,13 @@ def _source(content_list: list) -> object:
     )
 
 
+def test_source_document_strips_nul_bytes_from_extracted_text() -> None:
+    source = _source([{"type": "text", "text": "PROJECTS\x00\nMessage Me\x00"}])
+
+    assert "\x00" not in source.text
+    assert all("\x00" not in block.text for block in source.blocks)
+
+
 def test_source_document_preserves_page_order_bbox_and_sections() -> None:
     source = _source(
         [
@@ -493,6 +500,8 @@ def test_deterministic_parser_regression_education_and_projects() -> None:
 def test_deterministic_parser_project_detail_prefix_grouping() -> None:
     source = _source(
         [
+            {"type": "title", "text": "EXPERIENCE"},
+            {"type": "text", "text": "Blockly Programming Mobile App for IoT (Freelance) 2025 - 2026"},
             {"type": "title", "text": "PROJECTS"},
             {"type": "text", "text": "Career Assistant X"},
             {
@@ -531,6 +540,117 @@ def test_deterministic_parser_project_detail_prefix_grouping() -> None:
         assert not p.name.lower().startswith("description")
         assert not p.name.lower().startswith("responsibilities")
         assert not p.name.lower().startswith("technologies")
+
+
+def test_project_extractor_keeps_wrapped_description_lines_with_their_project() -> None:
+    source = _source(
+        [
+            {"type": "title", "text": "EXPERIENCE"},
+            {"type": "text", "text": "Blockly Programming Mobile App for IoT (Freelance) 2025 - 2026"},
+            {"type": "text", "text": "Founder & Fullstack Developer · IVORA 2025 - Present"},
+            {"type": "title", "text": "PROJECTS"},
+            {
+                "type": "text",
+                "text": "Interview Preparation Support System (Scientific Research) Currently Researching",
+            },
+            {
+                "type": "text",
+                "text": "Description: An interview preparation platform with AI and real-time video, supporting skill assessment and",
+            },
+            {"type": "text", "text": "CV ranking against Job Descriptions (JD)"},
+            {"type": "text", "text": "Technologies: Next.js, Spring Boot, Java, DynamoDB, WebRTC"},
+            {"type": "text", "text": "- Built an interview preparation system with AI and automated assessments"},
+            {"type": "text", "text": "feedback"},
+            {"type": "text", "text": "environment"},
+            {"type": "text", "text": "are missing)"},
+            {"type": "text", "text": "features, 384-768 dimensional embeddings"},
+            {"type": "text", "text": "algorithm"},
+            {"type": "text", "text": "Online Bookstore System"},
+            {"type": "text", "text": "Description: Built a distributed e-commerce system based on microservices."},
+            {"type": "text", "text": "- Designed and implemented a microservices architecture"},
+            {"type": "title", "text": "~25%"},
+            {"type": "text", "text": "HamTech — OTT Chat Platform with Integrated AI Agent"},
+            {"type": "text", "text": "- Developed a real-time multi-platform chat system with an AI agent."},
+            {"type": "text", "text": "Interview Preparation Support System"},
+            {"type": "text", "text": "An interview preparation platform with AI and real-time video."},
+            {"type": "text", "text": "HamTech"},
+            {"type": "text", "text": "Developed a real-time multi-platform chat system with an AI agent."},
+            {"type": "text", "text": "Blockly Programming Mobile App for IoT"},
+            {"type": "text", "text": "Developed a React Native application for programming IoT devices."},
+            {"type": "text", "text": "IVORA — Online Wedding Invitation Platform"},
+            {"type": "text", "text": "A platform for creating and sharing digital wedding invitations."},
+        ]
+    )
+
+    parsed = DeterministicResumeParser().parse(source, extraction_version="test-extractor")
+
+    assert [project.name for project in parsed.resume.projects] == [
+        "Interview Preparation Support System (Scientific Research) Currently Researching",
+        "Online Bookstore System",
+        "HamTech — OTT Chat Platform with Integrated AI Agent",
+    ]
+    assert "CV ranking against Job Descriptions (JD)" in (parsed.resume.projects[0].description or "")
+
+
+def test_project_extractor_deduplicates_dated_titles_and_ignores_technology_lists() -> None:
+    source = _source(
+        [
+            {"type": "title", "text": "PROJECTS"},
+            {"type": "text", "text": "Smart License Plate Recognition & Security SystemOct. 2025 – Dec. 2025"},
+            {"type": "title", "text": "Python, PyTorch, YOLOv8, OpenCV, EasyOCR, Flask, MySQL, Scikit-learn, Pandas"},
+            {"type": "text", "text": "– Engineered an end-to-end automated smart parking surveillance system."},
+            {"type": "text", "text": "Hybrid MoLD-ViT Deepfake DetectionMar. 2026 – Jun. 2026"},
+            {"type": "title", "text": "Python, TensorFlow/Keras, Vision Transformers (ViT), ResNet50V2, OpenCV, Scikit-learn"},
+            {"type": "text", "text": "– Developed an end-to-end deepfake detection system."},
+            {"type": "text", "text": "Advanced Multi-Stage RAG Pipeline with Citation VerificationJul. 2026 – Aug. 2026"},
+            {"type": "title", "text": "Python, LangChain, FAISS, Sentence-Transformers, BM25, Gemini API, Streamlit, PyPDF2"},
+            {"type": "text", "text": "– Architected a multi-stage Retrieval-Augmented Generation system."},
+            {"type": "text", "text": "Smart License Plate Recognition & Security System"},
+            {"type": "text", "text": "Engineered an automated smart parking surveillance system."},
+            {"type": "text", "text": "Hybrid MoLD-ViT Deepfake Detection"},
+            {"type": "text", "text": "Developed a deepfake detection system."},
+            {"type": "text", "text": "Advanced Multi-Stage RAG Pipeline with Citation Verification"},
+            {"type": "text", "text": "Architected a multi-stage RAG system."},
+        ]
+    )
+
+    parsed = DeterministicResumeParser().parse(source, extraction_version="test-extractor")
+
+    assert [project.name for project in parsed.resume.projects] == [
+        "Smart License Plate Recognition & Security System",
+        "Hybrid MoLD-ViT Deepfake Detection",
+        "Advanced Multi-Stage RAG Pipeline with Citation Verification",
+    ]
+
+
+def test_project_extractor_deduplicates_titles_with_month_day_date_ranges() -> None:
+    source = _source(
+        [
+            {"type": "title", "text": "PROJECTS"},
+            {"type": "title", "text": "Message Me - Chat app realtime April 28 - June 22, 2026"},
+            {"type": "text", "text": "Team size 1 - Position: Full-stack Developer"},
+            {
+                "type": "text",
+                "text": "Technology in use: Node.js, ExpressJs, Socket.IO, MongoBD, JWT, ReactJs, Vite",
+            },
+            {"type": "text", "text": "Descriptions: Developed a real-time messaging application using Socket.IO"},
+            {"type": "title", "text": "EV Station-based Rental System Oct 20 - Nov 15, 2025"},
+            {"type": "text", "text": "Team size 4 - Position: Full-stack Developer"},
+            {"type": "text", "text": "Technology in use: Node.js, ExpressJs, PostgreSQL, JWT, ReactJs, Vite"},
+            {"type": "text", "text": "Descriptions: Developed a full-stack authentication and KYC service"},
+            {"type": "text", "text": "Message Me - Chat app realtime"},
+            {"type": "text", "text": "Team size 1 - Position: Full-stack Developer. Developed a real-time messaging application."},
+            {"type": "text", "text": "EV Station-based Rental System"},
+            {"type": "text", "text": "Team size 4 - Position: Full-stack Developer. Developed an authentication and KYC service."},
+        ]
+    )
+
+    parsed = DeterministicResumeParser().parse(source, extraction_version="test-extractor")
+
+    assert [project.name for project in parsed.resume.projects] == [
+        "Message Me - Chat app realtime",
+        "EV Station-based Rental System",
+    ]
 
 
 def test_deterministic_parser_negative_education_major_and_gpa_guards() -> None:

@@ -72,6 +72,10 @@ Each structured entry must contain a quote copied verbatim from one unique conti
 Employment fields: jobTitle, organization, startDate, endDate, isCurrent, responsibilities, quote.
 Education fields: institution, degree, fieldOfStudy, startDate, endDate, studentStatus, gpa, gpaScale, quote.
 Project fields: name, description, quote. Certification fields: name, issuer, credentialId, quote.
+For projects, create one entry per distinct project title explicitly shown in the Projects/Research section.
+The project name must be the title itself, not a date, technology list, bullet, sentence, or achievement.
+Keep all following technologies and bullet descriptions in that project's description; merge repeated title/summary copies.
+Do not create a project from a title that appears only in Experience unless the Projects/Research section also lists it.
 Dates use {"value":"YYYY" or "YYYY-MM" or "YYYY-MM-DD", "precision":"year|month|day"}.
 Never extract names, email addresses, phone numbers, birth dates, protected traits, or inferred skills.
 Do not infer, translate, or add facts not explicitly supported by the quote. Omit uncertain facts.
