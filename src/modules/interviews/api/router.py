@@ -20,11 +20,18 @@ from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
 from src.modules.interviews.api.rate_limit import interview_rate_limiter
 from src.modules.interviews.application.agent_runtime import database_operations, run_interview_command
-from src.modules.interviews.application.session_reaper import CANDIDATE_LEFT_GRACE_MINUTES
 from src.modules.interviews.application.chat_runtime import (
     ChatRuntimeError,
     get_chat_runtime,
 )
+from src.modules.interviews.application.progress import compare_with_previous, load_progress, set_weekly_goal
+from src.modules.interviews.application.real_interviews import (
+    delete_report,
+    list_reports,
+    readiness_snapshot,
+    save_report,
+)
+from src.modules.interviews.application.session_reaper import CANDIDATE_LEFT_GRACE_MINUTES
 from src.modules.interviews.application.text_runtime import (
     TurnStateError,
     answer_turn,
@@ -37,13 +44,6 @@ from src.modules.interviews.evaluation.evaluation_service import (
     EvaluationServiceError,
     get_session_evaluation,
 )
-from src.modules.interviews.application.progress import compare_with_previous, load_progress, set_weekly_goal
-from src.modules.interviews.application.real_interviews import (
-    delete_report,
-    list_reports,
-    readiness_snapshot,
-    save_report,
-)
 from src.modules.interviews.planning.entry_gate import InterviewEntryBlocked, entry_policy, evaluate_entry
 from src.modules.interviews.planning.planner import (
     PlannerPolicyConfigurationError,
@@ -54,6 +54,8 @@ from src.modules.interviews.planning.question_selector import (
     QuestionUnavailableError,
     read_frozen_turns,
 )
+from src.modules.matching.facade import get_candidate_fit_attempt
+from src.modules.matching.schemas import MatchResult
 
 router = APIRouter(prefix="/api/v1/interviews", tags=["interviews"])
 
@@ -140,6 +142,7 @@ class SubmitInterviewAnswer(BaseModel):
 class CreateInterviewSession(BaseModel):
     resume_id: str = Field(alias="resumeId", min_length=1)
     job_id: str = Field(alias="jobId", min_length=1)
+    fit_attempt_id: str | None = Field(default=None, alias="fitAttemptId", max_length=64)
     mode: InterviewMode = "text"
     experience_type: ExperienceType = Field(default="interview_chat", alias="experienceType")
     locale: str = Field(default="vi-VN", min_length=2, max_length=35)
@@ -195,7 +198,7 @@ _SESSION_SELECT = """
            s.status, s.started_at, s.ended_at, s.experience_type, s.end_reason, s.metadata,
            j.title AS job_title,
            p.id AS plan_id, p.schema_version AS plan_schema_version,
-           p.status AS plan_status
+           p.status AS plan_status, p.source_context AS plan_source_context
     FROM interview_sessions s
     LEFT JOIN job_descriptions j ON j.id = s.job_id
     LEFT JOIN interview_session_plans p ON p.session_id = s.id
@@ -269,14 +272,33 @@ def _entry_blocked_http(exc: InterviewEntryBlocked) -> HTTPException:
     return HTTPException(status_code=409, detail=exc.decision.detail())
 
 
-async def _require_match_threshold(db: AsyncSession, user: dict, resume_id: str, job_id: str) -> None:
+async def _require_match_threshold(
+    db: AsyncSession,
+    user: dict,
+    resume_id: str,
+    job_id: str,
+    fit_attempt_id: str | None = None,
+) -> None:
     """Refuse to create a session whose CV–job match is missing or below the threshold.
 
     The match comes from the same cache as the fit report page, so this is the
     score the candidate has just seen. No session row is written when blocked.
     """
     try:
-        match = await evaluate_session_match(db=db, user=user, resume_id=resume_id, job_id=job_id)
+        if fit_attempt_id:
+            attempt = await get_candidate_fit_attempt(
+                db, user_id=str(user["sub"]), attempt_id=fit_attempt_id
+            )
+            if attempt is None:
+                raise HTTPException(status_code=404, detail="Assessment history not found")
+            if attempt["cvId"] != resume_id or attempt["jobId"] != job_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Assessment history does not match this CV and job",
+                )
+            match = MatchResult.model_validate(attempt["resultSnapshot"])
+        else:
+            match = await evaluate_session_match(db=db, user=user, resume_id=resume_id, job_id=job_id)
     except ValueError as exc:
         # CV or job not parsed yet: there is no score to enter the room with.
         raise HTTPException(
@@ -444,7 +466,9 @@ async def create_interview_session(
                 ),
             )
         await _validate_context(db, user, payload.resume_id, payload.job_id)
-        await _require_match_threshold(db, user, payload.resume_id, payload.job_id)
+        await _require_match_threshold(
+            db, user, payload.resume_id, payload.job_id, payload.fit_attempt_id
+        )
 
         session_id = str(uuid4())
         plan_id = str(uuid4())
@@ -483,6 +507,7 @@ async def create_interview_session(
                     {
                         "resumeId": payload.resume_id,
                         "jobId": payload.job_id,
+                        "fitAttemptId": payload.fit_attempt_id,
                         "source": "p0-session-context",
                         "focusArea": payload.focus_area,
                         "reaskConceptId": payload.reask_concept_id,

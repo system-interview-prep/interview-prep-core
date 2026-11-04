@@ -51,8 +51,29 @@ def test_matching_endpoints_reject_anonymous_callers(anonymous_client, path: str
 
 
 def test_fit_history_rejects_anonymous_callers(anonymous_client) -> None:
-    response = anonymous_client.get("/api/v1/matching/fit-history")
-    assert response.status_code == 401
+    for path in (
+        "/api/v1/matching/fit-history",
+        "/api/v1/matching/fit-history/attempts",
+        "/api/v1/matching/fit-history/attempts/attempt-1",
+    ):
+        response = anonymous_client.get(path)
+        assert response.status_code == 401
+
+
+def test_candidate_fit_attempt_history_is_scoped_and_returned(client, monkeypatch) -> None:
+    calls = {}
+
+    async def fake_list(_db, *, user_id: str, limit: int):
+        calls.update(user_id=user_id, limit=limit)
+        return [{"id": "attempt-1", "jobId": "job-1", "met": 2, "total": 8}]
+
+    monkeypatch.setattr(matching_router, "list_candidate_fit_attempts", fake_list)
+
+    response = client.get("/api/v1/matching/fit-history/attempts?limit=25")
+
+    assert response.status_code == 200
+    assert calls == {"user_id": "user-a", "limit": 25}
+    assert response.json() == {"items": [{"id": "attempt-1", "jobId": "job-1", "met": 2, "total": 8}]}
 
 
 class _CapturingDb:

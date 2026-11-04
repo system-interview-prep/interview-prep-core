@@ -34,6 +34,17 @@ def test_create_interview_session_accepts_an_exact_due_question_to_repeat() -> N
     assert payload.reask_question_version_id == "question-version-1"
 
 
+def test_create_interview_session_accepts_a_selected_fit_attempt() -> None:
+    payload = CreateInterviewSession.model_validate(
+        {
+            "resumeId": "cv-1",
+            "jobId": "job-1",
+            "fitAttemptId": "attempt-1",
+        }
+    )
+    assert payload.fit_attempt_id == "attempt-1"
+
+
 def test_create_interview_session_defaults_are_safe() -> None:
     payload = CreateInterviewSession.model_validate(
         {"resumeId": "cv-1", "jobId": "job-1"}

@@ -20,6 +20,11 @@ from src.core.config import get_settings
 from src.core.trace_logging import trace_event
 from src.modules.interviews.core.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
 from src.modules.interviews.core.interview_rounds import FOCUSABLE_AREAS, area_of, is_minor, spread_key
+from src.modules.interviews.planning.entry_gate import (
+    InterviewEntryBlocked,
+    evaluate_entry,
+    fit_adjusted_difficulty,
+)
 from src.modules.interviews.planning.plan_structure import (
     build_evaluation_targets,
     build_sections,
@@ -30,14 +35,13 @@ from src.modules.interviews.planning.planner_config import (
     PlannerPolicyConfig,
     resolve_strict_hands_on_precedence,
 )
-from src.modules.interviews.planning.entry_gate import (
-    InterviewEntryBlocked,
-    evaluate_entry,
-    fit_adjusted_difficulty,
-)
 from src.modules.interviews.planning.project_evidence import extract_project_evidences
 from src.modules.job_descriptions.schemas import CanonicalJobDescription
-from src.modules.matching.facade import canonical_job_from_description, evaluate_match
+from src.modules.matching.facade import (
+    canonical_job_from_description,
+    evaluate_match,
+    get_candidate_fit_attempt,
+)
 from src.modules.matching.schemas import (
     CanonicalJob,
     LanguageRequirement,
@@ -46,6 +50,7 @@ from src.modules.matching.schemas import (
     SkillRequirement,
     UnresolvedRequirement,
 )
+
 # `TaxonomyRef` is owned by user_cvs; matching only re-exported it.
 from src.modules.user_cvs.schemas import CanonicalResume, TaxonomyRef
 
@@ -1183,14 +1188,31 @@ async def build_and_persist_session_plan(
     )
     job = await _load_job(db, user=user, job_id=session_row["job_id"])
 
-    match = await evaluate_match(
-        MatchRequest(
-            schemaVersion="2.1",
-            resume=resume,
-            job=job,
-            asyncProcessing=False,
+    source_context = session_row.get("plan_source_context") or {}
+    fit_attempt_id = source_context.get("fitAttemptId")
+    if fit_attempt_id:
+        attempt = await get_candidate_fit_attempt(
+            db,
+            user_id=str(user["sub"]),
+            attempt_id=str(fit_attempt_id),
         )
-    )
+        attempt_matches_session = (
+            attempt is not None
+            and attempt["cvId"] == session_row["resume_id"]
+            and attempt["jobId"] == session_row["job_id"]
+        )
+        if not attempt_matches_session:
+            raise ValueError("The selected CV–JD assessment is no longer available for this session")
+        match = MatchResult.model_validate(attempt["resultSnapshot"])
+    else:
+        match = await evaluate_match(
+            MatchRequest(
+                schemaVersion="2.1",
+                resume=resume,
+                job=job,
+                asyncProcessing=False,
+            )
+        )
     # Checked again here, not only when the session is created: a session made
     # before the threshold existed, or before it was raised, must not open.
     entry = evaluate_entry(match)

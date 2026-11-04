@@ -190,22 +190,29 @@ class EvidenceCandidateTrace(CanonicalModel):
     rank: int = Field(ge=1)
 
 
-# "unknown" normally means a cited CV passage that needs confirmation. The one
-# exception is a skill the CV never mentions: CVs are short and parsers miss
-# sections, so absence is "not evidenced, ask the candidate", not a confident
-# not_met that fails the must-have gate. Only these reason codes may be uncited.
+# Reason codes for requirements/concepts that have no supporting passage in the CV.
 NOT_EVIDENCED_REASON_CODES = frozenset(
     {
         "skill_not_evidenced",
         "concept_not_evidenced",
         "concept_group_not_evidenced",
         "requirement_not_evidenced",
+        "gpa_not_evidenced",
+        "gpa_evidence_missing",
+        "language_credential_not_evidenced",
+        "language_credential_evidence_missing",
+        "education_status_not_evidenced",
+        "education_evidence_missing",
+        "education_degree_not_evidenced",
+        "education_degree_evidence_incomplete",
+        "programming_foundation_not_evidenced",
+        "programming_foundation_evidence_missing",
+        "research_or_competition_not_evidenced",
+        "research_or_competition_evidence_missing",
+        "ai_activity_not_evidenced",
+        "ai_activity_evidence_missing",
     }
 )
-
-
-def _uncited_unknown_allowed(status: str, reason_code: str) -> bool:
-    return status == "unknown" and reason_code in NOT_EVIDENCED_REASON_CODES
 
 
 class RequirementResult(CanonicalModel):
@@ -225,9 +232,7 @@ class RequirementResult(CanonicalModel):
 
     @model_validator(mode="after")
     def requirement_evidence_is_concept_union(self) -> "RequirementResult":
-        if self.status in {"met", "unknown"} and not self.evidence_refs and not _uncited_unknown_allowed(
-            self.status, self.reason_code
-        ):
+        if self.status in {"met", "unknown"} and not self.evidence_refs:
             raise ValueError(f"{self.status} requirement results must cite CV evidence")
         if not set(self.evidence_sources).issubset(set(self.evidence_refs)):
             raise ValueError("evidenceSources keys must appear in evidenceRefs")
@@ -242,12 +247,7 @@ class RequirementResult(CanonicalModel):
             if self.evidence_refs != expected:
                 raise ValueError("evidenceRefs must be the ordered union of conceptResults evidenceRefs")
         if self.status == "unknown" and not self.evidence_explanation:
-            # Only a cited unknown has a "related passage" to point at.
-            self.evidence_explanation = (
-                "CV có nhắc đến nội dung liên quan nhưng chưa đủ rõ để xác nhận yêu cầu."
-                if self.evidence_refs
-                else "CV hiện tại chưa nhắc tới yêu cầu này — cần ứng viên xác nhận thêm."
-            )
+            self.evidence_explanation = "CV có bằng chứng liên quan nhưng chưa đủ rõ để xác nhận yêu cầu."
         if self.status == "not_met" and not self.evidence_refs and not self.evidence_explanation:
             self.evidence_explanation = "Không tìm thấy nội dung đáp ứng yêu cầu trong CV hiện tại."
         return self
@@ -264,9 +264,7 @@ class ConceptResult(CanonicalModel):
 
     @model_validator(mode="after")
     def positive_or_ambiguous_result_requires_cited_evidence(self) -> "ConceptResult":
-        if self.status in {"met", "unknown"} and not self.evidence_refs and not _uncited_unknown_allowed(
-            self.status, self.reason_code
-        ):
+        if self.status in {"met", "unknown"} and not self.evidence_refs:
             raise ValueError(f"{self.status} concept results must cite CV evidence")
         return self
 
@@ -304,6 +302,7 @@ class ScoreProvenance(CanonicalModel):
 
 class MatchResult(CanonicalModel):
     schema_version: Literal["2.1"] = "2.1"
+    fit_attempt_id: str | None = Field(default=None, alias="fitAttemptId")
     pipeline_version: Literal["one-to-one-evidence-fusion-v1"] = "one-to-one-evidence-fusion-v1"
     resume_id: str
     job_id: str

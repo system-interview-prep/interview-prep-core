@@ -156,6 +156,39 @@ async def test_session_is_created_at_threshold(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_session_entry_uses_the_selected_fit_attempt_snapshot(monkeypatch) -> None:
+    monkeypatch.setenv("INTERVIEW_MIN_MATCH_PERCENT", "40")
+    selected_match = _match(suitabilityScore=0.2)
+    latest_match = _match(suitabilityScore=0.8)
+
+    async def selected_attempt(_db, *, user_id, attempt_id):
+        assert user_id == "u1"
+        assert attempt_id == "attempt-old"
+        return {
+            "cvId": "cv-1",
+            "jobId": "job-1",
+            "resultSnapshot": selected_match.model_dump(mode="json", by_alias=True),
+        }
+
+    async def latest_score(**_kwargs):
+        return latest_match
+
+    monkeypatch.setattr(router_module, "get_candidate_fit_attempt", selected_attempt)
+    monkeypatch.setattr(router_module, "evaluate_session_match", latest_score)
+
+    with pytest.raises(HTTPException) as caught:
+        await router_module._require_match_threshold(
+            None,
+            {"sub": "u1"},
+            "cv-1",
+            "job-1",
+            fit_attempt_id="attempt-old",
+        )
+
+    assert caught.value.detail["errorCode"] == "match_below_threshold"
+
+
+@pytest.mark.asyncio
 async def test_unparsed_cv_has_no_score_to_enter_with(monkeypatch) -> None:
     async def not_parsed(**_kwargs):
         raise ValueError("CV canonical parsing is incomplete")
