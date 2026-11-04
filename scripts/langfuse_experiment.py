@@ -38,7 +38,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.core import llm_tracing  # noqa: E402
-from src.modules.interviews.application import llm_checks  # noqa: E402
+from src.modules.interviews.application.quality_admin import llm_checks  # noqa: E402
 from src.modules.interviews.core import speech_checks  # noqa: E402
 
 DATASET = "interview-turns-golden"

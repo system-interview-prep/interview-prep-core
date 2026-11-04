@@ -7,8 +7,8 @@ from collections import defaultdict
 from datetime import date, datetime
 from typing import Any
 
-from src.modules.interviews.application.progress_calibration import Calibration
-from src.modules.interviews.application.progress_skills import (
+from src.modules.interviews.application.progress.progress_calibration import Calibration
+from src.modules.interviews.application.progress.progress_skills import (
     _NUMBER,
     _STAR_STAGES,
     _TECHNICAL_STAGES,
@@ -53,7 +53,7 @@ from src.modules.interviews.application.progress_skills import (
     trend,
     weekly_streak,
 )
-from src.modules.interviews.application.skill_display import area_of, display_name, is_tracked
+from src.modules.interviews.application.progress.skill_display import area_of, display_name, is_tracked
 from src.modules.interviews.core.interview_rounds import is_minor
 
 

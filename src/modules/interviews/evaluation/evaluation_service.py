@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core import llm_tracing
 from src.core.trace_logging import trace_event
-from src.modules.interviews.application import llm_checks
+from src.modules.interviews.application.quality_admin import llm_checks
 from src.modules.interviews.evaluation.answer_outcome import (
     ANSWERED,
     NOT_GRADABLE,

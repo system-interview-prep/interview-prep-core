@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.modules.interviews.application.session_reaper import reap_abandoned_sessions
+from src.modules.interviews.application.runtime.session_reaper import reap_abandoned_sessions
 
 
 class _SessionContext:

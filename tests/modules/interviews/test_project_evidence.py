@@ -247,7 +247,7 @@ def test_validation_question_is_one_short_spoken_question():
 @pytest.mark.asyncio
 async def test_no_repeated_project_validation_in_runtime():
     """Requirement 6: Once Turn 1 (project validation) is completed, it is never asked again."""
-    from src.modules.interviews.application.chat_runtime import process_candidate_message, start_chat_session
+    from src.modules.interviews.application.runtime.chat_runtime import process_candidate_message, start_chat_session
     from tests.modules.interviews.test_chat_runtime import MockChatSession
 
     session_row = {

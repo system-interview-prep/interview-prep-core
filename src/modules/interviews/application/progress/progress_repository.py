@@ -9,9 +9,9 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.modules.interviews.application.progress_calibration import load_calibration
-from src.modules.interviews.application.progress_sessions import build_progress
-from src.modules.interviews.application.progress_skills import (
+from src.modules.interviews.application.progress.progress_calibration import load_calibration
+from src.modules.interviews.application.progress.progress_sessions import build_progress
+from src.modules.interviews.application.progress.progress_skills import (
     _TIER_RANK,
     DEFAULT_WEEKLY_GOAL,
     MAX_SESSIONS,

@@ -20,8 +20,8 @@ from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
 from src.modules.interviews.adapters.voice.voice_events import VOICE_EVENTS, sanitize_fields
 from src.modules.interviews.api.rate_limit import interview_rate_limiter
-from src.modules.interviews.application.chat_runtime import build_session_state_from_db
-from src.modules.interviews.application.facade import (
+from src.modules.interviews.application.runtime.chat_runtime import build_session_state_from_db
+from src.modules.interviews.application.runtime.voice_facade import (
     ChatRuntimeError,
     start_voice_interview,
     submit_voice_answer,

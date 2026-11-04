@@ -48,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # chạy được 
 from sqlalchemy import text  # noqa: E402
 
 from src.infrastructure.database import StandaloneSessionFactory  # noqa: E402
-from src.modules.interviews.application.progress_calibration import (  # noqa: E402
+from src.modules.interviews.application.progress.progress_calibration import (  # noqa: E402
     Calibration,
     SkillSessionPoint,
     between_person_sd,

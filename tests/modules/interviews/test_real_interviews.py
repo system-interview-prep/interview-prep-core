@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from src.modules.interviews.api.router import RealInterviewPayload
-from src.modules.interviews.application.real_interviews import readiness_snapshot
+from src.modules.interviews.application.progress.real_interviews import readiness_snapshot
 
 
 def _progress() -> dict:

@@ -40,8 +40,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from src.modules.interviews.application.progress_calibration import Calibration
-from src.modules.interviews.application.skill_display import area_of, is_tracked
+from src.modules.interviews.application.progress.progress_calibration import Calibration
+from src.modules.interviews.application.progress.skill_display import area_of, is_tracked
 from src.modules.interviews.core.interview_rounds import AREAS, is_minor
 
 DEFAULT_WEEKLY_GOAL = 2

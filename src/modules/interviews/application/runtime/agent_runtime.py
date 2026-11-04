@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.modules.interviews.agent.interview_agent import InterviewAgent
 from src.modules.interviews.agent.ports import InterviewOperations
 from src.modules.interviews.agent.state import InterviewCommand
-from src.modules.interviews.application.chat_runtime import (
+from src.modules.interviews.application.runtime.chat_runtime import (
     complete_chat_session,
     process_candidate_message,
     start_chat_session,

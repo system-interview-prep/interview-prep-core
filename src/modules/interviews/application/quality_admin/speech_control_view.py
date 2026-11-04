@@ -29,7 +29,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core import llm_tracing
-from src.modules.interviews.application.pipeline_health import rate
+from src.modules.interviews.application.quality_admin.pipeline_health import rate
 from src.modules.interviews.core.interviewer_voice import (
     INTERJECTION_SHARE,
     INTERJECTION_WINDOW,

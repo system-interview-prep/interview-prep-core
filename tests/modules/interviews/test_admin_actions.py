@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-actions = importlib.import_module("src.modules.interviews.application.admin_actions")
+actions = importlib.import_module("src.modules.interviews.application.quality_admin.admin_actions")
 
 
 class _Db:

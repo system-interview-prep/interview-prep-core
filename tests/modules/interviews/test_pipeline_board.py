@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from src.modules.interviews.application import pipeline_board as board
+from src.modules.interviews.application.quality_admin import pipeline_board as board
 
 T = datetime(2026, 10, 19, 9, 0, tzinfo=UTC)
 

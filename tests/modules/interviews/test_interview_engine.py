@@ -1078,7 +1078,7 @@ def test_closing_invitation_has_no_bracketed_aside():
 
 
 def test_probe_provenance_marks_fixed_fallbacks():
-    from src.modules.interviews.application.chat_runtime import _provenance_metadata
+    from src.modules.interviews.application.runtime.chat_runtime import _provenance_metadata
     from src.modules.interviews.core.interview_engine import (
         _FIXED_PROBES,
         SAFE_FALLBACK_PROBE_VI,

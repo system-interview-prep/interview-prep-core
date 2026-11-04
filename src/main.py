@@ -22,9 +22,9 @@ from src.modules.auth import build_module as build_auth_module
 from src.modules.health import build_module as build_health_module
 from src.modules.interviews import build_module as build_interviews_module
 from src.modules.interviews.agent.checkpoints import interview_checkpoint_lifespan
-from src.modules.interviews.application.admin_notifier import notifier as admin_notifier
-from src.modules.interviews.application.pipeline_live import bridge as pipeline_live_bridge
-from src.modules.interviews.application.session_reaper import session_reaper_loop
+from src.modules.interviews.application.quality_admin.admin_notifier import notifier as admin_notifier
+from src.modules.interviews.application.quality_admin.pipeline_live import bridge as pipeline_live_bridge
+from src.modules.interviews.application.runtime.session_reaper import session_reaper_loop
 from src.modules.interviews.planning.planner import configured_planner_policy
 from src.modules.job_descriptions import build_module as build_job_descriptions_module
 from src.modules.matching import build_module as build_matching_module

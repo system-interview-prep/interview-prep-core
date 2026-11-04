@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from src.modules.interviews.application import admin_notifier as notifier
+from src.modules.interviews.application.quality_admin import admin_notifier as notifier
 
 NOW = datetime(2026, 10, 19, 14, 5, tzinfo=UTC)
 
@@ -53,7 +53,7 @@ def test_rate_problems_notify_at_most_once_per_hour():
 
 
 def test_every_alert_kind_has_words_and_unknown_kinds_are_skipped():
-    from src.modules.interviews.application.pipeline_board import build_alerts
+    from src.modules.interviews.application.quality_admin.pipeline_board import build_alerts
 
     session = {"id": "s1", "candidate_name": "An", "job_title": "Backend", "updated_at": NOW}
     alerts = build_alerts(

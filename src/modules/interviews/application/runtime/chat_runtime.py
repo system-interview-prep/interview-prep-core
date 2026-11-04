@@ -27,7 +27,7 @@ from src.core import llm_tracing
 from src.core.pipeline_events import current_session_id
 from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
-from src.modules.interviews.application import interviewer_playbook, llm_checks
+from src.modules.interviews.application.quality_admin import interviewer_playbook, llm_checks
 from src.modules.interviews.core import playbook, speech_checks
 from src.modules.interviews.core.opening_script import build_opening, warmup_question
 from src.modules.interviews.core.demo_mode import is_demo_duration

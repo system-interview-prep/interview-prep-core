@@ -252,7 +252,7 @@ async def main() -> None:
             return
         messages = await _load_messages(db, session_id)
         try:
-            from src.modules.interviews.application.chat_runtime import _candidate_names
+            from src.modules.interviews.application.runtime.chat_runtime import _candidate_names
 
             _, call_name = await _candidate_names(db, session_id)
         except Exception:  # noqa: BLE001 - the name only feeds one metric

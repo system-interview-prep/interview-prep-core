@@ -22,7 +22,7 @@ from src.modules.interviews.application.progress import (
     reask_after_days,
     weekly_streak,
 )
-from src.modules.interviews.application.progress_calibration import (
+from src.modules.interviews.application.progress.progress_calibration import (
     Calibration,
     SkillSessionPoint,
     between_person_sd,
@@ -326,7 +326,7 @@ def test_calibration_measurements() -> None:
 
 
 def test_skills_use_candidate_names_areas_and_hide_the_greeting() -> None:
-    from src.modules.interviews.application.skill_display import GENERAL_NAME
+    from src.modules.interviews.application.progress.skill_display import GENERAL_NAME
 
     sessions = [_session(1)]
     turns = [

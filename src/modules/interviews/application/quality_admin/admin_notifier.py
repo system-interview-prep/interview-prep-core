@@ -36,7 +36,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core import pipeline_events
-from src.modules.interviews.application.pipeline_board import load_alerts
+from src.modules.interviews.application.quality_admin.pipeline_board import load_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -436,7 +436,7 @@ async def sync_admin_notifications(db: AsyncSession) -> list[dict[str, Any]]:
 async def publish_notifications(items: list[dict[str, Any]]) -> None:
     """Announce new notifications to the open admin pages."""
     from src.infrastructure.socketio import sio
-    from src.modules.interviews.application.pipeline_live import ALL_ROOM, NAMESPACE
+    from src.modules.interviews.application.quality_admin.pipeline_live import ALL_ROOM, NAMESPACE
 
     payload = {
         "count": len(items),

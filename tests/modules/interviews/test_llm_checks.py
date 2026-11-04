@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.modules.interviews.application.llm_checks import decision_rule, session_flags, turn_flags
+from src.modules.interviews.application.quality_admin.llm_checks import decision_rule, session_flags, turn_flags
 
 QUESTION = "Khi dữ liệu trong Redis cache bị cũ so với database, bạn xử lý invalidation thế nào?"
 RUBRIC = "cache-aside, TTL, xoá key sau khi ghi, race condition khi nhiều request cùng ghi"

@@ -153,7 +153,7 @@ class PipelineLiveBridge:
                         asyncio.ensure_future(publish(body))
                         if body.get("problems"):
                             # A worker reported a problem: notify admins soon.
-                            from src.modules.interviews.application.admin_notifier import notifier
+                            from src.modules.interviews.application.quality_admin.admin_notifier import notifier
 
                             notifier.wake()
 

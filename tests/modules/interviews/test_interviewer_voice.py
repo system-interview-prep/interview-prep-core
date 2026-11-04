@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from src.modules.interviews.application.chat_runtime import build_session_state_from_db
+from src.modules.interviews.application.runtime.chat_runtime import build_session_state_from_db
 from src.modules.interviews.core.interview_engine import (
     InterviewCoreEngine,
     fallback_probe,
@@ -458,7 +458,7 @@ async def test_turn_metadata_says_where_the_acknowledgement_came_from() -> None:
 
 
 def test_spoken_turn_trace_record(monkeypatch) -> None:
-    from src.modules.interviews.application import chat_runtime
+    from src.modules.interviews.application.runtime import chat_runtime
     from src.modules.interviews.core.interview_types import InterviewerTurnOutput
 
     captured: list[dict] = []
@@ -1079,7 +1079,7 @@ async def test_rejected_acknowledgement_draft_is_recorded() -> None:
 
 
 def test_spoken_turn_trace_carries_speech_control(monkeypatch) -> None:
-    from src.modules.interviews.application import chat_runtime
+    from src.modules.interviews.application.runtime import chat_runtime
     from src.modules.interviews.core import speech_checks
     from src.modules.interviews.core.interview_types import InterviewerTurnOutput
 

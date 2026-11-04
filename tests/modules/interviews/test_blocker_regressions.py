@@ -414,7 +414,7 @@ async def test_closing_qna_and_unanswered_turn_are_not_graded() -> None:
 @pytest.mark.asyncio
 async def test_grading_failure_surfaces_as_503_through_the_agent_graph() -> None:
     """H6: an ungradable session is a retryable 503, not a 500 or a fake report."""
-    from src.modules.interviews.application import agent_runtime
+    from src.modules.interviews.application.runtime import agent_runtime
     from src.modules.interviews.evaluation.evaluation_engine import EvaluationGradingError
 
     session = {"id": "sess-grade", "plan_id": "plan-grade", "status": "CLOSED"}
