@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+import os
 from time import perf_counter
 from typing import Any
 
@@ -68,6 +69,64 @@ class LabSpeechRequest(LabSessionRequest):
 
 class VoiceRuntimePreview(BaseModel):
     transcript: str = Field(min_length=1, max_length=20000)
+
+
+class CandidateVoicePreview(BaseModel):
+    voice: str = Field(min_length=1, max_length=64)
+
+
+@router.get("/voices")
+async def list_candidate_voices(_: dict = Depends(current_user)) -> dict:
+    """Return the configured VieNeu voice list without exposing TTS credentials."""
+    base_url = os.getenv("VIENEU_TTS_BASE_URL", "http://host.docker.internal:8000").rstrip("/")
+    headers = {}
+    api_key = os.getenv("VIENEU_TTS_API_KEY", "").strip() or os.getenv("VIENEU_API_KEY", "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{base_url}/v1/voices", headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="VieNeu voice service is unavailable") from exc
+    return {"success": True, **payload}
+
+
+@router.post("/voices/preview")
+async def preview_candidate_voice(
+    payload: CandidateVoicePreview,
+    _: dict = Depends(current_user),
+) -> Response:
+    """Synthesize a short candidate-facing sample with the selected VieNeu voice."""
+    base_url = os.getenv("VIENEU_TTS_BASE_URL", "http://host.docker.internal:8000").rstrip("/")
+    headers = {}
+    api_key = os.getenv("VIENEU_TTS_API_KEY", "").strip() or os.getenv("VIENEU_API_KEY", "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request_body = {
+        "model": os.getenv("VIENEU_TTS_MODEL", "vieneu-v3-turbo").strip() or "vieneu-v3-turbo",
+        "voice": payload.voice,
+        "input": "Xin chào! Tôi sẽ đồng hành cùng bạn trong buổi luyện tập phỏng vấn hôm nay.",
+        "response_format": "wav",
+    }
+    timeout = float(os.getenv("VIENEU_TTS_TIMEOUT_SECONDS", "30"))
+    try:
+        async with httpx.AsyncClient(timeout=min(max(timeout, 5.0), 60.0)) as client:
+            voices_response = await client.get(f"{base_url}/v1/voices", headers=headers)
+            voices_response.raise_for_status()
+            available = voices_response.json().get("data", [])
+            if not any(item.get("id") == payload.voice for item in available):
+                raise HTTPException(status_code=422, detail="Unknown VieNeu voice")
+            response = await client.post(f"{base_url}/v1/audio/speech", json=request_body, headers=headers)
+            response.raise_for_status()
+    except HTTPException:
+        raise
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=503, detail="VieNeu could not synthesize this voice sample") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="VieNeu voice service is unavailable") from exc
+    return Response(content=response.content, media_type=response.headers.get("content-type", "audio/wav"))
 
 
 async def _ready(session_id: str, user: dict, db: AsyncSession) -> str:
