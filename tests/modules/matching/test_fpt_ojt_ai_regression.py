@@ -3,9 +3,10 @@ from __future__ import annotations
 import pytest
 
 from src.modules.job_descriptions.schemas import CanonicalJobDescription
-from src.modules.matching.domain.adapters import job_description_to_matching_job
 from src.modules.matching.application.facade import MatchingFacade
-from src.modules.matching.domain.schemas import MatchRequest
+from src.modules.matching.domain.adapters import job_description_to_matching_job
+from src.modules.matching.domain.schemas import MatchRequest, UnresolvedRequirement
+from src.modules.matching.evaluation.requirement_evaluators import evaluate_unresolved_requirement
 from src.modules.user_cvs.schemas import CanonicalResume
 
 SHA = "c" * 64
@@ -116,6 +117,118 @@ def _canonical_resume() -> CanonicalResume:
     )
 
 
+def _resume_with_evidence(evidence_id: str, text: str, section: str) -> CanonicalResume:
+    return CanonicalResume.model_validate(
+        {
+            "schemaVersion": "2.1",
+            "resumeId": "resume-evidence-fixture",
+            "documentId": "resume-evidence-fixture",
+            "documentSha256": SHA,
+            "evidence": [_evidence(evidence_id, "resume-evidence-fixture", text, section)],
+        }
+    )
+
+
+def _resume_with_certification(name: str, issuer: str, evidence_id: str) -> CanonicalResume:
+    text = f"{name} - {issuer}"
+    return CanonicalResume.model_validate(
+        {
+            "schemaVersion": "2.1",
+            "resumeId": "resume-certification-fixture",
+            "documentId": "resume-certification-fixture",
+            "documentSha256": SHA,
+            "certifications": [
+                {
+                    "certificationId": "certification-1",
+                    "name": name,
+                    "issuer": issuer,
+                    "evidenceRefs": [evidence_id],
+                }
+            ],
+            "evidence": [
+                _evidence(evidence_id, "resume-certification-fixture", text, "certifications")
+            ],
+        }
+    )
+
+
+def test_research_project_evidence_matches_but_certification_alone_does_not() -> None:
+    requirement = UnresolvedRequirement(
+        requirementId="req-research",
+        type="unresolved",
+        kind="other",
+        priority="nice_to_have",
+        sourceEvidenceRef="jd-research",
+        rawLabel="Có thành tích hoặc giải thưởng trong các cuộc thi hoặc nghiên cứu khoa học",
+    )
+
+    research_result = evaluate_unresolved_requirement(
+        requirement,
+        _resume_with_evidence(
+            "cv-research-project",
+            "Research Project: Built a movie recommendation system with Graph Neural Networks and PyTorch Geometric.",
+            "projects",
+        ),
+    )
+    certification_result = evaluate_unresolved_requirement(
+        requirement,
+        _resume_with_evidence(
+            "cv-certification",
+            "Google AI Essentials Specialization; Google Data Analytics Professional Certificate.",
+            "certifications",
+        ),
+    )
+
+    assert research_result.status == "met"
+    assert research_result.evidence_refs == ["cv-research-project"]
+    assert certification_result.status == "not_met"
+    assert certification_result.evidence_refs == []
+
+
+@pytest.mark.parametrize(
+    ("requirement_label", "certification_name", "expected_status"),
+    [
+        (
+            "AWS Certified Solutions Architect certification",
+            "AWS Certified Solutions Architect - Associate",
+            "met",
+        ),
+        ("Professional certification", "Google AI Essentials Specialization", "met"),
+        (
+            "AWS Certified Solutions Architect certification",
+            "Google AI Essentials Specialization",
+            "not_met",
+        ),
+    ],
+)
+def test_professional_certification_requirement_matches_certificate_records(
+    requirement_label: str,
+    certification_name: str,
+    expected_status: str,
+) -> None:
+    requirement = UnresolvedRequirement(
+        requirementId="req-certification",
+        type="unresolved",
+        kind="other",
+        priority="must_have",
+        sourceEvidenceRef="jd-certification",
+        rawLabel=requirement_label,
+    )
+
+    result = evaluate_unresolved_requirement(
+        requirement,
+        _resume_with_certification(
+            certification_name,
+            "AWS" if certification_name.startswith("AWS") else "Google",
+            "cv-certification",
+        ),
+    )
+
+    assert result.status == expected_status
+    if expected_status == "met":
+        assert result.evidence_refs == ["cv-certification"]
+
+
 def test_fpt_ojt_ai_sample_is_evidence_evaluated_without_duplicate_requirements() -> None:
     job = job_description_to_matching_job(_canonical_jd(), job_id="job-fixture")
     assert len(job.requirements) == 7
@@ -137,7 +250,7 @@ def test_fpt_ojt_ai_sample_is_evidence_evaluated_without_duplicate_requirements(
     assert statuses.count("not_met") == 1
     assert result.requirement_results[0].evidence_refs == ["cv-education"]
     assert result.requirement_results[2].evidence_refs == ["cv-gpa"]
-    assert result.requirement_results[3].reason_code == "requirement_not_found"
+    assert result.requirement_results[3].reason_code == "language_credential_evidence_missing"
     assert result.requirement_results[3].evidence_refs == []
     assert set(result.requirement_results[5].evidence_refs) == {
         "cv-genai",
@@ -164,8 +277,9 @@ def test_fpt_ojt_ai_sample_is_evidence_evaluated_without_duplicate_requirements(
     assert sum(result.score_provenance.factor_contributions.values()) == pytest.approx(
         result.diagnostic_score
     )
-    assert result.eligibility == "eligible"
-    assert result.suitability_score is not None
+    # The remaining must-have has no evidence in the CV, so it is now not met.
+    assert result.eligibility == "ineligible"
+    assert result.suitability_score is None
     assert result.diagnostic_score is not None
     assert result.decision == "assessed"
 
@@ -191,8 +305,7 @@ def test_unresolved_jd_requirement_does_not_get_promoted_by_semantic_similarity(
     assert semantic.status == "scored"
     assert semantic.raw_score is not None
     assert result.suitability_score is None
-    # Nothing was assessed against a requirement, so the only scored factor is
-    # semantic and the score stays a suppressed estimate.
-    assert result.score_provenance.mode == "semantic_only_estimated"
-    assert result.requirement_results[0].status == "unknown"
+    # The criterion is explicitly not met; semantic similarity cannot promote it.
+    assert result.score_provenance.mode == "requirement_aware"
+    assert result.requirement_results[0].status == "not_met"
     assert result.requirement_results[0].reason_code == "requirement_not_evidenced"

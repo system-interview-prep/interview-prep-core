@@ -96,13 +96,13 @@ PROFICIENCY_RANK = {
     "expert": 3,
 }
 
-# Confidence of "the CV does not mention this skill": the absence itself is
-# observed reliably, but it says little about the candidate.
+# Confidence in the document evidence assessment, not in the candidate's
+# underlying ability.
 _NOT_EVIDENCED_CONFIDENCE = 0.6
 
 
 def _not_evidenced_text(label: str) -> str:
-    return f"CV hiện tại chưa nhắc tới {label} — cần ứng viên xác nhận thêm."
+    return f"CV hiện tại không có bằng chứng cho {label}; tiêu chí chưa được đáp ứng theo hồ sơ đã cung cấp."
 
 
 class MatchingFacade:
@@ -309,17 +309,14 @@ class MatchingFacade:
                     recovered_refs = [item.evidence_id for item in recovered_evidence]
                     context_refs = [item.evidence.evidence_id for item in context_candidates]
                     has_uncertain_evidence = bool(context_candidates or recovered_evidence)
-                    # A CV that never mentions a skill is not evidence the
-                    # candidate lacks it: CVs are short and parsers miss
-                    # sections. Absence is "not evidenced" (unknown, ask the
-                    # candidate), never a confident not_met that fails the
-                    # must-have gate. not_met is kept for skills the CV shows
-                    # below the required level or duration.
+                    # Keep uncertain, cited evidence as unknown. If neither
+                    # canonical nor recovered evidence exists, the skill is
+                    # not met according to the CV supplied for this match.
                     results.append(
                         RequirementResult(
                             requirementId=requirement.requirement_id,
-                            status="unknown",
-                            score=None,
+                            status="unknown" if has_uncertain_evidence else "not_met",
+                            score=None if has_uncertain_evidence else 0.0,
                             confidence=0.45 if has_uncertain_evidence else _NOT_EVIDENCED_CONFIDENCE,
                             evidenceRefs=list(dict.fromkeys([*context_refs, *recovered_refs])),
                             reasonCode=(
@@ -344,8 +341,8 @@ class MatchingFacade:
                     results.append(
                         RequirementResult(
                             requirementId=requirement.requirement_id,
-                            status="unknown",
-                            score=None,
+                            status="not_met",
+                            score=0.0,
                             confidence=_NOT_EVIDENCED_CONFIDENCE,
                             evidenceRefs=[],
                             reasonCode="skill_not_evidenced",
@@ -604,7 +601,7 @@ class MatchingFacade:
             if requirement.priority == "must_have"
         ]
         if payload.matching_policy.must_have_mode == "strict" and any(
-            result.status == "not_met" and result.confidence >= 0.80 for result in must
+            result.status == "not_met" for result in must
         ):
             return "ineligible"
         if payload.matching_policy.unknown_handling == "manual_review" and any(

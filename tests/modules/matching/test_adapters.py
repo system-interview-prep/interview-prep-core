@@ -80,12 +80,11 @@ def test_unresolved_must_have_is_not_silently_dropped_or_marked_met() -> None:
     result = MatchingFacade(StubEmbedder()).match(request)
 
     degree = next(item for item in result.requirement_results if item.requirement_id == "req-degree")
-    # Kept and not marked met; an unaddressed must-have sends the candidate to
-    # review instead of rejecting on absence alone.
-    assert degree.status == "unknown"
+    # No supporting CV evidence means the must-have is not met.
+    assert degree.status == "not_met"
     assert degree.reason_code == "requirement_not_evidenced"
-    assert "chưa nhắc tới" in (degree.evidence_explanation or "")
-    assert result.eligibility == "review_required"
+    assert "không tìm thấy bằng chứng" in (degree.evidence_explanation or "").lower()
+    assert result.eligibility == "ineligible"
 
 
 def test_adapter_fails_closed_when_finalized_jd_has_no_evidence() -> None:

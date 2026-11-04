@@ -68,7 +68,9 @@ def _case_errors(case: dict[str, Any]) -> list[str]:
             errors.append(f"requirement:{requirement_id}:unresolved_cv_evidence")
         if not set(result.get("jd_evidence_refs", [])).issubset(evidence_ids.get("jd", set())):
             errors.append(f"requirement:{requirement_id}:unresolved_jd_evidence")
-        if status in {"met", "not_met"} and not result.get("evidence_refs"):
+        # A missing CV passage is now a negative match decision by policy;
+        # only a positive match must be grounded in a cited CV span.
+        if status == "met" and not result.get("evidence_refs"):
             errors.append(f"requirement:{requirement_id}:ungrounded_decision")
 
     must_statuses = {

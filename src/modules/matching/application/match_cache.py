@@ -28,7 +28,7 @@ from src.modules.matching.domain.schemas import MatchRequest, MatchResult
 logger = logging.getLogger(__name__)
 
 # Bump when matching logic changes in a way that should invalidate stored results.
-CACHE_VERSION = "1"
+CACHE_VERSION = "2"
 # Taxonomy aliases and embeddings live outside the request; refresh eventually.
 MAX_AGE = timedelta(days=30)
 

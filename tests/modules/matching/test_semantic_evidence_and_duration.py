@@ -101,8 +101,8 @@ def test_named_technology_is_not_inferred_from_near_synonyms() -> None:
         _resume_from_lines(),
     )
 
-    # Never promoted from near synonyms; with no mention it is "not evidenced".
-    assert result.status == "unknown"
+    # Never promoted from near synonyms; no supporting evidence means not met.
+    assert result.status == "not_met"
     assert result.reason_code == "requirement_not_evidenced"
     assert not result.evidence_refs
     assert not result.retrieval_candidates

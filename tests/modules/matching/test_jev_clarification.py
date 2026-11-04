@@ -590,8 +590,12 @@ async def test_rescore_by_ids_resolves_match_request_before_forwarding_answers(m
         captured.append(rescore_request)
         return expected
 
+    async def persist(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr(clarification_router_module, "_resolve_match_request", resolve)
     monkeypatch.setattr(clarification_router_module, "rescore_match_with_clarification_answers", rescore)
+    monkeypatch.setattr(clarification_router_module, "persist_candidate_fit", persist)
     payload = MatchClarificationRescoreIdsRequest(
         candidateId="cv-1",
         jobId="job-1",

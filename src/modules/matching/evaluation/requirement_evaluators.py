@@ -40,6 +40,24 @@ _CREDENTIAL_RE = re.compile(
     r"(?:>=|>|=|tu|from|:)?\s*(?P<value>\d+(?:\.\d+)?)?\s*\+?",
     re.I,
 )
+_CERTIFICATION_TERMS = (
+    "certification",
+    "certifications",
+    "certificate",
+    "certificates",
+    "certified",
+    "professional license",
+    "license",
+    "licenses",
+    "chung chi",
+    "chung nhan",
+)
+_CERTIFICATION_STOPWORDS = {
+    "a", "an", "and", "or", "the", "of", "in", "for", "with", "to",
+    "required", "preferred", "relevant", "professional", "technical", "valid",
+    "certification", "certifications", "certificate", "certificates", "certified",
+    "license", "licenses", "chung", "chi", "nhan",
+}
 
 _PROGRAMMING_LANGUAGES: dict[str, tuple[str, ...]] = {
     "python": ("python",),
@@ -363,6 +381,8 @@ def select_evaluator(requirement: UnresolvedRequirement) -> EvaluatorSelection |
         return EvaluatorSelection("education_degree", "education")
     if requirement.credential or _CREDENTIAL_RE.search(text):
         return EvaluatorSelection("language_credential", "language")
+    if _has_phrase(text, _CERTIFICATION_TERMS):
+        return EvaluatorSelection("certification", "other")
     if _required_experience_months(requirement) is not None:
         return EvaluatorSelection("experience_duration", "experience")
     decomposed, _ = _decompose_explicit_list(requirement.raw_label)
@@ -412,19 +432,26 @@ def _result(
         if concept_results
         else _unique_refs(evidence)
     )
-    # Unknown means there is a CV passage to inspect, but its meaning or
-    # strength is not enough to confirm the requirement. Absence without a
-    # citation is a not-found result; a positive result also needs citations.
-    if status == "unknown" and not evidence_refs and reason_code not in NOT_EVIDENCED_REASON_CODES:
+    # Unknown is reserved for cited evidence whose meaning or strength is
+    # insufficient. If the CV has no evidence reference, the requirement is
+    # not met according to the submitted CV.
+    if status == "unknown" and not evidence_refs:
         status = "not_met"
-        reason_code = "requirement_not_found"
-        evidence_explanation = f"Không tìm thấy “{requirement.raw_label}” trong CV hiện tại."
+        if reason_code not in NOT_EVIDENCED_REASON_CODES:
+            reason_code = "requirement_not_found"
+        evidence_explanation = (
+            f"Không tìm thấy bằng chứng đáp ứng “{requirement.raw_label}” trong CV hiện tại; "
+            "tiêu chí được tính là chưa đáp ứng."
+        )
     elif status == "met" and not evidence_refs:
         status = "not_met"
         reason_code = "requirement_not_found"
         evidence_explanation = f"Không tìm thấy “{requirement.raw_label}” trong CV hiện tại."
     elif status == "not_met" and not evidence_refs:
-        evidence_explanation = f"Không tìm thấy “{requirement.raw_label}” trong CV hiện tại."
+        evidence_explanation = (
+            f"Không tìm thấy bằng chứng đáp ứng “{requirement.raw_label}” trong CV hiện tại; "
+            "tiêu chí được tính là chưa đáp ứng."
+        )
     elif status == "unknown" and evidence_explanation is None:
         evidence_explanation = (
             "CV có nhắc đến nội dung liên quan nhưng chưa đủ rõ để xác nhận yêu cầu."
@@ -488,8 +515,6 @@ def _absence_result(
     *,
     reason_prefix: str = "requirement",
 ) -> RequirementResult:
-    # A requirement the CV never addresses ("excellent communication") is not
-    # evidence the candidate fails it; see NOT_EVIDENCED_REASON_CODES.
     return _result(
         requirement,
         status="unknown",
@@ -748,6 +773,81 @@ def _evaluate_language(
     )
 
 
+def _evaluate_certification(
+    requirement: UnresolvedRequirement,
+    resume: CanonicalResume,
+) -> RequirementResult:
+    terms = {
+        term
+        for term in _normalize(requirement.raw_label).split()
+        if len(term) > 1 and term not in _CERTIFICATION_STOPWORDS
+    }
+    evidence_by_id = {item.evidence_id: item for item in resume.evidence}
+    candidates: list[tuple[int, list[EvidenceSpan]]] = []
+    for certification in resume.certifications:
+        label = _normalize(f"{certification.name} {certification.issuer or ''}")
+        matched_terms = terms.intersection(label.split())
+        linked_evidence = [
+            evidence_by_id[ref]
+            for ref in certification.evidence_refs
+            if ref in evidence_by_id
+        ]
+        if linked_evidence:
+            candidates.append((len(matched_terms), linked_evidence))
+
+    if not candidates:
+        candidates = [
+            (
+                len(terms.intersection(_normalize(item.text).split())),
+                [item],
+            )
+            for item in resume.evidence
+            if _has_phrase(item.section, ("certification", "certificate", "credentials", "chung chi"))
+        ]
+
+    if not terms:
+        evidence = [item for _, refs in candidates for item in refs]
+        if evidence:
+            return _result(
+                requirement,
+                status="met",
+                reason_code="certification_evidenced",
+                evidence=_dedupe_evidence(evidence)[:4],
+                confidence=0.95,
+            )
+    else:
+        minimum_hits = max(1, (len(terms) + 1) // 2)
+        best_hits = max((hits for hits, _ in candidates), default=0)
+        if best_hits >= minimum_hits:
+            evidence = [item for hits, refs in candidates if hits == best_hits for item in refs]
+            return _result(
+                requirement,
+                status="met",
+                reason_code="certification_evidenced",
+                evidence=_dedupe_evidence(evidence)[:4],
+                confidence=0.9,
+            )
+        if best_hits:
+            evidence = [item for hits, refs in candidates if hits == best_hits for item in refs]
+            return _result(
+                requirement,
+                status="unknown",
+                reason_code="certification_needs_confirmation",
+                evidence=_dedupe_evidence(evidence)[:4],
+                confidence=0.55,
+                evidence_explanation=(
+                    "CV có chứng chỉ liên quan nhưng tên chưa khớp đủ rõ với chứng chỉ được yêu cầu."
+                ),
+            )
+
+    return _result(
+        requirement,
+        status="not_met",
+        reason_code="certification_not_evidenced",
+        confidence=0.9 if _absence_is_conclusive(resume) else 0.6,
+    )
+
+
 def _evaluate_education_status(
     requirement: UnresolvedRequirement,
     resume: CanonicalResume,
@@ -954,9 +1054,7 @@ def _evaluate_knowledge_skill(
                 "reason_code": "concept_not_found",
             }
         )
-        if concept.status == "unknown"
-        and not concept.evidence_refs
-        and concept.reason_code not in NOT_EVIDENCED_REASON_CODES
+        if concept.status == "unknown" and not concept.evidence_refs
         else concept
         for concept, _ in evaluated_concepts
     ]
@@ -1080,12 +1178,13 @@ def _evaluate_atomic_concept(
         ranked = [candidate.evidence for candidate in semantic_candidates]
         retrieval_candidates = semantic_candidates
     if not ranked:
-        # Not mentioned is not evidence of absence (see NOT_EVIDENCED_REASON_CODES).
+        # Without a CV passage, this concept is not met according to the
+        # evidence available in the submitted CV.
         return (
             ConceptResult(
                 conceptId=concept.concept_id,
                 label=concept.label,
-                status="unknown",
+                status="not_met",
                 confidence=0.6,
                 reasonCode="concept_not_evidenced",
             ),
@@ -1202,7 +1301,19 @@ def _evaluate_research_or_competition(
 ) -> RequirementResult:
     evidence = _matching_evidence(
         resume,
-        ("scientific research", "nlp research", "competition", "cuoc thi", "research & ai projects"),
+        (
+            "scientific research",
+            "research project",
+            "research experience",
+            "research study",
+            "nghien cuu khoa hoc",
+            "de tai nghien cuu",
+            "nlp research",
+            "competition",
+            "cuoc thi",
+            "giai thuong",
+            "research & ai projects",
+        ),
     )
     if evidence:
         return _result(
@@ -1262,6 +1373,7 @@ def evaluate_unresolved_requirement(
     evaluators = {
         "gpa": _evaluate_gpa,
         "language_credential": _evaluate_language,
+        "certification": _evaluate_certification,
         "experience_duration": _evaluate_experience_duration,
         "education_degree": _evaluate_education_degree,
         "education_status": _evaluate_education_status,
