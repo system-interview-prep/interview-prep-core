@@ -43,7 +43,47 @@ def _phrase_key(value: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z-]+", " ", value.casefold())).strip()
 
 
-def normalize_transcript_for_locale(text: str, *, locale: str) -> str:
+_CONTEXTUAL_TECHNICAL_ALIASES: tuple[tuple[str, str], ...] = (
+    ("virginie", "VIN University"),
+    ("you state", "useState"),
+    ("use state", "useState"),
+    ("you effect", "useEffect"),
+    ("use effect", "useEffect"),
+    ("view js", "Vue.js"),
+    ("vue js", "Vue.js"),
+    ("react js", "React.js"),
+    ("node js", "Node.js"),
+    ("type script", "TypeScript"),
+    ("java script", "JavaScript"),
+    ("mongo db", "MongoDB"),
+    ("my sql", "MySQL"),
+    ("async await", "async/await"),
+)
+
+
+def correct_contextual_technical_terms(text: str, *, context: str = "") -> str:
+    """Normalize a small set of technical-term ASR variants when context confirms them.
+
+    This is intentionally not general spell-checking: it only replaces a known
+    spaced/phonetic variant when the canonical term appears in the current
+    interviewer prompt. Unknown or ambiguous words are left untouched.
+    """
+    if not text or not context:
+        return text
+
+    context_key = f" {_phrase_key(context)} "
+    corrected = text
+    for variant, canonical in _CONTEXTUAL_TECHNICAL_ALIASES:
+        canonical_key = _phrase_key(canonical)
+        if not canonical_key or f" {canonical_key} " not in context_key:
+            continue
+        variant_words = variant.split()
+        pattern = r"(?<!\w)" + r"\s+".join(re.escape(word) for word in variant_words) + r"(?!\w)"
+        corrected = re.sub(pattern, canonical, corrected, flags=re.IGNORECASE)
+    return corrected
+
+
+def normalize_transcript_for_locale(text: str, *, locale: str, context: str = "") -> str:
     """Correct high-confidence short STT artifacts in a locale-locked session.
 
     This is deliberately exact-match only.  It fixes acknowledgements such as
@@ -53,15 +93,16 @@ def normalize_transcript_for_locale(text: str, *, locale: str) -> str:
 
     cleaned = text.strip()
     if not locale.lower().startswith("vi"):
-        return cleaned
+        return correct_contextual_technical_terms(cleaned, context=context)
     exact = _SHORT_VI_MISRECOGNITIONS.get(_phrase_key(cleaned))
     if exact is not None:
-        return exact
-    leading = _LEADING_FILLER.match(cleaned)
-    if leading and _VIETNAMESE_LETTER.search(cleaned[leading.end():]):
-        filler = _LEADING_VI_MISRECOGNITIONS[leading.group(1).casefold()]
-        return f"{filler}, {cleaned[leading.end():]}"
-    return cleaned
+        cleaned = exact
+    else:
+        leading = _LEADING_FILLER.match(cleaned)
+        if leading and _VIETNAMESE_LETTER.search(cleaned[leading.end():]):
+            filler = _LEADING_VI_MISRECOGNITIONS[leading.group(1).casefold()]
+            cleaned = f"{filler}, {cleaned[leading.end():]}"
+    return correct_contextual_technical_terms(cleaned, context=context)
 
 
 # Written forms a TTS voice reads badly: a Vietnamese voice says "CI gạch CD"

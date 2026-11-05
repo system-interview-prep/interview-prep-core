@@ -503,6 +503,20 @@ PROCESSING_FILLERS_VI: tuple[str, ...] = (
     "Mình xem lại câu trả lời một chút nhé.",
     "À, chờ mình chút.",
 )
+ANSWER_PAUSE_NUDGES_VI: tuple[str, ...] = (
+    "Mình vẫn đang nghe, bạn cứ nói tiếp nhé.",
+    "Bạn cứ từ từ nói tiếp, mình đang nghe đây.",
+    "Mình theo dõi đây, bạn cứ nói tiếp khi sẵn sàng nhé.",
+    "Bạn cứ nói tiếp nhé, mình vẫn ở đây.",
+    "Mình đang nghe bạn, cứ tiếp tục nhé.",
+)
+ANSWER_PAUSE_NUDGES_EN: tuple[str, ...] = (
+    "I'm listening. Go ahead when you're ready.",
+    "Take your time; I'm still with you.",
+    "Go ahead, I'm listening.",
+    "Whenever you're ready, keep going.",
+)
+
 PROCESSING_FILLERS_EN: tuple[str, ...] = (
     "Got it. Give me a moment.",
     "Okay, let me think about that for a second.",

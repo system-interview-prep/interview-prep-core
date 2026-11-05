@@ -59,6 +59,24 @@ def test_processing_filler_rotates_between_answers() -> None:
     assert processing_filler("en-US", 1) != processing_filler("en-US", 0)
 
 
+def test_answer_pause_nudges_vary_by_turn_and_do_not_repeat_back_to_back() -> None:
+    from src.modules.interviews.adapters.voice.answer_window import (
+        ANSWER_PAUSE_NUDGES_VI,
+        pick_answer_pause_nudge,
+    )
+
+    picked = []
+    for index in range(30):
+        picked.append(
+            pick_answer_pause_nudge(
+                "vi-VN", f"session:turn:{index}", avoid=picked[-1] if picked else None
+            )
+        )
+    assert len(set(picked)) == len(ANSWER_PAUSE_NUDGES_VI)
+    for index, line in enumerate(picked[1:], start=1):
+        assert line != picked[index - 1]
+
+
 def test_filler_varies_by_session_and_the_reply_does_not_repeat_its_interjection() -> None:
     from src.modules.interviews.adapters.voice.answer_window import (
         PROCESSING_FILLERS_VI,

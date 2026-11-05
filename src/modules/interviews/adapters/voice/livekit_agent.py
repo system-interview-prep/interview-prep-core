@@ -30,12 +30,14 @@ except ImportError:  # Allows a rolling deploy before the optional wheel is pres
 
 try:
     from .answer_window import (
+        ANSWER_PAUSE_NUDGE_SECONDS,
         PROCESSING_FILLER_SECONDS,
         AnswerWindow,
         backchannel_continue_text,
         core_error_text,
         localize_particles,
         not_heard_lines,
+        pick_answer_pause_nudge,
         pick_processing_filler,
         processing_filler,
         processing_fillers,
@@ -69,12 +71,14 @@ try:
     from .voice_events import VoiceEventReporter
 except ImportError:  # Executed directly by the API's LiveKit subprocess.
     from answer_window import (  # type: ignore[no-redef]
+        ANSWER_PAUSE_NUDGE_SECONDS,
         PROCESSING_FILLER_SECONDS,
         AnswerWindow,
         backchannel_continue_text,
         core_error_text,
         localize_particles,
         not_heard_lines,
+        pick_answer_pause_nudge,
         pick_processing_filler,
         processing_filler,
         processing_fillers,
@@ -233,6 +237,10 @@ class VoiceLabAgent(Agent):
         # Answer window: fragments of one spoken answer, submitted together.
         self._answer = AnswerWindow()
         self._commit_task: asyncio.Task | None = None
+        self._answer_pause_nudge_task: asyncio.Task | None = None
+        self._answer_pause_nudged = False
+        self._answer_pause_nudge_count = 0
+        self._last_answer_pause_nudge: str | None = None
         self._core_task: asyncio.Task | None = None
         self._preview_task: asyncio.Task | None = None
         self._preview_target = ""
@@ -299,6 +307,17 @@ class VoiceLabAgent(Agent):
             await asyncio.sleep(delay)
         except asyncio.CancelledError:
             return
+        # Do not start evaluating or asking the next question over the
+        # backchannel. If the candidate resumes, on_user_speaking cancels both
+        # this task and the pending commit.
+        pause_nudge_task = self._answer_pause_nudge_task
+        if pause_nudge_task is not None and not pause_nudge_task.done():
+            try:
+                await pause_nudge_task
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.debug("Voice answer pause backchannel failed", exc_info=True)
         # The Core call runs in its own task. `_commit_task` is cancelled
         # whenever the candidate speaks; if the call ran inside it, talking
         # while Core works ("alo?") would cancel the request mid-flight and
@@ -308,6 +327,7 @@ class VoiceLabAgent(Agent):
     def on_user_speaking(self) -> None:
         """The candidate is (still) talking: the answer is not finished yet."""
         self._cancel_task(self._commit_task)
+        self._cancel_task(self._answer_pause_nudge_task)
         self._cancel_task(self._reprompt_task)
         self._preview_token = None
         self._preview_text = ""
@@ -316,11 +336,45 @@ class VoiceLabAgent(Agent):
         if self._answer.is_empty:
             self._preview_call_count = 0
 
+    def _schedule_answer_pause_nudge(self) -> None:
+        if self._answer_pause_nudged or self._core_in_flight or self._answer.is_empty:
+            return
+        self._cancel_task(self._answer_pause_nudge_task)
+
+        async def nudge_after_pause() -> None:
+            try:
+                await asyncio.sleep(ANSWER_PAUSE_NUDGE_SECONDS)
+            except asyncio.CancelledError:
+                return
+            if self._answer.is_empty or self._core_in_flight or self._answer_pause_nudged:
+                return
+            self._answer_pause_nudged = True
+            self._answer_pause_nudge_count += 1
+            line = pick_answer_pause_nudge(
+                self._locale,
+                f"{self._session_id}:answer-pause:{self._answer_pause_nudge_count}",
+                self._last_answer_pause_nudge,
+            )
+            self._last_answer_pause_nudge = line
+            self.report("voice_answer_pause_nudge", after_s=ANSWER_PAUSE_NUDGE_SECONDS)
+            speech = self.speak(
+                line,
+                allow_interruptions=True,
+                add_to_chat_ctx=False,
+                kind="filler",
+            )
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await speech.wait_for_playout()
+
+        self._answer_pause_nudge_task = asyncio.create_task(nudge_after_pause())
+
     def on_interim_transcript(self, text: str) -> None:
         """Speculatively evaluate a stable rolling transcript without committing it."""
         if not self._enable_speculative_preview:
             return
-        transcript = normalize_transcript_for_locale(text, locale=self._locale).strip()
+        transcript = normalize_transcript_for_locale(
+            text, locale=self._locale, context=self._last_interview_speech_text
+        ).strip()
         combined = " ".join(part for part in (self._answer.text, transcript) if part)
         if len(combined) >= 16 and len(combined.split()) >= 4:
             self._schedule_preview(combined)
@@ -458,6 +512,8 @@ class VoiceLabAgent(Agent):
         answer = self._answer.take()
         if answer is None:
             return
+        self._answer_pause_nudged = False
+        self._cancel_task(self._answer_pause_nudge_task)
         preview_token = self._preview_token if self._preview_text == answer.text else None
         self._core_in_flight = True
         self._cancel_task(self._reprompt_task)
@@ -724,7 +780,9 @@ class VoiceLabAgent(Agent):
             },
         )
         transcript = (
-            normalize_transcript_for_locale(raw_transcript, locale=self._locale)
+            normalize_transcript_for_locale(
+                raw_transcript, locale=self._locale, context=self._last_interview_speech_text
+            )
             if isinstance(raw_transcript, str)
             else raw_transcript
         )
@@ -923,6 +981,7 @@ class VoiceLabAgent(Agent):
             ),
             confidence=quality.confidence,
         )
+        self._schedule_answer_pause_nudge()
         self._schedule_preview(self._answer.text)
         self._cancel_task(self._reprompt_task)
         self._publish_turn_state("answering")

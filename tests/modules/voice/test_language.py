@@ -48,6 +48,41 @@ def test_transcript_normalization_does_not_rewrite_real_answers() -> None:
     )
 
 
+def test_contextual_technical_alias_is_corrected_when_prompt_confirms_term() -> None:
+    transcript = "Em dùng you state để quản lý state trong component."
+    context = "Bạn dùng useState trong React như thế nào?"
+
+    assert normalize_transcript_for_locale(transcript, locale="vi-VN", context=context) == (
+        "Em dùng useState để quản lý state trong component."
+    )
+
+
+def test_contextual_project_name_asr_variant_is_corrected_from_prompt() -> None:
+    transcript = "Em tham gia dự án Virginie á."
+    context = "Trong dự án VIN UNIVERSITY AI20K, bạn trực tiếp làm phần nào?"
+
+    assert normalize_transcript_for_locale(transcript, locale="vi-VN", context=context) == (
+        "Em tham gia dự án VIN University á."
+    )
+
+
+def test_contextual_technical_alias_does_not_guess_without_prompt_evidence() -> None:
+    transcript = "Em dùng you state để quản lý state trong component."
+
+    assert normalize_transcript_for_locale(transcript, locale="vi-VN") == transcript
+    assert normalize_transcript_for_locale(
+        transcript, locale="vi-VN", context="Bạn dùng useEffect trong React như thế nào?"
+    ) == transcript
+
+
+def test_contextual_term_normalization_keeps_ambiguous_words_unchanged() -> None:
+    transcript = "Em dùng RMI trong hệ thống."
+
+    assert normalize_transcript_for_locale(
+        transcript, locale="vi-VN", context="Lỗi lan truyền qua promise chain thế nào?"
+    ) == transcript
+
+
 def test_vietnamese_stt_configuration_is_fixed_and_non_conflicting() -> None:
     options = assemblyai_session_options(
         "vi",

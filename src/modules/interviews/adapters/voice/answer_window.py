@@ -29,6 +29,9 @@ SHORT_COMMIT_SILENCE_SECONDS = 2.5
 SHORT_ANSWER_WORDS = 8
 # Speak a short filler only when Interview Core takes longer than this.
 PROCESSING_FILLER_SECONDS = 1.2
+# A brief pause inside an answer is common; acknowledge it before the answer
+# window commits the current transcript fragment.
+ANSWER_PAUSE_NUDGE_SECONDS = 1.25
 # Gently re-prompt once per question after this much silence.
 REPROMPT_AFTER_SECONDS = 30.0
 
@@ -159,6 +162,8 @@ def _load_script() -> ModuleType:
 
 SCRIPT = _load_script()
 
+ANSWER_PAUSE_NUDGES_VI: tuple[str, ...] = SCRIPT.ANSWER_PAUSE_NUDGES_VI
+ANSWER_PAUSE_NUDGES_EN: tuple[str, ...] = SCRIPT.ANSWER_PAUSE_NUDGES_EN
 # Câu chỉ có ở kênh nói. Câu chữ nằm ở core/interviewer_script.py.
 PROCESSING_FILLERS_VI: tuple[str, ...] = SCRIPT.PROCESSING_FILLERS_VI
 PROCESSING_FILLERS_EN: tuple[str, ...] = SCRIPT.PROCESSING_FILLERS_EN
@@ -181,6 +186,19 @@ def processing_fillers(locale: str) -> tuple[str, ...]:
 def processing_filler(locale: str, index: int = 0) -> str:
     pool = processing_fillers(locale)
     return pool[index % len(pool)]
+
+
+def pick_answer_pause_nudge(locale: str, seed: str, avoid: str | None = None) -> str:
+    """Vary the pause backchannel by turn and avoid repeating the last line."""
+    import hashlib
+
+    pool = ANSWER_PAUSE_NUDGES_VI if _is_vi(locale) else ANSWER_PAUSE_NUDGES_EN
+    start = int(hashlib.sha256(seed.encode("utf-8")).hexdigest(), 16) % len(pool)
+    for offset in range(len(pool)):
+        line = pool[(start + offset) % len(pool)]
+        if line != avoid:
+            return line
+    return pool[start]
 
 
 def speech_v2_enabled() -> bool:
