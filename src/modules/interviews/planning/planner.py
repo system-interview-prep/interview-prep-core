@@ -19,6 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.config import get_settings
 from src.core.trace_logging import trace_event
 from src.modules.interviews.core.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
+from src.modules.interviews.application.interview_blueprints import DEFAULT_NAME as DEFAULT_BLUEPRINT_NAME
+from src.modules.interviews.application.interview_blueprints import resolve_blueprint
+from src.modules.interviews.core.interview_blueprint import InterviewBlueprint, default_blueprint
 from src.modules.interviews.core.interview_rounds import FOCUSABLE_AREAS, area_of, is_minor, spread_key
 from src.modules.interviews.planning.entry_gate import (
     InterviewEntryBlocked,
@@ -105,17 +108,15 @@ class _CandidateTarget:
             self.source_evidence_refs.append(source_evidence_ref)
 
 
-# Expected (soft) seconds of the preset turns P2 always freezes - WARM_UP 120,
-# VALIDATE 180, BEHAVIORAL 180 (see question_selector snapshots) - plus the
-# runtime's 60s closing reserve.
-_PRESET_EXPECTED_SECONDS = 120 + 180 + 180 + 60
-# Expected seconds per technical question: thinking 30 + soft answer 150 + one
-# follow-up probe 60.
-_TECHNICAL_EXPECTED_SECONDS = 30 + 150 + 60
-_MAX_TECHNICAL_QUESTIONS = 8
+# The default blueprint's numbers (core.interview_blueprint): preset turns
+# WARM_UP 120 + VALIDATE 180 + BEHAVIORAL 180 + closing reserve 60, and 240s
+# (thinking 30 + soft answer 150 + one probe 60) per technical question.
+_PRESET_EXPECTED_SECONDS = default_blueprint().preset_expected_seconds()
+_TECHNICAL_EXPECTED_SECONDS = default_blueprint().technical.expected_seconds_per_question
+_MAX_TECHNICAL_QUESTIONS = default_blueprint().technical.max_questions
 
 
-def _question_budget(duration_minutes: int) -> int:
+def _question_budget(duration_minutes: int, blueprint: InterviewBlueprint | None = None) -> int:
     """Technical question budget derived from the session's time.
 
     The old fixed matrix (15m -> 2, 25m -> 4, 45m -> 6) ignored timing: a
@@ -127,8 +128,7 @@ def _question_budget(duration_minutes: int) -> int:
     """
     if is_demo_duration(duration_minutes):
         return DEMO_TECHNICAL_QUESTIONS
-    available = duration_minutes * 60 - _PRESET_EXPECTED_SECONDS
-    return max(1, min(_MAX_TECHNICAL_QUESTIONS, available // _TECHNICAL_EXPECTED_SECONDS))
+    return (blueprint or default_blueprint()).technical_question_budget(duration_minutes)
 
 
 def _is_gap_target(item: "_CandidateTarget") -> bool:
@@ -289,6 +289,7 @@ def _derive_competency_plan_legacy(
     listing: Mapping[str, Any] | None = None,
     focus_area: str | None = None,
     reask: Sequence[Mapping[str, Any]] = (),
+    blueprint: InterviewBlueprint | None = None,
 ) -> dict[str, Any]:
     """Legacy fixed question budget algorithm (interview-planner-v1).
 
@@ -354,7 +355,7 @@ def _derive_competency_plan_legacy(
     if not candidates:
         raise ValueError("No applicable taxonomy-backed interview competencies could be derived from the job")
 
-    budget = _question_budget(duration_minutes)
+    budget = _question_budget(duration_minutes, blueprint)
     askable, folded = _split_minor(list(candidates.values()))
     ranked = sorted(
         askable,
@@ -944,6 +945,7 @@ def derive_competency_plan(
     listing: Mapping[str, Any] | None = None,
     focus_area: str | None = None,
     reask: Sequence[Mapping[str, Any]] = (),
+    blueprint: InterviewBlueprint | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic competency agenda from canonical requirements.
 
@@ -962,6 +964,7 @@ def derive_competency_plan(
             listing=listing,
             focus_area=focus_area,
             reask=reask,
+            blueprint=blueprint,
         )
     return _derive_competency_plan_dynamic(
         job=job,
@@ -1066,6 +1069,17 @@ async def _load_job_listing_hints(db: AsyncSession, *, job_id: str) -> dict[str,
         )
     ).mappings().one_or_none()
     return dict(row) if row else {}
+
+
+async def _requested_blueprint(db: AsyncSession, *, plan_id: str) -> str | None:
+    """The interview type the candidate chose, stored when the session was created."""
+    value = (
+        await db.execute(
+            text("SELECT source_context->>'blueprintId' FROM interview_session_plans WHERE id = :id"),
+            {"id": plan_id},
+        )
+    ).scalar_one_or_none()
+    return str(value) if value else None
 
 
 async def _focus_area(db: AsyncSession, *, plan_id: str) -> str | None:
@@ -1224,10 +1238,18 @@ async def build_and_persist_session_plan(
             **entry.trace_fields(),
         )
         raise InterviewEntryBlocked(entry)
+    # The expert-configured stage policy in force now, frozen into the plan so a
+    # later activation never changes this session. Demo keeps the built-in one.
+    if is_demo_duration(session_row["duration_minutes"]):
+        blueprint_ref, blueprint = None, default_blueprint()
+    else:
+        # The interview type the candidate chose; the default type when none (or it is gone).
+        blueprint_ref, blueprint = await resolve_blueprint(db, await _requested_blueprint(db, plan_id=str(plan_id)))
     plan = derive_competency_plan(
         job=job,
         match=match,
         duration_minutes=session_row["duration_minutes"],
+        blueprint=blueprint,
         policy_config=configured_planner_policy(),
         listing=await _load_job_listing_hints(db, job_id=session_row["job_id"]),
         focus_area=await _focus_area(db, plan_id=str(plan_id)),
@@ -1239,6 +1261,14 @@ async def build_and_persist_session_plan(
     # answers too. Everyone practises; the score decides the level.
     plan["difficulty"] = fit_adjusted_difficulty(plan.get("difficulty") or {}, entry)
     plan["practiceTier"] = entry.tier
+    plan["blueprint"] = {
+        "blueprintId": (blueprint_ref or {}).get("blueprintId"),
+        "blueprintName": (blueprint_ref or {}).get("blueprintName"),
+        "versionId": (blueprint_ref or {}).get("versionId"),
+        "version": (blueprint_ref or {}).get("version"),
+        "name": (blueprint_ref or {}).get("name") or DEFAULT_BLUEPRINT_NAME,
+        "policy": blueprint.to_payload(),
+    }
     plan.pop("fingerprint", None)
     canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     plan["fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -1294,6 +1324,8 @@ async def build_and_persist_session_plan(
         "entryWarnings": list(entry.warnings),
         "practiceTier": entry.tier,
         "plannerPolicyVersion": plan["policyVersion"],
+        "blueprintVersionId": plan["blueprint"]["versionId"],
+        "blueprintId": plan["blueprint"]["blueprintId"],
         "questionBudget": plan.get("questionBudget"),
         "nonCompetencyRequirementIds": plan["nonCompetencyRequirementIds"],
         "projectEvidences": [p.to_dict() for p in extract_project_evidences(

@@ -16,6 +16,7 @@ from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
 from src.modules.interviews.core import speech_checks
 from src.modules.interviews.core.demo_mode import DEMO_OVERTIME_GRACE_SECONDS
+from src.modules.interviews.core.interview_blueprint import blueprint_from_payload
 from src.modules.interviews.core.interview_response import InterviewResponseMixin
 from src.modules.interviews.core.interview_rules import (
     _FIXED_PROBES,
@@ -57,6 +58,7 @@ from src.modules.interviews.core.interview_types import (
     SessionExitReason,
     TurnAction,
 )
+from src.modules.interviews.core.interviewer_script import QUESTION_RESPONSES_EN, QUESTION_RESPONSES_VI
 from src.modules.interviews.core.interviewer_voice import (
     CLOSE_COMPLETED_EN,
     CLOSE_COMPLETED_VI,
@@ -80,14 +82,18 @@ from src.modules.interviews.core.interviewer_voice import (
     TIMEOUT_VI,
     abort_confirmation,
     acknowledgement_for_action,
+    canary_leaked,
+    canary_scope,
     candidate_block,
     candidate_data_rule,
     compose_turn,
+    looks_like_system_probe,
     new_terms,
     pick_variant,
     qna_rejection_reason,
     speech_prompt,
     speech_v2_enabled,
+    without_canary,
 )
 from src.modules.interviews.core.language_policy import response_matches_locale
 
@@ -161,6 +167,30 @@ class InterviewCoreEngine(InterviewResponseMixin):
         self._generate_fn = ai_generator or generate_text
 
     async def handle_turn(
+        self,
+        turn_input: CandidateTurnInput,
+        session_state: dict[str, Any],
+    ) -> InterviewerTurnOutput:
+        """One turn, with this session's canary code in every prompt (layer 8).
+
+        Each line the model writes is checked for the code by its own guard;
+        this is the last net before the reply is shown or spoken.
+        """
+        with canary_scope(turn_input.session_id) as code:
+            output = await self._handle_turn(turn_input, session_state)
+        if not code or not canary_leaked(output.message_text, code):
+            return output
+        is_vi = str(session_state.get("locale", "vi-VN")).lower().startswith("vi")
+        cleaned = without_canary(output.message_text, code) or (
+            QUESTION_RESPONSES_VI if is_vi else QUESTION_RESPONSES_EN
+        )["SYSTEM_PROBE"]
+        trace_event("interviewer", "canary_leak", session_id=str(turn_input.session_id))
+        speech_checks.record("reply", "reject", "canary_leak")
+        return output.model_copy(
+            update={"message_text": cleaned, "metadata": {**output.metadata, "canary_leak": True}}
+        )
+
+    async def _handle_turn(
         self,
         turn_input: CandidateTurnInput,
         session_state: Dict[str, Any],
@@ -422,6 +452,30 @@ class InterviewCoreEngine(InterviewResponseMixin):
                 },
             )
 
+        # Layer 7: the evaluator recognised an attempt on the system that the
+        # patterns missed. Same fixed line as the rule path, no model-written text.
+        if eval_result.get("intent") == "SYSTEM_PROBE":
+            trace_event("interviewer", "system_probe", source="evaluation")
+            return InterviewerTurnOutput(
+                session_id=session_id,
+                turn_index=turn_input.turn_index + 1,
+                message_text=candidate_question_response(
+                    "SYSTEM_PROBE",
+                    current_question=active_prompt,
+                    is_vi=is_vi,
+                    duration_minutes=int(session_state.get("target_duration_minutes", 25)),
+                ),
+                action=TurnAction.CLARIFY,
+                current_stage=current_stage,
+                time_remaining_seconds=time_remaining_seconds,
+                metadata={
+                    "candidate_question_intent": "SYSTEM_PROBE",
+                    "system_probe_source": "evaluation",
+                    "turn_in_question": current_turn_in_question,
+                    "sufficiency_status": "NOT_ASSESSED",
+                },
+            )
+
         # Off-topic replies are not evidence: redirect without grading them.
         if eval_result.get("intent") == "OFF_TOPIC":
             return InterviewerTurnOutput(
@@ -511,8 +565,13 @@ class InterviewCoreEngine(InterviewResponseMixin):
             consecutive_uncooperative = 0
         session_state["consecutive_uncooperative"] = consecutive_uncooperative
 
+        blueprint = blueprint_from_payload(session_state.get("blueprint"))
         technical_stages = {InterviewStage.DEEP_DIVE, InterviewStage.CHALLENGE}
-        if allow_early_exit and current_stage in technical_stages and consecutive_uncooperative >= 2:
+        if (
+            allow_early_exit
+            and current_stage in technical_stages
+            and consecutive_uncooperative >= blueprint.technical.fast_fail_after_give_ups
+        ):
             uncoop_msg = pick_variant(
                 EARLY_STOP_VI if is_vi else EARLY_STOP_EN, f"{seed}:early", recent_lines
             )
@@ -530,10 +589,10 @@ class InterviewCoreEngine(InterviewResponseMixin):
         # 4. ĐIỀU HÒA NHỊP ĐỘ (PACING OFFSET) & QUYẾT ĐỊNH PROBE
         # Probe Budget Guardrails
         closing_reserve_seconds = session_state.get(
-            "closing_reserve_seconds", pacing_seconds(60, target_duration_seconds)
+            "closing_reserve_seconds", pacing_seconds(blueprint.closing.reserve_seconds, target_duration_seconds)
         )
         behavioral_reserve_seconds = session_state.get(
-            "behavioral_reserve_seconds", pacing_seconds(180, target_duration_seconds)
+            "behavioral_reserve_seconds", pacing_seconds(blueprint.behavioral.reserve_seconds, target_duration_seconds)
         )
         hard_answer_seconds = current_question.get("hard_answer_seconds", 180)
 
@@ -554,7 +613,9 @@ class InterviewCoreEngine(InterviewResponseMixin):
         )
 
         # Nếu đang bị trễ giờ hơn 80% thời gian -> cấm probe, ép chuyển câu
-        is_behind_schedule = (elapsed_seconds > (target_duration_seconds * 0.8)) and current_stage in [
+        is_behind_schedule = (
+            elapsed_seconds > (target_duration_seconds * blueprint.pacing.behind_schedule_ratio)
+        ) and current_stage in [
             InterviewStage.VALIDATE,
             InterviewStage.DEEP_DIVE,
         ]
@@ -575,6 +636,13 @@ class InterviewCoreEngine(InterviewResponseMixin):
                 InterviewStage.CHALLENGE,
             ]
         )
+        # The blueprint may turn follow-up questions off per stage.
+        stage_probes_enabled = (
+            blueprint.validate_cv.probe_enabled
+            if current_stage == InterviewStage.VALIDATE
+            else blueprint.technical.probe_enabled
+        )
+        probe_window_open = probe_window_open and stage_probes_enabled
         should_probe = probe_window_open and not is_sufficient
         # Challenge tier (CV–job match from 70%, planning.entry_gate): a good
         # answer to a technical question gets one deeper follow-up, so a strong
@@ -827,11 +895,14 @@ class InterviewCoreEngine(InterviewResponseMixin):
         # was 90s from its end, so it could take most of a session that
         # finished its assessment early. This is the last question we answer.
         is_demo = bool(session_state.get("is_demo"))
-        is_last_question = questions_asked >= MAX_QNA_QUESTIONS or (
-            not is_demo and qna_elapsed >= pacing_seconds(QNA_BUDGET_SECONDS, session_seconds)
+        # MAX_QNA_QUESTIONS / QNA_BUDGET_SECONDS are the default blueprint's values.
+        blueprint = blueprint_from_payload(session_state.get("blueprint"))
+        cutoff = blueprint.pacing.emergency_cutoff_seconds
+        is_last_question = questions_asked >= blueprint.closing.max_questions or (
+            not is_demo and qna_elapsed >= pacing_seconds(blueprint.closing.budget_seconds, session_seconds)
         )
         closing_seed = f"{session_id}:{turn_input.turn_index}"
-        if has_no_more_q or (not is_demo and time_remaining_seconds <= pacing_seconds(90, session_seconds)):
+        if has_no_more_q or (not is_demo and time_remaining_seconds <= pacing_seconds(cutoff, session_seconds)):
             farewell = pick_variant(FAREWELL_VI if is_vi else FAREWELL_EN, f"{closing_seed}:farewell")
             return self._terminate_session(
                 session_id=session_id,
@@ -902,6 +973,8 @@ class InterviewCoreEngine(InterviewResponseMixin):
             )
 
         try:
+            if looks_like_system_probe(candidate_text):
+                raise ValueError("system_probe")
             if hasattr(self.llm, "generate_text"):
                 answer = await self.llm.generate_text(system_prompt=system_prompt, user_content=user_content)
             else:
@@ -974,6 +1047,15 @@ class InterviewCoreEngine(InterviewResponseMixin):
         sentences, checked by ``qna_rejection_reason``. "Còn câu hỏi nào khác
         không?" is added by code so the model never writes it twice.
         """
+        if looks_like_system_probe(candidate_text):
+            # A key, the prompt or the model is never an answer, whatever the question claims.
+            trace_event("interviewer", "qna_system_probe")
+            responses = QUESTION_RESPONSES_VI if is_vi else QUESTION_RESPONSES_EN
+            answer_text = responses["SYSTEM_PROBE"]
+            if not is_last_question:
+                more = pick_variant(QNA_MORE_VI if is_vi else QNA_MORE_EN, f"{seed}:qna_more")
+                answer_text = f"{answer_text}\n\n{more}"
+            return answer_text, "system_probe", "system_probe"
         language = "tiếng Việt" if is_vi else "English"
         system_prompt = speech_prompt(
             is_vi=is_vi,
@@ -1101,14 +1183,20 @@ class InterviewCoreEngine(InterviewResponseMixin):
             time_remaining_seconds = max(0, target_duration_seconds - elapsed_seconds)
         elapsed_ratio = min(1.0, elapsed_seconds / target_duration_seconds)
 
+        blueprint = blueprint_from_payload(session_state.get("blueprint"))
         closing_reserve_seconds = session_state.get(
-            "closing_reserve_seconds", pacing_seconds(60, target_duration_seconds)
+            "closing_reserve_seconds", pacing_seconds(blueprint.closing.reserve_seconds, target_duration_seconds)
         )
         behavioral_reserve_seconds = session_state.get(
-            "behavioral_reserve_seconds", pacing_seconds(180, target_duration_seconds)
+            "behavioral_reserve_seconds", pacing_seconds(blueprint.behavioral.reserve_seconds, target_duration_seconds)
         )
-        emergency_cutoff_seconds = pacing_seconds(90, target_duration_seconds)
-        closing_min_seconds = pacing_seconds(180, target_duration_seconds)
+        emergency_cutoff_seconds = pacing_seconds(blueprint.pacing.emergency_cutoff_seconds, target_duration_seconds)
+        closing_min_seconds = pacing_seconds(blueprint.closing.min_seconds_to_open, target_duration_seconds)
+        stage_until_ratio = {
+            InterviewStage.VALIDATE: blueprint.validate_cv.until_ratio,
+            InterviewStage.DEEP_DIVE: blueprint.technical.deep_dive_until_ratio,
+            InterviewStage.CHALLENGE: blueprint.technical.challenge_until_ratio,
+        }
 
         def as_valid_frozen_question(st: InterviewStage, q: Dict[str, Any]) -> Optional[QuestionItem]:
             """Return a well-formed frozen turn only when it belongs to the requested stage."""
@@ -1149,6 +1237,34 @@ class InterviewCoreEngine(InterviewResponseMixin):
         # A demo is turn-driven: no time cutoff, reserve jump or closing minimum,
         # so it walks every frozen stage (its hard timeout is the overtime grace).
         is_demo = bool(session_state.get("is_demo"))
+
+        def open_closing() -> Tuple[InterviewStage, Optional[QuestionItem]]:
+            """The candidate's Q&A once assessment is over; the blueprint may skip it."""
+            if not blueprint.closing.qna_enabled:
+                return InterviewStage.CLOSED, None
+            # Closing still requires closing_min_seconds (default 180, scaled down
+            # for sessions shorter than 25 minutes).
+            if is_demo or time_remaining_seconds >= closing_min_seconds:
+                frozen_closing = pop_from_stage(InterviewStage.CLOSING)
+                if frozen_closing:
+                    return InterviewStage.CLOSING, frozen_closing
+                # The limit is said the way an interviewer would; a "(tối đa 2 câu)"
+                # aside was read aloud verbatim in the voice room. The chat room
+                # states the exact limit in its stage tip.
+                prompt = (
+                    "Mình hỏi xong rồi. Bạn có muốn hỏi mình một, hai câu về công việc, "
+                    "team hay công ty không?"
+                    if is_vi
+                    else "That's all from me. Would you like to ask me a question or two "
+                    "about the role, the team or the company?"
+                )
+                return InterviewStage.CLOSING, QuestionItem(
+                    question_id="closing-candidate-qna",
+                    stage=InterviewStage.CLOSING,
+                    competency="Hỏi đáp & Văn hóa doanh nghiệp",
+                    main_prompt=prompt,
+                )
+            return InterviewStage.CLOSED, None
 
         # 2. Emergency turn cutoff: do not issue a new turn with <= 90 seconds
         # left (scaled down for sessions shorter than 25 minutes).
@@ -1200,7 +1316,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
 
         elif current_stage == InterviewStage.VALIDATE:
             # Nếu chưa vượt ngưỡng 30% thời gian -> Ưu tiên kiểm tra tiếp Validate nếu còn câu
-            if elapsed_ratio < TIME_THRESHOLDS[InterviewStage.VALIDATE]:
+            if elapsed_ratio < stage_until_ratio[InterviewStage.VALIDATE]:
                 q = pop_from_stage(InterviewStage.VALIDATE)
                 if q:
                     return InterviewStage.VALIDATE, q
@@ -1214,7 +1330,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
 
         elif current_stage == InterviewStage.DEEP_DIVE:
             # Dynamic Loop: Còn thời gian (< 75%) -> Tiếp tục rút từ Queue DEEP_DIVE
-            if elapsed_ratio < TIME_THRESHOLDS[InterviewStage.DEEP_DIVE]:
+            if elapsed_ratio < stage_until_ratio[InterviewStage.DEEP_DIVE]:
                 q = pop_from_stage(InterviewStage.DEEP_DIVE)
                 if q:
                     return InterviewStage.DEEP_DIVE, q
@@ -1238,7 +1354,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
                     return InterviewStage.BEHAVIORAL, q
 
         elif current_stage == InterviewStage.CHALLENGE:
-            if elapsed_ratio < TIME_THRESHOLDS[InterviewStage.CHALLENGE]:
+            if elapsed_ratio < stage_until_ratio[InterviewStage.CHALLENGE]:
                 q = pop_from_stage(InterviewStage.CHALLENGE)
                 if q:
                     return InterviewStage.CHALLENGE, q
@@ -1274,30 +1390,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
             )
             if not has_completed_behavioral:
                 return InterviewStage.CLOSED, None
-
-            # Behavioral is complete. Closing still requires at least 180 seconds
-            # (scaled down for sessions shorter than 25 minutes).
-            if is_demo or time_remaining_seconds >= closing_min_seconds:
-                frozen_closing = pop_from_stage(InterviewStage.CLOSING)
-                if frozen_closing:
-                    return InterviewStage.CLOSING, frozen_closing
-                # The limit is said the way an interviewer would; a "(tối đa 2 câu)"
-                # aside was read aloud verbatim in the voice room. The chat room
-                # states the exact limit in its stage tip.
-                prompt = (
-                    "Mình hỏi xong rồi. Bạn có muốn hỏi mình một, hai câu về công việc, "
-                    "team hay công ty không?"
-                    if is_vi
-                    else "That's all from me. Would you like to ask me a question or two "
-                    "about the role, the team or the company?"
-                )
-                return InterviewStage.CLOSING, QuestionItem(
-                    question_id="closing-candidate-qna",
-                    stage=InterviewStage.CLOSING,
-                    competency="Hỏi đáp & Văn hóa doanh nghiệp",
-                    main_prompt=prompt,
-                )
-            return InterviewStage.CLOSED, None
+            return open_closing()
 
         # 4. Fallback: Duyệt tuần tự qua các stage còn lại
         stage_order = [
@@ -1316,5 +1409,8 @@ class InterviewCoreEngine(InterviewResponseMixin):
                 return next_st, q
 
         # Exhausting an assessment queue is not evidence that Behavioral completed.
-        # Only the BEHAVIORAL branch above may open Closing.
+        # Only the BEHAVIORAL branch above may open Closing, unless the blueprint
+        # has no Behavioral stage: then the last technical answer opens it.
+        if not blueprint.behavioral.enabled and current_stage != InterviewStage.WARM_UP and not has_pending_technical():
+            return open_closing()
         return InterviewStage.CLOSED, None

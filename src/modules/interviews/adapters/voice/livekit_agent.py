@@ -40,6 +40,7 @@ try:
         pick_answer_pause_nudge,
         pick_processing_filler,
         processing_filler,
+        processing_filler_enabled,
         processing_fillers,
         reprompt_after_seconds,
         scripted_reply_lines,
@@ -81,6 +82,7 @@ except ImportError:  # Executed directly by the API's LiveKit subprocess.
         pick_answer_pause_nudge,
         pick_processing_filler,
         processing_filler,
+        processing_filler_enabled,
         processing_fillers,
         reprompt_after_seconds,
         scripted_reply_lines,
@@ -532,26 +534,29 @@ class VoiceLabAgent(Agent):
         )
         self._publish_turn_state("processing")
 
+        # Keep the local processing filler opt-in; default remains silent while
+        # Core works, as the pulled branch specified.
         filler_spoken = False
+        filler_task: asyncio.Task | None = None
+        if processing_filler_enabled():
+            async def filler() -> None:
+                nonlocal filler_spoken
+                await asyncio.sleep(PROCESSING_FILLER_SECONDS)
+                self._filler_count = getattr(self, "_filler_count", 0) + 1
+                self.report("voice_processing_filler", after_s=PROCESSING_FILLER_SECONDS)
+                if speech_v2_enabled():
+                    line = pick_processing_filler(
+                        self._locale,
+                        f"{self._session_id}:{self._filler_count}",
+                        getattr(self, "_last_filler", None),
+                    )
+                else:
+                    line = processing_filler(self._locale, self._filler_count - 1)
+                self._last_filler = line
+                filler_spoken = True
+                self.speak(line, allow_interruptions=True, add_to_chat_ctx=False, kind="filler")
 
-        async def filler() -> None:
-            nonlocal filler_spoken
-            await asyncio.sleep(PROCESSING_FILLER_SECONDS)
-            self._filler_count = getattr(self, "_filler_count", 0) + 1
-            self.report("voice_processing_filler", after_s=PROCESSING_FILLER_SECONDS)
-            if speech_v2_enabled():
-                line = pick_processing_filler(
-                    self._locale,
-                    f"{self._session_id}:{self._filler_count}",
-                    getattr(self, "_last_filler", None),
-                )
-            else:
-                line = processing_filler(self._locale, self._filler_count - 1)
-            self._last_filler = line
-            filler_spoken = True
-            self.speak(line, allow_interruptions=True, add_to_chat_ctx=False, kind="filler")
-
-        filler_task = asyncio.create_task(filler())
+            filler_task = asyncio.create_task(filler())
         core_started = perf_counter()
         try:
             response = await self._runtime_client.post(
@@ -627,6 +632,8 @@ class VoiceLabAgent(Agent):
                 extra={"session_id": self._session_id, "fragments": leftover.fragment_count},
             )
         self._publish_turn_state("listening")
+        if filler_spoken and speech_v2_enabled():
+            content = without_leading_interjection(content)
         # Core asks the candidate to confirm a stop. Chat renders stop/continue
         # buttons in the bubble; the voice room only learns of it from this
         # event, so publish it before speaking and open the dialog right away.
@@ -640,10 +647,6 @@ class VoiceLabAgent(Agent):
                     reliable=True,
                     topic="intervia.session",
                 )
-        if filler_spoken and speech_v2_enabled():
-            # "Ừm, chờ mình một chút nhé." then "Ừm, mình hiểu ý bạn.": say the
-            # interjection once. Only the spoken line changes; the transcript keeps Core's text.
-            content = without_leading_interjection(content)
         speech = self.speak(
             content,
             allow_interruptions=not is_terminal,
@@ -674,13 +677,13 @@ class VoiceLabAgent(Agent):
         """Lines identical in every session: their audio is shared on disk."""
         return frozenset(
             {
-                *processing_fillers(self._locale),
                 silence_reprompt(self._locale),
                 hold_acknowledgement(self._locale),
                 self._unclear_transcript_text(),
                 self._core_error_text(),
                 *self._not_heard_lines(),
                 turn_taking_tip(self._locale),
+                *(processing_fillers(self._locale) if processing_filler_enabled() else ()),
                 *(scripted_reply_lines(self._locale) if speech_v2_enabled() else ()),
             }
         )
@@ -754,7 +757,7 @@ class VoiceLabAgent(Agent):
         add_to_chat_ctx: bool = True,
         kind: str | None = None,
     ):
-        # question | closing | filler | reprompt | replay | notice (admin view).
+        # question | closing | reprompt | replay | notice (admin view).
         text = localize_particles(text)
         self._active_speech_kind = kind or ("question" if add_to_chat_ctx else "notice")
         handle = self.session.say(

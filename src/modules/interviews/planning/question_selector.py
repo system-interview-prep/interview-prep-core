@@ -23,8 +23,10 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.core.trace_logging import trace_event
-from src.modules.interviews.core.demo_mode import is_demo_duration
+from src.modules.interviews.core.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
+from src.modules.interviews.core.interview_blueprint import InterviewBlueprint, blueprint_from_payload
 from src.modules.interviews.core.opening_script import warmup_question
 from src.modules.interviews.planning.spoken_questions import add_spoken_versions
 from src.modules.interviews.core.interviewer_voice import speech_v2_enabled
@@ -97,15 +99,18 @@ class _Candidate:
 
 # AI-generated drafts nobody has reviewed yet (the last rung of the ladder):
 # none in the challenge tier, where the difficulty of each question matters
-# most, and at most this many in any other session.
-MAX_UNREVIEWED_PER_SESSION = 1
+# most, and at most settings.interview_max_unreviewed_generated in any other
+# session. A demo session may use one per technical slot (demo_mode).
 GENERATED_SOURCE = "generated_unreviewed"
 
 
-def unreviewed_budget(payload: Any) -> int:
+def unreviewed_budget(payload: Any, *, demo: bool = False) -> int:
     """How many unreviewed generated drafts this session's plan may ask."""
+    settings = get_settings()
+    if demo and settings.demo_allow_unreviewed_generated:
+        return DEMO_TECHNICAL_QUESTIONS
     tier = payload.get("practiceTier") if isinstance(payload, dict) else None
-    return 0 if tier == "challenge" else MAX_UNREVIEWED_PER_SESSION
+    return 0 if tier == "challenge" else settings.interview_max_unreviewed_generated
 
 
 def limit_unreviewed(candidates: list[_Candidate], budget: int) -> tuple[list[_Candidate], int]:
@@ -709,21 +714,32 @@ def _snapshot(
     }
 
 
-def _technical_stage(idx: int, *, total: int, is_coding: bool, is_gap: bool, is_demo: bool) -> str:
+def _technical_stage(
+    idx: int,
+    *,
+    total: int,
+    is_coding: bool,
+    is_gap: bool,
+    is_demo: bool,
+    blueprint: InterviewBlueprint | None = None,
+) -> str:
     """Stage of the idx-th frozen technical question.
 
-    Coding questions and CV gaps after the first question are CHALLENGE. A demo
-    shows every stage, so its last technical question is always CHALLENGE (the
-    planner puts the CV gap, if any, in that slot).
+    Coding questions and CV gaps after the first question are CHALLENGE, unless
+    the blueprint turns either rule off. A demo shows every stage, so its last
+    technical question is always CHALLENGE (the planner puts the CV gap, if
+    any, in that slot).
     """
-    if is_coding or (is_gap and idx >= 1):
+    technical = (blueprint or InterviewBlueprint()).technical
+    if (is_coding and technical.challenge_for_coding) or (is_gap and idx >= 1 and technical.challenge_for_cv_gaps):
         return "CHALLENGE"
     if is_demo and idx >= 1 and idx == total - 1:
         return "CHALLENGE"
     return "DEEP_DIVE"
 
 
-def _behavioral_snapshot(locale: str) -> dict[str, Any]:
+def _behavioral_snapshot(locale: str, blueprint: InterviewBlueprint | None = None) -> dict[str, Any]:
+    behavioral = (blueprint or InterviewBlueprint()).behavioral
     is_vi = (locale or "vi").lower().startswith("vi")
     prompts_vi = (
         "Kể một lần bạn gặp sự cố kỹ thuật khó hoặc bất đồng trong team: "
@@ -746,8 +762,8 @@ def _behavioral_snapshot(locale: str) -> dict[str, Any]:
         "canonicalLocale": locale,
         "questionText": prompts_vi if is_vi else prompts_en,
         "objective": "Đánh giá kỹ năng mềm, giải quyết xung đột và làm việc nhóm theo mô hình STAR.",
-        "softAnswerSeconds": 180,
-        "hardAnswerSeconds": 240,
+        "softAnswerSeconds": behavioral.soft_answer_seconds,
+        "hardAnswerSeconds": behavioral.hard_answer_seconds,
         "taxonomyTarget": {
             "taxonomyVersion": "internal-2026.1",
             "conceptId": "soft-skill.star",
@@ -1166,7 +1182,7 @@ async def select_and_freeze_questions(
     # Targets the ladder could not cover at all, and targets served with fewer
     # questions than planned. Both reach the report as uncovered competencies.
     uncovered_targets: list[dict[str, Any]] = []
-    unreviewed_cap = unreviewed_budget(payload)
+    unreviewed_cap = unreviewed_budget(payload, demo=is_demo_duration(session_row.get("duration_minutes")))
     unreviewed_left = unreviewed_cap
     plan_tier = payload.get("practiceTier") if isinstance(payload, dict) else None
 
@@ -1568,6 +1584,10 @@ async def select_and_freeze_questions(
     # The question only: the greeting, agenda and how-to are the opening's
     # (core/opening_script.py), spoken once before it.
     warmup_text = warmup_question(is_vi=is_vi, is_demo=is_demo_duration(session_row.get("duration_minutes")))
+    # The stage policy the planner froze (core.interview_blueprint); older plans have none.
+    blueprint_record = payload.get("blueprint") if isinstance(payload, dict) else None
+    blueprint = blueprint_from_payload((blueprint_record or {}).get("policy"))
+    validate_enabled = blueprint.validate_cv.enabled
 
     if selected_project:
         validate_text = build_project_validation_question(
@@ -1628,8 +1648,8 @@ async def select_and_freeze_questions(
         "canonicalLocale": locale,
         "questionText": warmup_text,
         "objective": "Chào hỏi, tạo không khí thoải mái và giới thiệu bản thân.",
-        "softAnswerSeconds": 120,
-        "hardAnswerSeconds": 180,
+        "softAnswerSeconds": blueprint.warm_up.soft_answer_seconds,
+        "hardAnswerSeconds": blueprint.warm_up.hard_answer_seconds,
         "taxonomyTarget": {
             "taxonomyVersion": "internal-2026.1",
             "conceptId": "warmup",
@@ -1640,6 +1660,15 @@ async def select_and_freeze_questions(
         "selectionRank": 0,
         "expectedPoints": [],
         "rubric": None,
+        # Every turn of the session reads its stage policy from here (chat_runtime).
+        "blueprint": {
+            "blueprintId": (blueprint_record or {}).get("blueprintId"),
+            "blueprintName": (blueprint_record or {}).get("blueprintName"),
+            "versionId": (blueprint_record or {}).get("versionId"),
+            "version": (blueprint_record or {}).get("version"),
+            "name": (blueprint_record or {}).get("name"),
+            "policy": blueprint.to_payload(),
+        },
     }
 
     validate_snapshot = {
@@ -1656,8 +1685,8 @@ async def select_and_freeze_questions(
         "canonicalLocale": locale,
         "questionText": validate_text,
         "objective": "Xác thực kinh nghiệm thực tế và dự án kỹ thuật tiêu biểu trong CV.",
-        "softAnswerSeconds": 180,
-        "hardAnswerSeconds": 240,
+        "softAnswerSeconds": blueprint.validate_cv.soft_answer_seconds,
+        "hardAnswerSeconds": blueprint.validate_cv.hard_answer_seconds,
         "taxonomyTarget": {
             "taxonomyVersion": "internal-2026.1",
             "conceptId": "cv-validation",
@@ -1692,29 +1721,32 @@ async def select_and_freeze_questions(
         },
     )
 
-    # Insert Turn 1 (VALIDATE)
-    await db.execute(
-        text(
-            """
-            INSERT INTO interview_turns
-                (id, session_id, turn_index, status, question_version_id,
-                 rubric_version_id, question_snapshot)
-            VALUES
-                (:id, :session_id, 1, 'PLANNED',
-                 NULL, NULL, CAST(:snapshot AS jsonb))
-            """
-        ),
-        {
-            "id": str(uuid4()),
-            "session_id": session_row["id"],
-            "snapshot": json.dumps(validate_snapshot),
-        },
-    )
+    # Insert Turn 1 (VALIDATE) unless the blueprint turned the stage off.
+    if validate_enabled:
+        await db.execute(
+            text(
+                """
+                INSERT INTO interview_turns
+                    (id, session_id, turn_index, status, question_version_id,
+                     rubric_version_id, question_snapshot)
+                VALUES
+                    (:id, :session_id, 1, 'PLANNED',
+                     NULL, NULL, CAST(:snapshot AS jsonb))
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "session_id": session_row["id"],
+                "snapshot": json.dumps(validate_snapshot),
+            },
+        )
 
-    # Deep-dive and challenge technical questions from Question Bank start at turn_index = 2
+    # Deep-dive and challenge technical questions from Question Bank follow the
+    # presets: turn_index 2, or 1 when the blueprint has no VALIDATE stage.
+    first_technical_index = 2 if validate_enabled else 1
     is_demo = is_demo_duration(session_row.get("duration_minutes"))
     for idx, (candidate, target, _orig_rank, fallback) in enumerate(frozen):
-        turn_index = idx + 2
+        turn_index = idx + first_technical_index
         target_rationale = target.get("rationale") or {}
         match_statuses = target_rationale.get("matchStatuses") or []
         stage = _technical_stage(
@@ -1723,6 +1755,7 @@ async def select_and_freeze_questions(
             is_coding=(candidate.question_type == "coding") if candidate else False,
             is_gap=any(s in ("not_met", "unknown") for s in match_statuses),
             is_demo=is_demo,
+            blueprint=blueprint,
         )
         if candidate is None:
             snapshot = dict(fallback or {})
@@ -1764,35 +1797,37 @@ async def select_and_freeze_questions(
             },
         )
 
-    # Thêm câu hỏi BEHAVIORAL theo chuẩn STAR vào cuối Question Queue
-    behavioral_snap = _behavioral_snapshot(locale=locale)
-    behavioral_turn_index = len(frozen) + 2
+    # Thêm câu hỏi BEHAVIORAL theo chuẩn STAR vào cuối Question Queue (trừ khi blueprint tắt)
+    behavioral_enabled = blueprint.behavioral.enabled
+    behavioral_snap = _behavioral_snapshot(locale=locale, blueprint=blueprint)
+    behavioral_turn_index = len(frozen) + first_technical_index
     behavioral_snap["selectionRank"] = behavioral_turn_index
-    await db.execute(
-        text(
-            """
-            INSERT INTO interview_turns
-                (id, session_id, turn_index, status, question_version_id,
-                 rubric_version_id, question_snapshot)
-            VALUES
-                (:id, :session_id, :turn_index, 'PLANNED',
-                 NULL, NULL, CAST(:snapshot AS jsonb))
-            """
-        ),
-        {
-            "id": str(uuid4()),
-            "session_id": session_row["id"],
-            "turn_index": behavioral_turn_index,
-            "snapshot": json.dumps(behavioral_snap),
-        },
-    )
+    if behavioral_enabled:
+        await db.execute(
+            text(
+                """
+                INSERT INTO interview_turns
+                    (id, session_id, turn_index, status, question_version_id,
+                     rubric_version_id, question_snapshot)
+                VALUES
+                    (:id, :session_id, :turn_index, 'PLANNED',
+                     NULL, NULL, CAST(:snapshot AS jsonb))
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "session_id": session_row["id"],
+                "turn_index": behavioral_turn_index,
+                "snapshot": json.dumps(behavioral_snap),
+            },
+        )
 
     selection_contract = [
         {"turnIndex": 0, "stage": "WARM_UP"},
-        {"turnIndex": 1, "stage": "VALIDATE"},
+        *([{"turnIndex": 1, "stage": "VALIDATE"}] if validate_enabled else []),
     ] + [
         {
-            "turnIndex": idx + 2,
+            "turnIndex": idx + first_technical_index,
             "questionVersionId": candidate.question_version_id if candidate else None,
             "rubricVersionId": candidate.rubric_version_id if candidate else None,
             "questionSource": candidate.source if candidate else "deterministic_fallback_unreviewed",
@@ -1800,13 +1835,17 @@ async def select_and_freeze_questions(
             "target": f"{target['taxonomyVersion']}:{target['conceptId']}",
         }
         for idx, (candidate, target, _, fallback) in enumerate(frozen)
-    ] + [
-        {
-            "turnIndex": behavioral_turn_index,
-            "stage": "BEHAVIORAL",
-            "questionSource": "behavioral_star_preset",
-        }
-    ]
+    ] + (
+        [
+            {
+                "turnIndex": behavioral_turn_index,
+                "stage": "BEHAVIORAL",
+                "questionSource": "behavioral_star_preset",
+            }
+        ]
+        if behavioral_enabled
+        else []
+    )
     source_counts: dict[str, int] = {}
     for candidate, _, _, _ in frozen:
         if candidate is not None:

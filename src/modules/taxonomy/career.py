@@ -2,7 +2,19 @@
 
 from dataclasses import dataclass
 
-from src.modules.taxonomy.skill_catalog import AI, BACKEND, DEVOPS, FRONTEND, GAME, MOBILE, role_skill_ids
+from src.modules.taxonomy.skill_catalog import (
+    AI,
+    BACKEND,
+    DATA,
+    DEVOPS,
+    EMBEDDED,
+    FRONTEND,
+    GAME,
+    MOBILE,
+    QA,
+    SECURITY,
+    role_skill_ids,
+)
 
 TAXONOMY_VERSION = "internal-career-2026.1"
 
@@ -76,6 +88,10 @@ _NODES = (
     CareerTaxonomyNode("technology.ux-ui-design", "UX/UI Design", "specialization", "technology"),
     CareerTaxonomyNode("technology.business-analysis", "Business Analysis", "specialization", "technology"),
     CareerTaxonomyNode("technology.game-development", "Game Development", "specialization", "technology"),
+    CareerTaxonomyNode(EMBEDDED, "Embedded Engineering", "specialization", "technology.software-engineering"),
+    CareerTaxonomyNode(QA, "Software Testing & QA", "specialization", "technology"),
+    CareerTaxonomyNode(DATA, "Data Engineering & Analytics", "specialization", "technology"),
+    CareerTaxonomyNode(SECURITY, "Cybersecurity", "specialization", "technology"),
 )
 
 _RULES = (
@@ -183,6 +199,41 @@ _RULES = (
         "Cloud & DevOps",
         ("devops", "cloud engineer", "site reliability", "sre"),
         role_skill_ids(DEVOPS),
+        "technology",
+    ),
+    CareerRule(
+        EMBEDDED,
+        "Embedded Engineering",
+        ("embedded", "firmware", "iot", "nhúng"),
+        role_skill_ids(EMBEDDED),
+        "technology.software-engineering",
+    ),
+    CareerRule(
+        QA,
+        "Software Testing & QA",
+        ("tester", "qa", "qc", "quality assurance", "test engineer", "automation test", "kiểm thử"),
+        role_skill_ids(QA),
+        "technology",
+    ),
+    CareerRule(
+        DATA,
+        "Data Engineering & Analytics",
+        (
+            "data engineer",
+            "data analyst",
+            "data analytics",
+            "business intelligence",
+            "bi developer",
+            "phân tích dữ liệu",
+        ),
+        role_skill_ids(DATA),
+        "technology",
+    ),
+    CareerRule(
+        SECURITY,
+        "Cybersecurity",
+        ("security", "pentest", "penetration", "soc analyst", "bảo mật", "an toàn thông tin"),
+        role_skill_ids(SECURITY),
         "technology",
     ),
 )

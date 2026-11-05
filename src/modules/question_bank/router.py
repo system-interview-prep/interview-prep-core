@@ -18,6 +18,7 @@ from src.modules.question_bank import insights
 from src.modules.question_bank.facade import GENERATED_QUESTION_AUTHOR
 from src.modules.question_bank.import_parser import csv_template, xlsx_template
 from src.modules.question_bank.import_service import QuestionImportService
+from src.modules.question_bank.notifications import notify_question_author
 from src.modules.question_bank.permissions import (
     REVIEW_TYPES,
     version_actions,
@@ -54,11 +55,12 @@ def _import_response(import_run: object) -> dict:
 @router.get("/imports/template")
 async def import_template(
     _: dict = Depends(require_roles(QUESTION_AUTHOR)),
-    format: str = Query(default="csv"),
+    db: AsyncSession = Depends(get_db),
+    format: str = Query(default="xlsx"),
 ) -> Response:
     if format == "xlsx":
         return Response(
-            content=xlsx_template(),
+            content=xlsx_template(await QuestionImportService(db).template_catalog()),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": "attachment; filename=question-bank-import-v1.xlsx"},
         )
@@ -144,7 +146,9 @@ async def import_report(
 async def commit_import(
     import_id: UUID,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    actor: dict = Depends(require_admin),
+    # Authors stage and commit their own imports: commit only creates DRAFT
+    # versions, which still need an admin review and final approval.
+    actor: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     if not idempotency_key:
@@ -597,7 +601,11 @@ async def review(
     actor: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    review_record = await QuestionBankService(db).record_review(version_id, actor["sub"], payload)
+    service = QuestionBankService(db)
+    review_record = await service.record_review(version_id, actor["sub"], payload)
+    await notify_question_author(
+        db, await service._version_or_404(version_id), review_record.decision, comment=payload.comment
+    )
     await db.commit()
     await record_admin_action(
         db, actor, "REVIEW_QUESTION", target_id=version_id, detail={"decision": review_record.decision}
@@ -613,6 +621,7 @@ async def approve(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     version = await QuestionBankService(db).approve(version_id, actor["sub"], payload.approval_policy_version)
+    await notify_question_author(db, version, "APPROVED")
     await db.commit()
     await record_admin_action(db, actor, "APPROVE_QUESTION", target_id=version_id)
     return _version_response(version)

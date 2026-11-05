@@ -29,6 +29,7 @@ from src.modules.interviews.application.runtime.voice_facade import (
 )
 from src.modules.interviews.core.interview_engine import InterviewCoreEngine
 from src.modules.interviews.core.interview_types import InterviewStage
+from src.modules.interviews.core.interviewer_voice import canary_scope
 
 router = APIRouter(prefix="/voice-lab", tags=["voice-lab"])
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
@@ -346,13 +347,15 @@ async def preview_livekit_runtime_answer(
 
     is_vi = str(session.get("locale") or "vi").lower().startswith("vi")
     engine = InterviewCoreEngine()
-    evaluation = await engine._evaluate_candidate_response(
-        candidate_text=transcript,
-        current_stage=stage,
-        current_question=question,
-        is_vi=is_vi,
-        telemetry={},
-    )
+    # The preview's prompt carries the same canary code as the turn it stands in for.
+    with canary_scope(session["id"]):
+        evaluation = await engine._evaluate_candidate_response(
+            candidate_text=transcript,
+            current_stage=stage,
+            current_question=question,
+            is_vi=is_vi,
+            telemetry={},
+        )
     settings = get_settings()
     preview_token = jwt.encode(
         {

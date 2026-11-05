@@ -24,6 +24,8 @@ from src.modules.interviews.application.runtime.chat_runtime import (
     ChatRuntimeError,
     get_chat_runtime,
 )
+from src.modules.interviews.application.interview_blueprints import BlueprintError, resolve_blueprint
+from src.modules.interviews.core.demo_mode import is_demo_duration
 from src.modules.interviews.application.progress import compare_with_previous, load_progress, set_weekly_goal
 from src.modules.interviews.application.progress.real_interviews import (
     delete_report,
@@ -157,6 +159,8 @@ class CreateInterviewSession(BaseModel):
     reask_concept_id: str | None = Field(default=None, alias="reaskConceptId", max_length=120)
     # Repeat yesterday's exact missed question once; the grader closes it after a covered answer.
     reask_question_version_id: str | None = Field(default=None, alias="reaskQuestionVersionId", max_length=64)
+    # The interview type the candidate chose (interview_blueprints); None: the default type.
+    blueprint_id: str | None = Field(default=None, alias="blueprintId", max_length=36)
 
     model_config = {"populate_by_name": True}
 
@@ -469,6 +473,15 @@ async def create_interview_session(
         await _require_match_threshold(
             db, user, payload.resume_id, payload.job_id, payload.fit_attempt_id
         )
+        if payload.blueprint_id and not is_demo_duration(payload.duration_minutes):
+            # Ask the candidate to choose again rather than switching their choice silently.
+            try:
+                await resolve_blueprint(db, payload.blueprint_id, strict=True)
+            except BlueprintError as exc:
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail={"errorCode": exc.code, "message": "Interview type is no longer available."},
+                ) from exc
 
         session_id = str(uuid4())
         plan_id = str(uuid4())
@@ -512,6 +525,7 @@ async def create_interview_session(
                         "focusArea": payload.focus_area,
                         "reaskConceptId": payload.reask_concept_id,
                         "reaskQuestionVersionId": payload.reask_question_version_id,
+                        "blueprintId": payload.blueprint_id,
                     }
                 ),
             },

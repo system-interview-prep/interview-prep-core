@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     # When a job is published, a background task generates gated drafts so each
     # must-have skill has enough questions to rotate (question_coverage).
     question_pregeneration_enabled: bool = True
+    # Unreviewed generated drafts one regular session may ask (none in the
+    # challenge tier). A demo session may fill every technical slot with them
+    # so any IT CV-JD pair the audience picks can run end to end.
+    interview_max_unreviewed_generated: int = Field(default=1, ge=0, le=10)
+    demo_allow_unreviewed_generated: bool = True
     # Old unstructured interview endpoints bypass the structured turn state
     # machine. They remain opt-in only for a controlled migration window.
     legacy_interview_api_enabled: bool = False

@@ -1,12 +1,20 @@
 """One spoken answer = one Interview Core turn, however many STT fragments it has."""
 
+from pathlib import Path
+
 import pytest
 
 from src.modules.interviews.adapters.voice.answer_window import (
+    PROCESSING_FILLERS_EN,
+    PROCESSING_FILLERS_VI,
     SHORT_ANSWER_WORDS,
     AnswerWindow,
+    pick_processing_filler,
+    processing_filler,
+    processing_fillers,
     silence_reprompt,
     turn_taking_tip,
+    without_leading_interjection,
 )
 
 
@@ -50,13 +58,22 @@ def test_voice_guidance_is_hands_free(locale: str) -> None:
     assert "press" not in guidance
 
 
-def test_processing_filler_rotates_between_answers() -> None:
-    from src.modules.interviews.adapters.voice.answer_window import processing_filler, processing_fillers
+def test_processing_filler_is_opt_in_and_silent_by_default(monkeypatch) -> None:
+    """No "Ừm, chờ mình một chút nhé" while Core works (removed 31/10)."""
+    from src.modules.interviews.adapters.voice import answer_window
+    from src.modules.interviews.core import interviewer_script as script
 
     lines = [processing_filler("vi-VN", i) for i in range(len(processing_fillers("vi-VN")))]
     assert len(set(lines)) == len(lines) >= 3
     assert processing_filler("vi-VN") == "Ừm, chờ mình một chút nhé."
     assert processing_filler("en-US", 1) != processing_filler("en-US", 0)
+    monkeypatch.delenv("VOICE_PROCESSING_FILLER_ENABLED", raising=False)
+    assert not answer_window.processing_filler_enabled()
+    monkeypatch.setenv("VOICE_PROCESSING_FILLER_ENABLED", "true")
+    assert answer_window.processing_filler_enabled()
+    assert script.PROCESSING_FILLERS_VI
+    agent = Path(answer_window.__file__).with_name("livekit_agent.py").read_text(encoding="utf-8")
+    assert 'kind="filler"' in agent
 
 
 def test_answer_pause_nudges_vary_by_turn_and_do_not_repeat_back_to_back() -> None:

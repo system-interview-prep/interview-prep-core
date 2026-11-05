@@ -1875,6 +1875,20 @@ def test_unreviewed_budget_is_zero_in_challenge_and_one_otherwise():
     assert unreviewed_budget(None) == 1
 
 
+def test_demo_session_may_fill_every_technical_slot_with_generated_drafts(monkeypatch):
+    """Any IT CV-JD pair picked live must run even when the bank has no question for it."""
+    from src.core.config import get_settings
+    from src.modules.interviews.core.demo_mode import DEMO_TECHNICAL_QUESTIONS
+    from src.modules.interviews.planning.question_selector import unreviewed_budget
+
+    assert unreviewed_budget({"practiceTier": "challenge"}, demo=True) == DEMO_TECHNICAL_QUESTIONS
+    assert unreviewed_budget({"practiceTier": "standard"}, demo=True) == DEMO_TECHNICAL_QUESTIONS
+    monkeypatch.setattr(get_settings(), "demo_allow_unreviewed_generated", False)
+    assert unreviewed_budget({"practiceTier": "challenge"}, demo=True) == 0
+    monkeypatch.setattr(get_settings(), "interview_max_unreviewed_generated", 3)
+    assert unreviewed_budget({"practiceTier": "standard"}) == 3
+
+
 def test_limit_unreviewed_keeps_reviewed_and_order():
     from src.modules.interviews.planning.question_selector import limit_unreviewed
 
