@@ -195,6 +195,25 @@ def processing_filler(locale: str, index: int = 0) -> str:
     return pool[index % len(pool)]
 
 
+def pick_processing_filler(locale: str, seed: str, avoid: str | None = None) -> str:
+    """Choose a stable filler for this turn, avoiding the previous line when possible."""
+    import hashlib
+
+    pool = processing_fillers(locale)
+    start = int(hashlib.sha256(seed.encode("utf-8")).hexdigest(), 16) % len(pool)
+    for offset in range(len(pool)):
+        line = pool[(start + offset) % len(pool)]
+        if line != avoid:
+            return line
+    return pool[start]
+
+
+def without_leading_interjection(text: str) -> str:
+    """Avoid repeating a filler at the start of Core's response after speaking one."""
+    value = str(text or "")
+    return re.sub(r"^\s*(?:Ừm|Um|Okay|Ok|À)\s*[,—-]\s*", "", value, count=1, flags=re.IGNORECASE)
+
+
 def pick_answer_pause_nudge(locale: str, seed: str, avoid: str | None = None) -> str:
     """Vary the pause backchannel by turn and avoid repeating the last line."""
     import hashlib
