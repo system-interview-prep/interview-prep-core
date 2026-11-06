@@ -252,6 +252,7 @@ class VoiceLabAgent(Agent):
         self._preview_last_started = 0.0
         self._preview_call_count = 0
         self._core_in_flight = False
+        self._repeat_after_core = False
         self._reprompt_task: asyncio.Task | None = None
         self._reprompted_text = ""
         self._last_interruption_telemetry: dict = {}
@@ -309,17 +310,9 @@ class VoiceLabAgent(Agent):
             await asyncio.sleep(delay)
         except asyncio.CancelledError:
             return
-        # Do not start evaluating or asking the next question over the
-        # backchannel. If the candidate resumes, on_user_speaking cancels both
-        # this task and the pending commit.
-        pause_nudge_task = self._answer_pause_nudge_task
-        if pause_nudge_task is not None and not pause_nudge_task.done():
-            try:
-                await pause_nudge_task
-            except asyncio.CancelledError:
-                return
-            except Exception:
-                logger.debug("Voice answer pause backchannel failed", exc_info=True)
+        # The nudge is optional ambience, not part of the answer. Do not make
+        # the candidate wait for its TTS playout before Core can start.
+        self._cancel_task(self._answer_pause_nudge_task)
         # The Core call runs in its own task. `_commit_task` is cancelled
         # whenever the candidate speaks; if the call ran inside it, talking
         # while Core works ("alo?") would cancel the request mid-flight and
@@ -584,10 +577,12 @@ class VoiceLabAgent(Agent):
         except asyncio.CancelledError:
             self._cancel_task(filler_task)
             self._core_in_flight = False
+            self._repeat_after_core = False
             raise
         except Exception as exc:
             self._cancel_task(filler_task)
             self._core_in_flight = False
+            self._repeat_after_core = False
             self.report(
                 "voice_core_failed",
                 error_type=type(exc).__name__,
@@ -622,16 +617,33 @@ class VoiceLabAgent(Agent):
             terminal=is_terminal,
         )
         self._core_in_flight = False
+        repeat_after_core = self._repeat_after_core
+        self._repeat_after_core = False
         leftover = self._answer.take()
         if leftover is not None:
-            # Speech that arrived while Core was working is the tail of the
-            # answer just submitted, not an answer to the question about to be
-            # asked; submitting it would answer the next question with it.
-            logger.info(
-                "Speech during Core processing dropped",
-                extra={"session_id": self._session_id, "fragments": leftover.fragment_count},
+            # Never silently attach a late fragment to the next question. Keep
+            # the transcript visible and ask the candidate to restate it for
+            # the active question, because Core has already committed the
+            # previous turn by this point.
+            self.report(
+                "voice_late_speech_captured",
+                fragments=leftover.fragment_count,
+                words=len(leftover.text.split()),
             )
+            with contextlib.suppress(Exception):
+                await self._room.local_participant.publish_data(
+                    json.dumps({"type": "voice.late_transcript", "text": leftover.text}),
+                    reliable=True,
+                    topic="intervia.turn",
+                )
         self._publish_turn_state("listening")
+        if repeat_after_core:
+            content = f"Mình vừa nhận được yêu cầu nhắc lại. Câu hỏi hiện tại là: {content}"
+        if leftover is not None:
+            content = (
+                "Mình nghe được phần bạn vừa nói thêm. Câu trả lời trước đã được gửi đi rồi. "
+                f"Bạn có thể nhắc lại ý đó sau câu hỏi này nhé. {content}"
+            )
         if filler_spoken and speech_v2_enabled():
             content = without_leading_interjection(content)
         # Core asks the candidate to confirm a stop. Chat renders stop/continue
@@ -832,6 +844,15 @@ class VoiceLabAgent(Agent):
                     "corrected_transcript": transcript,
                 },
             )
+
+        # The request belongs to the question currently being spoken, not to
+        # the answer payload. Core may already be finishing the previous turn;
+        # remember the request and repeat the next active question after it
+        # returns instead of treating this sentence as an answer or an abort.
+        if self._core_in_flight and is_repeat_request(transcript, locale=self._locale):
+            self._repeat_after_core = True
+            self.report("voice_question_replay_deferred", reason="core_processing")
+            return
 
         quality = assess_transcript(transcript, confidence=confidence, locale=self._locale)
         logger.info(

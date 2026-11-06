@@ -24,8 +24,8 @@ from types import ModuleType
 # Silence (seconds) after the last fragment before an answer is submitted.
 # A short buffer waits longer, so a brief real answer ("Chưa ạ.") still goes
 # through while a lone mis-heard word does not end the answer prematurely.
-COMMIT_SILENCE_SECONDS = 2.5
-SHORT_COMMIT_SILENCE_SECONDS = 2.5
+COMMIT_SILENCE_SECONDS = 1.8
+SHORT_COMMIT_SILENCE_SECONDS = 2.2
 SHORT_ANSWER_WORDS = 8
 # Speak a short filler only when Interview Core takes longer than this.
 PROCESSING_FILLER_SECONDS = 1.2

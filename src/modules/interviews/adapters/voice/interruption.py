@@ -58,7 +58,7 @@ _EN_REPEAT_MARKERS = (
 )
 # A repeat request is a short aside; a long utterance is answer content even
 # when it mentions "lặp lại" (retry loops) or "hỏi lại" (asking a teammate).
-_MAX_REPEAT_REQUEST_WORDS = 14
+_MAX_REPEAT_REQUEST_WORDS = 24
 _VI_RESUME_MARKERS = {
     "duoc roi",
     "noi tiep di",
@@ -172,9 +172,11 @@ def is_greeting_backchannel(text: str, *, locale: str = "vi-VN") -> bool:
 def is_repeat_request(text: str, *, locale: str = "vi-VN") -> bool:
     """Detect explicit reports that the question was missed or cut off."""
     tokens = _normalized_tokens(text)
-    if not tokens or len(tokens) > _MAX_REPEAT_REQUEST_WORDS:
+    if not tokens:
         return False
     if not locale.lower().startswith("vi"):
+        if len(tokens) > _MAX_REPEAT_REQUEST_WORDS:
+            return False
         # Pad so markers match whole words only.
         phrase = f" {' '.join(tokens)} "
         # The re-prompt tells candidates to just say "repeat".
@@ -182,8 +184,13 @@ def is_repeat_request(text: str, *, locale: str = "vi-VN") -> bool:
             return True
         return any(f" {marker} " in phrase for marker in _EN_REPEAT_MARKERS)
     spoken = unicodedata.normalize("NFC", text).lower().strip()
+    # Explicitly saying the interviewer/audio was not heard may be a full
+    # sentence (not just a short aside). Check it before the short-request
+    # guard so it cannot fall through as an interview answer or abort intent.
     if _VI_NOT_HEARD.search(spoken):
         return True
+    if len(tokens) > _MAX_REPEAT_REQUEST_WORDS:
+        return False
     if _VI_AUDIO_PROBLEM.search(spoken):
         return len(tokens) <= _MAX_AUDIO_PROBLEM_WORDS
     if not _VI_REPEAT_VERB.search(spoken):

@@ -44,6 +44,14 @@ def test_short_buffer_waits_longer_before_submitting() -> None:
     assert window.commit_delay() == 2.5
 
 
+def test_default_commit_delays_reduce_wait_without_committing_short_answers_immediately(monkeypatch) -> None:
+    monkeypatch.delenv("VOICE_ANSWER_COMMIT_SILENCE", raising=False)
+    monkeypatch.delenv("VOICE_ANSWER_SHORT_COMMIT_SILENCE", raising=False)
+    window = AnswerWindow()
+    assert window.commit_silence == 1.8
+    assert window.short_commit_silence == 2.2
+
+
 def test_blank_fragments_are_ignored() -> None:
     window = AnswerWindow()
     window.add("   ", message_id="m1")

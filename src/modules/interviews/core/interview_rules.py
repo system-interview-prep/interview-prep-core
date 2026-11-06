@@ -751,6 +751,11 @@ def classify_candidate_question(text: str) -> CandidateQuestionIntent | None:
         # Only when asked: "anh là người quyết định" may describe a team lead.
         if _ABOUT_INTERVIEWER.search(cleaned) and _ASKS_BACK.search(cleaned):
             return "ABOUT_INTERVIEWER"
+    # Role/process keywords inside a long answer (for example, "em ứng tuyển vị
+    # trí Backend vì muốn hiểu API hoạt động như thế nào") are not an aside to
+    # the interviewer. Preserve longer messages for answer evaluation.
+    if len(cleaned.split()) > _MAX_ASIDE_WORDS:
+        return None
     asks_question = "?" in cleaned or any(
         cue in cleaned
         for cue in (

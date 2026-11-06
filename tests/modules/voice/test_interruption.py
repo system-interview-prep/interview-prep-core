@@ -141,6 +141,12 @@ def test_detects_vietnamese_repeat_requests(text: str) -> None:
     assert is_repeat_request(text, locale="vi-VN")
 
 
+def test_detects_long_explicit_not_heard_request() -> None:
+    text = "Dạ em không nghe được gì hết vì bạn nói xong là em chưa nghe thấy câu hỏi"
+    assert len(text.split()) > 14
+    assert is_repeat_request(text, locale="vi-VN")
+
+
 @pytest.mark.parametrize(
     "text",
     [
