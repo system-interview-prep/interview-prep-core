@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 from src.core.config import get_settings
 from src.core.trace_logging import _WORKFLOW_DIRECTORIES, trace_event
@@ -9,6 +8,7 @@ def test_interviewer_workflow_directory_mapping():
     assert _WORKFLOW_DIRECTORIES.get("interviewer") == "interview"
     assert _WORKFLOW_DIRECTORIES.get("interview") == "interview"
     assert _WORKFLOW_DIRECTORIES.get("clarification") == "hoilai"
+    assert _WORKFLOW_DIRECTORIES.get("test_stt") == "test-stt"
 
 
 def test_trace_event_interviewer(monkeypatch, tmp_path):

@@ -1,31 +1,53 @@
-import asyncio
 import io
 import os
 import wave
 from time import perf_counter
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import Response
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import require_admin
 from src.infrastructure.database import get_db
 from src.modules.admin.ai import ai_overview, langfuse_view
-from src.modules.admin.shared.audit import log_admin_action as _log_admin_action
 from src.modules.admin.ai.service import enrich_flagged_turns
-from src.modules.interviews.facade import (
-    interview_ai_alerts, interview_ai_health, interview_langfuse_links,
-    interview_speech_control, interviewer_playbook, review_interview_speech_check,
-)
 from src.modules.admin.ai.service import get_ai_call as get_ai_call_view
 from src.modules.admin.ai.service import list_ai_calls as list_ai_calls_view
+from src.modules.admin.shared.audit import log_admin_action as _log_admin_action
+from src.modules.interviews.facade import (
+    interview_ai_alerts,
+    interview_ai_health,
+    interview_langfuse_links,
+    interview_speech_control,
+    interviewer_playbook,
+    review_interview_speech_check,
+)
 
-from .schemas import AdminSpeechTestRequest, PlaybookDecisionRequest, PlaybookEntryRequest, PlaybookReflectRequest, SpeechCheckReview, TraceReviewRequest
+from .schemas import (
+    AdminSpeechTestRequest,
+    PlaybookDecisionRequest,
+    PlaybookEntryRequest,
+    PlaybookReflectRequest,
+    SpeechCheckReview,
+    TraceReviewRequest,
+)
+from .stt_livekit import router as stt_livekit_router
 
 router = APIRouter(tags=["admin"])
+router.include_router(stt_livekit_router)
 
 
 @router.get("/ai/alerts")
@@ -264,10 +286,6 @@ async def get_admin_ai_call(call_id: int, _: dict=Depends(require_admin), db: As
         raise HTTPException(status_code=404, detail='AI call not found')
     return result
 
-_SPEECH_TEST_MAX_AUDIO_BYTES = 10 * 1024 * 1024
-
-_SPEECH_TEST_AUDIO_TYPES = {"audio/wav", "audio/x-wav"}
-
 _SPEECH_STT_ADAPTERS = ["AssemblyAI (LiveKit Inference)", "Qwen3-ASR (streaming)"]
 
 _SPEECH_TTS_ADAPTERS = ["ElevenLabs", "VieNeu", "Cartesia (LiveKit Inference)"]
@@ -276,8 +294,9 @@ _SPEECH_TTS_ADAPTERS = ["ElevenLabs", "VieNeu", "Cartesia (LiveKit Inference)"]
 async def _authenticate_speech_websocket(websocket: WebSocket, db: AsyncSession) -> bool:
     protocols = [part.strip() for part in websocket.headers.get("sec-websocket-protocol", "").split(",")]
     token = protocols[1] if len(protocols) == 2 and protocols[0] == "bearer" else ""
-    from src.core.config import get_settings
     import jwt
+
+    from src.core.config import get_settings
 
     try:
         settings = get_settings()
@@ -317,6 +336,7 @@ def _pcm16_wav(data: bytes, sample_rate: int, channels: int) -> bytes:
 def _configured_tts_adapter() -> tuple[Any, str, str]:
     from livekit.agents import inference
     from livekit.plugins import elevenlabs
+
     from src.modules.interviews.adapters.voice.provider_config import tts_provider_config
     from src.modules.interviews.adapters.voice.vieneu_tts import VieNeuTTS
 
@@ -450,95 +470,13 @@ async def admin_speech_test_speak_stream(
 @router.post("/ai/speech/test/transcribe")
 async def admin_speech_test_transcribe(
     audio: UploadFile = File(...),
+    context: str = Form("", max_length=4000),
+    reference_text: str = Form("", alias="referenceText", max_length=16000),
     _: dict = Depends(require_admin),
 ) -> dict:
-    from livekit import rtc
-    from livekit.agents import inference, stt
-    from src.modules.interviews.adapters.voice.language import (
-        assemblyai_stream_options,
-        normalize_transcript_for_locale,
-    )
-    from src.modules.interviews.adapters.voice.qwen_streaming_stt import QwenStreamingSTT
-    from src.modules.interviews.adapters.voice.stt_provider import stt_provider_settings
+    from .stt_test import SttTestOptions, transcribe_file
 
-    if audio.content_type not in _SPEECH_TEST_AUDIO_TYPES:
-        raise HTTPException(status_code=415, detail="Audio must be a WAV recording")
-    data = await audio.read(_SPEECH_TEST_MAX_AUDIO_BYTES + 1)
-    if not data or len(data) > _SPEECH_TEST_MAX_AUDIO_BYTES:
-        raise HTTPException(status_code=413, detail="Audio must be between 1 byte and 10 MiB")
-    try:
-        with wave.open(io.BytesIO(data), "rb") as wav:
-            if wav.getsampwidth() != 2:
-                raise HTTPException(status_code=415, detail="WAV audio must use 16-bit PCM")
-            sample_rate = wav.getframerate()
-            channels = wav.getnchannels()
-            if sample_rate <= 0 or channels <= 0 or wav.getcomptype() != "NONE":
-                raise HTTPException(status_code=415, detail="WAV audio must be uncompressed PCM")
-            pcm = wav.readframes(wav.getnframes())
-    except (wave.Error, EOFError) as exc:
-        raise HTTPException(status_code=415, detail="Invalid WAV audio") from exc
-    import numpy as np
-
-    samples = np.frombuffer(pcm, dtype="<i2")
-    if channels > 1:
-        samples = samples.reshape(-1, channels).mean(axis=1).astype(np.int16)
-    if sample_rate != 16_000 and samples.size:
-        target_len = max(1, round(len(samples) / sample_rate * 16_000))
-        samples = np.interp(np.linspace(0, len(samples) - 1, target_len), np.arange(len(samples)), samples).astype(np.int16)
-    if samples.size == 0:
-        raise HTTPException(status_code=422, detail="Audio is empty")
-
-    provider_settings = stt_provider_settings()
-    language = os.getenv("LIVEKIT_STT_LANGUAGE", "vi").strip().lower() or "vi"
-    if language in {"session", "auto", "multi"}:
-        # The admin tester has no interview locale to inherit from.
-        language = "vi"
-    if provider_settings.provider == "qwen":
-        provider = QwenStreamingSTT(
-            base_url=provider_settings.base_url or "",
-            model=provider_settings.model,
-            chunk_size_seconds=provider_settings.chunk_size_seconds,
-            endpoint_silence_seconds=provider_settings.endpoint_silence_seconds,
-            silence_rms_threshold=provider_settings.silence_rms_threshold,
-        )
-    else:
-        provider = inference.STT(
-            model=provider_settings.model,
-            language=language,
-            extra_kwargs=assemblyai_stream_options(language),
-        )
-
-    started = perf_counter()
-    stream = provider.stream(language=language)
-
-    async def final_transcript() -> str:
-        async for event in stream:
-            if event.type == stt.SpeechEventType.FINAL_TRANSCRIPT and event.alternatives:
-                return event.alternatives[0].text.strip()
-        return ""
-
-    task = asyncio.create_task(final_transcript())
-    try:
-        chunk_size = 3200  # 200 ms at 16 kHz
-        for offset in range(0, samples.size, chunk_size):
-            chunk = samples[offset : offset + chunk_size]
-            stream.push_frame(rtc.AudioFrame(chunk.tobytes(), 16_000, 1, len(chunk)))
-        silence = np.zeros(40_000, dtype=np.int16)
-        stream.push_frame(rtc.AudioFrame(silence.tobytes(), 16_000, 1, len(silence)))
-        transcript = await asyncio.wait_for(task, timeout=60)
-        transcript = normalize_transcript_for_locale(transcript, locale=language)
-    except asyncio.TimeoutError as exc:
-        task.cancel()
-        raise HTTPException(status_code=504, detail="Speech adapter did not return a transcript in time") from exc
-    finally:
-        await stream.aclose()
-        await provider.aclose()
-    return {
-        "text": transcript,
-        "elapsedMs": round((perf_counter() - started) * 1000),
-        "provider": provider_settings.provider,
-        "model": provider_settings.model,
-    }
+    return await transcribe_file(audio, SttTestOptions(context=context, referenceText=reference_text))
 
 
 @router.websocket("/ai/speech/test/transcribe/stream")
@@ -546,108 +484,17 @@ async def admin_speech_test_transcribe_stream(
     websocket: WebSocket,
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    """Stream live microphone PCM directly into the configured STT adapter."""
     if not await _authenticate_speech_websocket(websocket, db):
         return
+    from .stt_test import transcribe_stream
 
-    from livekit import rtc
-    from livekit.agents import inference, stt
-    from src.modules.interviews.adapters.voice.language import (
-        assemblyai_stream_options,
-        normalize_transcript_for_locale,
-    )
-    from src.modules.interviews.adapters.voice.qwen_streaming_stt import QwenStreamingSTT
-    from src.modules.interviews.adapters.voice.stt_provider import stt_provider_settings
+    await transcribe_stream(websocket)
 
-    provider_settings = stt_provider_settings()
-    language = os.getenv("LIVEKIT_STT_LANGUAGE", "vi").strip().lower() or "vi"
-    if language in {"session", "auto", "multi"}:
-        # The admin tester has no interview locale to inherit from.
-        language = "vi"
-    if provider_settings.provider == "qwen":
-        provider = QwenStreamingSTT(
-            base_url=provider_settings.base_url or "",
-            model=provider_settings.model,
-            chunk_size_seconds=provider_settings.chunk_size_seconds,
-            endpoint_silence_seconds=provider_settings.endpoint_silence_seconds,
-            silence_rms_threshold=provider_settings.silence_rms_threshold,
-        )
-    else:
-        provider = inference.STT(
-            model=provider_settings.model,
-            language=language,
-            extra_kwargs=assemblyai_stream_options(language),
-        )
-
-    stream = provider.stream(language=language)
-    await websocket.send_json(
-        {"type": "ready", "provider": provider_settings.provider, "model": provider_settings.model}
-    )
-
-    async def forward_events() -> None:
-        async for event in stream:
-            if event.type not in {stt.SpeechEventType.INTERIM_TRANSCRIPT, stt.SpeechEventType.FINAL_TRANSCRIPT}:
-                continue
-            if not event.alternatives:
-                continue
-            transcript = normalize_transcript_for_locale(
-                event.alternatives[0].text,
-                locale=language,
-            )
-            await websocket.send_json(
-                {
-                    "type": "final" if event.type == stt.SpeechEventType.FINAL_TRANSCRIPT else "interim",
-                    "text": transcript,
-                }
-            )
-
-    event_task = asyncio.create_task(forward_events())
-    received_bytes = 0
-    try:
-        while True:
-            message = await websocket.receive()
-            if message.get("bytes") is not None:
-                pcm = message["bytes"]
-                received_bytes += len(pcm)
-                if received_bytes > _SPEECH_TEST_MAX_AUDIO_BYTES:
-                    await websocket.send_json({"type": "error", "detail": "Audio exceeded 10 MiB"})
-                    break
-                if len(pcm) % 2:
-                    await websocket.send_json({"type": "error", "detail": "Expected 16-bit PCM audio"})
-                    break
-                samples = len(pcm) // 2
-                if samples:
-                    stream.push_frame(rtc.AudioFrame(pcm, 16_000, 1, samples))
-                continue
-
-            if message.get("text"):
-                control = json.loads(message["text"])
-                if control.get("type") == "stop":
-                    await stream.flush()
-                    break
-    except WebSocketDisconnect:
-        pass
-    except Exception as exc:  # noqa: BLE001 - surface adapter failures to the test UI
-        try:
-            await websocket.send_json({"type": "error", "detail": str(exc)[:300]})
-        except Exception:  # noqa: BLE001
-            pass
-    finally:
-        await stream.aclose()
-        try:
-            await asyncio.wait_for(event_task, timeout=5)
-        except TimeoutError:
-            event_task.cancel()
-        await provider.aclose()
-        try:
-            await websocket.send_json({"type": "stopped"})
-            await websocket.close()
-        except Exception:  # noqa: BLE001
-            pass
 
 @router.get("/ai/speech/test/config")
 async def get_admin_speech_test_config(_: dict = Depends(require_admin)) -> dict:
     """Show integrated voice adapters and the providers selected by configuration."""
+    from src.core.config import get_settings
     from src.modules.interviews.adapters.voice.provider_config import tts_provider_config
     from src.modules.interviews.adapters.voice.stt_provider import stt_provider_settings
 
@@ -674,11 +521,13 @@ async def get_admin_speech_test_config(_: dict = Depends(require_admin)) -> dict
         if stt.provider == "qwen"
         else bool(os.getenv("LIVEKIT_API_KEY") and os.getenv("LIVEKIT_API_SECRET"))
     )
+    settings = get_settings()
     return {
         "success": True,
         "sttProvider": stt.provider,
         "sttModel": stt.model,
         "sttReady": stt_ready,
+        "livekitSttReady": bool(settings.livekit_url and settings.livekit_api_key and settings.livekit_api_secret),
         "ttsProvider": tts_provider,
         "ttsModel": tts_model,
         "ttsVoice": tts_voice,
