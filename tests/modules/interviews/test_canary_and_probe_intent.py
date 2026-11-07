@@ -16,9 +16,9 @@ from uuid import uuid4
 import pytest
 
 from src.modules.interviews.application.llm_checks import FLAG_LABELS, decision_rule, turn_flags
-from src.modules.interviews.core.interview_engine import InterviewCoreEngine
-from src.modules.interviews.core.interview_rules import EVALUATION_SCHEMA, acknowledgement_rejection_reason
-from src.modules.interviews.core.interview_types import (
+from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.core.conversation.turn_rules import EVALUATION_SCHEMA, acknowledgement_rejection_reason
+from src.modules.interviews.core.contracts.interview import (
     CandidateTurnInput,
     InterviewerTurnOutput,
     InterviewStage,

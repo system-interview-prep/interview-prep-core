@@ -104,7 +104,7 @@ def test_voice_agent_packages_load_without_livekit_runtime_imports() -> None:
 
 
 def test_every_room_answers_an_aside_by_repeating_the_question() -> None:
-    from src.modules.interviews.core.interview_engine import candidate_question_response
+    from src.modules.interviews.core.conversation.turn_engine import candidate_question_response
 
     for spoken in (True, False):
         reply = candidate_question_response(

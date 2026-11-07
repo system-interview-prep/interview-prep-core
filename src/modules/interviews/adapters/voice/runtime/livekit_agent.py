@@ -120,7 +120,7 @@ def _message_metrics(message: object) -> dict[str, float]:
 
 
 def opening_paragraphs(text: str) -> list[str]:
-    """The opening's blank-line paragraphs (core/opening_script.py), in order."""
+    """The opening's blank-line paragraphs (core/dialogue/opening.py), in order."""
     paragraphs = [part.strip() for part in text.split("\n\n")]
     return [part for part in paragraphs if part] or [text]
 

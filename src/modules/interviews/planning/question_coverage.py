@@ -23,7 +23,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
-from src.modules.interviews.core.demo_mode import DEMO_DURATION_MINUTES
+from src.modules.interviews.core.interview_design.demo_mode import DEMO_DURATION_MINUTES
 from src.modules.interviews.planning.plan_structure import derive_difficulty
 from src.modules.interviews.planning.planner import _requirement_concepts
 from src.modules.interviews.planning.question_generation import (

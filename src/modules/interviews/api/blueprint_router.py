@@ -16,7 +16,7 @@ from src.core.roles import QUESTION_AUTHOR
 from src.core.security import current_user, require_admin, require_roles
 from src.infrastructure.database import get_db
 from src.modules.interviews.application import interview_blueprints as blueprints
-from src.modules.interviews.core.interview_blueprint import InterviewBlueprint
+from src.modules.interviews.core.interview_design.blueprint import InterviewBlueprint
 
 router = APIRouter(prefix="/admin/interview-blueprints", tags=["interview-blueprints"])
 candidate_router = APIRouter(prefix="/interview-types", tags=["interview-blueprints"])

@@ -18,7 +18,7 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.modules.interviews.core.interview_rounds import AREAS
+from src.modules.interviews.core.interview_design.rounds import AREAS
 
 STAGES = ("screening", "technical", "final", "other")
 RESULTS = ("passed", "failed", "waiting")

@@ -1,4 +1,4 @@
-# src/modules/interviews/core/interview_engine.py
+# src/modules/interviews/core/conversation/turn_engine.py
 from __future__ import annotations
 
 import logging
@@ -14,11 +14,11 @@ from uuid import UUID
 
 from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
-from src.modules.interviews.core import speech_checks
-from src.modules.interviews.core.demo_mode import DEMO_OVERTIME_GRACE_SECONDS
-from src.modules.interviews.core.interview_blueprint import blueprint_from_payload
-from src.modules.interviews.core.interview_response import InterviewResponseMixin
-from src.modules.interviews.core.interview_rules import (
+from src.modules.interviews.core.dialogue import speech_checks
+from src.modules.interviews.core.interview_design.demo_mode import DEMO_OVERTIME_GRACE_SECONDS
+from src.modules.interviews.core.interview_design.blueprint import blueprint_from_payload
+from src.modules.interviews.core.conversation.response_generation import InterviewResponseMixin
+from src.modules.interviews.core.conversation.turn_rules import (
     _FIXED_PROBES,
     DEEPEN_ASPECT_EN,
     DEEPEN_ASPECT_VI,
@@ -50,7 +50,7 @@ from src.modules.interviews.core.interview_rules import (
     safe_acknowledgement,
     validate_probe_text,
 )
-from src.modules.interviews.core.interview_types import (
+from src.modules.interviews.core.contracts.interview import (
     CandidateTurnInput,
     InterviewerTurnOutput,
     InterviewStage,
@@ -95,7 +95,7 @@ from src.modules.interviews.core.dialogue.policy import (
     speech_v2_enabled,
     without_canary,
 )
-from src.modules.interviews.core.language_policy import response_matches_locale
+from src.modules.interviews.core.dialogue.language import response_matches_locale
 
 __all__ = [
     "InterviewCoreEngine",

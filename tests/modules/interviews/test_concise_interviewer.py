@@ -2,8 +2,8 @@
 
 import pytest
 
-from src.modules.interviews.core.interview_engine import InterviewCoreEngine
-from src.modules.interviews.core.interview_types import InterviewStage
+from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.core.contracts.interview import InterviewStage
 from src.modules.interviews.evaluation.evaluation_engine import InterviewEvaluationEngine
 from src.modules.interviews.evaluation.evaluation_types import TurnEvaluationInput
 from src.modules.interviews.planning.question_selector import _behavioral_snapshot

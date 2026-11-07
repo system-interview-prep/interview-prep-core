@@ -12,12 +12,12 @@ from typing import Any
 import pytest
 
 from src.modules.interviews.application.runtime.chat_runtime import build_session_state_from_db
-from src.modules.interviews.core.interview_engine import (
+from src.modules.interviews.core.conversation.turn_engine import (
     InterviewCoreEngine,
     fallback_probe,
     safe_acknowledgement,
 )
-from src.modules.interviews.core.interview_types import CandidateTurnInput, InterviewStage, TurnAction
+from src.modules.interviews.core.contracts.interview import CandidateTurnInput, InterviewStage, TurnAction
 from src.modules.interviews.core.dialogue.policy import (
     ACK_FALLBACK_VI,
     CLOSE_COMPLETED_VI,
@@ -27,7 +27,7 @@ from src.modules.interviews.core.dialogue.policy import (
     pick_variant,
     transition_line,
 )
-from src.modules.interviews.core.opening_script import build_opening, warmup_question
+from src.modules.interviews.core.dialogue.opening import build_opening, warmup_question
 from src.modules.interviews.planning.spoken_questions import add_spoken_versions, validate_spoken_question
 
 LONG_ANSWER = (
@@ -459,7 +459,7 @@ async def test_turn_metadata_says_where_the_acknowledgement_came_from() -> None:
 
 def test_spoken_turn_trace_record(monkeypatch) -> None:
     from src.modules.interviews.application.runtime import chat_runtime
-    from src.modules.interviews.core.interview_types import InterviewerTurnOutput
+    from src.modules.interviews.core.contracts.interview import InterviewerTurnOutput
 
     captured: list[dict] = []
     monkeypatch.setattr(chat_runtime, "trace_event", lambda wf, ev, **f: captured.append({"wf": wf, "ev": ev, **f}))
@@ -574,7 +574,7 @@ async def test_challenge_transition_after_dont_know_in_a_full_turn() -> None:
 
 
 def test_clarify_text_must_restate_not_lecture() -> None:
-    from src.modules.interviews.core.interview_engine import clarify_rejection_reason
+    from src.modules.interviews.core.conversation.turn_engine import clarify_rejection_reason
 
     lecturing = (
         "Mình muốn bạn chia sẻ một sự cố kỹ thuật khó hoặc bất đồng trong team. "
@@ -645,7 +645,7 @@ def test_voice_side_lines_live_in_answer_window() -> None:
 
 
 def test_off_topic_reply_is_not_answered_as_an_unrelated_question() -> None:
-    from src.modules.interviews.core.interview_engine import candidate_question_response
+    from src.modules.interviews.core.conversation.turn_engine import candidate_question_response
 
     reply = candidate_question_response(
         "OFF_TOPIC_REPLY", current_question="Bạn làm phần nào?", is_vi=True, duration_minutes=25
@@ -772,7 +772,7 @@ def test_leading_interjection_can_be_dropped_after_a_filler() -> None:
 
 
 def test_follow_up_questions_get_the_same_kind_of_guard_as_acknowledgements() -> None:
-    from src.modules.interviews.core.interview_engine import probe_is_sayable
+    from src.modules.interviews.core.conversation.turn_engine import probe_is_sayable
     from src.modules.interviews.core.dialogue.policy import first_question_only
 
     assert probe_is_sayable("Khi Redis lỗi, hệ thống của bạn xử lý thế nào?")
@@ -786,7 +786,7 @@ def test_follow_up_questions_get_the_same_kind_of_guard_as_acknowledgements() ->
 
 
 def test_acknowledgement_that_says_it_heard_is_replaced() -> None:
-    from src.modules.interviews.core.interview_engine import acknowledgement_rejection_reason
+    from src.modules.interviews.core.conversation.turn_engine import acknowledgement_rejection_reason
 
     # Buổi thật 19/10, nói cả ở phòng chat.
     assert acknowledgement_rejection_reason(
@@ -846,7 +846,7 @@ async def test_closing_answer_is_short_checked_and_followed_by_a_scripted_questi
 
 def test_speech_calls_ask_for_no_reasoning_and_the_evaluation_for_a_schema() -> None:
     from src.modules.ai.facade import generate_text
-    from src.modules.interviews.core.interview_engine import EVALUATION_SCHEMA
+    from src.modules.interviews.core.conversation.turn_engine import EVALUATION_SCHEMA
 
     engine = InterviewCoreEngine(ai_generator=generate_text)
     assert engine._llm_options(speech=True) == {"reasoning_effort": "none"}
@@ -1002,7 +1002,7 @@ def test_scripted_pools_are_large_enough_not_to_repeat() -> None:
 
 
 def test_speech_checks_collect_only_inside_a_turn() -> None:
-    from src.modules.interviews.core import speech_checks
+    from src.modules.interviews.core.dialogue import speech_checks
 
     speech_checks.record("ack", "reject", "parroting", "x")  # no turn open: ignored, no error
     records = speech_checks.begin()
@@ -1014,7 +1014,7 @@ def test_speech_checks_collect_only_inside_a_turn() -> None:
 
 
 def test_compose_turn_records_its_edits() -> None:
-    from src.modules.interviews.core import speech_checks
+    from src.modules.interviews.core.dialogue import speech_checks
     from src.modules.interviews.core.dialogue.policy import compose_turn
 
     records = speech_checks.begin()
@@ -1029,7 +1029,7 @@ def test_compose_turn_records_its_edits() -> None:
 
 @pytest.mark.asyncio
 async def test_probe_turn_records_ack_fix_and_cut_question() -> None:
-    from src.modules.interviews.core import speech_checks
+    from src.modules.interviews.core.dialogue import speech_checks
 
     engine = InterviewCoreEngine(
         llm_client=RecordingLLM(
@@ -1058,7 +1058,7 @@ async def test_probe_turn_records_ack_fix_and_cut_question() -> None:
 
 @pytest.mark.asyncio
 async def test_rejected_acknowledgement_draft_is_recorded() -> None:
-    from src.modules.interviews.core import speech_checks
+    from src.modules.interviews.core.dialogue import speech_checks
 
     engine = InterviewCoreEngine(
         llm_client=RecordingLLM(
@@ -1080,8 +1080,8 @@ async def test_rejected_acknowledgement_draft_is_recorded() -> None:
 
 def test_spoken_turn_trace_carries_speech_control(monkeypatch) -> None:
     from src.modules.interviews.application.runtime import chat_runtime
-    from src.modules.interviews.core import speech_checks
-    from src.modules.interviews.core.interview_types import InterviewerTurnOutput
+    from src.modules.interviews.core.dialogue import speech_checks
+    from src.modules.interviews.core.contracts.interview import InterviewerTurnOutput
 
     captured: list[dict] = []
     monkeypatch.setattr(chat_runtime, "trace_event", lambda wf, ev, **f: captured.append(f))

@@ -2,7 +2,7 @@
 
 Reads the ``turn_spoken`` pipeline events over a time window. Each one carries
 what the speech guards did in that turn (``speech_checks``, written by
-core/speech_checks.py since 25/10), where each part of the reply came from
+core/dialogue/speech_checks.py since 25/10), where each part of the reply came from
 (``speech_plan``), the acknowledgement source and the reply text. Answers:
 
 * how often each guard let the AI's line through, rejected it, edited it or
@@ -41,7 +41,7 @@ from src.modules.interviews.core.dialogue.policy import (
     speech_v2_enabled,
 )
 from src.modules.interviews.application.quality_admin.speech_settings import voice_dialect
-from src.modules.interviews.core.speech_checks import KINDS
+from src.modules.interviews.core.dialogue.speech_checks import KINDS
 
 ROW_LIMIT = 5000
 RECENT_LIMIT = 40

@@ -16,8 +16,8 @@ they are: IT candidates know them by those names.
 
 from __future__ import annotations
 
-from src.modules.interviews.core.interview_rounds import AREAS as ROUND_AREAS
-from src.modules.interviews.core.interview_rounds import area_of
+from src.modules.interviews.core.interview_design.rounds import AREAS as ROUND_AREAS
+from src.modules.interviews.core.interview_design.rounds import area_of
 
 # Concepts that are part of the interview but not a skill to track.
 HIDDEN_CONCEPTS = frozenset({"warmup"})

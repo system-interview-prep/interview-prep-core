@@ -3,7 +3,7 @@
 import pytest
 
 from src.modules.interviews.application.quality_admin import interviewer_playbook as ip
-from src.modules.interviews.core import playbook
+from src.modules.interviews.core.dialogue import playbook
 
 
 @pytest.fixture(autouse=True)

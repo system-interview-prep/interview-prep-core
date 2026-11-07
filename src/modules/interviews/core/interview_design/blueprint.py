@@ -9,7 +9,7 @@ session without a configured blueprint behaves as before.
 The stage *types* stay fixed (WARM_UP, VALIDATE, DEEP_DIVE, CHALLENGE,
 BEHAVIORAL, CLOSING): the engine, scoring and reports understand each of them.
 A blueprint tunes them and turns the optional ones off; it cannot invent a new
-type. Demo sessions ignore the blueprint (core.demo_mode) so the scripted demo
+type. Demo sessions ignore the blueprint (core.interview_design.demo_mode) so the scripted demo
 stays fixed.
 """
 

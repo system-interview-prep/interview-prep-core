@@ -15,7 +15,7 @@ from src.modules.interviews.application.runtime.chat_runtime import (
     process_candidate_message,
     start_chat_session,
 )
-from src.modules.interviews.core.interview_engine import InterviewCoreEngine
+from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 from src.modules.interviews.core.dialogue.policy import EARLY_STOP_VI, FAREWELL_VI, PROBE_FALLBACK_VI, TIMEOUT_VI
 
 
@@ -1314,7 +1314,7 @@ async def test_rt17_hard_timeout_persistence(mock_session_data):
 @pytest.mark.asyncio
 async def test_rt18_reserve_precedence_over_elapsed_ratio_heuristic():
     """RT-18: cutoff and valid Behavioral reserve precedence follow the Gate 4 contract."""
-    from src.modules.interviews.core.interview_types import InterviewStage
+    from src.modules.interviews.core.contracts.interview import InterviewStage
 
     engine = InterviewCoreEngine()
 
@@ -2165,7 +2165,7 @@ async def test_regression_closing_farewell_completes_instead_of_abort(farewell):
 
 def test_abort_detection_ignores_technical_answers():
     """H1: technical vocabulary like "phải dừng lại" or "end the session" is not an abort."""
-    from src.modules.interviews.core.interview_engine import is_abort_request
+    from src.modules.interviews.core.conversation.turn_engine import is_abort_request
 
     for answer in [
         "Khi lỗi xảy ra thì service phải dừng lại và rollback toàn bộ transaction.",

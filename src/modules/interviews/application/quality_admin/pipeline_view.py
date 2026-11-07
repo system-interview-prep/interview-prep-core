@@ -256,7 +256,7 @@ def _exchange_view(event: dict[str, Any]) -> dict[str, Any]:
         "interviewer": p.get("interviewer"),
         "coreMs": event.get("duration_ms"),
         "modality": p.get("modality"),
-        # Speech control (core/speech_checks.py): the AI's rejected or edited
+        # Speech control (core/dialogue/speech_checks.py): the AI's rejected or edited
         # drafts with the reason, where each part of the reply came from, and
         # terms the AI brought in that neither the question nor the answer had.
         "ackRaw": p.get("ack_raw"),

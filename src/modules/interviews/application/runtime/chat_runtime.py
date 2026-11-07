@@ -29,10 +29,10 @@ from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
 from src.modules.interviews.application.quality_admin import interviewer_playbook, llm_checks
 from src.modules.interviews.application.runtime.session_deadline import chat_deadline
-from src.modules.interviews.core.interview_blueprint import InterviewBlueprint, blueprint_from_payload
-from src.modules.interviews.core import playbook, speech_checks
-from src.modules.interviews.core.opening_script import build_opening, warmup_question
-from src.modules.interviews.core.demo_mode import is_demo_duration
+from src.modules.interviews.core.interview_design.blueprint import InterviewBlueprint, blueprint_from_payload
+from src.modules.interviews.core.dialogue import playbook, speech_checks
+from src.modules.interviews.core.dialogue.opening import build_opening, warmup_question
+from src.modules.interviews.core.interview_design.demo_mode import is_demo_duration
 from src.modules.interviews.core.dialogue.policy import (
     CLOSE_COMPLETED_EN,
     CLOSE_COMPLETED_VI,
@@ -49,14 +49,14 @@ from src.modules.interviews.core.dialogue.policy import (
     pick_variant,
     speech_v2_enabled,
 )
-from src.modules.interviews.core.interview_engine import (
+from src.modules.interviews.core.conversation.turn_engine import (
     SAFE_FALLBACK_PROBE_EN,
     SAFE_FALLBACK_PROBE_VI,
     InterviewCoreEngine,
     pacing_seconds,
     validate_probe_text,
 )
-from src.modules.interviews.core.interview_types import (
+from src.modules.interviews.core.contracts.interview import (
     CandidateTurnInput,
     InterviewerTurnOutput,
     InterviewStage,
@@ -1002,7 +1002,7 @@ def build_session_state_from_db(
 
     target_duration_minutes = session_row.get("duration_minutes") or 25
     session_seconds = int(target_duration_minutes) * 60
-    # The stage policy frozen on the opening turn (core.interview_blueprint);
+    # The stage policy frozen on the opening turn (core.interview_design.blueprint);
     # sessions planned before blueprints existed get the default.
     blueprint = session_blueprint(turns)
     behavioral_reserve = blueprint.behavioral.reserve_seconds if blueprint.behavioral.enabled else 0
@@ -1068,7 +1068,7 @@ def build_session_state_from_db(
         ),
         "current_turn_in_question": 1 if has_probed else 0,
         "target_duration_minutes": target_duration_minutes,
-        # Demo sessions are turn-driven (see core.demo_mode).
+        # Demo sessions are turn-driven (see core.interview_design.demo_mode).
         "is_demo": is_demo_duration(target_duration_minutes),
         # basic | standard | challenge, frozen on each technical turn from the
         # CV–job match (planning.entry_gate). Challenge also probes good answers.
@@ -1511,7 +1511,7 @@ async def process_candidate_message(
     )
     try:
         core_started = perf_counter()
-        # Every guard decision on the AI's lines in this turn (core/speech_checks.py).
+        # Every guard decision on the AI's lines in this turn (core/dialogue/speech_checks.py).
         speech_checks.begin()
         try:
             core_output = await engine.handle_turn(turn_input, session_state)

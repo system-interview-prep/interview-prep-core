@@ -27,7 +27,7 @@ Hệ thống phỏng vấn INTERVIA hiện áp dụng quy trình chia pha độc
 - **P0**: Trích xuất dữ liệu chuẩn hóa từ CV và JD (`src/modules/matching/facade.py`).
 - **P1 (`src/modules/interviews/planner.py`)**: Lập kế hoạch phân bổ năng lực (Competency Agenda) và chia section.
 - **P2 (`src/modules/interviews/question_selector.py`)**: Chọn và đóng băng (freeze) câu hỏi từ Ngân hàng câu hỏi (Question Bank) hoặc tạo fallback prompt nếu thiếu câu.
-- **Runtime (`src/modules/interviews/chat_runtime.py` + `src/modules/interviews/core/interview_engine.py`)**: Điều phối lượt chat hai chiều, phát hiện ý định ứng viên, kích hoạt câu hỏi đào sâu (probe), điều hòa nhịp độ (pacing) và kết thúc phiên.
+- **Runtime (`src/modules/interviews/chat_runtime.py` + `src/modules/interviews/core/conversation/turn_engine.py`)**: Điều phối lượt chat hai chiều, phát hiện ý định ứng viên, kích hoạt câu hỏi đào sâu (probe), điều hòa nhịp độ (pacing) và kết thúc phiên.
 - **P4 (`src/modules/interviews/evaluation/evaluation_engine.py` + `src/modules/interviews/evaluation/evaluation_service.py`)**: Đánh giá câu trả lời theo tiêu chí rubric đưa vào prompt và trích xuất cấu trúc STAR.
 
 ### 1.1. Thống nhất định nghĩa các loại lượt trong hệ thống
@@ -44,14 +44,14 @@ Hệ thống phỏng vấn INTERVIA hiện áp dụng quy trình chia pha độc
    - *Hệ quả*: Số lượng câu hỏi kỹ thuật bị phình theo công thức: $\text{tech\_turns} = \sum_{i=1}^K \max(\text{targetQuestionCount}_i, 2)$. Ví dụ JD có 4 competencies (P1 giao mỗi target 1 câu), P2 tự động nhân đôi thành $4 \times 2 = 8$ câu kỹ thuật.
    - Khi cộng thêm Turn 0 (Warm-up), Turn 1 (CV-Validate) và Turn cuối (Behavioral STAR), tổng số `P2 frozen turns` bị đẩy lên $2 + 8 + 1 = \mathbf{11\text{ câu}}$ cho một phiên 25 phút.
 2. **Runtime điều phối theo tỷ lệ đồng hồ và cơ chế Pacing thực tế**:
-   - Runtime trong `src/modules/interviews/core/interview_engine.py` khai báo từ điển `TIME_THRESHOLDS`: WARM_UP 10%, VALIDATE 30%, DEEP_DIVE 75%, CHALLENGE 85%, BEHAVIORAL 95%, CLOSING 100%.
+   - Runtime trong `src/modules/interviews/core/conversation/turn_engine.py` khai báo từ điển `TIME_THRESHOLDS`: WARM_UP 10%, VALIDATE 30%, DEEP_DIVE 75%, CHALLENGE 85%, BEHAVIORAL 95%, CLOSING 100%.
    - **Rà soát thực tế mã nguồn điều phối**:
-     - **Ngưỡng WARM_UP (10%)**: Khai báo trong `TIME_THRESHOLDS` nhưng **chưa được dùng trong logic chuyển stage của WARM_UP** (`interview_engine.py:890-898`). Nhánh Warm-up trong code chỉ kiểm tra hoàn thành 1 lượt là chuyển thẳng sang VALIDATE, không so sánh với `0.10`.
+     - **Ngưỡng WARM_UP (10%)**: Khai báo trong `TIME_THRESHOLDS` nhưng **chưa được dùng trong logic chuyển stage của WARM_UP** (`conversation/turn_engine.py:890-898`). Nhánh Warm-up trong code chỉ kiểm tra hoàn thành 1 lượt là chuyển thẳng sang VALIDATE, không so sánh với `0.10`.
      - **Ngưỡng VALIDATE (30%)**: Thực sự được dùng (`elapsed_ratio < 0.30`).
      - **Ngưỡng DEEP_DIVE (75%)**: Thực sự được dùng (`elapsed_ratio < 0.75`). Khi chạm hoặc vượt 75%, runtime ưu tiên chuyển sang CHALLENGE hoặc BEHAVIORAL. Runtime **chỉ quay lại rút nốt câu trong pool `DEEP_DIVE` nếu trong queue không còn câu nào thuộc `CHALLENGE` hoặc `BEHAVIORAL`**.
      - **Ngưỡng CHALLENGE (85%)**: Thực sự được dùng (`elapsed_ratio < 0.85`).
      - **Ngưỡng BEHAVIORAL (95%)**: Thực sự được dùng (`elapsed_ratio < 0.95`).
-   - **Quy tắc Probe**: Hạn chế cấm probe sau mốc 80% (`is_behind_schedule`) **chỉ áp dụng riêng cho hai stage `VALIDATE` và `DEEP_DIVE`** (`interview_engine.py:416-419`). Stage `CHALLENGE` theo mã nguồn hiện tại **vẫn được phép probe sau mốc 80%**. Stage `WARM_UP` bị khóa probe tuyệt đối (`should_probe = False`).
+   - **Quy tắc Probe**: Hạn chế cấm probe sau mốc 80% (`is_behind_schedule`) **chỉ áp dụng riêng cho hai stage `VALIDATE` và `DEEP_DIVE`** (`conversation/turn_engine.py:416-419`). Stage `CHALLENGE` theo mã nguồn hiện tại **vẫn được phép probe sau mốc 80%**. Stage `WARM_UP` bị khóa probe tuyệt đối (`should_probe = False`).
    - **Cơ chế ngắt phiên**:
      - *Emergency Turn Cutoff (90 giây)*: Khi chọn câu tiếp theo, nếu thời gian còn lại $\le 90$ giây ở **bất kỳ stage nào, bao gồm `WARM_UP`**, runtime chủ động đóng phiên (`InterviewStage.CLOSED, None`) để tránh giao câu mới khi không đủ giờ.
      - *Hard Session Timeout (30 giây)*: Khi ứng viên gửi câu trả lời, nếu thời gian còn lại $\le 30$ giây và chưa ở `CLOSING`, runtime lập tức ngắt phiên với lý do `HARD_TIMEOUT`.
@@ -92,7 +92,7 @@ flowchart TD
         TurnBuilder --> P2Queue["P2 frozen turns: 6 đến 11 câu tùy số target"]
     end
 
-    subgraph Runtime_Engine [Runtime: chat_runtime + core/interview_engine]
+    subgraph Runtime_Engine [Runtime: chat_runtime + core/conversation/turn_engine]
         P2Queue --> QueueExecution[Hàng đợi câu hỏi]
         QueueExecution --> CandidateAnswer[Ứng viên trả lời]
         CandidateAnswer --> IntentCheck{Ý định ứng viên?}
@@ -204,7 +204,7 @@ Tất cả các dòng đều sử dụng thống nhất một định nghĩa đ�
      + *Khi chọn 1C.1 hoặc 1C.2a (Dùng chung `T_probe_pool`)*: Lượt CV follow-up tiêu hao thời gian từ `T_probe_pool`. Cả hai biến quỹ riêng đều bằng 0: $T_{\text{cv\_addon\_inclusive}} = 0$ và $T_{\text{cv\_standalone\_reserve}} = 0$. $T_{\text{onboarding}} = T_{\text{onboarding\_base}}$. Thời gian CV follow-up được hạch toán đúng một lần bên trong `T_probe_pool`.
      + *Khi chọn 1C.2b (Cấp quỹ riêng qua Cách 1 Inclusive hoặc Cách 2 Decoupled)*: CV follow-up đã có quỹ thời gian riêng (nằm trong $T_{\text{cv\_addon\_inclusive}}$ hoặc $T_{\text{cv\_standalone\_reserve}}$). Do đó, `T_probe_pool` **chỉ dành riêng cho probe chuyên môn kỹ thuật**, hoàn toàn không gánh thêm lượt CV follow-up. Điều này ngăn chặn triệt để nguy cơ vừa gộp CV vào onboarding/quỹ riêng vừa giữ nguyên `T_probe_pool` bao gồm chính lượt CV đó (loại trừ double counting). Lựa chọn này được giữ ở trạng thái mở chờ Product phê duyệt tại Quyết định 1.
    - **Làm rõ bản chất và chính sách quyết toán `T_probe_pool`**:
-     + *Bản chất & Quy mô*: `T_probe_pool` là khoản dự trữ thời gian vĩ mô trong kế hoạch P1 (macro planning reserve), được tính theo công thức $T_{\text{probe\_pool}} = \text{probe\_pool\_ratio} \times T_{\text{session}}$ (với tỷ lệ `probe_pool_ratio` = 15%–20%, tương ứng từng gói phiên: 15m $\rightarrow$ 135–180s; 25m $\rightarrow$ 225–300s; 45m $\rightarrow$ 405–540s), **KHÔNG PHẢI bộ đếm thời gian runtime thực thi đã có trong mã nguồn hiện tại**. Runtime hiện hữu (`interview_engine.py`) chỉ pacing cục bộ theo tỷ lệ thời gian `elapsed_ratio` từng turn; việc theo dõi cạn quỹ probe tại runtime là tính năng mới cần lập trình ở Gate 4.
+     + *Bản chất & Quy mô*: `T_probe_pool` là khoản dự trữ thời gian vĩ mô trong kế hoạch P1 (macro planning reserve), được tính theo công thức $T_{\text{probe\_pool}} = \text{probe\_pool\_ratio} \times T_{\text{session}}$ (với tỷ lệ `probe_pool_ratio` = 15%–20%, tương ứng từng gói phiên: 15m $\rightarrow$ 135–180s; 25m $\rightarrow$ 225–300s; 45m $\rightarrow$ 405–540s), **KHÔNG PHẢI bộ đếm thời gian runtime thực thi đã có trong mã nguồn hiện tại**. Runtime hiện hữu (`conversation/turn_engine.py`) chỉ pacing cục bộ theo tỷ lệ thời gian `elapsed_ratio` từng turn; việc theo dõi cạn quỹ probe tại runtime là tính năng mới cần lập trình ở Gate 4.
      + *Khi không dùng hết `T_probe_pool`*: Theo Decision 8A được PO duyệt ngày 02/10/2026, phần dư được giữ lại làm buffer an toàn đến cuối phiên (cho Closing hoặc bù độ trễ mạng), không reclaim để cấp câu chuyên môn mới.
      + *Khi dùng hết `T_probe_pool`*: Nếu Gate 4 triển khai bộ đếm quỹ probe, runtime ngừng kích hoạt probe mới theo ngân sách thời gian, đồng thời vẫn áp dụng đầy đủ các điều kiện runtime khác (`not is_sufficient`, `consecutive_fails < 2`, cấm probe khi `elapsed > 80%` tại Validate/Deep Dive).
    - Sắp xếp thứ tự ưu tiên các competency dựa trên trọng số requirement (`must_have` vs `nice_to_have`) và tín hiệu matching (`unknown`, `not_met` được ưu tiên trước `met`).

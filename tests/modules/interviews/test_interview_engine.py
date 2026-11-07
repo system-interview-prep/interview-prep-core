@@ -1,9 +1,9 @@
-# tests/modules/interviews/test_interview_engine.py
+# tests/modules/interviews/test_conversation/turn_engine.py
 import unittest
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from src.modules.interviews.core.interview_types import (
+from src.modules.interviews.core.contracts.interview import (
     CandidateTurnInput,
     InterviewStage,
     SessionExitReason,
@@ -15,7 +15,7 @@ from src.modules.interviews.core.dialogue.policy import (
     REPEAT_PREFIX_VI,
     SKIP_ACK_VI,
 )
-from src.modules.interviews.core.interview_engine import (
+from src.modules.interviews.core.conversation.turn_engine import (
     SAFE_FALLBACK_PROBE_VI,
     InterviewCoreEngine,
     classify_candidate_question,
@@ -737,7 +737,7 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
 
     def test_is_yes_no_question_patterns(self):
         """10. Nhận diện chính xác câu hỏi Yes/No vs câu hỏi tự luận mở."""
-        from src.modules.interviews.core.interview_engine import is_yes_no_question
+        from src.modules.interviews.core.conversation.turn_engine import is_yes_no_question
 
         self.assertTrue(is_yes_no_question("Bạn đã từng làm việc trực tiếp với Kubernetes trên môi trường Production chưa?"))
         self.assertTrue(is_yes_no_question("Bạn có kinh nghiệm deploy Redis Cluster không?"))
@@ -751,7 +751,7 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
 
     def test_classify_candidate_intent_distinguishes_yes_no_from_give_up(self):
         """11. Phân loại ý định: 'Không'/'Chưa' cho câu hỏi Yes/No là VALID_ANSWER, cho câu hỏi lý thuyết là GIVE_UP."""
-        from src.modules.interviews.core.interview_engine import classify_candidate_intent
+        from src.modules.interviews.core.conversation.turn_engine import classify_candidate_intent
 
         yes_no_q = "Bạn đã từng làm việc với Kubernetes trên Production chưa?"
         open_q = "Giải thích cơ chế B-tree index trong database?"
@@ -1021,7 +1021,7 @@ if __name__ == "__main__":
 
 def test_acknowledgement_from_llm_is_sanitised():
     """M2: an injected answer must not make the interviewer announce a score."""
-    from src.modules.interviews.core.interview_engine import safe_acknowledgement
+    from src.modules.interviews.core.conversation.turn_engine import safe_acknowledgement
 
     assert safe_acknowledgement("Cảm ơn bạn đã chia sẻ.", True) == "Cảm ơn bạn đã chia sẻ."
     for injected in [
@@ -1037,7 +1037,7 @@ def test_acknowledgement_from_llm_is_sanitised():
 
 def test_llm_lines_address_the_candidate_as_ban():
     """The room swaps "bạn" for the candidate's name, so "em"/"anh"/"chị" must not reach it."""
-    from src.modules.interviews.core.interview_engine import (
+    from src.modules.interviews.core.conversation.turn_engine import (
         normalize_candidate_pronoun,
         safe_acknowledgement,
     )
@@ -1079,7 +1079,7 @@ def test_closing_invitation_has_no_bracketed_aside():
 
 def test_probe_provenance_marks_fixed_fallbacks():
     from src.modules.interviews.application.runtime.chat_runtime import _provenance_metadata
-    from src.modules.interviews.core.interview_engine import (
+    from src.modules.interviews.core.conversation.turn_engine import (
         _FIXED_PROBES,
         SAFE_FALLBACK_PROBE_VI,
         clarify_fallback_text,
@@ -1096,7 +1096,7 @@ def test_probe_provenance_marks_fixed_fallbacks():
 
 
 def test_spoken_stop_requests_open_the_confirmation_but_answers_do_not():
-    from src.modules.interviews.core.interview_engine import is_abort_request
+    from src.modules.interviews.core.conversation.turn_engine import is_abort_request
 
     # Voice turns from a real session and short spoken stops.
     for text in ("dừng", "Dừng lại.", "thôi dừng lại", "kết thúc phiên",

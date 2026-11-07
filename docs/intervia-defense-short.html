@@ -382,7 +382,7 @@
           </div>
         </div>
         <div class="note"><strong>Lý do bỏ cách cũ:</strong> trước đây số câu cố định (15′ → 2, 25′ → 4, 45′ → 6). Gói 15′ cần khoảng 1080s nhưng chỉ có 900s, nên phiên thường bị ngắt vì hết giờ.</div>
-        <div class="footer"><span>Nguồn: planner.py (_question_budget, _PRESET_EXPECTED_SECONDS, _TECHNICAL_EXPECTED_SECONDS) · core/demo_mode.py</span><span>06</span></div>
+        <div class="footer"><span>Nguồn: planner.py (_question_budget, _PRESET_EXPECTED_SECONDS, _TECHNICAL_EXPECTED_SECONDS) · core/interview_design/demo_mode.py</span><span>06</span></div>
       </div>
     </section>
 
@@ -470,7 +470,7 @@
             <p style="margin-top:8px">Phiên bị bỏ dở sẽ được tự đóng sau thời lượng + 10 phút.</p>
           </div>
         </div>
-        <div class="footer"><span>Máy trạng thái viết bằng Python (core/interview_engine.py). LangGraph chỉ điều phối lệnh và lưu checkpoint vào PostgreSQL, để cùng một tin nhắn gửi lại không bị xử lý 2 lần</span><span>08</span></div>
+        <div class="footer"><span>Máy trạng thái viết bằng Python (core/conversation/turn_engine.py). LangGraph chỉ điều phối lệnh và lưu checkpoint vào PostgreSQL, để cùng một tin nhắn gửi lại không bị xử lý 2 lần</span><span>08</span></div>
       </div>
     </section>
 
@@ -512,7 +512,7 @@
             <p style="margin-top:8px"><b>Kiểm tra đầu ra:</b> câu đào sâu có chữ "điểm", "rubric", "tiêu chí" hoặc sai ngôn ngữ thì bị thay bằng câu dự phòng.</p>
           </div>
         </div>
-        <div class="footer"><span>Nguồn: core/interview_engine.py (classify_candidate_intent, _evaluate_candidate_response, PROHIBITED_LEAK_PATTERNS) · core/language_policy.py</span><span>09</span></div>
+        <div class="footer"><span>Nguồn: core/conversation/turn_engine.py (classify_candidate_intent, _evaluate_candidate_response, PROHIBITED_LEAK_PATTERNS) · core/dialogue/language.py</span><span>09</span></div>
       </div>
     </section>
 

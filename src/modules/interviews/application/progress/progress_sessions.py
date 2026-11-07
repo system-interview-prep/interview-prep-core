@@ -54,7 +54,7 @@ from src.modules.interviews.application.progress.progress_skills import (
     weekly_streak,
 )
 from src.modules.interviews.application.progress.skill_display import area_of, display_name, is_tracked
-from src.modules.interviews.core.interview_rounds import is_minor
+from src.modules.interviews.core.interview_design.rounds import is_minor
 
 
 def _session_behavior(turns: list[TurnRow]) -> dict[str, Any]:
@@ -469,7 +469,7 @@ def build_progress(
         view["area"] = area_of(skill_concepts.get(key))
         view["taxonomyLabel"] = skill_labels.get(key)
         view["recentQuestions"] = list(reversed(skill_questions[key][-RECENT_QUESTIONS:]))
-        # No longer asked as a topic of its own (interview_rounds.MINOR_CONCEPTS).
+        # No longer asked as a topic of its own (interview_design.rounds.MINOR_CONCEPTS).
         view["minor"] = is_minor(skill_concepts.get(key))
         skills.append(view)
     skills.sort(key=lambda item: (-len(item["points"]), item["label"].casefold()))

@@ -42,7 +42,7 @@ from typing import Any
 
 from src.modules.interviews.application.progress.progress_calibration import Calibration
 from src.modules.interviews.application.progress.skill_display import area_of, is_tracked
-from src.modules.interviews.core.interview_rounds import AREAS, is_minor
+from src.modules.interviews.core.interview_design.rounds import AREAS, is_minor
 
 DEFAULT_WEEKLY_GOAL = 2
 WEEKLY_GOAL_RANGE = (1, 7)
@@ -645,7 +645,7 @@ def round_readiness(
     job_id: str,
     calibration: Calibration | None = None,
 ) -> list[dict[str, Any]]:
-    """Readiness for one position, by interview round (interview_rounds.AREAS).
+    """Readiness for one position, by interview round (interview_design.rounds.AREAS).
 
     Per round: the mean smoothed level of its skills as asked for this job,
     the number of sessions behind it, a status (ready / almost / practice /

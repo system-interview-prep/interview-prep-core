@@ -28,12 +28,12 @@ import time
 from pathlib import Path
 
 from src.modules.ai.facade import generate_text
-from src.modules.interviews.core.interview_engine import (
+from src.modules.interviews.core.conversation.turn_engine import (
     PROHIBITED_LEAK_PATTERNS,
     InterviewCoreEngine,
     _loads_llm_json,
 )
-from src.modules.interviews.core.interview_types import InterviewStage
+from src.modules.interviews.core.contracts.interview import InterviewStage
 from src.modules.interviews.core.dialogue.policy import (
     ACK_FALLBACK_VI,
     GIVE_UP_ACK_VI,
@@ -45,7 +45,7 @@ from src.modules.interviews.core.dialogue.policy import (
     is_grader_style,
     is_parroting,
 )
-from src.modules.interviews.core.language_policy import response_matches_locale
+from src.modules.interviews.core.dialogue.language import response_matches_locale
 from src.modules.interviews.planning.spoken_questions import _rewrite_prompt, validate_spoken_question
 
 OLD_SYSTEM_PROMPT = """Bạn là chuyên gia phân tích kỹ thuật thời gian thực của hệ thống phỏng vấn INTERVIA.

@@ -27,8 +27,8 @@ from src.modules.interviews.application.runtime.voice_facade import (
     start_voice_interview,
     submit_voice_answer,
 )
-from src.modules.interviews.core.interview_engine import InterviewCoreEngine
-from src.modules.interviews.core.interview_types import InterviewStage
+from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.core.contracts.interview import InterviewStage
 from src.modules.interviews.core.dialogue.policy import canary_scope
 
 router = APIRouter(prefix="/voice-lab", tags=["voice-lab"])

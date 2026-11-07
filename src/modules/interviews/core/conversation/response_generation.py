@@ -7,8 +7,8 @@ import logging
 from typing import Any, Dict, Optional
 
 from src.core.trace_logging import trace_event
-from src.modules.interviews.core import playbook, speech_checks
-from src.modules.interviews.core.interview_rules import (
+from src.modules.interviews.core.dialogue import playbook, speech_checks
+from src.modules.interviews.core.conversation.turn_rules import (
     _loads_llm_json,
     acknowledgement_pool,
     acknowledgement_rejection_reason,
@@ -22,7 +22,7 @@ from src.modules.interviews.core.interview_rules import (
     normalize_candidate_pronoun,
     safe_acknowledgement,
 )
-from src.modules.interviews.core.interview_types import InterviewStage, QuestionItem
+from src.modules.interviews.core.contracts.interview import InterviewStage, QuestionItem
 from src.modules.interviews.core.dialogue.phrases import (
     CODING_FALLBACK_PROBE_EN,
     CODING_FALLBACK_PROBE_VI,

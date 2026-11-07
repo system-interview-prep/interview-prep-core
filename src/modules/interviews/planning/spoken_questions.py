@@ -100,9 +100,9 @@ def validate_spoken_question(
 ) -> bool:
     """True khi ``spoken`` là bản nói an toàn của ``original``."""
     # Imported here: the core package imports planning modules at load time.
-    from src.modules.interviews.core.interview_engine import PROHIBITED_LEAK_PATTERNS
+    from src.modules.interviews.core.conversation.turn_engine import PROHIBITED_LEAK_PATTERNS
     from src.modules.interviews.core.dialogue.policy import is_evaluative
-    from src.modules.interviews.core.language_policy import response_matches_locale
+    from src.modules.interviews.core.dialogue.language import response_matches_locale
 
     original = str(original or "").strip()
     spoken = str(spoken or "").strip()

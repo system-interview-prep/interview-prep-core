@@ -22,8 +22,8 @@ and evaluation responsibilities.
 | `adapters/voice/stt/` | STT provider, recognition, correction, transcript quality and evaluation | Voice input processing |
 | `adapters/voice/tts/` | TTS providers, audio cache and pronunciation | Voice output processing |
 | `adapters/voice/conversation/` | Answer buffering, interruption policy, events and voice-only phrases | Voice turn-taking behavior |
-| `core/interview_engine.py` | runtime FSM and pacing | Current deterministic kernel |
-| `core/interview_types.py` | turn/stage contracts | Core domain contracts |
+| `core/conversation/turn_engine.py` | runtime FSM and pacing | Current deterministic kernel |
+| `core/contracts/interview.py` | turn/stage contracts | Core domain contracts |
 | `evaluation/` | P4 report generation | Async evaluation pipeline |
 
 ## LangGraph agent now wired into structured interview

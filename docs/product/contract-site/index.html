@@ -394,7 +394,7 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
     <div class="cl frozen"><span class="id">1.1.4</span><p>Bộ câu hỏi <em class="k k-must">MUST</em> được chốt trước khi phiên mở và <em class="k k-not">MUST NOT</em> thay đổi sau đó. Câu đào sâu (PROBE) là câu hỏi phụ của một câu đã chốt, không phải câu mới.<span class="src">question_selector.py</span></p></div>
     <div class="cl frozen"><span class="id">1.1.5</span><p>Câu hỏi <em class="k k-must">MUST</em> đến từ ngân hàng đã duyệt. Câu do AI sinh để lấp chỗ thiếu <em class="k k-must">MUST</em> mang trạng thái <code>IN_REVIEW</code>, và người duyệt <em class="k k-must">MUST</em> khác người soạn. Không mục nào trong kế hoạch có câu hỏi thì hệ thống <em class="k k-must">MUST</em> trả 409 <code>question_bank_insufficient</code> và <em class="k k-not">MUST NOT</em> mở phiên.<span class="src">question_generation.py</span><span class="gap">MỘT PHẦN</span></p></div>
     <p class="callout">130 câu seed được chèn thẳng ở trạng thái APPROVED, bỏ qua quy trình duyệt, và dùng chung một rubric Relevance / Depth / Clarity.</p>
-    <div class="cl frozen"><span class="id">1.1.6</span><p>Phiên <em class="k k-must">MUST</em> chạy theo máy trạng thái <code>WARM_UP → VALIDATE → DEEP_DIVE → CHALLENGE → BEHAVIORAL → CLOSING → CLOSED</code>. Mô hình ngôn ngữ <em class="k k-not">MUST NOT</em> tự chuyển giai đoạn; nó chỉ sinh câu chữ và phân loại ý định trong phạm vi hẹp.<span class="src">interview_engine.py</span></p></div>
+    <div class="cl frozen"><span class="id">1.1.6</span><p>Phiên <em class="k k-must">MUST</em> chạy theo máy trạng thái <code>WARM_UP → VALIDATE → DEEP_DIVE → CHALLENGE → BEHAVIORAL → CLOSING → CLOSED</code>. Mô hình ngôn ngữ <em class="k k-not">MUST NOT</em> tự chuyển giai đoạn; nó chỉ sinh câu chữ và phân loại ý định trong phạm vi hẹp.<span class="src">conversation/turn_engine.py</span></p></div>
     <div class="cl frozen"><span class="id">1.1.7</span><p>Mỗi câu hỏi <em class="k k-must">MUST</em> được đào sâu tối đa một lần. Khi ứng viên hỏi lại hoặc trả lời mơ hồ, hệ thống <em class="k k-must">MUST</em> làm rõ (CLARIFY) và <em class="k k-not">MUST NOT</em> chấm câu đó như một câu trả lời.</p></div>
     <div class="cl frozen"><span class="id">1.1.8</span><p>Khi ứng viên nói muốn dừng, hệ thống <em class="k k-must">MUST</em> hỏi xác nhận (CONFIRM_ABORT) và chỉ đóng phiên sau khi ứng viên xác nhận.</p></div>
     <div class="cl frozen"><span class="id">1.1.9</span><p>Ứng viên <em class="k k-must">MUST</em> chọn được thời lượng phiên trong khoảng 2–120 phút. Số câu hỏi <em class="k k-should">SHOULD</em> co giãn theo ngân sách thời gian thay vì cắt ngang câu đang hỏi.</p></div>
@@ -746,7 +746,7 @@ footer { margin: 90px 0 0; padding-top: 14px; border-top: 2px solid var(--ink); 
   <!-- Appendix A -->
   <section class="s" id="apa">
     <div class="sh"><span class="n">A</span><h2>Enum và mã lỗi</h2></div>
-    <p class="intro">Được tham chiếu bởi §1.1.6, §2.2 và hợp đồng API. Giá trị lấy nguyên từ <code>core/interview_types.py</code> và <code>api/router.py</code>.</p>
+    <p class="intro">Được tham chiếu bởi §1.1.6, §2.2 và hợp đồng API. Giá trị lấy nguyên từ <code>core/contracts/interview.py</code> và <code>api/router.py</code>.</p>
     <div class="tw">
       <div class="tcap">BẢNG 4</div>
       <table>

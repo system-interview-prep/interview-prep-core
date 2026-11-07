@@ -13,7 +13,7 @@ Covers:
 
 import pytest
 
-from src.modules.interviews.core.interview_engine import InterviewCoreEngine
+from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 from src.modules.interviews.planning.project_evidence import (
     StructuredProjectEvidence,
     build_project_validation_question,
@@ -334,7 +334,7 @@ async def test_no_repeated_project_validation_in_runtime():
 
 def test_project_validation_preserves_lifecycle_and_stage_order():
     """Requirement 7: Project validation sits cleanly between WARM_UP and DEEP_DIVE without breaking FSM."""
-    from src.modules.interviews.core.interview_types import InterviewStage
+    from src.modules.interviews.core.contracts.interview import InterviewStage
 
     # Verify InterviewStage enum integrity
     assert hasattr(InterviewStage, "WARM_UP")

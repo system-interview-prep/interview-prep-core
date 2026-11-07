@@ -13,7 +13,7 @@ Chạy trong container backend (cần LANGFUSE_* và OPENAI_API_KEY):
     docker compose exec backend python scripts/langfuse_experiment.py seed
     docker compose exec backend python scripts/langfuse_experiment.py run --name "truoc-khi-sua-prompt"
 
-Sổ tay người phỏng vấn (interviews/core/playbook.py): `--playbook active` chạy với các
+Sổ tay người phỏng vấn (interviews/core/dialogue/playbook.py): `--playbook active` chạy với các
 bài học đang dùng, `--playbook candidate` thêm cả các bài học đang chờ duyệt. Chạy hai lần
 rồi so trong Langfuse trước khi duyệt bài học mới:
 
@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.core import llm_tracing  # noqa: E402
 from src.modules.interviews.application.quality_admin import llm_checks  # noqa: E402
-from src.modules.interviews.core import speech_checks  # noqa: E402
+from src.modules.interviews.core.dialogue import speech_checks  # noqa: E402
 
 DATASET = "interview-turns-golden"
 DATA_FILE = Path(__file__).resolve().parent / "data" / "golden_turns.json"
@@ -112,8 +112,8 @@ def observed_intent(meta: dict[str, Any]) -> str | None:
 async def run_item(payload: dict[str, Any]) -> dict[str, Any]:
     """One golden turn through the real engine: what it decided and said, and the rule checks."""
     from src.modules.ai.facade import generate_text
-    from src.modules.interviews.core.interview_engine import InterviewCoreEngine
-    from src.modules.interviews.core.interview_types import CandidateTurnInput
+    from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+    from src.modules.interviews.core.contracts.interview import CandidateTurnInput
 
     engine = InterviewCoreEngine(ai_generator=generate_text)
     speech_checks.begin()
@@ -191,7 +191,7 @@ def seed() -> None:
 
 def load_playbook(mode: str) -> str:
     """Load the ``mode`` playbook entries (none / active / candidate) into the engine; return the version."""
-    from src.modules.interviews.core import playbook
+    from src.modules.interviews.core.dialogue import playbook
 
     if mode == "none":
         playbook.load([])

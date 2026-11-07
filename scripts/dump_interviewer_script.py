@@ -14,8 +14,8 @@ Lời nói nằm ở đâu trong code:
 - core/dialogue/phrases.py     MỌI câu soạn sẵn, một kịch bản chung cho chat, voice và video
                                  (kể cả câu chỉ có ở kênh nói; voice agent đọc file này theo đường dẫn)
 - core/dialogue/policy.py      văn phong chung cho prompt, cách chọn câu, câu chuyển
-- core/interview_engine.py       prompt cho AI (ghi nhận, hỏi thêm, giải thích lại)
-- core/opening_script.py         ghép lời mở đầu từ các câu trong kịch bản
+- core/conversation/turn_engine.py       prompt cho AI (ghi nhận, hỏi thêm, giải thích lại)
+- core/dialogue/opening.py         ghép lời mở đầu từ các câu trong kịch bản
 - planning/spoken_questions.py   prompt viết bản nói của câu hỏi trong kho
 """
 
@@ -30,12 +30,12 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # chạy được cả khi không đặt PYTHONPATH
 
 from src.modules.interviews.adapters.voice.conversation import answer_window
-from src.modules.interviews.core import interview_engine as engine_module
+from src.modules.interviews.core.conversation import turn_engine as engine_module
 from src.modules.interviews.core.dialogue import phrases as script
 from src.modules.interviews.core.dialogue import policy as voice
-from src.modules.interviews.core.interview_engine import InterviewCoreEngine, candidate_question_response
-from src.modules.interviews.core.interview_types import InterviewStage
-from src.modules.interviews.core.opening_script import build_opening, warmup_question
+from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine, candidate_question_response
+from src.modules.interviews.core.contracts.interview import InterviewStage
+from src.modules.interviews.core.dialogue.opening import build_opening, warmup_question
 from src.modules.interviews.planning.spoken_questions import _rewrite_prompt
 
 QUESTION = "Trong dự án quản lý đơn hàng, bạn trực tiếp làm phần nào?"

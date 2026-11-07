@@ -13,8 +13,8 @@ import unittest
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from src.modules.interviews.core.interview_engine import InterviewCoreEngine
-from src.modules.interviews.core.interview_types import (
+from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.core.contracts.interview import (
     CandidateTurnInput,
     InterviewStage,
     SessionExitReason,

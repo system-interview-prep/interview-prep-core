@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.core.config import get_settings
-from src.modules.interviews.core import interview_engine
+from src.modules.interviews.core.conversation import turn_engine
 from src.modules.interviews.core.dialogue import policy as interviewer_dialogue
 from src.modules.interviews.application.quality_admin.speech_settings import voice_dialect
 from src.modules.interviews.planning.entry_gate import (
@@ -77,8 +77,8 @@ def interview_config_groups() -> list[dict[str, Any]]:
                     "INTERVIEW_DYNAMIC_PLANNER_ENABLED",
                     False,
                 ),
-                item("maxQnaQuestions", interview_engine.MAX_QNA_QUESTIONS),
-                item("qnaBudgetSeconds", interview_engine.QNA_BUDGET_SECONDS),
+                item("maxQnaQuestions", turn_engine.MAX_QNA_QUESTIONS),
+                item("qnaBudgetSeconds", turn_engine.QNA_BUDGET_SECONDS),
             ],
         },
         {
@@ -89,7 +89,7 @@ def interview_config_groups() -> list[dict[str, Any]]:
                 item("dialect", voice_dialect(), "INTERVIEWER_VOICE_DIALECT", "bac"),
                 item("ackMaxWords", interviewer_dialogue.ACK_MAX_WORDS),
                 item("probeMaxWords", interviewer_dialogue.PROBE_MAX_WORDS),
-                item("clarifyMaxWords", interview_engine.CLARIFY_MAX_WORDS),
+                item("clarifyMaxWords", turn_engine.CLARIFY_MAX_WORDS),
                 item("qnaMaxWords", interviewer_dialogue.QNA_MAX_WORDS),
                 item("maxNhePerTurn", interviewer_dialogue.MAX_NHE_PER_TURN),
                 item("answerPromptMaxChars", interviewer_dialogue.ANSWER_PROMPT_MAX_CHARS),

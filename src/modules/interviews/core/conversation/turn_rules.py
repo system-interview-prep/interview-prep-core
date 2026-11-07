@@ -8,8 +8,8 @@ import unicodedata
 from typing import Any, Dict, Literal, Optional, Sequence
 
 from src.core.trace_logging import trace_event
-from src.modules.interviews.core import speech_checks
-from src.modules.interviews.core.interview_types import InterviewStage
+from src.modules.interviews.core.dialogue import speech_checks
+from src.modules.interviews.core.contracts.interview import InterviewStage
 from src.modules.interviews.core.dialogue.phrases import (
     CLARIFY_FALLBACK_EN,
     CLARIFY_FALLBACK_VI,
@@ -46,7 +46,7 @@ from src.modules.interviews.core.dialogue.policy import (
     speech_v2_enabled,
     system_leak_reason,
 )
-from src.modules.interviews.core.language_policy import response_matches_locale
+from src.modules.interviews.core.dialogue.language import response_matches_locale
 
 
 def _loads_llm_json(raw: str) -> Any:

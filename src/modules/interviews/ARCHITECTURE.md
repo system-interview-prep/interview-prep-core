@@ -19,7 +19,10 @@ flowchart LR
 ## Responsibilities
 
 - `core/` owns behavior common to all modalities: turn state, evaluation rules, question response policy, and channel-neutral interviewer dialogue.
-- `core/dialogue/` owns the shared persona and language policy (`policy.py`) and shared phrases (`phrases.py`). It contains no STT, TTS, camera behavior, pronunciation, or audio recovery.
+- `core/conversation/` owns the turn engine, response generation, and turn rules used for every modality.
+- `core/contracts/` defines the shared interview input, output, stage, and action types.
+- `core/interview_design/` defines the interview blueprint, round taxonomy, and demo-session behavior.
+- `core/dialogue/` owns shared dialogue policy, phrases, opening, language checks, playbook lessons, and speech-check diagnostics. It contains no STT, TTS, camera behavior, pronunciation, or audio recovery.
 - `planning/` builds and selects the interview plan from candidate, CV, JD, matching, and question bank data.
 - `agent/` receives one normalized candidate turn and invokes Core.
 - `adapters/chat/input/turn_input.py`, `adapters/voice/input/turn_input.py`, and `adapters/video_calls/input/turn_input.py` map each modality to the same agent request contract. Voice accepts only a final transcript; partial STT is not an answer.
@@ -48,11 +51,10 @@ interviews/
 |   |-- quality_admin/
 |   `-- runtime/               # shared persistence/runtime path
 |-- core/
-|   |-- dialogue/              # policy.py, phrases.py
-|   |-- interview_engine.py
-|   |-- interview_response.py
-|   |-- interview_rules.py
-|   `-- interview_types.py
+|   |-- conversation/          # turn_engine.py, response_generation.py, turn_rules.py
+|   |-- contracts/             # interview.py
+|   |-- interview_design/      # blueprint.py, rounds.py, demo_mode.py
+|   `-- dialogue/              # policy.py, phrases.py, opening.py, language.py, playbook.py, speech_checks.py
 |-- evaluation/
 `-- planning/
 ```

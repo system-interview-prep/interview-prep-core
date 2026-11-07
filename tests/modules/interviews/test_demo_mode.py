@@ -5,9 +5,9 @@ from uuid import uuid4
 
 import pytest
 
-from src.modules.interviews.core.demo_mode import DEMO_OVERTIME_GRACE_SECONDS, is_demo_duration
-from src.modules.interviews.core.interview_engine import InterviewCoreEngine
-from src.modules.interviews.core.interview_types import (
+from src.modules.interviews.core.interview_design.demo_mode import DEMO_OVERTIME_GRACE_SECONDS, is_demo_duration
+from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.core.contracts.interview import (
     CandidateTurnInput,
     InterviewStage,
     SessionExitReason,

@@ -45,7 +45,7 @@ class _DeterministicChatEngine:
         pass
 
     async def handle_turn(self, turn_input, session_state):
-        from src.modules.interviews.core.interview_types import (
+        from src.modules.interviews.core.contracts.interview import (
             InterviewerTurnOutput,
             InterviewStage,
             TurnAction,

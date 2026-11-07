@@ -5,14 +5,14 @@ from pydantic import ValidationError
 
 from src.modules.interviews.application.chat_runtime import session_blueprint
 from src.modules.interviews.application.interview_blueprints import _view
-from src.modules.interviews.core.interview_blueprint import (
+from src.modules.interviews.core.interview_design.blueprint import (
     InterviewBlueprint,
     blueprint_from_payload,
     default_blueprint,
 )
-from src.modules.interviews.core.interview_engine import InterviewCoreEngine
-from src.modules.interviews.core.interview_rules import MAX_QNA_QUESTIONS, QNA_BUDGET_SECONDS, TIME_THRESHOLDS
-from src.modules.interviews.core.interview_types import InterviewStage
+from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.core.conversation.turn_rules import MAX_QNA_QUESTIONS, QNA_BUDGET_SECONDS, TIME_THRESHOLDS
+from src.modules.interviews.core.contracts.interview import InterviewStage
 from src.modules.interviews.planning.planner import _question_budget
 from src.modules.interviews.planning.question_selector import _behavioral_snapshot, _technical_stage
 

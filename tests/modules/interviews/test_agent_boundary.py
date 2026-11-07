@@ -6,8 +6,8 @@ from src.modules.interviews.adapters.chat.input.turn_input import from_chat_mess
 from src.modules.interviews.adapters.video_calls.input.turn_input import from_video_turn
 from src.modules.interviews.adapters.voice.input.turn_input import from_voice_transcript
 from src.modules.interviews.agent import InterviewAgent
-from src.modules.interviews.core.interview_engine import InterviewCoreEngine
-from src.modules.interviews.core.interview_types import (
+from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.core.contracts.interview import (
     InterviewStage,
     InterviewerTurnOutput,
     TurnAction,

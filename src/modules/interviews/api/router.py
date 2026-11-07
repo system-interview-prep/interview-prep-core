@@ -21,7 +21,7 @@ from src.modules.interviews.application.runtime.chat_runtime import (
     get_chat_runtime,
 )
 from src.modules.interviews.application.interview_blueprints import BlueprintError, resolve_blueprint
-from src.modules.interviews.core.demo_mode import is_demo_duration
+from src.modules.interviews.core.interview_design.demo_mode import is_demo_duration
 from src.modules.interviews.application.progress import compare_with_previous, load_progress, set_weekly_goal
 from src.modules.interviews.application.progress.real_interviews import (
     delete_report,
@@ -146,7 +146,7 @@ class CreateInterviewSession(BaseModel):
     locale: str = Field(default="vi-VN", min_length=2, max_length=35)
     duration_minutes: int = Field(default=25, alias="durationMinutes", ge=2, le=120)
     # "Luyện vòng này" on the progress page: half of the technical questions
-    # come from this round (interview_rounds.FOCUSABLE_AREAS).
+    # come from this round (interview_design.rounds.FOCUSABLE_AREAS).
     focus_area: Literal["language", "framework", "data", "api", "infra", "ai"] | None = Field(
         default=None, alias="focusArea"
     )

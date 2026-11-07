@@ -7,11 +7,11 @@ from src.modules.interviews.adapters.voice.speech.language import (
     normalize_transcript_for_locale,
     speakable_text,
 )
-from src.modules.interviews.core.interview_engine import (
+from src.modules.interviews.core.conversation.turn_engine import (
     SAFE_FALLBACK_PROBE_VI,
     InterviewCoreEngine,
 )
-from src.modules.interviews.core.language_policy import response_matches_locale
+from src.modules.interviews.core.dialogue.language import response_matches_locale
 
 
 class _EnglishDriftLLM:

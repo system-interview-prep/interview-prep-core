@@ -19,7 +19,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.modules.interviews.core.interview_engine import PROHIBITED_LEAK_PATTERNS
+from src.modules.interviews.core.conversation.turn_engine import PROHIBITED_LEAK_PATTERNS
 
 _VI_LETTER = re.compile(
     "[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", re.IGNORECASE

@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from src.modules.interviews.core import speech_checks
+from src.modules.interviews.core.dialogue import speech_checks
 
 # Câu chữ nằm ở dialogue/phrases.py; tên cũ được giữ để code khác import từ đây.
 from src.modules.interviews.core.dialogue.phrases import (  # noqa: F401

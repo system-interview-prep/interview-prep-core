@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from src.modules.interviews.application.runtime.chat_runtime import build_session_state_from_db
-from src.modules.interviews.core.interview_engine import DEEPEN_ASPECT_VI, InterviewCoreEngine
-from src.modules.interviews.core.interview_types import CandidateTurnInput, InterviewStage, TurnAction
+from src.modules.interviews.core.conversation.turn_engine import DEEPEN_ASPECT_VI, InterviewCoreEngine
+from src.modules.interviews.core.contracts.interview import CandidateTurnInput, InterviewStage, TurnAction
 from tests.modules.interviews.test_interviewer_voice import LONG_ANSWER, RecordingLLM, _state
 
 

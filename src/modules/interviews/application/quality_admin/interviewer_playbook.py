@@ -1,4 +1,4 @@
-"""The interviewer learns from past interviews ("AI tích luỹ skill phỏng vấn").
+﻿"""The interviewer learns from past interviews ("AI tích luỹ skill phỏng vấn").
 
 Design: ADVISOR_FEEDBACK_RESEARCH_2026-10-26.md, section 3 (after ACE, ExpeL).
 
@@ -10,7 +10,7 @@ Loop::
         -> one LLM "reflector" call proposes at most 5 small edits to the playbook
            (ADD / EDIT / RETIRE one lesson each, citing its cases)
         -> PROPOSED entries; an admin approves (ACTIVE) or rejects them
-        -> ACTIVE entries reach the engine prompts (core/playbook.py), cached 60 s
+        -> ACTIVE entries reach the engine prompts (core/dialogue/playbook.py), cached 60 s
         -> every traced turn records the playbook version, so Langfuse compares
            before/after, and scripts/langfuse_experiment.py --playbook candidate
            runs the fixed test set with the proposals before anyone approves.
@@ -45,7 +45,7 @@ from src.core import llm_tracing
 from src.core.trace_logging import trace_event
 from src.infrastructure.database import SessionFactory
 from src.modules.ai.facade import generate_text
-from src.modules.interviews.core import playbook
+from src.modules.interviews.core.dialogue import playbook
 from src.modules.interviews.planning.question_generation import is_near_duplicate
 
 logger = logging.getLogger(__name__)
@@ -79,7 +79,7 @@ class PlaybookError(Exception):
 
 
 async def refresh(db: AsyncSession | None = None, *, force: bool = False) -> None:
-    """Load ACTIVE entries into core.playbook at most every REFRESH_SECONDS; never fails a turn.
+    """Load ACTIVE entries into core.dialogue.playbook at most every REFRESH_SECONDS; never fails a turn.
 
     Reads on its own short session, never on the caller's: a failed read
     (table not migrated) must not roll back the turn being processed.

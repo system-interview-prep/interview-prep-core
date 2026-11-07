@@ -3,7 +3,7 @@
 
 import pytest
 
-from src.modules.interviews.core.interview_engine import is_skip_request
+from src.modules.interviews.core.conversation.turn_engine import is_skip_request
 from src.modules.interviews.evaluation.answer_outcome import (
     SKIPPED,
     is_non_answer,

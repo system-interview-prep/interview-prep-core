@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from src.modules.interviews.core.interview_engine import InterviewCoreEngine
-from src.modules.interviews.core.interview_rules import (
+from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.core.conversation.turn_rules import (
     acknowledgement_rejection_reason,
     candidate_question_response,
     classify_candidate_question,

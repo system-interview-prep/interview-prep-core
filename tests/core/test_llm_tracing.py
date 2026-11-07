@@ -63,7 +63,7 @@ def test_a_turn_is_one_trace_with_its_model_calls_masked(exported, monkeypatch) 
         metadata={"turn_index": "2"},
     ) as turn:
         generation = llm_tracing.Generation(
-            "interviews.interview_engine.InterviewCoreEngine._generate_probe_question",
+            "interviews.turn_engine.InterviewCoreEngine._generate_probe_question",
             model="gpt-test",
             instructions="SYSTEM",
             input_text="Hiền gọi 0912345678",
@@ -120,7 +120,7 @@ def test_everything_is_a_no_op_without_langfuse() -> None:
 
 def test_step_names_and_masking_helpers() -> None:
     assert (
-        llm_tracing.step_of("interviews.interview_engine.InterviewCoreEngine._generate_clarify_text")
+        llm_tracing.step_of("interviews.turn_engine.InterviewCoreEngine._generate_clarify_text")
         == "clarify"
     )
     assert llm_tracing.step_of("matching.llm.score") == "score"

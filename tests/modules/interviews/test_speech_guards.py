@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.modules.interviews.core.interview_engine import (
+from src.modules.interviews.core.conversation.turn_engine import (
     acknowledgement_rejection_reason,
     checked_probe,
     clarify_rejection_reason,

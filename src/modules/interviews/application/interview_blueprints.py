@@ -31,7 +31,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.roles import ADMIN, CANDIDATE
-from src.modules.interviews.core.interview_blueprint import (
+from src.modules.interviews.core.interview_design.blueprint import (
     InterviewBlueprint,
     blueprint_from_payload,
     default_blueprint,

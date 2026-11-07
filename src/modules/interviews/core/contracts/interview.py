@@ -1,4 +1,4 @@
-# src/modules/interviews/core/interview_types.py
+# src/modules/interviews/core/contracts/interview.py
 from __future__ import annotations
 
 from enum import Enum
@@ -93,6 +93,7 @@ class QuestionItem(BaseModel):
     - spoken_prompt: là nội dung câu hỏi được nói ra (nếu có),
     - rubric_criteria: là tiêu chí đánh giá,
     - difficulty: là mức độ khó của câu hỏi.
+    - model_config: là cấu hình mô hình Pydantic để bỏ qua các trường không xác định.
     """
     question_id: str
     question_version_id: Optional[str] = None
@@ -106,15 +107,3 @@ class QuestionItem(BaseModel):
     rubric_criteria: Optional[Any] = ""
     difficulty: str = "intermediate"  # foundational | intermediate | advanced
     model_config = {"extra": "ignore"}
-
-
-class StageConfig(BaseModel):
-    """
-    Cấu hình cho từng giai đoạn phỏng vấn.
-    - stage: là giai đoạn phỏng vấn,
-    - budget_seconds: là thời gian tối đa cho giai đoạn này,
-    - is_enabled: là trạng thái bật/tắt giai đoạn này.
-    """
-    stage: InterviewStage
-    budget_seconds: int
-    is_enabled: bool = True

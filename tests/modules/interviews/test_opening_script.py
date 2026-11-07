@@ -1,4 +1,4 @@
-from src.modules.interviews.core.opening_script import build_opening, warmup_question
+from src.modules.interviews.core.dialogue.opening import build_opening, warmup_question
 
 _STAGES = ["WARM_UP", "VALIDATE", "DEEP_DIVE", "DEEP_DIVE", "CHALLENGE", "BEHAVIORAL"]
 

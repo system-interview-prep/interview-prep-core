@@ -18,11 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
 from src.core.trace_logging import trace_event
-from src.modules.interviews.core.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
+from src.modules.interviews.core.interview_design.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
 from src.modules.interviews.application.interview_blueprints import DEFAULT_NAME as DEFAULT_BLUEPRINT_NAME
 from src.modules.interviews.application.interview_blueprints import resolve_blueprint
-from src.modules.interviews.core.interview_blueprint import InterviewBlueprint, default_blueprint
-from src.modules.interviews.core.interview_rounds import FOCUSABLE_AREAS, area_of, is_minor, spread_key
+from src.modules.interviews.core.interview_design.blueprint import InterviewBlueprint, default_blueprint
+from src.modules.interviews.core.interview_design.rounds import FOCUSABLE_AREAS, area_of, is_minor, spread_key
 from src.modules.interviews.planning.entry_gate import (
     InterviewEntryBlocked,
     evaluate_entry,
@@ -108,7 +108,7 @@ class _CandidateTarget:
             self.source_evidence_refs.append(source_evidence_ref)
 
 
-# The default blueprint's numbers (core.interview_blueprint): preset turns
+# The default blueprint's numbers (core.interview_design.blueprint): preset turns
 # WARM_UP 120 + VALIDATE 180 + BEHAVIORAL 180 + closing reserve 60, and 240s
 # (thinking 30 + soft answer 150 + one probe 60) per technical question.
 _PRESET_EXPECTED_SECONDS = default_blueprint().preset_expected_seconds()

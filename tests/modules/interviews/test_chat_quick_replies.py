@@ -1,7 +1,7 @@
 """The chat room's quick replies (frontend room.dict.ts, ChatRoomParts.quickRepliesFor)
 must keep meaning what the room promises: change a phrase there, update it here."""
 
-from src.modules.interviews.core.interview_engine import (
+from src.modules.interviews.core.conversation.turn_engine import (
     classify_candidate_intent,
     classify_candidate_question,
     is_repeat_request,

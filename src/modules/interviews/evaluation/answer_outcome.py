@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from src.modules.interviews.core.interview_engine import (
+from src.modules.interviews.core.conversation.turn_engine import (
     classify_candidate_intent,
     is_skip_request,
     is_yes_no_question,
