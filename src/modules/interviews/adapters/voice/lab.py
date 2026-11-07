@@ -1,8 +1,8 @@
 """Voice experiments and the authenticated LiveKit adapter for Interview Core."""
 
+import os
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-import os
 from time import perf_counter
 from typing import Any
 
@@ -152,8 +152,10 @@ async def _load_voice_session(db: AsyncSession, session_id: str, user_id: str) -
     result = await db.execute(
         text(
             "SELECT s.id, s.user_id, s.resume_id, s.job_id, s.mode, s.status, s.locale, "
+            "jd.title AS job_title, "
             "s.duration_minutes, s.metadata, s.started_at, p.status AS plan_status "
             "FROM interview_sessions s LEFT JOIN interview_session_plans p ON p.session_id = s.id "
+            "LEFT JOIN job_descriptions jd ON jd.id = s.job_id "
             "WHERE s.id = :sid AND s.user_id = :uid"
         ),
         {"sid": session_id, "uid": user_id},
@@ -311,6 +313,7 @@ async def start_livekit_runtime(
         "openingMessage": opening,
         "sessionStatus": runtime["sessionStatus"],
         "locale": session.get("locale") or "vi-VN",
+        "jobTitle": session.get("job_title") or "",
     }
 
 

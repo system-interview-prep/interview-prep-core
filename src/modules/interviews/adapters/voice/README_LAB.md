@@ -143,6 +143,24 @@ The API verifies session ownership, voice mode, and locked plan. It passes the w
   mutually exclusive `prompt` and `keyterms_prompt` options together.
 - Normal interviewer speech is interruptible. The final closing remains
   non-interruptible so the session-close event is delivered only after playout.
+- Technical transcript repairs use `transcript_correction.py`. The job title and
+  active interviewer prompt authorize terms; the candidate's own clause must
+  also support technical usage. Context alone never authorizes a replacement.
+  Code, quoted literals, identifiers, paths, English sentences, ordinary
+  Vietnamese constructions, and uncertain proper names are preserved. Ambiguous
+  sounds such as `in in out` remain unchanged. NestJS/Next.js sound-alikes also
+  require distinguishing evidence in the candidate's clause, such as controller
+  versus app router; a technology mentioned only in the prompt is insufficient.
+  Repairs operate on original spans
+  in one pass, preserving surrounding numbers, negations, and Unicode spelling.
+  `correct_technical_transcript` returns edits and abstention reasons for audit;
+  the worker sends both corrected content and `rawTranscript` in turn telemetry.
+  This local filter adds no model request. Both previews and final turns share
+  the filter; preview reuse still requires an exact final-text match.
+  `test_transcript_correction.py` contains an independent synthetic sentence set
+  with positive cases and counterexamples; `test_core_in_flight_flow.py` checks
+  the actual worker-to-Core boundary with fake providers. These tests establish
+  text-repair behavior, not real-audio recognition accuracy or WER.
 - Adaptive interruption ignores short listener backchannels. If it degrades to
   VAD, the transport resumes the unheard suffix for backchannels, treats short
   hold requests without advancing the plan, and acknowledges genuine barge-ins
@@ -160,3 +178,55 @@ The API verifies session ownership, voice mode, and locked plan. It passes the w
   only a compatibility fallback. Auto mode removes chunk-schedule buffering
   because every interview utterance is supplied as complete text.
 - The existing OpenAI Realtime experiment is separate and does not control this interview flow.
+
+Admin microphone tests now use a separate room on the same LiveKit worker.
+`recognition.py` owns provider construction, locale, VAD, endpointing and room audio
+configuration; the frontend shares microphone capture options. The listen-only
+test job has no Interview Core calls, LLM, TTS or interview database session.
+Test runtime tokens have their own audience and scope. See
+`src/modules/admin/ai/STT_TEST_TRACE.md` for stop/drain and trace contracts.
+
+Qwen diagnostics are posted asynchronously as `voice_stt_diagnostic` for interviews
+and `stt_test_asr_diagnostic` for admin tests. They separate incoming/consumed/submitted
+PCM, pending backlog, per-request processing and PCM speech-end-to-final time.
+End-of-speech timestamps are captured before inference returns. A failed chunk is
+not retried as a fresh stream with its consumed prefix missing; cancellation/error
+attempts to release the remote Qwen session. Provider configuration and thresholds
+are unchanged for a comparable human-read test. The demo Qwen API does not support
+context; reference scripts are never passed to ASR or transcript repair.
+
+### Trace-derived term repairs (06 Nov 2026)
+
+The term registry remains in `transcript_correction.py`. New candidates need an
+explicit interview context AND compatible candidate wording; adding a spelling
+does not authorize a global substitution.
+
+| ASR spelling | Candidate repair | Extra evidence |
+| --- | --- | --- |
+| `netJS`, `net js` | NestJS / Next.js | Controller/DI versus App Router/Pages Router/SSR; ambiguity stays unchanged. React alone is insufficient. |
+| `net.js` | NestJS / Next.js | Retained as possible filename; never rewrite file/code literals. |
+| `inl`, `in out` | unknown | Type checking, properties or unverified data; preserve I/O meanings and uppercase INL. |
+| `postgre sql`, `post gre sql`, `post gre s q l`, `pốt gre sql` | PostgreSQL | Vietnamese technical usage with PostgreSQL in the authorized context. |
+| `SpringBoot`, `spring bút` | Spring Boot | Technical usage; preserve quoted package names/code. |
+| `vue effect` | useEffect | Candidate explicitly mentions React positively; component/hook alone is insufficient. |
+| `type gard`, `type gua` | type guard | Type/property/data checks, with type guard in context. |
+| `api bao đờ ri`, `a pi ai bao đờ ri` | API boundary | Data/schema checks, with API boundary in context. |
+
+In interim transcripts an alias with fewer than three following words in its
+clause is retained with `unstable_interim_tail`. A later interim or the final
+transcript may authorize it. Ordinary Vietnamese coercion, including truncated
+`công việc để làm bắt em`, stays unchanged. Negated framework mentions do not
+count as positive disambiguation evidence. Test and interview paths share the
+`is_final` policy; raw text and reasons remain available in test traces.
+
+Do not reverse an ASR output such as `regex`, `Node.js`, `HTML`, `useEffect`,
+`database view`, `bootstrap Vue`, `component`, `typeRow` or `PNBA` into the expected
+answer. Some are valid terms; others are too damaged to identify without audio.
+The filter never fills missing answer content. The read script is not evidence
+for an automatic repair.
+
+`test_trace_term_repairs.py` covers independently written positive/negative
+sentences, repeated terms, partial-to-final updates, competing frameworks,
+negation, literals, Unicode offsets and canonical-word preservation. Flow tests
+verify that previews stay bound to the exact final text and raw speech reaches
+Core/trace unchanged.

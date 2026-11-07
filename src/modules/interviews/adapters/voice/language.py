@@ -40,50 +40,23 @@ _VIETNAMESE_LETTER = re.compile(
 
 
 def _phrase_key(value: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"[^a-z-]+", " ", value.casefold())).strip()
+    return re.sub(r"\s+", " ", re.sub(r"[^\w-]+", " ", value.casefold())).strip()
 
 
-_CONTEXTUAL_TECHNICAL_ALIASES: tuple[tuple[str, str], ...] = (
-    ("virginie", "VIN University"),
-    ("you state", "useState"),
-    ("use state", "useState"),
-    ("you effect", "useEffect"),
-    ("use effect", "useEffect"),
-    ("view js", "Vue.js"),
-    ("vue js", "Vue.js"),
-    ("react js", "React.js"),
-    ("node js", "Node.js"),
-    ("type script", "TypeScript"),
-    ("java script", "JavaScript"),
-    ("mongo db", "MongoDB"),
-    ("my sql", "MySQL"),
-    ("async await", "async/await"),
-)
+try:
+    from .transcript_correction import correct_technical_transcript
+except ImportError:  # The LiveKit worker also loads this folder as plain scripts.
+    from transcript_correction import correct_technical_transcript  # type: ignore[no-redef]
 
 
-def correct_contextual_technical_terms(text: str, *, context: str = "") -> str:
-    """Normalize a small set of technical-term ASR variants when context confirms them.
-
-    This is intentionally not general spell-checking: it only replaces a known
-    spaced/phonetic variant when the canonical term appears in the current
-    interviewer prompt. Unknown or ambiguous words are left untouched.
-    """
-    if not text or not context:
-        return text
-
-    context_key = f" {_phrase_key(context)} "
-    corrected = text
-    for variant, canonical in _CONTEXTUAL_TECHNICAL_ALIASES:
-        canonical_key = _phrase_key(canonical)
-        if not canonical_key or f" {canonical_key} " not in context_key:
-            continue
-        variant_words = variant.split()
-        pattern = r"(?<!\w)" + r"\s+".join(re.escape(word) for word in variant_words) + r"(?!\w)"
-        corrected = re.sub(pattern, canonical, corrected, flags=re.IGNORECASE)
-    return corrected
+def correct_contextual_technical_terms(text: str, *, context: str = "", is_final: bool = True) -> str:
+    """Apply only term repairs supported by both context and candidate wording."""
+    return correct_technical_transcript(text, context=context, is_final=is_final).text
 
 
-def normalize_transcript_for_locale(text: str, *, locale: str, context: str = "") -> str:
+def normalize_transcript_for_locale(
+    text: str, *, locale: str, context: str = "", is_final: bool = True
+) -> str:
     """Correct high-confidence short STT artifacts in a locale-locked session.
 
     This is deliberately exact-match only.  It fixes acknowledgements such as
@@ -93,16 +66,20 @@ def normalize_transcript_for_locale(text: str, *, locale: str, context: str = ""
 
     cleaned = text.strip()
     if not locale.lower().startswith("vi"):
-        return correct_contextual_technical_terms(cleaned, context=context)
+        return cleaned
     exact = _SHORT_VI_MISRECOGNITIONS.get(_phrase_key(cleaned))
     if exact is not None:
         cleaned = exact
     else:
         leading = _LEADING_FILLER.match(cleaned)
-        if leading and _VIETNAMESE_LETTER.search(cleaned[leading.end():]):
+        if (
+            leading
+            and re.match(r"(?:em|mình|tôi|anh|chị|bạn)\b", cleaned[leading.end() :], re.IGNORECASE)
+            and _VIETNAMESE_LETTER.search(cleaned[leading.end() :])
+        ):
             filler = _LEADING_VI_MISRECOGNITIONS[leading.group(1).casefold()]
-            cleaned = f"{filler}, {cleaned[leading.end():]}"
-    return correct_contextual_technical_terms(cleaned, context=context)
+            cleaned = f"{filler}, {cleaned[leading.end() :]}"
+    return correct_contextual_technical_terms(cleaned, context=context, is_final=is_final)
 
 
 # Written forms a TTS voice reads badly: a Vietnamese voice says "CI gạch CD"
@@ -250,9 +227,14 @@ def _spoken_layout(text_value: str, locale: str) -> str:
         spoken = re.sub(r"(\d)\s*″", r"\1 giây", spoken)
         spoken = re.sub(r"(\d)\s*%", r"\1 phần trăm", spoken)
         spoken = _DECIMAL_VI_RE.sub(
-            lambda m: f"{number_to_vietnamese(int(m.group(1)))} phẩy {' '.join(_DIGITS_VI[int(d)] for d in m.group(2))}"
-            if len(m.group(2)) <= 2
-            else m.group(0),
+            lambda m: (
+                (
+                    f"{number_to_vietnamese(int(m.group(1)))} phẩy "
+                    f"{' '.join(_DIGITS_VI[int(d)] for d in m.group(2))}"
+                )
+                if len(m.group(2)) <= 2
+                else m.group(0)
+            ),
             spoken,
         )
         spoken = _STANDALONE_INT_RE.sub(lambda m: number_to_vietnamese(int(m.group(1))), spoken)
@@ -275,9 +257,11 @@ def speakable_text(text: str, *, locale: str) -> str:
     conjunction = " hoặc " if locale.lower().startswith("vi") else " or "
     return re.sub(
         r"\S+",
-        lambda token: token.group(0)
-        if "://" in token.group(0) or token.group(0).startswith("www.")
-        else _WORD_SLASH.sub(conjunction, token.group(0)),
+        lambda token: (
+            token.group(0)
+            if "://" in token.group(0) or token.group(0).startswith("www.")
+            else _WORD_SLASH.sub(conjunction, token.group(0))
+        ),
         spoken,
     )
 
@@ -287,22 +271,108 @@ def speakable_text(text: str, *, locale: str) -> str:
 # are listed here; a free-text prompt did not. AssemblyAI accepts up to 100.
 INTERVIEW_KEYTERMS: tuple[str, ...] = (
     # Vietnamese words the model otherwise hears as English ("hello", "yeah").
-    "alô", "dạ", "vâng",
+    "alô",
+    "dạ",
+    "vâng",
     # Languages, frameworks, platforms (taxonomy labels plus close relatives).
-    "Python", "Java", "Kotlin", "JavaScript", "TypeScript", "C#", "PHP", "SQL", "HTML", "CSS",
-    "Spring Boot", "FastAPI", "Django", "Node.js", ".NET", "React", "Angular", "Vue", "Next.js",
-    "Android", "iOS", "Flutter", "PostgreSQL", "MySQL", "MongoDB", "Redis", "Kafka", "RabbitMQ",
-    "Elasticsearch", "Docker", "Kubernetes", "AWS", "Azure", "Google Cloud", "Linux", "Nginx",
-    "Git", "GitHub", "Jira", "Postman",
+    "Python",
+    "Java",
+    "Kotlin",
+    "JavaScript",
+    "TypeScript",
+    "C#",
+    "PHP",
+    "SQL",
+    "HTML",
+    "CSS",
+    "Spring Boot",
+    "FastAPI",
+    "Django",
+    "Node.js",
+    ".NET",
+    "React",
+    "Angular",
+    "Vue",
+    "Next.js",
+    "Android",
+    "iOS",
+    "Flutter",
+    "PostgreSQL",
+    "MySQL",
+    "MongoDB",
+    "Redis",
+    "Kafka",
+    "RabbitMQ",
+    "Elasticsearch",
+    "Docker",
+    "Kubernetes",
+    "AWS",
+    "Azure",
+    "Google Cloud",
+    "Linux",
+    "Nginx",
+    "Git",
+    "GitHub",
+    "Jira",
+    "Postman",
     # Everyday engineering vocabulary.
-    "backend", "frontend", "full-stack", "API", "REST API", "GraphQL", "endpoint", "webhook",
-    "database", "schema", "query", "index", "transaction", "cache", "microservices", "monolith",
-    "service", "deploy", "rollback", "pipeline", "CI/CD", "unit test", "integration test",
-    "refactor", "code review", "pull request", "merge", "branch", "bug", "debug", "logging",
-    "monitoring", "performance", "latency", "throughput", "scale", "load balancer", "message queue",
-    "event", "retry", "timeout", "authentication", "authorization", "JWT", "OAuth", "token",
-    "refresh token", "session", "trade-off", "consistency", "availability", "deadline", "sprint",
-    "Agile", "Scrum",
+    "backend",
+    "frontend",
+    "full-stack",
+    "API",
+    "REST API",
+    "GraphQL",
+    "endpoint",
+    "webhook",
+    "database",
+    "schema",
+    "query",
+    "index",
+    "transaction",
+    "cache",
+    "microservices",
+    "monolith",
+    "service",
+    "deploy",
+    "rollback",
+    "pipeline",
+    "CI/CD",
+    "unit test",
+    "integration test",
+    "refactor",
+    "code review",
+    "pull request",
+    "merge",
+    "branch",
+    "bug",
+    "debug",
+    "logging",
+    "monitoring",
+    "performance",
+    "latency",
+    "throughput",
+    "scale",
+    "load balancer",
+    "message queue",
+    "event",
+    "retry",
+    "timeout",
+    "authentication",
+    "authorization",
+    "JWT",
+    "OAuth",
+    "token",
+    "refresh token",
+    "session",
+    "trade-off",
+    "consistency",
+    "availability",
+    "Agile",
+    "Scrum",
+    "unknown",
+    "any",
+    "schema validator",
+    "type guard",
 )
 
 

@@ -57,13 +57,72 @@ def test_contextual_technical_alias_is_corrected_when_prompt_confirms_term() -> 
     )
 
 
-def test_contextual_project_name_asr_variant_is_corrected_from_prompt() -> None:
+def test_contextual_project_name_does_not_overwrite_a_possible_real_name() -> None:
     transcript = "Em tham gia dự án Virginie á."
     context = "Trong dự án VIN UNIVERSITY AI20K, bạn trực tiếp làm phần nào?"
 
-    assert normalize_transcript_for_locale(transcript, locale="vi-VN", context=context) == (
-        "Em tham gia dự án VIN University á."
+    assert normalize_transcript_for_locale(transcript, locale="vi-VN", context=context) == transcript
+
+
+def test_contextual_phonetic_variants_are_corrected_when_question_confirms_them() -> None:
+    assert normalize_transcript_for_locale(
+        "Em đang làm bắt em Developer, chủ yếu xây API.",
+        locale="vi-VN",
+        context="Bạn ứng tuyển Backend Developer, công việc có phần xây API.",
+    ) == "Em đang làm backend Developer, chủ yếu xây API."
+
+    transcript = (
+        "Em dùng in out khi kiểu dữ liệu chưa được xác minh, khác với in in out, "
+        "in out không cho phép gọi thuộc tính ngay."
     )
+    assert normalize_transcript_for_locale(
+        transcript,
+        locale="vi-VN",
+        context="Khi nào dùng unknown thay vì any trong TypeScript?",
+    ) == (
+        "Em dùng unknown khi kiểu dữ liệu chưa được xác minh, khác với in in out, "
+        "unknown không cho phép gọi thuộc tính ngay."
+    )
+
+
+def test_candidate_technical_term_aliases_are_contextual() -> None:
+    context = "Bạn dùng useState, useEffect, useRef, useReducer và Redux trong React thế nào?"
+    transcript = "Em dùng diu xét, diu effect, use review, use reduce và ri đắc."
+    assert normalize_transcript_for_locale(transcript, locale="vi-VN", context=context) == (
+        "Em dùng useState, useEffect, useRef, useReducer và Redux."
+    )
+
+    assert normalize_transcript_for_locale(
+        "Em làm với nét chây ét và app router.",
+        locale="vi-VN",
+        context="Bạn đã triển khai Next.js trong dự án nào?",
+    ) == "Em làm với Next.js và app router."
+    assert normalize_transcript_for_locale(
+        "Em làm với nét chây ét.",
+        locale="vi-VN",
+        context="Bạn đã dùng NestJS hay Next.js?",
+    ) == "Em làm với nét chây ét."
+
+
+def test_contextual_phonetic_correction_stays_off_without_local_evidence() -> None:
+    context = "Bạn đang ứng tuyển Backend Developer."
+    for transcript in (
+        "Em bắt em đi làm rồi.",
+        "Nhà trường bắt em phải nộp giấy xác nhận.",
+        "Em đang làm đồ án, nhà trường bắt em phải nộp giấy xác nhận.",
+    ):
+        assert normalize_transcript_for_locale(
+            transcript,
+            locale="vi-VN",
+            context=context,
+        ) == transcript
+
+    io_transcript = "API nhận input và output, còn phần in out xử lý riêng."
+    assert normalize_transcript_for_locale(
+        io_transcript,
+        locale="vi-VN",
+        context="Khi nào dùng unknown thay vì any trong TypeScript?",
+    ) == io_transcript
 
 
 def test_contextual_technical_alias_does_not_guess_without_prompt_evidence() -> None:
@@ -172,7 +231,9 @@ def test_interviewer_speech_reads_numbers_units_and_layout_aloud() -> None:
         "độ tin cậy không phẩy bảy và tám mươi phần trăm thời gian."
     )
     # Numbers that are part of a name are read as the name.
-    assert speakable_text("S3, HTTP2, v2.5 hay Python 3.12", locale="vi-VN") == "S3, HTTP2, v2.5 hay Python 3.12"
+    assert speakable_text("S3, HTTP2, v2.5 hay Python 3.12", locale="vi-VN") == (
+        "S3, HTTP2, v2.5 hay Python 3.12"
+    )
     assert speakable_text("Còn 25′.\n\nTiếp", locale="en-US") == "Còn 25 minutes. Tiếp"
 
 
@@ -185,11 +246,15 @@ def test_notation_heard_in_the_20_10_sessions_is_read_as_words(monkeypatch) -> N
     spoken = speakable_text("API trả về HTTP 404 (Not Found) khi gọi /users/{id}, p95 200ms.", locale="vi-VN")
     assert "HTTP bốn không bốn" in spoken and "(" not in spoken and "{id}" not in spoken
     assert "hai trăm mi li giây" in spoken
-    assert speakable_text("Bạn nói don't repeat yourself.", locale="vi-VN") == "Bạn nói don't repeat yourself."
+    assert speakable_text("Bạn nói don't repeat yourself.", locale="vi-VN") == (
+        "Bạn nói don't repeat yourself."
+    )
     monkeypatch.setenv("INTERVIEWER_SPEECH_V2", "0")
     assert "(Not Found)" in speakable_text("HTTP 404 (Not Found).", locale="vi-VN")
 
 
 def test_pronunciation_file_applies_to_speech_only() -> None:
-    spoken = speakable_text("Deploy lên k8s, vs Docker Swarm, latency ~200ms -> 50ms, e.g. Redis.", locale="vi-VN")
-    assert "Kubernetes" in spoken and "so với" in spoken and "khoảng hai trăm" in spoken and "ví dụ Redis" in spoken
+    spoken = speakable_text(
+        "Deploy lên k8s, vs Docker Swarm, latency ~200ms -> 50ms, e.g. Redis.", locale="vi-VN"
+    )
+    assert all(part in spoken for part in ("Kubernetes", "so với", "khoảng hai trăm", "ví dụ Redis"))

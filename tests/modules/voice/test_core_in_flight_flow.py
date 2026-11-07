@@ -151,6 +151,64 @@ async def test_not_heard_during_core_is_deferred_and_not_sent_as_an_answer(monke
     assert agent._repeat_after_core is False
     assert any("yêu cầu nhắc lại" in line.lower() for line in spoken)
     assert not any(
-        item.get("type") == "voice.late_transcript"
-        for item in agent._room.local_participant.published
+        item.get("type") == "voice.late_transcript" for item in agent._room.local_participant.published
     )
+
+
+@pytest.mark.parametrize(
+    ("spoken", "expected_interim", "expected"),
+    [
+        ("Em đang làm bắt em Developer.", "Em đang làm bắt em Developer.", "Em đang làm backend Developer."),
+        (
+            "Nhà trường bắt em phải nộp giấy xác nhận.",
+            "Nhà trường bắt em phải nộp giấy xác nhận.",
+            "Nhà trường bắt em phải nộp giấy xác nhận.",
+        ),
+        (
+            "Em dùng you state để cập nhật giao diện.",
+            "Em dùng useState để cập nhật giao diện.",
+            "Em dùng useState để cập nhật giao diện.",
+        ),
+    ],
+)
+@pytest.mark.parametrize("matching_preview", [True, False])
+@pytest.mark.asyncio
+async def test_correction_reaches_core_with_raw_speech_and_exact_preview_binding(
+    monkeypatch,
+    spoken: str,
+    expected_interim: str,
+    expected: str,
+    matching_preview: bool,
+) -> None:
+    monkeypatch.setattr(livekit_agent, "processing_filler_enabled", lambda: False)
+
+    async def no_late_speech() -> None:
+        pass
+
+    agent, _ = _agent(no_late_speech)
+    agent._answer = AnswerWindow()
+    agent._session_context = "Backend Developer"
+    agent._last_interview_speech_text = "Bạn dùng useState thế nào?"
+    agent._enable_speculative_preview = True
+    previews: list[str] = []
+    agent._schedule_preview = previews.append
+    agent._schedule_answer_pause_nudge = lambda: None
+    agent._schedule_commit = lambda _delay: None
+
+    agent.on_interim_transcript(spoken)
+    message = _user_message(spoken)
+    await agent.on_user_turn_completed(None, message)
+
+    assert previews == [expected_interim, expected]
+    assert message.content == [expected]
+    assert agent._answer.text == expected
+    assert agent._answer.raw_fragments == [spoken]
+    agent._preview_text = expected if matching_preview else "Bản tạm trước khi ứng viên nói xong."
+    agent._preview_token = "signed-preview-token"
+
+    await agent._commit_answer()
+    payload = agent._runtime_client.payloads[0]
+    assert payload["content"] == expected
+    assert payload["telemetry"]["rawTranscript"] == spoken
+    assert payload["previewToken"] == ("signed-preview-token" if matching_preview else None)
+    assert agent._answer.is_empty

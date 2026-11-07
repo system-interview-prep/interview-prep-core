@@ -58,6 +58,7 @@ VOICE_EVENTS = frozenset(
         "voice_interruption",
         "voice_processing_filler",
         "voice_tts_metrics",
+        "voice_stt_diagnostic",
         "voice_tts_fallback",
         "voice_provider_degraded",
         "voice_provider_recovered",

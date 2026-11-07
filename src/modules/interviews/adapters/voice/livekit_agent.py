@@ -19,14 +19,9 @@ from time import perf_counter
 import httpx
 from dotenv import load_dotenv
 from livekit import agents, rtc
-from livekit.agents import Agent, AgentServer, AgentSession, TurnHandlingOptions, inference, room_io
-from livekit.agents.voice.turn import EndpointingOptions, InterruptionOptions
+from livekit.agents import Agent, AgentServer, AgentSession, inference
+from livekit.agents.voice.turn import InterruptionOptions
 from livekit.plugins import elevenlabs
-
-try:
-    from livekit.plugins import noise_cancellation
-except ImportError:  # Allows a rolling deploy before the optional wheel is present.
-    noise_cancellation = None  # type: ignore[assignment]
 
 try:
     from .answer_window import (
@@ -61,9 +56,9 @@ try:
         remaining_after_interruption,
         resolve_interruption,
     )
-    from .language import assemblyai_stream_options, normalize_transcript_for_locale, speakable_text
+    from .language import normalize_transcript_for_locale, speakable_text
     from .provider_config import tts_provider_config
-    from .qwen_streaming_stt import QwenStreamingSTT
+    from .recognition import create_stt, recognition_language, recognition_options, recognition_room_options
     from .stt_provider import stt_provider_settings
     from .transcript_quality import assess_transcript
     from .tts_cache import SpeechAudioCache, SpeechClip
@@ -104,12 +99,11 @@ except ImportError:  # Executed directly by the API's LiveKit subprocess.
         resolve_interruption,
     )
     from language import (  # type: ignore[no-redef]
-        assemblyai_stream_options,
         normalize_transcript_for_locale,
         speakable_text,
     )
     from provider_config import tts_provider_config  # type: ignore[no-redef]
-    from qwen_streaming_stt import QwenStreamingSTT  # type: ignore[no-redef]
+    from recognition import create_stt, recognition_language, recognition_options, recognition_room_options
     from stt_provider import stt_provider_settings  # type: ignore[no-redef]
     from transcript_quality import assess_transcript  # type: ignore[no-redef]
     from tts_cache import SpeechAudioCache, SpeechClip  # type: ignore[no-redef]
@@ -134,17 +128,6 @@ Never create, rephrase, or add interview content independently.
 """
 
 logger = logging.getLogger(__name__)
-
-
-def _noise_filter(mode: str):
-    if mode == "off":
-        return None
-    if noise_cancellation is None:
-        logger.warning(
-            "Server noise cancellation requested but plugin is unavailable; continuing with WebRTC filtering"
-        )
-        return None
-    return noise_cancellation.BVC()
 
 
 def _float_env(name: str, default: float) -> float:
@@ -172,10 +155,7 @@ def _bool_env(name: str, default: bool = False) -> bool:
 
 def _session_stt_language(locale: str) -> str:
     """Keep recognition in the interview language for the whole session."""
-    configured = os.getenv("LIVEKIT_STT_LANGUAGE", "session").strip().lower()
-    if configured not in {"", "auto", "multi", "session"}:
-        return configured
-    return "vi" if locale.lower().startswith("vi") else "en"
+    return recognition_language(locale)
 
 
 def _message_metrics(message: object) -> dict[str, float]:
@@ -208,6 +188,7 @@ class VoiceLabAgent(Agent):
         room_name: str,
         room: object,
         locale: str,
+        session_context: str = "",
         stt_provider: str = "assemblyai",
         enable_speculative_preview: bool = False,
         speech_cache: SpeechAudioCache | None = None,
@@ -227,6 +208,7 @@ class VoiceLabAgent(Agent):
         self._room_name = room_name
         self._room = room
         self._locale = locale
+        self._session_context = session_context.strip()
         self._stt_provider = stt_provider
         self._enable_speculative_preview = enable_speculative_preview
         self._active_speech_handle: object | None = None
@@ -368,7 +350,10 @@ class VoiceLabAgent(Agent):
         if not self._enable_speculative_preview:
             return
         transcript = normalize_transcript_for_locale(
-            text, locale=self._locale, context=self._last_interview_speech_text
+            text,
+            locale=self._locale,
+            context=f"{getattr(self, '_session_context', '')} {self._last_interview_speech_text}".strip(),
+            is_final=False,
         ).strip()
         combined = " ".join(part for part in (self._answer.text, transcript) if part)
         if len(combined) >= 16 and len(combined.split()) >= 4:
@@ -796,7 +781,9 @@ class VoiceLabAgent(Agent):
         )
         transcript = (
             normalize_transcript_for_locale(
-                raw_transcript, locale=self._locale, context=self._last_interview_speech_text
+                raw_transcript,
+                locale=self._locale,
+                context=f"{getattr(self, '_session_context', '')} {self._last_interview_speech_text}".strip(),
             )
             if isinstance(raw_transcript, str)
             else raw_transcript
@@ -1045,6 +1032,18 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
         headers={"Authorization": f"Bearer {runtime_token}"},
         timeout=httpx.Timeout(90.0),
     )
+    if runtime_token.startswith("stt-test:"):
+        runtime_client.headers["Authorization"] = f"Bearer {runtime_token.removeprefix('stt-test:')}"
+        try:
+            from .livekit_stt_test import run_stt_test
+        except ImportError:
+            from livekit_stt_test import run_stt_test
+        try:
+            await run_stt_test(ctx, runtime_client)
+        finally:
+            await runtime_client.aclose()
+        return
+
     try:
         start_response = await runtime_client.post("/ai/voice-lab/livekit/runtime/start")
         start_response.raise_for_status()
@@ -1099,23 +1098,12 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
 
     stt_settings = stt_provider_settings()
     stt_model = stt_settings.model
-    is_assemblyai = stt_settings.provider == "assemblyai"
     stt_language = _session_stt_language(locale)
-    if is_assemblyai:
-        assemblyai_options = assemblyai_stream_options(stt_language, agent_context=opening_text)
-        stt = inference.STT(
-            model=stt_model,
-            language=stt_language,
-            extra_kwargs=assemblyai_options,
-        )
-    else:
-        stt = QwenStreamingSTT(
-            model=stt_model,
-            base_url=stt_settings.base_url,
-            chunk_size_seconds=stt_settings.chunk_size_seconds,
-            endpoint_silence_seconds=stt_settings.endpoint_silence_seconds,
-            silence_rms_threshold=stt_settings.silence_rms_threshold,
-        )
+    session_context = " ".join(
+        part for part in (str(start_payload.get("jobTitle") or "").strip(), opening_text.strip()) if part
+    )
+    stt = create_stt(stt_settings, stt_language, session_context,
+                     telemetry=lambda fields: voice_events.emit("voice_stt_diagnostic", **fields))
 
     interruption_mode = os.getenv("VOICE_LAB_INTERRUPTION_MODE", "adaptive").strip().lower()
     if interruption_mode not in {"adaptive", "vad"}:
@@ -1323,37 +1311,8 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
         )
 
     session = AgentSession(
-        # Vietnamese mode is more reliable for short utterances. Set the env
-        # value to "multi" only when the candidate frequently code-switches.
-        stt=stt,
-        # STT decides end-of-turn. Silero remains deliberately more sensitive
-        # so quiet Vietnamese syllables and real barge-ins are not discarded.
-        vad=inference.VAD(
-            model="silero",
-            min_speech_duration=tuning.vad_min_speech_duration,
-            min_silence_duration=tuning.vad_min_silence_duration,
-            activation_threshold=tuning.vad_activation_threshold,
-            deactivation_threshold=tuning.vad_deactivation_threshold,
-        ),
-        # Turn callback forwards transcripts to Interview Core; no free-form LLM is attached.
-        llm=None,
-        tts=tts,
-        # Browser echo cancellation is already enabled. A shorter warmup keeps
-        # the opening interruptible without removing AEC protection entirely.
-        aec_warmup_duration=tuning.aec_warmup_duration,
-        # Leave a human-sized breath between the immediate acknowledgement and
-        # the full Interview Core response queued behind it.
-        min_consecutive_speech_delay=tuning.min_consecutive_speech_delay,
-        # End a user turn after a short, stable silence. This makes the lab
-        # predictable for measurement and prevents waiting for manual input.
-        turn_handling=TurnHandlingOptions(
-            turn_detection="stt" if is_assemblyai else "vad",
-            endpointing=EndpointingOptions(
-                mode="fixed",
-                min_delay=0.0 if is_assemblyai else 0.8,
-                max_delay=tuning.endpoint_max_delay,
-            ),
-            interruption=InterruptionOptions(
+        stt=stt, tts=tts,
+        **recognition_options(stt_settings, tuning, interruption=InterruptionOptions(
                 enabled=True,
                 mode=interruption_mode,
                 min_duration=tuning.interruption_min_duration,
@@ -1364,8 +1323,7 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
                     _float_env("VOICE_LAB_BACKCHANNEL_START_BOUNDARY", 0.5),
                     _float_env("VOICE_LAB_BACKCHANNEL_END_BOUNDARY", 2.2),
                 ),
-            ),
-        ),
+            )),
     )
 
     @session.on("error")
@@ -1458,6 +1416,7 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
         room_name=ctx.room.name,
         room=ctx.room,
         locale=locale,
+        session_context=str(start_payload.get("jobTitle") or ""),
         stt_provider=stt_settings.provider,
         enable_speculative_preview=(
             stt_settings.provider == "qwen" and _bool_env("VOICE_LLM_SPECULATIVE_PREVIEW", True)
@@ -1550,15 +1509,7 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
     await session.start(
         room=ctx.room,
         agent=agent,
-        room_options=room_io.RoomOptions(
-            audio_input=room_io.AudioInputOptions(
-                noise_cancellation=_noise_filter(tuning.noise_cancellation),
-                auto_gain_control=True,
-            ),
-            # A closed session must not leave its room, and the STT stream
-            # tied to it, counting against the plan's concurrency cap.
-            delete_room_on_close=True,
-        ),
+        room_options=recognition_room_options(tuning),
     )
     # Do not let startup noise or echo turn the opening question into a
     # candidate answer before AEC has converged. The spoken opening combines
