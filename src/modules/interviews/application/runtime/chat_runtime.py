@@ -28,6 +28,7 @@ from src.core.pipeline_events import current_session_id
 from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
 from src.modules.interviews.application.quality_admin import interviewer_playbook, llm_checks
+from src.modules.interviews.application.runtime.session_deadline import chat_deadline
 from src.modules.interviews.core.interview_blueprint import InterviewBlueprint, blueprint_from_payload
 from src.modules.interviews.core import playbook, speech_checks
 from src.modules.interviews.core.opening_script import build_opening, warmup_question
@@ -555,6 +556,20 @@ async def _get_job_context(db: AsyncSession, job_id: str | None) -> dict[str, An
     return dict(row) if row else {}
 
 
+async def expire_chat_session_if_due(
+    db: AsyncSession, session_row: dict[str, Any], *, has_started: bool,
+) -> bool:
+    deadline = chat_deadline(session_row, has_started=has_started)
+    if session_row["status"] != "OPEN" or deadline is None or datetime.now(UTC) < deadline:
+        return False
+    await complete_chat_session(db, session_row, reason="HARD_TIMEOUT")
+    trace_event(
+        "interviewer", "chat_deadline_reached", session_id=str(session_row["id"]),
+        deadline=deadline.isoformat(), end_reason=session_row.get("end_reason"),
+    )
+    return True
+
+
 async def get_chat_runtime(
     db: AsyncSession,
     session_row: dict[str, Any],
@@ -576,6 +591,8 @@ async def get_chat_runtime(
         {"session_id": session_id},
     )
     messages = [_message_payload(dict(r)) for r in msg_res.mappings().all()]
+    if await expire_chat_session_if_due(db, session_row, has_started=bool(messages)):
+        return await get_chat_runtime(db, session_row)
 
     # Fetch turns
     turns_res = await db.execute(
@@ -649,6 +666,7 @@ async def get_chat_runtime(
     has_started = bool(messages)
     if not has_started:
         remaining_sec = target_sec
+    deadline = chat_deadline(session_row, has_started=has_started)
 
     is_awaiting = False
     if session_row["status"] == "OPEN" and messages:
@@ -716,6 +734,8 @@ async def get_chat_runtime(
             if has_started and isinstance(session_row.get("started_at"), datetime)
             else None
         ),
+        "expiresAt": deadline.isoformat() if deadline else None,
+        "serverTime": datetime.now(UTC).isoformat(),
         "sessionProbeCount": session_probe_count,
         "cvFollowupUsed": bool(cv_followup_used > 0),
         "workingMemory": {
@@ -1193,6 +1213,9 @@ async def process_candidate_message(
     if current_turn.get("question_snapshot") is None:
         raise ChatRuntimeError("QUESTION_SNAPSHOT_MISSING: Question snapshot bị thiếu trong turn hiện tại.")
 
+    if await expire_chat_session_if_due(db, session_row, has_started=bool(last_asst_msg)):
+        raise ChatRuntimeError("SESSION_CLOSED: Thời gian phỏng vấn đã hết.")
+
     current_turn_id = current_turn["id"]
     current_turn_index = current_turn["turn_index"]
 
@@ -1613,6 +1636,8 @@ async def process_candidate_message(
     if status_after_llm == "CLOSED":
         await db.rollback()
         raise ChatRuntimeError("SESSION_CLOSED: Phiên phỏng vấn đã kết thúc trong lúc xử lý câu trả lời.")
+    if await expire_chat_session_if_due(db, session_row, has_started=True):
+        raise ChatRuntimeError("SESSION_CLOSED: Thời gian phỏng vấn đã hết trong lúc xử lý câu trả lời.")
     if core_output.action == TurnAction.CONFIRM_ABORT:
         # A stop request is not an answer. Phase 1 stored it as one, so a session
         # ended here graded "em xin dừng" as the answer to the open question (0.0)
@@ -2353,6 +2378,11 @@ async def complete_chat_session(
         )
         asst_seq = int(max_seq or 0) + 1
         wrap_text = pick_variant(USER_ENDED_VI if is_vi else USER_ENDED_EN, f"{session_id}:user_ended")
+        if reason == "HARD_TIMEOUT":
+            wrap_text = (
+                "Thời gian phỏng vấn đã hết. Mình kết thúc buổi tại đây và đánh giá các câu trả lời bạn đã gửi."
+                if is_vi else "The interview time is up. We will now evaluate the answers you submitted."
+            )
         if is_vi:
             wrap_text = localize_particles(_personalize_candidate_address(wrap_text, candidate_short_name))
         await db.execute(
@@ -2384,6 +2414,8 @@ async def complete_chat_session(
     )
     await db.commit()
     session_row["status"] = "CLOSED"
+    session_row["end_reason"] = reason
+    session_row["ended_at"] = datetime.now(UTC)
 
     ended_at = session_row.get("ended_at")
     ended_str = (

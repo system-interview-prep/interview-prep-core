@@ -52,6 +52,17 @@ async def test_reaper_closes_rooms_the_candidate_left_as_candidate_left() -> Non
 
 
 @pytest.mark.asyncio
+async def test_regular_chat_expiry_does_not_inherit_the_media_ten_minute_cleanup_grace():
+    db = AsyncMock()
+    db.execute.return_value.all = MagicMock(return_value=[])
+    await reap_abandoned_sessions(lambda: _SessionContext(db))
+    sql = " ".join(str(db.execute.await_args.args[0]).split())
+    assert "COALESCE(experience_type, 'interview_chat') = 'interview_chat'" in sql
+    assert "THEN 180 ELSE 0 END" in sql
+    assert "ELSE interval '10 minutes' END <= now()" in sql
+
+
+@pytest.mark.asyncio
 async def test_reaper_counts_the_budget_from_the_opening_question() -> None:
     db = AsyncMock()
     result = MagicMock()

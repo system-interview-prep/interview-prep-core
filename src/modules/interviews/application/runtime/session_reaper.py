@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.core.trace_logging import trace_event
+from src.modules.interviews.core.demo_mode import DEMO_DURATION_MINUTES, DEMO_OVERTIME_GRACE_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ async def reap_abandoned_sessions(session_factory: async_sessionmaker[AsyncSessi
     async with session_factory() as db:
         result = await db.execute(
             text(
-                """
+                f"""
                 UPDATE interview_sessions
                 SET status = 'CLOSED',
                     end_reason = CASE
@@ -47,7 +48,13 @@ async def reap_abandoned_sessions(session_factory: async_sessionmaker[AsyncSessi
                      EXISTS (
                         SELECT 1 FROM interview_chat_messages m WHERE m.session_id = interview_sessions.id
                      ) AND
-                     started_at + make_interval(mins => duration_minutes) + interval '10 minutes' < now())
+                     started_at + make_interval(mins => duration_minutes) +
+                     CASE WHEN mode = 'text'
+                               AND COALESCE(experience_type, 'interview_chat') = 'interview_chat'
+                          THEN make_interval(secs => CASE
+                               WHEN duration_minutes BETWEEN 1 AND {DEMO_DURATION_MINUTES}
+                               THEN {DEMO_OVERTIME_GRACE_SECONDS} ELSE 0 END)
+                          ELSE interval '10 minutes' END <= now())
                     OR
                     ((started_at IS NULL OR NOT EXISTS (
                         SELECT 1 FROM interview_chat_messages m WHERE m.session_id = interview_sessions.id

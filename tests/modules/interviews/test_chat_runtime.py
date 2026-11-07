@@ -2295,6 +2295,79 @@ async def test_abandoned_session_is_closed_when_the_candidate_returns():
 
 
 @pytest.mark.asyncio
+async def test_runtime_read_closes_a_five_minute_chat_without_another_answer():
+    session_row, turns = _pacing_cutoff_fixture()
+    session_row["duration_minutes"] = 5
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    session_row["started_at"] = datetime.now(UTC) - timedelta(minutes=5, milliseconds=1)
+    result = await get_chat_runtime(db, session_row)
+    assert result["sessionStatus"] == "CLOSED"
+    assert result["endReason"] == "HARD_TIMEOUT"
+    assert result["workingMemory"]["remaining_time"] == 0
+    wraps = [m for m in db.messages if m["message_type"] == "WRAP_UP"]
+    assert len(wraps) == 1
+    assert "Thời gian phỏng vấn đã hết" in wraps[0]["content"]
+    assert not any(m["role"] == "user" for m in db.messages)
+    again = await get_chat_runtime(db, session_row)
+    assert again["endReason"] == "HARD_TIMEOUT"
+    assert len([m for m in db.messages if m["message_type"] == "WRAP_UP"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_does_not_close_before_the_selected_deadline():
+    session_row, turns = _pacing_cutoff_fixture()
+    session_row["duration_minutes"] = 5
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    session_row["started_at"] = datetime.now(UTC) - timedelta(minutes=4, seconds=59)
+    result = await get_chat_runtime(db, session_row)
+    assert result["sessionStatus"] == "OPEN"
+    assert datetime.fromisoformat(result["expiresAt"]) > datetime.fromisoformat(result["serverTime"])
+
+
+@pytest.mark.asyncio
+async def test_late_chat_answer_is_not_saved_or_sent_to_the_model():
+    session_row, turns = _pacing_cutoff_fixture()
+    session_row["duration_minutes"] = 5
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    session_row["started_at"] = datetime.now(UTC) - timedelta(minutes=5, seconds=1)
+    generator = AsyncMock()
+    with pytest.raises(ChatRuntimeError, match="SESSION_CLOSED"):
+        await process_candidate_message(
+            db, session_row, client_message_id="late", content="Too late",
+            core_engine=InterviewCoreEngine(ai_generator=generator),
+        )
+    generator.assert_not_called()
+    assert db.session_row["end_reason"] == "HARD_TIMEOUT"
+    assert not any(m.get("client_message_id") == "late" for m in db.messages)
+
+
+@pytest.mark.asyncio
+async def test_model_finishing_after_deadline_cannot_append_a_new_question():
+    session_row, turns = _pacing_cutoff_fixture()
+    session_row["duration_minutes"] = 5
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    session_row["started_at"] = datetime.now(UTC) - timedelta(minutes=1)
+
+    async def slow_generator(**_kwargs):
+        session_row["started_at"] = datetime.now(UTC) - timedelta(minutes=5, seconds=1)
+        return '{"intent":"ANSWER","sufficiency_status":"SUFFICIENT","acknowledgement":"Thanks","score":7}'
+
+    with pytest.raises(ChatRuntimeError, match="SESSION_CLOSED"):
+        await process_candidate_message(
+            db, session_row, client_message_id="in-time", content="Answer submitted in time",
+            core_engine=InterviewCoreEngine(ai_generator=slow_generator),
+        )
+    assert db.session_row["end_reason"] == "HARD_TIMEOUT"
+    assert db.turns["t-deep"]["answer_text"] == "Answer submitted in time"
+    assert db.turns["t-beh"]["status"] == "PLANNED"
+    assert len([m for m in db.messages if m["message_type"] == "MAIN_QUESTION"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_three_minute_demo_session_reaches_the_technical_question():
     """Demo sessions: pacing reserves scale with duration.
 
