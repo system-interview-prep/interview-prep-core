@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.core.trace_logging import trace_event
-from src.modules.interviews.core.interview_design.demo_mode import DEMO_DURATION_MINUTES, DEMO_OVERTIME_GRACE_SECONDS
+from src.modules.interviews.core.session_policy.demo_mode import DEMO_DURATION_MINUTES, DEMO_OVERTIME_GRACE_SECONDS
 
 logger = logging.getLogger(__name__)
 

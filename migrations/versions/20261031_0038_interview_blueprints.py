@@ -6,7 +6,7 @@ At most one version is ACTIVE; activating one retires the previous. A version
 is never edited after submission, and every session plan freezes the version
 it used (plan_payload.blueprint), so changing the policy never alters a
 session already planned. With no ACTIVE version the built-in default applies
-(core/interview_design/blueprint.py).
+(core/session_policy/blueprint.py).
 
 Revision ID: 20261031_0038
 Revises: 20261026_0037

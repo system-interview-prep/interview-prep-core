@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from src.modules.interviews.application.chat_runtime import session_blueprint
 from src.modules.interviews.application.interview_blueprints import _view
-from src.modules.interviews.core.interview_design.blueprint import (
+from src.modules.interviews.core.session_policy.blueprint import (
     InterviewBlueprint,
     blueprint_from_payload,
     default_blueprint,

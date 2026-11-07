@@ -15,8 +15,8 @@ from uuid import UUID
 from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
 from src.modules.interviews.core.dialogue import speech_checks
-from src.modules.interviews.core.interview_design.demo_mode import DEMO_OVERTIME_GRACE_SECONDS
-from src.modules.interviews.core.interview_design.blueprint import blueprint_from_payload
+from src.modules.interviews.core.session_policy.demo_mode import DEMO_OVERTIME_GRACE_SECONDS
+from src.modules.interviews.core.session_policy.blueprint import blueprint_from_payload
 from src.modules.interviews.core.conversation.response_generation import InterviewResponseMixin
 from src.modules.interviews.core.conversation.turn_rules import (
     _FIXED_PROBES,

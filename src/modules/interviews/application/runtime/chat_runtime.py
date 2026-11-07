@@ -29,10 +29,10 @@ from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
 from src.modules.interviews.application.quality_admin import interviewer_playbook, llm_checks
 from src.modules.interviews.application.runtime.session_deadline import chat_deadline
-from src.modules.interviews.core.interview_design.blueprint import InterviewBlueprint, blueprint_from_payload
+from src.modules.interviews.core.session_policy.blueprint import InterviewBlueprint, blueprint_from_payload
 from src.modules.interviews.core.dialogue import playbook, speech_checks
 from src.modules.interviews.core.dialogue.opening import build_opening, warmup_question
-from src.modules.interviews.core.interview_design.demo_mode import is_demo_duration
+from src.modules.interviews.core.session_policy.demo_mode import is_demo_duration
 from src.modules.interviews.core.dialogue.policy import (
     CLOSE_COMPLETED_EN,
     CLOSE_COMPLETED_VI,
@@ -1002,7 +1002,7 @@ def build_session_state_from_db(
 
     target_duration_minutes = session_row.get("duration_minutes") or 25
     session_seconds = int(target_duration_minutes) * 60
-    # The stage policy frozen on the opening turn (core.interview_design.blueprint);
+    # The stage policy frozen on the opening turn (core.session_policy.blueprint);
     # sessions planned before blueprints existed get the default.
     blueprint = session_blueprint(turns)
     behavioral_reserve = blueprint.behavioral.reserve_seconds if blueprint.behavioral.enabled else 0
@@ -1068,7 +1068,7 @@ def build_session_state_from_db(
         ),
         "current_turn_in_question": 1 if has_probed else 0,
         "target_duration_minutes": target_duration_minutes,
-        # Demo sessions are turn-driven (see core.interview_design.demo_mode).
+        # Demo sessions are turn-driven (see core.session_policy.demo_mode).
         "is_demo": is_demo_duration(target_duration_minutes),
         # basic | standard | challenge, frozen on each technical turn from the
         # CV–job match (planning.entry_gate). Challenge also probes good answers.

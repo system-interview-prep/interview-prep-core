@@ -21,7 +21,7 @@ from src.modules.interviews.application.runtime.chat_runtime import (
     get_chat_runtime,
 )
 from src.modules.interviews.application.interview_blueprints import BlueprintError, resolve_blueprint
-from src.modules.interviews.core.interview_design.demo_mode import is_demo_duration
+from src.modules.interviews.core.session_policy.demo_mode import is_demo_duration
 from src.modules.interviews.application.progress import compare_with_previous, load_progress, set_weekly_goal
 from src.modules.interviews.application.progress.real_interviews import (
     delete_report,

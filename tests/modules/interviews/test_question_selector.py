@@ -1878,7 +1878,7 @@ def test_unreviewed_budget_is_zero_in_challenge_and_one_otherwise():
 def test_demo_session_may_fill_every_technical_slot_with_generated_drafts(monkeypatch):
     """Any IT CV-JD pair picked live must run even when the bank has no question for it."""
     from src.core.config import get_settings
-    from src.modules.interviews.core.interview_design.demo_mode import DEMO_TECHNICAL_QUESTIONS
+    from src.modules.interviews.core.session_policy.demo_mode import DEMO_TECHNICAL_QUESTIONS
     from src.modules.interviews.planning.question_selector import unreviewed_budget
 
     assert unreviewed_budget({"practiceTier": "challenge"}, demo=True) == DEMO_TECHNICAL_QUESTIONS

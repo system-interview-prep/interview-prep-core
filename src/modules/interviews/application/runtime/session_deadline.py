@@ -3,7 +3,7 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from src.modules.interviews.core.interview_design.demo_mode import DEMO_OVERTIME_GRACE_SECONDS, is_demo_duration
+from src.modules.interviews.core.session_policy.demo_mode import DEMO_OVERTIME_GRACE_SECONDS, is_demo_duration
 
 
 def chat_deadline(session: dict[str, Any], *, has_started: bool) -> datetime | None:

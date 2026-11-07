@@ -25,8 +25,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
 from src.core.trace_logging import trace_event
-from src.modules.interviews.core.interview_design.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
-from src.modules.interviews.core.interview_design.blueprint import InterviewBlueprint, blueprint_from_payload
+from src.modules.interviews.core.session_policy.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
+from src.modules.interviews.core.session_policy.blueprint import InterviewBlueprint, blueprint_from_payload
 from src.modules.interviews.core.dialogue.opening import warmup_question
 from src.modules.interviews.planning.spoken_questions import add_spoken_versions
 from src.modules.interviews.core.dialogue.policy import speech_v2_enabled
@@ -1584,7 +1584,7 @@ async def select_and_freeze_questions(
     # The question only: the greeting, agenda and how-to are the opening's
     # (core/dialogue/opening.py), spoken once before it.
     warmup_text = warmup_question(is_vi=is_vi, is_demo=is_demo_duration(session_row.get("duration_minutes")))
-    # The stage policy the planner froze (core.interview_design.blueprint); older plans have none.
+    # The stage policy the planner froze (core.session_policy.blueprint); older plans have none.
     blueprint_record = payload.get("blueprint") if isinstance(payload, dict) else None
     blueprint = blueprint_from_payload((blueprint_record or {}).get("policy"))
     validate_enabled = blueprint.validate_cv.enabled
