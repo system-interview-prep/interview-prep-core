@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "chat-interview-eval-v1",
+  "id": "chat-backend-star-vi-v1",
+  "description": "Kịch bản tiếng Việt để phát lại phỏng vấn Chat và đánh giá báo cáo thực bằng LLM.",
+  "locale": "vi-VN",
+  "durationMinutes": 25,
+  "turns": [
+    {
+      "stage": "WARM_UP",
+      "competency": "Giao tiếp",
+      "question": "Bạn hãy giới thiệu ngắn về bản thân và định hướng công việc hiện tại.",
+      "messages": [
+        "Em là sinh viên Công nghệ thông tin, hiện tập trung vào phát triển backend. Em đã làm một số dự án với Node.js, Express và PostgreSQL. Em muốn theo hướng backend vì thích thiết kế API, xử lý dữ liệu và tìm hiểu cách hệ thống vận hành ổn định khi có nhiều yêu cầu."
+      ]
+    },
+    {
+      "stage": "DEEP_DIVE",
+      "competency": "Thiết kế API Backend",
+      "question": "Khi thiết kế API cho một tính năng đăng ký thuê trạm sạc xe điện, bạn sẽ tổ chức luồng xử lý và bảo vệ dữ liệu như thế nào?",
+      "target": {"conceptId": "skill.backend.api_design"},
+      "messages": [
+        "Em sẽ tách API theo tài nguyên, ví dụ phiên thuê và trạm sạc, rồi kiểm tra dữ liệu đầu vào ở boundary trước khi xử lý. Với thao tác bắt đầu thuê, backend xác thực JWT, kiểm tra quyền của người dùng và trạng thái trạm trong transaction để tránh hai người cùng thuê một trạm. Em lưu trạng thái thuê và lịch sử thay đổi trong PostgreSQL, trả mã HTTP cùng lỗi có cấu trúc. Em cũng viết test cho trường hợp hợp lệ, token hết hạn, trạm đã có người thuê và hai yêu cầu đến gần như đồng thời.",
+        "Nếu hai yêu cầu cạnh tranh, em sẽ khóa bản ghi hoặc dùng cập nhật có điều kiện trong transaction, sau đó kiểm tra số dòng bị cập nhật. Chỉ một yêu cầu được chuyển trạng thái trạm sang đang thuê; yêu cầu còn lại nhận conflict thay vì tạo hai phiên thuê."
+      ],
+      "evaluationFocus": [
+        "Xác thực và phân quyền",
+        "Kiểm tra dữ liệu đầu vào",
+        "Transaction hoặc cơ chế chống cập nhật đồng thời",
+        "Mã lỗi và kiểm thử các trường hợp biên"
+      ]
+    },
+    {
+      "stage": "BEHAVIORAL",
+      "competency": "Hợp tác và giải quyết bất đồng",
+      "question": "Hãy kể về một lần bạn và thành viên trong nhóm bất đồng về cách triển khai. Bạn đã xử lý và kết quả ra sao?",
+      "target": {"conceptId": "skill.teamwork.conflict_resolution"},
+      "messages": [
+        "Trong dự án thuê trạm sạc, nhóm em bất đồng về việc để phần xác thực KYC trong service người dùng hay tách thành module riêng. Nhiệm vụ của em là hoàn thành API đăng nhập và KYC trong khi vẫn giữ tiến độ tích hợp. Em đề xuất so sánh hai phương án theo phạm vi hiện tại, ranh giới dữ liệu và chi phí vận hành, rồi cùng nhóm thống nhất giữ chung module nhưng tách interface và bảng dữ liệu để có thể tách service sau. Em triển khai API, bổ sung test phân quyền và ghi lại quyết định trong tài liệu. Nhóm tích hợp đúng hạn, luồng KYC hoạt động và sau đó có thể thay đổi cấu trúc mà không phải sửa hợp đồng API bên ngoài."
+      ],
+      "evaluationFocus": [
+        "Bối cảnh và bất đồng cụ thể",
+        "Vai trò và hành động cá nhân",
+        "Cách trao đổi hoặc ra quyết định cùng nhóm",
+        "Kết quả cụ thể và điều rút ra"
+      ]
+    }
+  ],
+  "evalAssertions": {
+    "minimumScoredTurns": 2,
+    "scoresWithin": [0, 10],
+    "evidenceQuotesMustComeFromCandidateMessages": true,
+    "reportMustPersistAndBeReadable": true
+  }
+}
