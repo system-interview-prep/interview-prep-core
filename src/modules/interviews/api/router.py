@@ -145,11 +145,8 @@ class CreateInterviewSession(BaseModel):
     experience_type: ExperienceType = Field(default="interview_chat", alias="experienceType")
     locale: str = Field(default="vi-VN", min_length=2, max_length=35)
     duration_minutes: int = Field(default=25, alias="durationMinutes", ge=2, le=120)
-    # "Luyện vòng này" on the progress page: half of the technical questions
-    # come from this round (interview_design.rounds.FOCUSABLE_AREAS).
-    focus_area: Literal["language", "framework", "data", "api", "infra", "ai"] | None = Field(
-        default=None, alias="focusArea"
-    )
+    # Taxonomy group to prioritize in the interview plan; validated from DB.
+    focus_area: str | None = Field(default=None, alias="focusArea", max_length=160)
     # "Luyện lại ý này": a skill (concept id) to ask again in this session,
     # with a question the candidate has not seen (planner._due_reask).
     reask_concept_id: str | None = Field(default=None, alias="reaskConceptId", max_length=120)

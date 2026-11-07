@@ -53,8 +53,11 @@ from src.modules.interviews.application.progress.progress_skills import (
     trend,
     weekly_streak,
 )
-from src.modules.interviews.application.progress.skill_display import area_of, display_name, is_tracked
-from src.modules.interviews.core.interview_design.rounds import is_minor
+from src.modules.interviews.application.progress.skill_display import display_name, is_tracked
+from src.modules.taxonomy.interview_groups import (
+    EMPTY_TAXONOMY_SKILL_GROUPS,
+    TaxonomySkillGroups,
+)
 
 
 def _session_behavior(turns: list[TurnRow]) -> dict[str, Any]:
@@ -377,6 +380,7 @@ def build_progress(
     all_session_starts: list[datetime] | None = None,
     calibration: Calibration | None = None,
     split_rooms: bool = True,
+    taxonomy_groups: TaxonomySkillGroups = EMPTY_TAXONOMY_SKILL_GROUPS,
 ) -> dict[str, Any]:
     """Build progress views; optionally split comparable metrics by practice room."""
     calibration = calibration or Calibration()
@@ -466,11 +470,13 @@ def build_progress(
     for key, points in skill_points.items():
         name = display_name(skill_concepts.get(key), skill_labels.get(key) or key)
         view = _skill_view(key, name, points, calibration)
-        view["area"] = area_of(skill_concepts.get(key))
+        view["area"] = taxonomy_groups.group_for(skill_concepts.get(key))
+        view["areaLabel"] = taxonomy_groups.group_label(
+            view["area"], skill_labels.get(key) or key
+        )
         view["taxonomyLabel"] = skill_labels.get(key)
         view["recentQuestions"] = list(reversed(skill_questions[key][-RECENT_QUESTIONS:]))
-        # No longer asked as a topic of its own (interview_design.rounds.MINOR_CONCEPTS).
-        view["minor"] = is_minor(skill_concepts.get(key))
+        view["minor"] = False
         skills.append(view)
     skills.sort(key=lambda item: (-len(item["points"]), item["label"].casefold()))
 
@@ -513,12 +519,16 @@ def build_progress(
 
     # Gaps across every session, kept long enough for the readiness rounds.
     names = {s["conceptId"]: s["label"] for s in skills}
-    all_gaps = gap_notebook(sessions, turns_by_session, names, limited=False, now=now)
+    all_gaps = gap_notebook(
+        sessions, turns_by_session, names, limited=False, now=now,
+        taxonomy_groups=taxonomy_groups,
+    )
     # Points due for practice first, then the most often missed.
     open_sorted = sorted(all_gaps["open"], key=lambda item: not item.get("due"))
     gaps = {"open": open_sorted[:GAP_OPEN_LIMIT], "fixed": all_gaps["fixed"][:GAP_FIXED_LIMIT]}
     retries = retries_by_session(
-        skill_questions, names, {key: area_of(skill_concepts.get(key)) for key in skill_questions}
+        skill_questions, names,
+        {key: taxonomy_groups.group_for(skill_concepts.get(key)) for key in skill_questions}
     )
     wins = small_wins(session_items, all_gaps["events"])
 
@@ -567,7 +577,10 @@ def build_progress(
     tiers = {item["sessionId"]: item["tier"] for item in session_items}
     readiness = []
     for job in jobs:
-        rounds = round_readiness(skills, all_gaps["open"], job["jobId"], calibration)
+        rounds = round_readiness(
+            skills, all_gaps["open"], job["jobId"], calibration,
+            taxonomy_groups=taxonomy_groups,
+        )
         for r in rounds:
             for skill in r["skills"]:
                 answers = skill_questions.get(skill["conceptId"], [])
@@ -587,6 +600,8 @@ def build_progress(
 
     result = {
         "generatedAt": _iso(now),
+        "areaLabels": taxonomy_groups.labels,
+        "areaDefinitions": taxonomy_groups.definitions(),
         "weeklyGoal": weekly_goal,
         "resumes": sorted(resumes.values(), key=lambda r: -r["sessions"]),
         "streak": streak,
@@ -629,6 +644,7 @@ def build_progress(
                 weekly_goal=weekly_goal,
                 calibration=calibration,
                 split_rooms=False,
+                taxonomy_groups=taxonomy_groups,
             )
             view = {key: sub[key] for key in ROOM_KEYS}
             view["count"] = len(ids)

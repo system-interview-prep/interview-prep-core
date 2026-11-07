@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.modules.interviews.application.progress.progress_calibration import load_calibration
 from src.modules.interviews.application.progress.progress_sessions import build_progress
+from src.modules.taxonomy.interview_groups import load_taxonomy_skill_groups
 from src.modules.interviews.application.progress.progress_skills import (
     _TIER_RANK,
     DEFAULT_WEEKLY_GOAL,
@@ -166,4 +167,5 @@ async def load_progress(
         weekly_goal=await weekly_goal_for(db, user_id),
         all_session_starts=all_starts,
         calibration=await load_calibration(db),
+        taxonomy_groups=await load_taxonomy_skill_groups(db),
     )

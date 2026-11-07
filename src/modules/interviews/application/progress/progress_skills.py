@@ -41,8 +41,11 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from src.modules.interviews.application.progress.progress_calibration import Calibration
-from src.modules.interviews.application.progress.skill_display import area_of, is_tracked
-from src.modules.interviews.core.interview_design.rounds import AREAS, is_minor
+from src.modules.interviews.application.progress.skill_display import is_tracked
+from src.modules.taxonomy.interview_groups import (
+    EMPTY_TAXONOMY_SKILL_GROUPS,
+    TaxonomySkillGroups,
+)
 
 DEFAULT_WEEKLY_GOAL = 2
 WEEKLY_GOAL_RANGE = (1, 7)
@@ -435,6 +438,7 @@ def gap_notebook(
     *,
     limited: bool = True,
     now: datetime | None = None,
+    taxonomy_groups: TaxonomySkillGroups = EMPTY_TAXONOMY_SKILL_GROUPS,
 ) -> dict[str, list[dict[str, Any]]]:
     """Key points the candidate keeps leaving out, and the ones they fixed.
 
@@ -452,15 +456,16 @@ def gap_notebook(
       it was last missed in. A point covered again in the very same question
       can be memory of that question (retest effect, research 24/10).
 
-    Job keywords that are no longer asked on their own (JSON, XML) are left
-    out; so are the greeting and the closing Q&A.
+    Taxonomy concepts remain in the notebook because the current taxonomy does
+    not distinguish contextual-only skills. The greeting and closing Q&A stay
+    out because they are interview stages, not competency answers.
     """
     state: dict[tuple[str, str], dict[str, Any]] = {}
     events: list[dict[str, Any]] = []
     for s in sorted(sessions, key=lambda item: item.started_at):
         for t in turns_by_session.get(s.session_id, []):
             key = skill_key(t.concept_id, t.label)
-            if not key or t.outcome != "ANSWERED" or is_minor(t.concept_id):
+            if not key or t.outcome != "ANSWERED":
                 continue
             if not is_tracked(t.concept_id, t.stage):
                 continue
@@ -470,7 +475,7 @@ def gap_notebook(
                     {
                         "skill": names.get(key) or key,
                         "skillKey": key,
-                        "area": area_of(t.concept_id),
+                        "area": taxonomy_groups.group_for(t.concept_id),
                         "point": point,
                         "timesAsked": 0,
                         "timesMissed": 0,
@@ -531,10 +536,6 @@ def gap_notebook(
 ROUND_READY = 7.0
 ROUND_ALMOST = 5.5
 ROUND_MIN_SESSIONS = 2
-# Asked in every session (VALIDATE and BEHAVIORAL presets).
-ALWAYS_ASKED = ("project", "teamwork")
-
-
 # Levels of a round (research 24/10, PROGRESS_TRACKING_PATTERNS_RESEARCH:
 # Khan Academy's mastery ladder with written rules). Bắt đầu, Cơ bản, Vững,
 # Thành thạo. A level moves on whole sessions, never on one answer, and a
@@ -644,8 +645,9 @@ def round_readiness(
     gaps: list[dict[str, Any]],
     job_id: str,
     calibration: Calibration | None = None,
+    taxonomy_groups: TaxonomySkillGroups = EMPTY_TAXONOMY_SKILL_GROUPS,
 ) -> list[dict[str, Any]]:
-    """Readiness for one position, by interview round (interview_design.rounds.AREAS).
+    """Readiness for one position, grouped by current taxonomy relationships.
 
     Per round: the mean smoothed level of its skills as asked for this job,
     the number of sessions behind it, a status (ready / almost / practice /
@@ -675,15 +677,14 @@ def round_readiness(
             )
             bucket["scores"].append(p["score"])
     rounds = []
-    for area in AREAS:
-        entry = per_area.get(area)
-        if entry is None and area not in ALWAYS_ASKED:
-            continue
+    for area in sorted(per_area):
+        entry = per_area[area]
         top_gap = next((g for g in gaps if g["area"] == area and g["lastSeen"].get("jobId") == job_id), None)
         if entry is None:
             rounds.append(
                 {
                     "area": area,
+                    "areaLabel": taxonomy_groups.group_label(area),
                     "status": "unseen",
                     "estimate": None,
                     "sessions": 0,
@@ -719,6 +720,9 @@ def round_readiness(
         rounds.append(
             {
                 "area": area,
+                "areaLabel": taxonomy_groups.group_label(area),
+                "focusable": area in taxonomy_groups.group_ids,
+                "alwaysAsked": False,
                 "status": status,
                 "estimate": estimate,
                 "sessions": sessions,
@@ -819,7 +823,6 @@ __all__ = [
     "ROUND_READY",
     "ROUND_ALMOST",
     "ROUND_MIN_SESSIONS",
-    "ALWAYS_ASKED",
     "LEVEL_NAMES",
     "LADDER_BASIC",
     "LADDER_SOLID",

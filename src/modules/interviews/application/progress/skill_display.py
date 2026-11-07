@@ -16,8 +16,6 @@ they are: IT candidates know them by those names.
 
 from __future__ import annotations
 
-from src.modules.interviews.core.interview_design.rounds import AREAS as ROUND_AREAS
-from src.modules.interviews.core.interview_design.rounds import area_of
 
 # Concepts that are part of the interview but not a skill to track.
 HIDDEN_CONCEPTS = frozenset({"warmup"})
@@ -25,8 +23,6 @@ HIDDEN_STAGES = frozenset({"WARM_UP", "CLOSING"})
 
 # Rounds (areas) and the concept -> round map live with the planner, which
 # spreads questions over them.
-AREAS = ROUND_AREAS
-
 # Plain names for labels a candidate would not read as a skill.
 _DISPLAY_NAMES: dict[str, str] = {
     "cv-validation": "Kể về dự án trong CV",
@@ -63,6 +59,4 @@ def display_name(concept_id: str | None, label: str | None) -> str:
     key = str(concept_id or "")
     if key in _DISPLAY_NAMES:
         return _DISPLAY_NAMES[key]
-    if area_of(key) == "general":
-        return GENERAL_NAME
     return str(label or key)

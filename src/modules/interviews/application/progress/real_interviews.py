@@ -18,8 +18,6 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.modules.interviews.core.interview_design.rounds import AREAS
-
 STAGES = ("screening", "technical", "final", "other")
 RESULTS = ("passed", "failed", "waiting")
 MAX_REPORTS = 50
@@ -54,7 +52,7 @@ def _row(row: Any) -> dict[str, Any]:
         "date": row["interview_date"].isoformat(),
         "stage": row["stage"],
         "result": row["result"],
-        "askedAreas": [a for a in areas or [] if a in AREAS],
+        "askedAreas": [str(a) for a in areas or [] if str(a).strip()],
         "hardParts": row["hard_parts"],
         "readiness": readiness or {},
     }
@@ -101,7 +99,7 @@ async def save_report(
     """Insert, or update the result of an earlier report (a "waiting" one usually)."""
     if stage not in STAGES or result not in RESULTS:
         raise ValueError("invalid stage or result")
-    areas = [a for a in dict.fromkeys(asked_areas) if a in AREAS]
+    areas = [str(a).strip()[:160] for a in dict.fromkeys(asked_areas) if str(a).strip()]
     params = {
         "uid": user_id,
         "job_id": job_id,

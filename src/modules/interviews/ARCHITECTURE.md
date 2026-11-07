@@ -53,7 +53,7 @@ interviews/
 |-- core/
 |   |-- conversation/          # turn_engine.py, response_generation.py, turn_rules.py
 |   |-- contracts/             # interview.py
-|   |-- interview_design/      # blueprint.py, rounds.py, demo_mode.py
+|   |-- interview_design/      # blueprint.py, demo_mode.py
 |   `-- dialogue/              # policy.py, phrases.py, opening.py, language.py, playbook.py, speech_checks.py
 |-- evaluation/
 `-- planning/
