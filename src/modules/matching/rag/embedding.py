@@ -64,13 +64,23 @@ class OpenAIEmbeddingAdapter(EmbeddingAdapter):
         *,
         api_key: str | None = None,
         cache_dir: Path | None = None,
+        timeout_seconds: float = 90.0,
+        max_retries: int = 1,
     ) -> None:
         from openai import OpenAI
 
         resolved_key = api_key or os.getenv("OPENAI_API_KEY")
         if not resolved_key:
             raise ValueError("OPENAI_API_KEY environment variable is required.")
-        self._client = OpenAI(api_key=resolved_key)
+        client = OpenAI(api_key=resolved_key)
+        # Match the application AI timeout. The SDK's 600-second default made a
+        # failed embedding request hold every matching pair for up to ten minutes.
+        with_options = getattr(client, "with_options", None)
+        self._client = (
+            with_options(timeout=timeout_seconds, max_retries=max_retries)
+            if callable(with_options)
+            else client
+        )
         self._model = model_name
         self._dimensions = dimensions
         self._cache_dir = cache_dir
@@ -172,4 +182,5 @@ def build_embedding_adapter_from_env() -> EmbeddingAdapter:
         dimensions=settings.embedding_dimension,
         api_key=settings.openai_api_key,
         cache_dir=cache_dir,
+        timeout_seconds=settings.ai_request_timeout_seconds,
     )
