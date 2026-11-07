@@ -17,8 +17,6 @@ def test_openapi_contains_every_public_business_route(client) -> None:
         "/api/v1/interviews/sessions/{session_id}",
         "/api/v1/interviews/sessions/{session_id}/close",
         "/api/v1/interviews/sessions/{session_id}/plan",
-        "/ai/session",
-        "/ai/sessions",
         "/ai/chat",
         "/ai/history",
         "/ai/chat-voice",
@@ -30,6 +28,9 @@ def test_openapi_contains_every_public_business_route(client) -> None:
         "/api/v1/matching/match",
     }
     assert expected.issubset(paths)
+    assert "/ai/session" not in paths
+    assert "/ai/sessions" not in paths
+    assert "/ai/session/{session_id}/close" not in paths
 
 
 def test_unknown_api_returns_404(client) -> None:
