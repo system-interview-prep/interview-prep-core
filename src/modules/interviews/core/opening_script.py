@@ -2,7 +2,7 @@
 
 Built the way structured interviews open: a short introduction, the length of
 the session, the parts it will go through, and an easy first question. Every
-room says the same words (wording in ``interviewer_script.py``); the voice
+room says the same words (wording in ``dialogue/phrases.py``); the voice
 agent only cleans it up for speech.
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from src.modules.interviews.core.interviewer_script import (
+from src.modules.interviews.core.dialogue.phrases import (
     OPENING_AGENDA_EN,
     OPENING_AGENDA_VI,
     OPENING_DEMO_EN,

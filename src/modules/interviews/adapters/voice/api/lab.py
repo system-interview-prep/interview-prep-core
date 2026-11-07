@@ -19,7 +19,7 @@ from src.core.config import get_settings
 from src.core.security import bearer_scheme, current_user
 from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
-from src.modules.interviews.adapters.voice.voice_events import VOICE_EVENTS, sanitize_fields
+from src.modules.interviews.adapters.voice.conversation.voice_events import VOICE_EVENTS, sanitize_fields
 from src.modules.interviews.api.rate_limit import interview_rate_limiter
 from src.modules.interviews.application.runtime.chat_runtime import build_session_state_from_db
 from src.modules.interviews.application.runtime.voice_facade import (
@@ -29,7 +29,7 @@ from src.modules.interviews.application.runtime.voice_facade import (
 )
 from src.modules.interviews.core.interview_engine import InterviewCoreEngine
 from src.modules.interviews.core.interview_types import InterviewStage
-from src.modules.interviews.core.interviewer_voice import canary_scope
+from src.modules.interviews.core.dialogue.policy import canary_scope
 
 router = APIRouter(prefix="/voice-lab", tags=["voice-lab"])
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
@@ -478,7 +478,7 @@ async def record_livekit_runtime_events(
     The session comes from the runtime credential, never from the body. Events
     are attached to the question being asked and stored like any other
     interview event; unknown names and anything that is not a number, flag or
-    short code are dropped (adapters/voice/voice_events.py).
+    short code are dropped (adapters/voice/conversation/voice_events.py).
     """
     session_id = claims["session_id"]
     accepted = [item for item in payload.events if item.event in VOICE_EVENTS]

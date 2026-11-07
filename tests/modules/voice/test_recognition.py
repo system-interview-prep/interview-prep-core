@@ -3,9 +3,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.modules.interviews.adapters.voice import recognition
-from src.modules.interviews.adapters.voice.stt_provider import stt_provider_settings
-from src.modules.interviews.adapters.voice.tuning import voice_tuning
+from src.modules.interviews.adapters.voice.stt import recognition
+from src.modules.interviews.adapters.voice.stt.stt_provider import stt_provider_settings
+from src.modules.interviews.adapters.voice.config.tuning import voice_tuning
 
 
 def test_assemblyai_factory_uses_shared_language_and_context(monkeypatch):

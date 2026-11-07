@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.modules.interviews.adapters.voice import livekit_agent
-from src.modules.interviews.adapters.voice.answer_window import AnswerWindow
+from src.modules.interviews.adapters.voice.runtime import livekit_agent
+from src.modules.interviews.adapters.voice.conversation.answer_window import AnswerWindow
 
 
 class _Events:

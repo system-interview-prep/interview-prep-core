@@ -16,7 +16,7 @@ from src.modules.interviews.application.runtime.chat_runtime import (
     start_chat_session,
 )
 from src.modules.interviews.core.interview_engine import InterviewCoreEngine
-from src.modules.interviews.core.interviewer_voice import EARLY_STOP_VI, FAREWELL_VI, PROBE_FALLBACK_VI, TIMEOUT_VI
+from src.modules.interviews.core.dialogue.policy import EARLY_STOP_VI, FAREWELL_VI, PROBE_FALLBACK_VI, TIMEOUT_VI
 
 
 class MockResult:
@@ -2629,7 +2629,7 @@ class _ContentDB:
 async def test_a_line_said_with_the_name_still_counts_as_just_said() -> None:
     """Buổi thật: câu đã lưu có tên, câu dự phòng có "bạn", nên chống lặp trượt."""
     from src.modules.interviews.application.runtime.chat_runtime import _recent_interviewer_lines
-    from src.modules.interviews.core.interviewer_voice import ACK_FALLBACK_VI, pick_variant
+    from src.modules.interviews.core.dialogue.policy import ACK_FALLBACK_VI, pick_variant
 
     db = _ContentDB(["Ừm, mình hiểu ý Hiền.\n\nCâu hỏi?"])
     lines = await _recent_interviewer_lines(db, "s1", call_name="Hiền")

@@ -10,18 +10,11 @@ from time import perf_counter
 
 from livekit.agents import Agent, AgentSession, stt
 
-try:
-    from .language import normalize_transcript_for_locale
-    from .recognition import create_stt, recognition_language, recognition_options, recognition_room_options
-    from .stt_provider import stt_provider_settings
-    from .transcript_correction import correct_technical_transcript
-    from .tuning import voice_tuning
-except ImportError:
-    from language import normalize_transcript_for_locale
-    from recognition import create_stt, recognition_language, recognition_options, recognition_room_options
-    from stt_provider import stt_provider_settings
-    from transcript_correction import correct_technical_transcript
-    from tuning import voice_tuning
+from ..config.tuning import voice_tuning
+from ..speech.language import normalize_transcript_for_locale
+from .recognition import create_stt, recognition_language, recognition_options, recognition_room_options
+from .stt_provider import stt_provider_settings
+from .transcript_correction import correct_technical_transcript
 
 logger = logging.getLogger(__name__)
 TOPIC = "intervia.stt-test"

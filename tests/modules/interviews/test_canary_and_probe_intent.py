@@ -24,8 +24,8 @@ from src.modules.interviews.core.interview_types import (
     InterviewStage,
     TurnAction,
 )
-from src.modules.interviews.core.interviewer_script import QUESTION_RESPONSES_VI
-from src.modules.interviews.core.interviewer_voice import (
+from src.modules.interviews.core.dialogue.phrases import QUESTION_RESPONSES_VI
+from src.modules.interviews.core.dialogue.policy import (
     canary_leaked,
     canary_scope,
     candidate_data_rule,

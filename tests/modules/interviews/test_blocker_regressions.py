@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 import src.modules.interviews.api.router  # noqa: F401  (ensures the submodule is imported)
-from src.modules.interviews.adapters.voice.lab import _load_voice_session
+from src.modules.interviews.adapters.voice.api.lab import _load_voice_session
 from src.modules.interviews.evaluation.evaluation_service import (
     EvaluationServiceError,
     evaluate_closed_session,

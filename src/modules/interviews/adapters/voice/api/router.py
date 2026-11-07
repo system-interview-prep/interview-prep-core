@@ -11,7 +11,7 @@ from src.core.config import get_settings
 from src.core.security import current_user
 from src.infrastructure.database import get_db
 from src.modules.ai.facade import generate_text, synthesize_speech
-from src.modules.interviews.adapters.voice.lab import router as lab_router
+from src.modules.interviews.adapters.voice.api.lab import router as lab_router
 
 router = APIRouter(prefix="/ai", tags=["voice"])
 router.include_router(lab_router)

@@ -8,7 +8,7 @@ vấn (và câu trong file tuỳ chọn), đưa qua cùng bước chuẩn hoá m
 Kết quả ghi ra trace-logs/tts_roundtrip_<giờ>.md và .json:
 - CER (tỉ lệ lỗi ký tự) từng câu, các câu tệ nhất trước;
 - thuật ngữ chữ Latin có trong câu mà STT không nghe ra (ứng viên cho
-  ``adapters/voice/pronunciations_vi.py``).
+  ``adapters/voice/tts/pronunciations_vi.py``).
 
 Chạy trong container backend, khi server VieNeu đang chạy:
 
@@ -34,8 +34,8 @@ from pathlib import Path
 
 import httpx
 
-from src.modules.interviews.adapters.voice.language import speakable_text
-from src.modules.interviews.core import interviewer_script as script
+from src.modules.interviews.adapters.voice.speech.language import speakable_text
+from src.modules.interviews.core.dialogue import phrases as script
 
 POOLS = (
     "ACK_FALLBACK_VI", "INTRO_ACK_VI", "NON_ANSWER_ACK_VI", "GIVE_UP_ACK_VI", "SKIP_ACK_VI", "PROBE_ACK_VI",

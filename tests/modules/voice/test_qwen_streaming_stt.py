@@ -6,7 +6,7 @@ import pytest
 from livekit import rtc
 from livekit.agents import APIConnectionError, stt
 
-from src.modules.interviews.adapters.voice.qwen_streaming_stt import QwenStreamingSTT
+from src.modules.interviews.adapters.voice.stt.qwen_streaming_stt import QwenStreamingSTT
 
 
 @pytest.mark.asyncio

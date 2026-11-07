@@ -1,6 +1,6 @@
 import pytest
 
-from src.modules.interviews.adapters.video_calls.signaling import _room
+from src.modules.interviews.adapters.video_calls.api.signaling import _room
 
 
 def test_room_validation() -> None:

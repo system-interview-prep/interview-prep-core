@@ -1,22 +1,7 @@
-"""Lớp diễn đạt: cách người phỏng vấn AI nói, tách khỏi việc quyết định nói gì.
+"""Shared interviewer dialogue policy for Chat, Voice, and Video.
 
-Code của engine vẫn quyết định hành động (hỏi thêm, sang câu mới, kết thúc).
-Module này chỉ lo phần lời nói:
-
-* ``INTERVIEWER_STYLE_*``: một bộ văn phong dùng chung cho mọi prompt sinh lời
-  nói với ứng viên (câu ghi nhận, câu hỏi thêm, câu giải thích), để giọng nhất
-  quán và không mang giọng "chuyên gia phân tích" của phần chấm.
-* ``pick_variant``: chọn một câu trong nhóm câu soạn sẵn theo mã buổi, tránh câu
-  vừa dùng. Câu chữ của mọi nhóm nằm ở ``interviewer_script.py`` (một kịch bản
-  chung cho chat, voice và video); module này import lại để giữ tên cũ.
-* ``transition_line``: câu chuyển khi đổi kỹ năng hoặc giai đoạn.
-* ``compose_speech``: ghép câu ghi nhận, câu chuyển và câu hỏi.
-
-Chuẩn hoá văn bản trước khi đọc thành giọng nằm ở
-``adapters/voice/language.py`` (``speakable_text``), vì voice agent chạy độc lập.
-
-Mọi câu ở đây đều trung tính: không khen, không chê, không nói đúng hay sai, vì
-người phỏng vấn không được để lộ kết quả chấm trong lúc phỏng vấn.
+This module shapes candidate-facing language and validates generated lines. It
+does not own turn decisions, scoring, STT, TTS, or modality-specific recovery.
 """
 
 from __future__ import annotations
@@ -33,8 +18,8 @@ from contextvars import ContextVar
 
 from src.modules.interviews.core import speech_checks
 
-# Câu chữ nằm ở interviewer_script.py; tên cũ được giữ để code khác import từ đây.
-from src.modules.interviews.core.interviewer_script import (  # noqa: F401
+# Câu chữ nằm ở dialogue/phrases.py; tên cũ được giữ để code khác import từ đây.
+from src.modules.interviews.core.dialogue.phrases import (  # noqa: F401
     ABORT_CONFIRMATION_EN,
     ABORT_CONFIRMATION_VI,
     ACK_FALLBACK_EN,
@@ -1092,25 +1077,6 @@ def balance_interjection(acknowledgement: str, recent: Iterable[str] = ()) -> st
     if openings[-1] == own or crowded:
         return strip_leading_interjection(acknowledgement)
     return acknowledgement
-
-
-def voice_dialect() -> str:
-    """"bac" (mặc định) hoặc "nam": tiểu từ cuối câu khớp giọng đọc (INTERVIEWER_VOICE_DIALECT)."""
-    value = os.getenv("INTERVIEWER_VOICE_DIALECT", "bac").strip().casefold()
-    return "nam" if value in {"nam", "south", "southern", "mien nam", "miền nam"} else "bac"
-
-
-_SOUTHERN_PARTICLES = ((re.compile(r"(?<!\w)nhé(?!\w)"), "nha"), (re.compile(r"(?<!\w)nhỉ(?!\w)"), "hen"))
-
-
-def localize_particles(text_value: str) -> str:
-    """Giọng Nam: "nhé" → "nha", "nhỉ" → "hen" (Trịnh Cẩm Lan 2010). Giọng Bắc: giữ nguyên."""
-    value = str(text_value or "")
-    if not speech_v2_enabled() or voice_dialect() != "nam":
-        return value
-    for pattern, replacement in _SOUTHERN_PARTICLES:
-        value = pattern.sub(replacement, value)
-    return value
 
 
 def ack_mode() -> str:

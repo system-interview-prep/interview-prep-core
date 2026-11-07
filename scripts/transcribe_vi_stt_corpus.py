@@ -15,8 +15,8 @@ from livekit.agents.utils import http_context
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.modules.interviews.adapters.voice.evaluation import validate_corpus_manifest  # noqa: E402
-from src.modules.interviews.adapters.voice.language import assemblyai_stream_options  # noqa: E402
+from src.modules.interviews.adapters.voice.stt.evaluation import validate_corpus_manifest  # noqa: E402
+from src.modules.interviews.adapters.voice.speech.language import assemblyai_stream_options  # noqa: E402
 
 
 def decode_audio(path: Path) -> list[rtc.AudioFrame]:

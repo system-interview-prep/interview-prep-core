@@ -139,36 +139,33 @@ class SubmittedAnswer:
     confidence: float | None
 
 
-def _load_script() -> ModuleType:
-    """The shared interviewer script (core/interviewer_script.py).
+def _load_script(module_name: str, path: Path) -> ModuleType:
+    """Load a data-only phrase module without importing Core in LiveKit worker."""
 
-    The LiveKit worker runs this folder as plain scripts, without the ``src``
-    package, so the data-only script file is loaded by its path. Loading it
-    the same way inside the API avoids importing the whole core package (and
-    its engine) from a transport adapter.
-    """
-    cached = sys.modules.get("interviewer_script")
+    cached = sys.modules.get(module_name)
     if cached is not None:
         return cached
-    path = Path(__file__).resolve().parents[2] / "core" / "interviewer_script.py"
-    spec = importlib.util.spec_from_file_location("interviewer_script", path)
+    spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:  # pragma: no cover - the file ships with the repo
         raise ImportError(f"interviewer script not found at {path}")
     module = importlib.util.module_from_spec(spec)
-    sys.modules["interviewer_script"] = module
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
 
 
-SCRIPT = _load_script()
+SCRIPT = _load_script(
+    "interview_dialogue_phrases", Path(__file__).resolve().parents[3] / "core" / "dialogue" / "phrases.py"
+)
+VOICE_SCRIPT = _load_script("interview_voice_phrases", Path(__file__).resolve().parents[0] / "voice_phrases.py")
 
-ANSWER_PAUSE_NUDGES_VI: tuple[str, ...] = SCRIPT.ANSWER_PAUSE_NUDGES_VI
-ANSWER_PAUSE_NUDGES_EN: tuple[str, ...] = SCRIPT.ANSWER_PAUSE_NUDGES_EN
-PROCESSING_FILLERS_VI: tuple[str, ...] = SCRIPT.PROCESSING_FILLERS_VI
-PROCESSING_FILLERS_EN: tuple[str, ...] = SCRIPT.PROCESSING_FILLERS_EN
-# Câu chỉ có ở kênh nói. Câu chữ nằm ở core/interviewer_script.py.
-NOT_HEARD_VI: tuple[str, ...] = SCRIPT.NOT_HEARD_VI
-NOT_HEARD_EN: tuple[str, ...] = SCRIPT.NOT_HEARD_EN
+ANSWER_PAUSE_NUDGES_VI: tuple[str, ...] = VOICE_SCRIPT.ANSWER_PAUSE_NUDGES_VI
+ANSWER_PAUSE_NUDGES_EN: tuple[str, ...] = VOICE_SCRIPT.ANSWER_PAUSE_NUDGES_EN
+PROCESSING_FILLERS_VI: tuple[str, ...] = VOICE_SCRIPT.PROCESSING_FILLERS_VI
+PROCESSING_FILLERS_EN: tuple[str, ...] = VOICE_SCRIPT.PROCESSING_FILLERS_EN
+# Voice-only recovery phrases stay outside the shared Core dialogue policy.
+NOT_HEARD_VI: tuple[str, ...] = VOICE_SCRIPT.NOT_HEARD_VI
+NOT_HEARD_EN: tuple[str, ...] = VOICE_SCRIPT.NOT_HEARD_EN
 
 
 def _is_vi(locale: str) -> bool:
@@ -228,12 +225,12 @@ def pick_answer_pause_nudge(locale: str, seed: str, avoid: str | None = None) ->
 
 
 def speech_v2_enabled() -> bool:
-    """Same switch as core.interviewer_voice.speech_v2_enabled (the agent cannot import src)."""
+    """Read the shared dialogue switch in the standalone LiveKit process."""
     return os.getenv("INTERVIEWER_SPEECH_V2", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def voice_dialect() -> str:
-    """Same as core.interviewer_voice.voice_dialect (INTERVIEWER_VOICE_DIALECT=bac|nam)."""
+    """Voice-only spoken dialect (INTERVIEWER_VOICE_DIALECT=bac|nam)."""
     value = os.getenv("INTERVIEWER_VOICE_DIALECT", "bac").strip().casefold()
     return "nam" if value in {"nam", "south", "southern", "mien nam", "miền nam"} else "bac"
 
@@ -268,24 +265,24 @@ def scripted_reply_lines(locale: str) -> tuple[str, ...]:
 
 
 def silence_reprompt(locale: str) -> str:
-    return SCRIPT.SILENCE_REPROMPT_VI if _is_vi(locale) else SCRIPT.SILENCE_REPROMPT_EN
+    return VOICE_SCRIPT.SILENCE_REPROMPT_VI if _is_vi(locale) else VOICE_SCRIPT.SILENCE_REPROMPT_EN
 
 
 def turn_taking_tip(locale: str) -> str:
     """Briefly invite a natural answer before the opening question."""
-    return SCRIPT.TURN_TAKING_TIP_VI if _is_vi(locale) else SCRIPT.TURN_TAKING_TIP_EN
+    return VOICE_SCRIPT.TURN_TAKING_TIP_VI if _is_vi(locale) else VOICE_SCRIPT.TURN_TAKING_TIP_EN
 
 
 def unclear_transcript_text(locale: str) -> str:
-    return SCRIPT.UNCLEAR_TRANSCRIPT_VI if _is_vi(locale) else SCRIPT.UNCLEAR_TRANSCRIPT_EN
+    return VOICE_SCRIPT.UNCLEAR_TRANSCRIPT_VI if _is_vi(locale) else VOICE_SCRIPT.UNCLEAR_TRANSCRIPT_EN
 
 
 def core_error_text(locale: str) -> str:
-    return SCRIPT.CORE_ERROR_VI if _is_vi(locale) else SCRIPT.CORE_ERROR_EN
+    return VOICE_SCRIPT.CORE_ERROR_VI if _is_vi(locale) else VOICE_SCRIPT.CORE_ERROR_EN
 
 
 def backchannel_continue_text(locale: str) -> str:
-    return SCRIPT.BACKCHANNEL_CONTINUE_VI if _is_vi(locale) else SCRIPT.BACKCHANNEL_CONTINUE_EN
+    return VOICE_SCRIPT.BACKCHANNEL_CONTINUE_VI if _is_vi(locale) else VOICE_SCRIPT.BACKCHANNEL_CONTINUE_EN
 
 
 def reprompt_after_seconds() -> float:

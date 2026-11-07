@@ -344,7 +344,7 @@ Những chỉ số đáng định nghĩa nhưng hiện chưa đo:
 ### Ràng buộc kỹ thuật
 
 - Toàn bộ mô hình (ngôn ngữ, embedding, nhận dạng và tổng hợp tiếng nói) đang dùng một nhà cung cấp là OpenAI. [Code — `src/core/config.py`]
-- Kênh giọng nói và video phụ thuộc LiveKit. [Code — `adapters/voice/livekit_agent.py`]
+- Kênh giọng nói và video phụ thuộc LiveKit. [Code — `adapters/voice/runtime/livekit_agent.py`]
 - Schema ngân hàng câu hỏi được tạo bằng `create_all` ngoài Alembic. [Code — `README.md`]
 - Bộ lập kế hoạch động, câu hỏi làm rõ khi đối chiếu và Voice Lab đang tắt mặc định. [Code — tắt mặc định]
 

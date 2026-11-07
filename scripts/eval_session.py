@@ -37,7 +37,7 @@ from sqlalchemy import text
 from src.infrastructure.database import StandaloneSessionFactory
 from src.modules.ai.facade import generate_text
 from src.modules.interviews.core.interview_engine import _loads_llm_json
-from src.modules.interviews.core.interviewer_voice import (
+from src.modules.interviews.core.dialogue.policy import (
     ACK_FALLBACK_VI,
     GIVE_UP_ACK_VI,
     NON_ANSWER_ACK_VI,

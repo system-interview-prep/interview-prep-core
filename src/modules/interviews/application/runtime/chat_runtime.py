@@ -33,7 +33,7 @@ from src.modules.interviews.core.interview_blueprint import InterviewBlueprint, 
 from src.modules.interviews.core import playbook, speech_checks
 from src.modules.interviews.core.opening_script import build_opening, warmup_question
 from src.modules.interviews.core.demo_mode import is_demo_duration
-from src.modules.interviews.core.interviewer_voice import (
+from src.modules.interviews.core.dialogue.policy import (
     CLOSE_COMPLETED_EN,
     CLOSE_COMPLETED_VI,
     USER_ENDED_EN,
@@ -46,7 +46,6 @@ from src.modules.interviews.core.interviewer_voice import (
     compose_speech,
     first_paragraph,
     last_paragraph,
-    localize_particles,
     pick_variant,
     speech_v2_enabled,
 )
@@ -884,8 +883,6 @@ async def start_chat_session(
         if is_vi:
             greeting, _, rest = opening_text.partition(". ")
             opening_text = f"{greeting}. {_personalize_candidate_address(rest, candidate_short_name)}"
-    if is_vi:
-        opening_text = localize_particles(opening_text)
 
     question_id = str(uuid4())
     q_meta = {
@@ -1542,8 +1539,6 @@ async def process_candidate_message(
                     candidate_short_name,
                     await _recent_interviewer_contents(db, session_id, NAME_GAP_MESSAGES),
                 )
-            # "nhé" → "nha" when the voice is Southern (INTERVIEWER_VOICE_DIALECT=nam).
-            core_output.message_text = localize_particles(core_output.message_text)
 
         core_ms = round((perf_counter() - core_started) * 1000)
         turn_meta = core_output.metadata or {}
@@ -2067,9 +2062,7 @@ async def process_candidate_message(
         )
         if is_vi:
             # core_output.message_text is already personalised, so compare like with like.
-            next_q_text = localize_particles(
-                _personalize_candidate_address(next_q_text, candidate_short_name)
-            )
+            next_q_text = _personalize_candidate_address(next_q_text, candidate_short_name)
 
         # Bridge: the core already said "acknowledgement\n\n[transition] question".
         next_content = core_output.message_text
@@ -2220,7 +2213,7 @@ async def process_candidate_message(
                 CLOSE_COMPLETED_VI if is_vi else CLOSE_COMPLETED_EN, f"{session_id}:wrap"
             )
     if is_vi:
-        wrap_text = localize_particles(_personalize_candidate_address(wrap_text, candidate_short_name))
+        wrap_text = _personalize_candidate_address(wrap_text, candidate_short_name)
 
     await db.execute(
         text(
@@ -2384,7 +2377,7 @@ async def complete_chat_session(
                 if is_vi else "The interview time is up. We will now evaluate the answers you submitted."
             )
         if is_vi:
-            wrap_text = localize_particles(_personalize_candidate_address(wrap_text, candidate_short_name))
+            wrap_text = _personalize_candidate_address(wrap_text, candidate_short_name)
         await db.execute(
             text(
                 """

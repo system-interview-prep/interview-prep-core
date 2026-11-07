@@ -10,7 +10,9 @@ from __future__ import annotations
 from typing import Any
 
 from src.core.config import get_settings
-from src.modules.interviews.core import interview_engine, interviewer_voice
+from src.modules.interviews.core import interview_engine
+from src.modules.interviews.core.dialogue import policy as interviewer_dialogue
+from src.modules.interviews.application.quality_admin.speech_settings import voice_dialect
 from src.modules.interviews.planning.entry_gate import (
     DEFAULT_CHALLENGE_PERCENT,
     DEFAULT_LOW_FIT_PERCENT,
@@ -82,15 +84,15 @@ def interview_config_groups() -> list[dict[str, Any]]:
         {
             "key": "speech",
             "items": [
-                item("speechV2", interviewer_voice.speech_v2_enabled(), "INTERVIEWER_SPEECH_V2", True),
-                item("ackMode", interviewer_voice.ack_mode(), "INTERVIEWER_ACK_MODE", "free"),
-                item("dialect", interviewer_voice.voice_dialect(), "INTERVIEWER_VOICE_DIALECT", "bac"),
-                item("ackMaxWords", interviewer_voice.ACK_MAX_WORDS),
-                item("probeMaxWords", interviewer_voice.PROBE_MAX_WORDS),
+                item("speechV2", interviewer_dialogue.speech_v2_enabled(), "INTERVIEWER_SPEECH_V2", True),
+                item("ackMode", interviewer_dialogue.ack_mode(), "INTERVIEWER_ACK_MODE", "free"),
+                item("dialect", voice_dialect(), "INTERVIEWER_VOICE_DIALECT", "bac"),
+                item("ackMaxWords", interviewer_dialogue.ACK_MAX_WORDS),
+                item("probeMaxWords", interviewer_dialogue.PROBE_MAX_WORDS),
                 item("clarifyMaxWords", interview_engine.CLARIFY_MAX_WORDS),
-                item("qnaMaxWords", interviewer_voice.QNA_MAX_WORDS),
-                item("maxNhePerTurn", interviewer_voice.MAX_NHE_PER_TURN),
-                item("answerPromptMaxChars", interviewer_voice.ANSWER_PROMPT_MAX_CHARS),
+                item("qnaMaxWords", interviewer_dialogue.QNA_MAX_WORDS),
+                item("maxNhePerTurn", interviewer_dialogue.MAX_NHE_PER_TURN),
+                item("answerPromptMaxChars", interviewer_dialogue.ANSWER_PROMPT_MAX_CHARS),
             ],
         },
     ]

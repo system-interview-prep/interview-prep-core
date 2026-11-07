@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from src.modules.interviews.adapters.voice.language import normalize_transcript_for_locale
-from src.modules.interviews.adapters.voice.transcript_correction import correct_technical_transcript
+from src.modules.interviews.adapters.voice.speech.language import normalize_transcript_for_locale
+from src.modules.interviews.adapters.voice.stt.transcript_correction import correct_technical_transcript
 
 # context, candidate ASR, approved repaired sentence
 REPAIRS = [
@@ -306,14 +306,15 @@ def test_similar_technology_names_do_not_authorize_a_different_term() -> None:
     assert correct_technical_transcript(spoken, context=context).text == spoken
 
 
-def test_standalone_voice_worker_import_uses_the_same_filter() -> None:
-    adapter_dir = Path(__file__).parents[3] / "src/modules/interviews/adapters/voice"
+def test_voice_package_import_uses_the_same_filter() -> None:
+    project_root = Path(__file__).resolve().parents[3]
     script = (
-        "import sys; sys.path.insert(0, sys.argv[1]); import language; "
+        "import sys; sys.path.insert(0, sys.argv[1]); "
+        "from src.modules.interviews.adapters.voice.speech import language; "
         "assert language.normalize_transcript_for_locale("
         "'Em d\\u00f9ng use state.', locale='vi-VN', context='useState') == 'Em d\\u00f9ng useState.'; "
         "assert language.normalize_transcript_for_locale("
         "'When you state requirements.', locale='en-US', context='useState') "
         "== 'When you state requirements.'"
     )
-    subprocess.run([sys.executable, "-I", "-c", script, str(adapter_dir)], check=True, capture_output=True)
+    subprocess.run([sys.executable, "-I", "-c", script, str(project_root)], check=True, capture_output=True)

@@ -18,7 +18,7 @@ from src.modules.interviews.core.interview_engine import (
     safe_acknowledgement,
 )
 from src.modules.interviews.core.interview_types import CandidateTurnInput, InterviewStage, TurnAction
-from src.modules.interviews.core.interviewer_voice import (
+from src.modules.interviews.core.dialogue.policy import (
     ACK_FALLBACK_VI,
     CLOSE_COMPLETED_VI,
     PROBE_FALLBACK_VI,
@@ -362,7 +362,7 @@ async def test_injection_attempt_gets_a_neutral_acknowledgement() -> None:
         current_question={"main_prompt": "Bạn thiết kế schema bảng đơn hàng thế nào?"},
         seed="s:9",
     )
-    from src.modules.interviews.core.interviewer_voice import NON_ANSWER_ACK_VI
+    from src.modules.interviews.core.dialogue.policy import NON_ANSWER_ACK_VI
 
     assert result["acknowledgement"] in NON_ANSWER_ACK_VI
 
@@ -379,7 +379,7 @@ def test_spoken_question_must_be_rephrased_not_wrapped() -> None:
 
 
 def test_curt_and_keyword_only_acknowledgements_are_replaced() -> None:
-    from src.modules.interviews.core.interviewer_voice import is_keyword_fragment
+    from src.modules.interviews.core.dialogue.policy import is_keyword_fragment
 
     for line in ("Ok.", "Ừ, được.", "À, dùng k6.", "À, SELECT FOR UPDATE.", "À, selectinload trong SQLAlchemy."):
         assert safe_acknowledgement(line, True) in ACK_FALLBACK_VI, line
@@ -424,7 +424,7 @@ def test_acknowledgement_that_judges_quality_is_replaced() -> None:
 
 @pytest.mark.asyncio
 async def test_injection_gets_a_non_answer_line_not_a_method_line() -> None:
-    from src.modules.interviews.core.interviewer_voice import NON_ANSWER_ACK_VI
+    from src.modules.interviews.core.dialogue.policy import NON_ANSWER_ACK_VI
 
     engine = InterviewCoreEngine(
         llm_client=RecordingLLM({"intent": "ANSWER", "sufficiency_status": "INSUFFICIENT", "acknowledgement": "x", "score": 1})
@@ -482,7 +482,7 @@ def test_spoken_turn_trace_record(monkeypatch) -> None:
 
 
 def test_natural_restatement_of_an_introduction_is_not_parroting() -> None:
-    from src.modules.interviews.core.interviewer_voice import is_parroting
+    from src.modules.interviews.core.dialogue.policy import is_parroting
 
     intro = (
         "xin chào tôi là hiền tôi là sinh viên năm bốn và tôi đang thực tập tại công ty "
@@ -498,7 +498,7 @@ def test_natural_restatement_of_an_introduction_is_not_parroting() -> None:
 
 @pytest.mark.asyncio
 async def test_warm_up_fallback_does_not_talk_about_a_method() -> None:
-    from src.modules.interviews.core.interviewer_voice import INTRO_ACK_VI
+    from src.modules.interviews.core.dialogue.policy import INTRO_ACK_VI
 
     engine = InterviewCoreEngine(
         llm_client=RecordingLLM({"intent": "ANSWER", "sufficiency_status": "SUFFICIENT", "acknowledgement": "Ok.", "score": 7})
@@ -519,7 +519,7 @@ async def test_warm_up_fallback_does_not_talk_about_a_method() -> None:
     [("GIVE_UP", "give_up"), ("SKIP_QUESTION", "skip")],
 )
 async def test_dont_know_and_skip_get_their_own_lines(intent: str, source: str) -> None:
-    from src.modules.interviews.core.interviewer_voice import GIVE_UP_ACK_VI, NON_ANSWER_ACK_VI, SKIP_ACK_VI
+    from src.modules.interviews.core.dialogue.policy import GIVE_UP_ACK_VI, NON_ANSWER_ACK_VI, SKIP_ACK_VI
 
     engine = InterviewCoreEngine(
         llm_client=RecordingLLM({"intent": intent, "sufficiency_status": "INSUFFICIENT", "acknowledgement": "x", "score": 1})
@@ -601,8 +601,8 @@ async def test_lecturing_clarify_falls_back_to_restating_the_question() -> None:
 
 
 def test_abort_confirmation_names_the_buttons_of_both_rooms() -> None:
-    from src.modules.interviews.adapters.voice.language import speakable_text
-    from src.modules.interviews.core.interviewer_voice import abort_confirmation
+    from src.modules.interviews.adapters.voice.speech.language import speakable_text
+    from src.modules.interviews.core.dialogue.policy import abort_confirmation
 
     text = abort_confirmation(True)
     assert abort_confirmation(True, spoken=True) == abort_confirmation(True, spoken=False) == text
@@ -615,7 +615,7 @@ def test_abort_confirmation_names_the_buttons_of_both_rooms() -> None:
 
 @pytest.mark.asyncio
 async def test_voice_and_chat_stop_requests_get_the_same_confirmation() -> None:
-    from src.modules.interviews.core.interviewer_voice import ABORT_CONFIRMATION_VI
+    from src.modules.interviews.core.dialogue.policy import ABORT_CONFIRMATION_VI
 
     engine = InterviewCoreEngine(llm_client=RecordingLLM({}))
     voice = await engine.handle_turn(
@@ -631,14 +631,14 @@ async def test_voice_and_chat_stop_requests_get_the_same_confirmation() -> None:
 
 
 def test_fallback_acknowledgements_do_not_all_start_with_an_interjection() -> None:
-    from src.modules.interviews.core.interviewer_voice import _INTERJECTION_RE
+    from src.modules.interviews.core.dialogue.policy import _INTERJECTION_RE
 
     plain = [line for line in ACK_FALLBACK_VI if not _INTERJECTION_RE.match(line)]
     assert len(plain) >= 3
 
 
 def test_voice_side_lines_live_in_answer_window() -> None:
-    from src.modules.interviews.adapters.voice.answer_window import not_heard_lines
+    from src.modules.interviews.adapters.voice.conversation.answer_window import not_heard_lines
 
     assert not_heard_lines("vi-VN") and not_heard_lines("en-US")
     assert not_heard_lines("vi-VN") != not_heard_lines("en-US")
@@ -672,8 +672,8 @@ def test_script_dump_lists_every_situation() -> None:
 
 
 def test_a_turn_says_nhe_at_most_once_whatever_lines_are_combined() -> None:
-    from src.modules.interviews.core import interviewer_script as script
-    from src.modules.interviews.core.interviewer_voice import count_nhe
+    from src.modules.interviews.core.dialogue import phrases as script
+    from src.modules.interviews.core.dialogue.policy import count_nhe
 
     acks = [
         *script.ACK_FALLBACK_VI, *script.INTRO_ACK_VI, *script.NON_ANSWER_ACK_VI, *script.GIVE_UP_ACK_VI,
@@ -702,7 +702,7 @@ def test_the_old_composition_is_kept_behind_the_switch(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_skipping_before_a_stage_change_does_not_say_moving_on_twice() -> None:
-    from src.modules.interviews.core.interviewer_script import SKIP_ACK_SHORT_VI
+    from src.modules.interviews.core.dialogue.phrases import SKIP_ACK_SHORT_VI
 
     engine = InterviewCoreEngine(llm_client=RecordingLLM({"intent": "ANSWER", "score": 5}))
     state = _state(questions_pool={"BEHAVIORAL": _state()["questions_pool"]["BEHAVIORAL"]})
@@ -717,8 +717,8 @@ async def test_skipping_before_a_stage_change_does_not_say_moving_on_twice() -> 
 
 
 def test_acknowledgement_before_a_follow_up_does_not_say_it_is_all_clear(monkeypatch) -> None:
-    from src.modules.interviews.core.interviewer_script import PROBE_ACK_VI, WARMUP_SHORT_ACK_VI
-    from src.modules.interviews.core.interviewer_voice import acknowledgement_for_action
+    from src.modules.interviews.core.dialogue.phrases import PROBE_ACK_VI, WARMUP_SHORT_ACK_VI
+    from src.modules.interviews.core.dialogue.policy import acknowledgement_for_action
 
     closed, reason = acknowledgement_for_action(
         "Vậy là mình hình dung được rồi.", action="PROBE", is_vi=True, seed="s:1", answer=LONG_ANSWER
@@ -743,7 +743,7 @@ def test_acknowledgement_before_a_follow_up_does_not_say_it_is_all_clear(monkeyp
 
 @pytest.mark.asyncio
 async def test_probe_turn_replaces_a_closing_acknowledgement() -> None:
-    from src.modules.interviews.core.interviewer_script import PROBE_ACK_VI
+    from src.modules.interviews.core.dialogue.phrases import PROBE_ACK_VI
 
     llm = RecordingLLM(
         {
@@ -761,7 +761,7 @@ async def test_probe_turn_replaces_a_closing_acknowledgement() -> None:
 
 
 def test_leading_interjection_can_be_dropped_after_a_filler() -> None:
-    from src.modules.interviews.core.interviewer_voice import strip_leading_interjection
+    from src.modules.interviews.core.dialogue.policy import strip_leading_interjection
 
     assert strip_leading_interjection("Ừm, mình hiểu ý bạn.") == "Mình hiểu ý bạn."
     assert strip_leading_interjection("Mình nắm được ý đó rồi.") == "Mình nắm được ý đó rồi."
@@ -773,7 +773,7 @@ def test_leading_interjection_can_be_dropped_after_a_filler() -> None:
 
 def test_follow_up_questions_get_the_same_kind_of_guard_as_acknowledgements() -> None:
     from src.modules.interviews.core.interview_engine import probe_is_sayable
-    from src.modules.interviews.core.interviewer_voice import first_question_only
+    from src.modules.interviews.core.dialogue.policy import first_question_only
 
     assert probe_is_sayable("Khi Redis lỗi, hệ thống của bạn xử lý thế nào?")
     assert not probe_is_sayable("Đúng rồi, nhưng khi tải tăng gấp mười thì sao?")
@@ -795,7 +795,7 @@ def test_acknowledgement_that_says_it_heard_is_replaced() -> None:
 
 
 def test_closing_answer_guard() -> None:
-    from src.modules.interviews.core.interviewer_voice import qna_rejection_reason
+    from src.modules.interviews.core.dialogue.policy import qna_rejection_reason
 
     job = "- Mức lương: 15000000 - 25000000 VND\n- Địa điểm: Hà Nội"
     leak = lambda _value: False  # noqa: E731
@@ -829,7 +829,7 @@ class _TextLLM:
     ],
 )
 async def test_closing_answer_is_short_checked_and_followed_by_a_scripted_question(reply: str, generated_by: str) -> None:
-    from src.modules.interviews.core.interviewer_script import QNA_FALLBACK_VI, QNA_MORE_VI
+    from src.modules.interviews.core.dialogue.phrases import QNA_FALLBACK_VI, QNA_MORE_VI
 
     llm = _TextLLM(reply)
     engine = InterviewCoreEngine(llm_client=llm)
@@ -856,8 +856,8 @@ def test_speech_calls_ask_for_no_reasoning_and_the_evaluation_for_a_schema() -> 
 
 
 def test_coding_turn_lines_come_from_the_script() -> None:
-    from src.modules.interviews.core.interviewer_script import CODING_FAILED_ACK_VI, CODING_PASSED_ACK_VI
-    from src.modules.interviews.core.interviewer_voice import is_evaluative
+    from src.modules.interviews.core.dialogue.phrases import CODING_FAILED_ACK_VI, CODING_PASSED_ACK_VI
+    from src.modules.interviews.core.dialogue.policy import is_evaluative
 
     for line in (CODING_PASSED_ACK_VI, CODING_FAILED_ACK_VI):
         assert not is_evaluative(line) and line.count("nhé") == 1
@@ -867,7 +867,7 @@ def test_coding_turn_lines_come_from_the_script() -> None:
 
 
 def test_topic_phrase_must_come_from_the_answer() -> None:
-    from src.modules.interviews.core.interviewer_voice import topic_rejection_reason
+    from src.modules.interviews.core.dialogue.policy import topic_rejection_reason
 
     answer = "Em dùng SELECT FOR UPDATE trong transaction để khoá dòng khi trừ tồn kho."
     assert topic_rejection_reason("khoá dòng khi trừ tồn kho", answer) is None
@@ -879,7 +879,7 @@ def test_topic_phrase_must_come_from_the_answer() -> None:
 
 @pytest.mark.asyncio
 async def test_topic_mode_frames_the_acknowledgement_in_code(monkeypatch) -> None:
-    from src.modules.interviews.core.interviewer_script import ACK_FALLBACK_VI, ACK_TOPIC_FRAMES_VI
+    from src.modules.interviews.core.dialogue.phrases import ACK_FALLBACK_VI, ACK_TOPIC_FRAMES_VI
 
     monkeypatch.setenv("INTERVIEWER_ACK_MODE", "topic")
     llm = RecordingLLM(
@@ -904,7 +904,7 @@ async def test_topic_mode_frames_the_acknowledgement_in_code(monkeypatch) -> Non
 
 
 def test_opening_interjections_are_rationed() -> None:
-    from src.modules.interviews.core.interviewer_voice import balance_interjection
+    from src.modules.interviews.core.dialogue.policy import balance_interjection
 
     assert balance_interjection("À, vậy là cache năm phút.", ["À, ra là index ghép."]) == "Vậy là cache năm phút."
     crowded = ["Ok, a.", "Ừ, b.", "À, c.", "Mình d."]
@@ -913,7 +913,7 @@ def test_opening_interjections_are_rationed() -> None:
 
 
 def test_southern_voice_gets_southern_particles(monkeypatch) -> None:
-    from src.modules.interviews.core.interviewer_voice import localize_particles
+    from src.modules.interviews.adapters.voice.conversation.answer_window import localize_particles
 
     assert localize_particles("Mình bắt đầu nhé.") == "Mình bắt đầu nhé."
     monkeypatch.setenv("INTERVIEWER_VOICE_DIALECT", "nam")
@@ -921,7 +921,7 @@ def test_southern_voice_gets_southern_particles(monkeypatch) -> None:
 
 
 def test_the_interviewer_does_not_speak_deferentially() -> None:
-    from src.modules.interviews.core.interviewer_voice import breaks_house_style
+    from src.modules.interviews.core.dialogue.policy import breaks_house_style
 
     assert breaks_house_style("Dạ, mình hiểu rồi.")
     assert breaks_house_style("Mình hiểu rồi ạ.")
@@ -929,7 +929,7 @@ def test_the_interviewer_does_not_speak_deferentially() -> None:
 
 
 def test_prompts_share_one_layout_and_ask_for_the_candidate_words() -> None:
-    from src.modules.interviews.core.interviewer_voice import speech_prompt
+    from src.modules.interviews.core.dialogue.policy import speech_prompt
 
     prompt = speech_prompt(is_vi=True, role="R", task="T", rules=("X",), examples=("E",), output="O")
     for head in ("# Vai trò", "# Giọng văn", "# Nhiệm vụ", "# Luật bắt buộc", "# Câu mẫu", "# Đầu ra"):
@@ -958,7 +958,7 @@ async def test_follow_up_prompt_uses_the_shared_layout_and_logs_new_terms() -> N
     assert probe == "Khi Redis Sentinel lỗi, hệ thống của bạn xử lý thế nào?"
     assert "# Nhiệm vụ" in llm.system_prompt and "Tech Lead" not in llm.system_prompt
 
-    from src.modules.interviews.core.interviewer_voice import new_terms
+    from src.modules.interviews.core.dialogue.policy import new_terms
 
     assert new_terms(probe, "Bạn dùng Redis cache thế nào?", LONG_ANSWER) == ["Sentinel"]
     assert new_terms("Khi Redis lỗi thì sao, hay bạn retry?", "Redis", "") == ["retry"]
@@ -977,7 +977,7 @@ async def test_turn_metadata_carries_the_speech_plan() -> None:
 
 
 def test_closing_answer_names_only_what_the_posting_or_question_has() -> None:
-    from src.modules.interviews.core.interviewer_voice import qna_rejection_reason
+    from src.modules.interviews.core.dialogue.policy import qna_rejection_reason
 
     leak = lambda _value: False  # noqa: E731
     job = "Yêu cầu: Python, FastAPI. Địa điểm: Hà Nội"
@@ -989,7 +989,7 @@ def test_closing_answer_names_only_what_the_posting_or_question_has() -> None:
 
 
 def test_scripted_pools_are_large_enough_not_to_repeat() -> None:
-    from src.modules.interviews.core import interviewer_script as script
+    from src.modules.interviews.core.dialogue import phrases as script
 
     assert len(script.ACK_FALLBACK_VI) >= 12
     for name in ("INTRO_ACK_VI", "NON_ANSWER_ACK_VI", "GIVE_UP_ACK_VI", "SKIP_ACK_VI", "SKIP_ACK_SHORT_VI", "PROBE_ACK_VI"):
@@ -1015,7 +1015,7 @@ def test_speech_checks_collect_only_inside_a_turn() -> None:
 
 def test_compose_turn_records_its_edits() -> None:
     from src.modules.interviews.core import speech_checks
-    from src.modules.interviews.core.interviewer_voice import compose_turn
+    from src.modules.interviews.core.dialogue.policy import compose_turn
 
     records = speech_checks.begin()
     compose_turn(

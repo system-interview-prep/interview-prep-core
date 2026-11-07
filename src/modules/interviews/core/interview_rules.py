@@ -10,7 +10,7 @@ from typing import Any, Dict, Literal, Optional, Sequence
 from src.core.trace_logging import trace_event
 from src.modules.interviews.core import speech_checks
 from src.modules.interviews.core.interview_types import InterviewStage
-from src.modules.interviews.core.interviewer_script import (
+from src.modules.interviews.core.dialogue.phrases import (
     CLARIFY_FALLBACK_EN,
     CLARIFY_FALLBACK_VI,
     CODING_FALLBACK_PROBE_EN,
@@ -20,7 +20,7 @@ from src.modules.interviews.core.interviewer_script import (
     QUESTION_RETURN_EN,
     QUESTION_RETURN_VI,
 )
-from src.modules.interviews.core.interviewer_voice import (
+from src.modules.interviews.core.dialogue.policy import (
     ACK_FALLBACK_EN,
     ACK_FALLBACK_VI,
     ACK_MAX_WORDS,
@@ -480,7 +480,7 @@ def is_yes_no_question(question_prompt: str) -> bool:
 # for this choice (room.chat.stopAndReport / room.abort.confirm and
 # room.common.continueInterview), never where they sit: chat puts them in the
 # bubble, the voice room in a dialog.
-# ABORT_CONFIRMATION_VI/EN: interviewer_script, một câu cho mọi kênh.
+# ABORT_CONFIRMATION_VI/EN: core/dialogue/phrases.py, một câu cho mọi kênh.
 
 # Abort phrases that name the interview itself: unambiguous at any length.
 EXPLICIT_ABORT_PATTERNS = [

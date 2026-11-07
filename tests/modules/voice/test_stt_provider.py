@@ -1,6 +1,6 @@
 import pytest
 
-from src.modules.interviews.adapters.voice.stt_provider import stt_provider_settings
+from src.modules.interviews.adapters.voice.stt.stt_provider import stt_provider_settings
 
 
 def test_assemblyai_provider_defaults_to_universal_35_pro():

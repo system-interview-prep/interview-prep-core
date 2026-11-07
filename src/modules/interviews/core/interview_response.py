@@ -23,11 +23,11 @@ from src.modules.interviews.core.interview_rules import (
     safe_acknowledgement,
 )
 from src.modules.interviews.core.interview_types import InterviewStage, QuestionItem
-from src.modules.interviews.core.interviewer_script import (
+from src.modules.interviews.core.dialogue.phrases import (
     CODING_FALLBACK_PROBE_EN,
     CODING_FALLBACK_PROBE_VI,
 )
-from src.modules.interviews.core.interviewer_voice import (
+from src.modules.interviews.core.dialogue.policy import (
     CODING_FAILED_ACK_EN,
     CODING_FAILED_ACK_VI,
     CODING_PASSED_ACK_EN,
@@ -87,7 +87,7 @@ class InterviewResponseMixin:
 
         Một lần gọi, hai vai: phần phân tích (giám khảo, ứng viên không thấy) và
         phần lời nói (người phỏng vấn, ứng viên nghe nguyên văn) theo văn phong
-        chung trong ``interviewer_voice``.
+        chung trong ``core.dialogue.policy``.
         """
         recent_lines = [str(x) for x in (recent_lines or []) if x]
         question_prompt = current_question.get("main_prompt", "")

@@ -6,12 +6,8 @@ import os
 from livekit.agents import TurnHandlingOptions, inference, room_io
 from livekit.agents.voice.turn import EndpointingOptions
 
-try:
-    from .language import assemblyai_stream_options
-    from .qwen_streaming_stt import QwenStreamingSTT
-except ImportError:  # Worker is also launched as a standalone script.
-    from language import assemblyai_stream_options
-    from qwen_streaming_stt import QwenStreamingSTT
+from ..speech.language import assemblyai_stream_options
+from .qwen_streaming_stt import QwenStreamingSTT
 
 
 def recognition_language(locale: str) -> str:

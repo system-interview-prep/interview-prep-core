@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core import llm_tracing
 from src.modules.interviews.application.quality_admin.pipeline_health import rate
-from src.modules.interviews.core.interviewer_voice import (
+from src.modules.interviews.core.dialogue.policy import (
     INTERJECTION_SHARE,
     INTERJECTION_WINDOW,
     MAX_NHE_PER_TURN,
@@ -39,8 +39,8 @@ from src.modules.interviews.core.interviewer_voice import (
     first_paragraph,
     opening_interjection,
     speech_v2_enabled,
-    voice_dialect,
 )
+from src.modules.interviews.application.quality_admin.speech_settings import voice_dialect
 from src.modules.interviews.core.speech_checks import KINDS
 
 ROW_LIMIT = 5000

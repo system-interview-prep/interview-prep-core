@@ -85,8 +85,8 @@ services:
       VOICE_LAB_TTS_PROVIDER: ${VOICE_LAB_TTS_PROVIDER:-elevenlabs}
       # Audio of fixed interviewer lines, reused by every session.
       VOICE_LAB_TTS_CACHE_DIR: /var/cache/intervia-tts
-    working_dir: /app/src/modules
-    command: ["python", "interviews/adapters/voice/livekit_agent.py", "start"]
+    working_dir: /app
+    command: ["python", "-m", "src.modules.interviews.adapters.voice.runtime.livekit_agent", "start"]
     volumes: ["./src:/app/src", "voice-tts-cache:/var/cache/intervia-tts"]
     extra_hosts:
       - "host.docker.internal:host-gateway"

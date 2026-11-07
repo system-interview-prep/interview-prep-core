@@ -23,97 +23,43 @@ from livekit.agents import Agent, AgentServer, AgentSession, inference
 from livekit.agents.voice.turn import InterruptionOptions
 from livekit.plugins import elevenlabs
 
-try:
-    from .answer_window import (
-        ANSWER_PAUSE_NUDGE_SECONDS,
-        PROCESSING_FILLER_SECONDS,
-        AnswerWindow,
-        backchannel_continue_text,
-        core_error_text,
-        localize_particles,
-        not_heard_lines,
-        pick_answer_pause_nudge,
-        pick_processing_filler,
-        processing_filler,
-        processing_filler_enabled,
-        processing_fillers,
-        reprompt_after_seconds,
-        scripted_reply_lines,
-        silence_reprompt,
-        speech_v2_enabled,
-        turn_taking_tip,
-        unclear_transcript_text,
-        without_leading_interjection,
-    )
-    from .health import provider_error_payload, provider_recovered_payload
-    from .interruption import (
-        capture_interruption,
-        classify_interruption,
-        hold_acknowledgement,
-        is_greeting_backchannel,
-        is_repeat_request,
-        is_resume_request,
-        remaining_after_interruption,
-        resolve_interruption,
-    )
-    from .language import normalize_transcript_for_locale, speakable_text
-    from .provider_config import tts_provider_config
-    from .recognition import create_stt, recognition_language, recognition_options, recognition_room_options
-    from .stt_provider import stt_provider_settings
-    from .transcript_quality import assess_transcript
-    from .tts_cache import SpeechAudioCache, SpeechClip
-    from .tuning import voice_tuning
-    from .vieneu_tts import VieNeuTTS
-    from .voice_events import VoiceEventReporter
-except ImportError:  # Executed directly by the API's LiveKit subprocess.
-    from answer_window import (  # type: ignore[no-redef]
-        ANSWER_PAUSE_NUDGE_SECONDS,
-        PROCESSING_FILLER_SECONDS,
-        AnswerWindow,
-        backchannel_continue_text,
-        core_error_text,
-        localize_particles,
-        not_heard_lines,
-        pick_answer_pause_nudge,
-        pick_processing_filler,
-        processing_filler,
-        processing_filler_enabled,
-        processing_fillers,
-        reprompt_after_seconds,
-        scripted_reply_lines,
-        silence_reprompt,
-        speech_v2_enabled,
-        turn_taking_tip,
-        unclear_transcript_text,
-        without_leading_interjection,
-    )
-    from health import provider_error_payload, provider_recovered_payload  # type: ignore[no-redef]
-    from interruption import (  # type: ignore[no-redef]
-        capture_interruption,
-        classify_interruption,
-        hold_acknowledgement,
-        is_greeting_backchannel,
-        is_repeat_request,
-        is_resume_request,
-        remaining_after_interruption,
-        resolve_interruption,
-    )
-    from language import (  # type: ignore[no-redef]
-        normalize_transcript_for_locale,
-        speakable_text,
-    )
-    from provider_config import tts_provider_config  # type: ignore[no-redef]
-    from recognition import create_stt, recognition_language, recognition_options, recognition_room_options
-    from stt_provider import stt_provider_settings  # type: ignore[no-redef]
-    from transcript_quality import assess_transcript  # type: ignore[no-redef]
-    from tts_cache import SpeechAudioCache, SpeechClip  # type: ignore[no-redef]
-    from tuning import voice_tuning  # type: ignore[no-redef]
-    from vieneu_tts import VieNeuTTS  # type: ignore[no-redef]
-    from voice_events import VoiceEventReporter  # type: ignore[no-redef]
+from src.modules.interviews.adapters.voice.conversation.answer_window import (
+    ANSWER_PAUSE_NUDGE_SECONDS, PROCESSING_FILLER_SECONDS, AnswerWindow,
+    backchannel_continue_text, core_error_text, localize_particles, not_heard_lines,
+    pick_answer_pause_nudge, pick_processing_filler, processing_filler,
+    processing_filler_enabled, processing_fillers, reprompt_after_seconds,
+    scripted_reply_lines, silence_reprompt, speech_v2_enabled, turn_taking_tip,
+    unclear_transcript_text, without_leading_interjection,
+)
+from src.modules.interviews.adapters.voice.conversation.health import (
+    provider_error_payload,
+    provider_recovered_payload,
+)
+from src.modules.interviews.adapters.voice.conversation.interruption import (
+    capture_interruption, classify_interruption, hold_acknowledgement, is_greeting_backchannel,
+    is_repeat_request, is_resume_request, remaining_after_interruption, resolve_interruption,
+)
+from src.modules.interviews.adapters.voice.conversation.voice_events import VoiceEventReporter
+from src.modules.interviews.adapters.voice.config.tuning import voice_tuning
+from src.modules.interviews.adapters.voice.speech.language import (
+    normalize_transcript_for_locale,
+    speakable_text,
+)
+from src.modules.interviews.adapters.voice.stt.recognition import (
+    create_stt,
+    recognition_language,
+    recognition_options,
+    recognition_room_options,
+)
+from src.modules.interviews.adapters.voice.stt.stt_provider import stt_provider_settings
+from src.modules.interviews.adapters.voice.stt.transcript_quality import assess_transcript
+from src.modules.interviews.adapters.voice.tts.provider_config import tts_provider_config
+from src.modules.interviews.adapters.voice.tts.tts_cache import SpeechAudioCache, SpeechClip
+from src.modules.interviews.adapters.voice.tts.vieneu_tts import VieNeuTTS
 
 # Prefer variables supplied by Docker/the backend environment. The project-root
 # .env file only fills values that are not already present.
-load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
+load_dotenv(Path(__file__).resolve().parents[6] / ".env", override=False)
 
 # The ElevenLabs plugin uses ELEVEN_API_KEY, while the existing Voice Lab uses
 # the more explicit ELEVENLABS_API_KEY name.
@@ -1034,10 +980,7 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
     )
     if runtime_token.startswith("stt-test:"):
         runtime_client.headers["Authorization"] = f"Bearer {runtime_token.removeprefix('stt-test:')}"
-        try:
-            from .livekit_stt_test import run_stt_test
-        except ImportError:
-            from livekit_stt_test import run_stt_test
+        from src.modules.interviews.adapters.voice.stt.livekit_stt_test import run_stt_test
         try:
             await run_stt_test(ctx, runtime_client)
         finally:

@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from src.core.config import get_settings
 from src.core.security import bearer_scheme, require_admin
 from src.core.trace_logging import trace_event
-from src.modules.interviews.adapters.voice.stt_provider import stt_provider_settings
+from src.modules.interviews.adapters.voice.stt.stt_provider import stt_provider_settings
 
 from .stt_test import SttTestOptions
 

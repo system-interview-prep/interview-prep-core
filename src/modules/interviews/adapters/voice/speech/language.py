@@ -43,10 +43,7 @@ def _phrase_key(value: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w-]+", " ", value.casefold())).strip()
 
 
-try:
-    from .transcript_correction import correct_technical_transcript
-except ImportError:  # The LiveKit worker also loads this folder as plain scripts.
-    from transcript_correction import correct_technical_transcript  # type: ignore[no-redef]
+from ..stt.transcript_correction import correct_technical_transcript
 
 
 def correct_contextual_technical_terms(text: str, *, context: str = "", is_final: bool = True) -> str:
@@ -162,7 +159,7 @@ _DECIMAL_VI_RE = re.compile(r"(?<![\w.,])(\d{1,6}),(\d{1,3})(?![\w.,])")
 
 
 def _speech_v2_enabled() -> bool:
-    """Same switch as core.interviewer_voice.speech_v2_enabled (the agent cannot import src)."""
+    """Same switch as core.dialogue.policy.speech_v2_enabled (the agent cannot import src)."""
     return os.getenv("INTERVIEWER_SPEECH_V2", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
@@ -174,10 +171,7 @@ _SIZE_RE = re.compile(r"(\d+(?:[.,]\d+)?)(GB|MB|KB|TB)\b")
 _PATH_RE = re.compile(r"(?<![\w:/])/(?:[\w{}.-]+/?)+")
 
 
-try:
-    from .pronunciations_vi import PRONUNCIATIONS_VI
-except ImportError:  # Loaded directly by the LiveKit agent subprocess.
-    from pronunciations_vi import PRONUNCIATIONS_VI  # type: ignore[no-redef]
+from ..tts.pronunciations_vi import PRONUNCIATIONS_VI
 
 _PRONUNCIATIONS_VI = tuple((re.compile(pattern), spoken) for pattern, spoken in PRONUNCIATIONS_VI)
 

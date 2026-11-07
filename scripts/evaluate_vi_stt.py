@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.modules.interviews.adapters.voice.evaluation import (  # noqa: E402
+from src.modules.interviews.adapters.voice.stt.evaluation import (  # noqa: E402
     evaluate_manifest,
     validate_corpus_manifest,
 )

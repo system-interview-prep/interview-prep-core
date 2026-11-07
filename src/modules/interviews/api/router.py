@@ -1,8 +1,4 @@
-"""P0 structured interview runtime foundation API.
-
-This module owns the new interview runtime contract. Legacy /ai/session remains
-available during migration, but new product flows should create sessions here.
-"""
+"""Structured interview runtime API."""
 
 import json
 import time

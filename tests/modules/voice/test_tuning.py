@@ -1,4 +1,4 @@
-from src.modules.interviews.adapters.voice.tuning import voice_tuning
+from src.modules.interviews.adapters.voice.config.tuning import voice_tuning
 
 
 def test_noise_resistant_defaults_keep_real_barge_in_responsive() -> None:

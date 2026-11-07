@@ -29,7 +29,7 @@ from src.modules.interviews.core.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_d
 from src.modules.interviews.core.interview_blueprint import InterviewBlueprint, blueprint_from_payload
 from src.modules.interviews.core.opening_script import warmup_question
 from src.modules.interviews.planning.spoken_questions import add_spoken_versions
-from src.modules.interviews.core.interviewer_voice import speech_v2_enabled
+from src.modules.interviews.core.dialogue.policy import speech_v2_enabled
 from src.modules.interviews.planning.project_evidence import (
     build_project_validation_question,
     extract_project_evidences,

@@ -16,11 +16,11 @@ from pydantic import BaseModel, Field
 
 from src.core.config import get_settings
 from src.core.trace_logging import trace_event
-from src.modules.interviews.adapters.voice.language import (
+from src.modules.interviews.adapters.voice.speech.language import (
     normalize_transcript_for_locale,
 )
-from src.modules.interviews.adapters.voice.stt_provider import stt_provider_settings
-from src.modules.interviews.adapters.voice.transcript_correction import correct_technical_transcript
+from src.modules.interviews.adapters.voice.stt.stt_provider import stt_provider_settings
+from src.modules.interviews.adapters.voice.stt.transcript_correction import correct_technical_transcript
 
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
 
@@ -137,13 +137,13 @@ class SttTestTrace:
 
 
 def _language() -> str:
-    from src.modules.interviews.adapters.voice.recognition import recognition_language
+    from src.modules.interviews.adapters.voice.stt.recognition import recognition_language
 
     return recognition_language("vi-VN")
 
 
 def _provider(settings, language: str, context: str = ""):
-    from src.modules.interviews.adapters.voice.recognition import create_stt
+    from src.modules.interviews.adapters.voice.stt.recognition import create_stt
 
     return create_stt(settings, language, context)
 

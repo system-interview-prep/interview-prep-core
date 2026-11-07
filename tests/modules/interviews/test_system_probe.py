@@ -14,8 +14,8 @@ from src.modules.interviews.core.interview_rules import (
     candidate_question_response,
     classify_candidate_question,
 )
-from src.modules.interviews.core.interviewer_script import QUESTION_RESPONSES_EN, QUESTION_RESPONSES_VI
-from src.modules.interviews.core.interviewer_voice import (
+from src.modules.interviews.core.dialogue.phrases import QUESTION_RESPONSES_EN, QUESTION_RESPONSES_VI
+from src.modules.interviews.core.dialogue.policy import (
     leaks_system,
     looks_like_injection,
     looks_like_system_probe,

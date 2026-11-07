@@ -12,7 +12,7 @@ from livekit.agents import stt
 
 from src.core.security import current_user
 from src.modules.admin.ai import stt_livekit as api
-from src.modules.interviews.adapters.voice import livekit_stt_test as worker
+from src.modules.interviews.adapters.voice.stt import livekit_stt_test as worker
 
 
 @pytest.fixture

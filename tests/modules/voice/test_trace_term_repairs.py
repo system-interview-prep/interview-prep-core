@@ -4,8 +4,8 @@ import unicodedata
 
 import pytest
 
-from src.modules.interviews.adapters.voice.language import normalize_transcript_for_locale
-from src.modules.interviews.adapters.voice.transcript_correction import correct_technical_transcript
+from src.modules.interviews.adapters.voice.speech.language import normalize_transcript_for_locale
+from src.modules.interviews.adapters.voice.stt.transcript_correction import correct_technical_transcript
 
 REPAIRS = [
     ("NestJS Next.js", "Em dùng netJS để viết controller.", "Em dùng NestJS để viết controller."),

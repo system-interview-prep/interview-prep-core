@@ -1,4 +1,4 @@
-from src.modules.interviews.adapters.voice.tts_cache import SpeechAudioCache, SpeechClip
+from src.modules.interviews.adapters.voice.tts.tts_cache import SpeechAudioCache, SpeechClip
 
 _CLIP = SpeechClip(pcm=b"\x01\x00" * 4800, sample_rate=24000, channels=1)  # 200 ms
 

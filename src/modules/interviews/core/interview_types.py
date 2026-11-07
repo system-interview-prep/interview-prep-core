@@ -36,7 +36,16 @@ class SessionExitReason(str, Enum):
 
 
 class CandidateTurnInput(BaseModel):
-    """Đầu vào đồng nhất cho cả Chat và Voice gửi vào Core."""
+    """
+    Đầu vào đồng nhất cho cả Chat và Voice và Video gửi vào Core.
+    - session_id: là UUID của phiên phỏng vấn,
+    - turn_index: là số thứ tự lượt ứng viên trả lời (bắt đầu từ 0),
+    - text_content: là nội dung ứng viên gõ hoặc STT bóc băng,
+    - modality: là loại input (CHAT | VOICE | VIDEO),
+    - duration_seconds: là thời gian ứng viên hoàn thành câu trả lời,
+    - telemetry: là metadata bổ sung như VAD pauses, typing speed, proctoring flags...,
+    - precomputed_evaluation: là đánh giá trước đó nếu có.
+    """
     session_id: UUID | str
     turn_index: int
     text_content: str = Field(..., description="Nội dung ứng viên gõ (Chat) hoặc text STT bóc băng (Voice)")
@@ -47,7 +56,19 @@ class CandidateTurnInput(BaseModel):
 
 
 class InterviewerTurnOutput(BaseModel):
-    """Đầu ra từ Core gửi về cho ChatAdapter hoặc VoiceAdapter."""
+    """
+    Đầu ra từ Core gửi về cho ChatAdapter hoặc VoiceAdapter.
+    - session_id: là UUID của phiên phỏng vấn,
+    - turn_index: là số thứ tự lượt ứng viên trả lời (bắt đầu từ 0),
+    - message_text: là nội dung AI cần hiển thị trên UI hoặc ném vào TTS để đọc,
+    - action: là hành động cần thực hiện,
+    - current_stage: là giai đoạn phỏng vấn hiện tại,
+    - is_session_finished: là trạng thái phiên phỏng vấn đã kết thúc hay chưa,
+    - current_competency: là năng lực hiện tại của ứng viên,
+    - time_remaining_seconds: là thời gian còn lại trong phiên phỏng vấn,
+    - exit_reason: là lý do kết thúc phiên phỏng vấn,
+    - metadata: là thông tin bổ sung.
+    """
     session_id: UUID | str
     turn_index: int
     message_text: str = Field(..., description="Nội dung AI cần hiển thị trên UI hoặc ném vào TTS để đọc")
@@ -61,7 +82,18 @@ class InterviewerTurnOutput(BaseModel):
 
 
 class QuestionItem(BaseModel):
-    """Câu hỏi đã đóng băng từ P2 Question Bank."""
+    """
+    Câu hỏi đã đóng băng từ P2 Question Bank.
+    - question_id: là ID của câu hỏi,
+    - question_version_id: là ID phiên bản câu hỏi (có thể None nếu không có phiên bản),
+    - rubric_version_id: là ID phiên bản rubric (có thể None nếu không có phiên bản),
+    - competency: là năng lực mà câu hỏi đánh giá,
+    - stage: là giai đoạn phỏng vấn,
+    - main_prompt: là nội dung câu hỏi chính,
+    - spoken_prompt: là nội dung câu hỏi được nói ra (nếu có),
+    - rubric_criteria: là tiêu chí đánh giá,
+    - difficulty: là mức độ khó của câu hỏi.
+    """
     question_id: str
     question_version_id: Optional[str] = None
     rubric_version_id: Optional[str] = None
@@ -73,10 +105,16 @@ class QuestionItem(BaseModel):
     spoken_prompt: Optional[str] = None
     rubric_criteria: Optional[Any] = ""
     difficulty: str = "intermediate"  # foundational | intermediate | advanced
-
     model_config = {"extra": "ignore"}
 
 
 class StageConfig(BaseModel):
+    """
+    Cấu hình cho từng giai đoạn phỏng vấn.
+    - stage: là giai đoạn phỏng vấn,
+    - budget_seconds: là thời gian tối đa cho giai đoạn này,
+    - is_enabled: là trạng thái bật/tắt giai đoạn này.
+    """
+    stage: InterviewStage
     budget_seconds: int
     is_enabled: bool = True

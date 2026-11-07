@@ -2,11 +2,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.modules.interviews.adapters import (
-    from_chat_message,
-    from_video_turn,
-    from_voice_transcript,
-)
+from src.modules.interviews.adapters.chat.input.turn_input import from_chat_message
+from src.modules.interviews.adapters.video_calls.input.turn_input import from_video_turn
+from src.modules.interviews.adapters.voice.input.turn_input import from_voice_transcript
 from src.modules.interviews.agent import InterviewAgent
 from src.modules.interviews.core.interview_engine import InterviewCoreEngine
 from src.modules.interviews.core.interview_types import (

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from src.modules.interviews.adapters.voice.evaluation import (
+from src.modules.interviews.adapters.voice.stt.evaluation import (
     edit_counts,
     evaluate_manifest,
     normalize_vi_text,

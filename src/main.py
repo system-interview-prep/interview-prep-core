@@ -72,20 +72,14 @@ async def _start_livekit_agent(settings: object) -> asyncio.subprocess.Process |
     if run_mode not in {"dev", "start"}:
         raise RuntimeError("LIVEKIT_AGENT_RUN_MODE must be 'dev' or 'start'")
 
-    agent_script = (
-        Path(__file__).resolve().parent
-        / "modules"
-        / "interviews"
-        / "adapters"
-        / "voice"
-        / "livekit_agent.py"
-    )
+    project_root = Path(__file__).resolve().parent.parent
     try:
         process = await asyncio.create_subprocess_exec(
             sys.executable,
-            str(agent_script),
+            "-m",
+            "src.modules.interviews.adapters.voice.runtime.livekit_agent",
             run_mode,
-            cwd=str(agent_script.parents[3]),
+            cwd=str(project_root),
         )
     except OSError:
         logger.exception("Could not start the LiveKit agent process")

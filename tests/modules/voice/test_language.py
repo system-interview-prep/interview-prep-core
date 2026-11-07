@@ -1,6 +1,6 @@
 import pytest
 
-from src.modules.interviews.adapters.voice.language import (
+from src.modules.interviews.adapters.voice.speech.language import (
     INTERVIEW_KEYTERMS,
     assemblyai_session_options,
     assemblyai_stream_options,
@@ -217,7 +217,7 @@ async def test_english_clarification_is_replaced_in_vietnamese_session() -> None
 
 
 def test_interviewer_speech_reads_numbers_units_and_layout_aloud() -> None:
-    from src.modules.interviews.adapters.voice.language import number_to_vietnamese
+    from src.modules.interviews.adapters.voice.speech.language import number_to_vietnamese
 
     assert [number_to_vietnamese(n) for n in (5, 14, 15, 21, 24, 25, 105, 1005, 2025)] == [
         "năm", "mười bốn", "mười lăm", "hai mươi mốt", "hai mươi tư", "hai mươi lăm",

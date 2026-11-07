@@ -9,7 +9,7 @@ from src.modules.interviews.core.interview_types import (
     SessionExitReason,
     TurnAction,
 )
-from src.modules.interviews.core.interviewer_voice import (
+from src.modules.interviews.core.dialogue.policy import (
     ACK_FALLBACK_VI,
     PROBE_FALLBACK_VI,
     REPEAT_PREFIX_VI,

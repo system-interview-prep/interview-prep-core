@@ -15,13 +15,13 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.modules.interviews.core.interviewer_script import (
+from src.modules.interviews.core.dialogue.phrases import (
     PROJECT_QUESTION_EN,
     PROJECT_QUESTION_UNNAMED_EN,
     PROJECT_QUESTION_UNNAMED_VI,
     PROJECT_QUESTION_VI,
 )
-from src.modules.interviews.core.interviewer_voice import speech_v2_enabled
+from src.modules.interviews.core.dialogue.policy import speech_v2_enabled
 
 _COMMON_TECH_TOKENS = {
     "python", "java", "typescript", "javascript", "golang", "go", "c++", "c#", "rust",

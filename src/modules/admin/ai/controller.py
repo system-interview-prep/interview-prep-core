@@ -337,8 +337,8 @@ def _configured_tts_adapter() -> tuple[Any, str, str]:
     from livekit.agents import inference
     from livekit.plugins import elevenlabs
 
-    from src.modules.interviews.adapters.voice.provider_config import tts_provider_config
-    from src.modules.interviews.adapters.voice.vieneu_tts import VieNeuTTS
+    from src.modules.interviews.adapters.voice.tts.provider_config import tts_provider_config
+    from src.modules.interviews.adapters.voice.tts.vieneu_tts import VieNeuTTS
 
     provider_name = os.getenv("VOICE_LAB_TTS_PROVIDER", "elevenlabs").strip().lower()
     voice_id = os.getenv("ELEVENLABS_VI_VOICE_ID", "").strip() or os.getenv("ELEVENLABS_VOICE_ID", "").strip()
@@ -495,8 +495,8 @@ async def admin_speech_test_transcribe_stream(
 async def get_admin_speech_test_config(_: dict = Depends(require_admin)) -> dict:
     """Show integrated voice adapters and the providers selected by configuration."""
     from src.core.config import get_settings
-    from src.modules.interviews.adapters.voice.provider_config import tts_provider_config
-    from src.modules.interviews.adapters.voice.stt_provider import stt_provider_settings
+    from src.modules.interviews.adapters.voice.tts.provider_config import tts_provider_config
+    from src.modules.interviews.adapters.voice.stt.stt_provider import stt_provider_settings
 
     stt = stt_provider_settings()
     tts_provider = os.getenv("VOICE_LAB_TTS_PROVIDER", "elevenlabs").strip().lower()

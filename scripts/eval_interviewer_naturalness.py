@@ -34,7 +34,7 @@ from src.modules.interviews.core.interview_engine import (
     _loads_llm_json,
 )
 from src.modules.interviews.core.interview_types import InterviewStage
-from src.modules.interviews.core.interviewer_voice import (
+from src.modules.interviews.core.dialogue.policy import (
     ACK_FALLBACK_VI,
     GIVE_UP_ACK_VI,
     INTRO_ACK_VI,

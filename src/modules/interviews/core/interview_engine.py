@@ -58,8 +58,8 @@ from src.modules.interviews.core.interview_types import (
     SessionExitReason,
     TurnAction,
 )
-from src.modules.interviews.core.interviewer_script import QUESTION_RESPONSES_EN, QUESTION_RESPONSES_VI
-from src.modules.interviews.core.interviewer_voice import (
+from src.modules.interviews.core.dialogue.phrases import QUESTION_RESPONSES_EN, QUESTION_RESPONSES_VI
+from src.modules.interviews.core.dialogue.policy import (
     CLOSE_COMPLETED_EN,
     CLOSE_COMPLETED_VI,
     EARLY_STOP_EN,

@@ -14,12 +14,14 @@ and evaluation responsibilities.
 | `planning/planner_config.py` | planning policy contract | Planner configuration |
 | `planning/project_evidence.py` | CV project grounding | Candidate evidence tool |
 | `planning/question_selector.py` | P2 question freeze | Frozen-question tool |
-| `adapters/chat/router.py` | HTTP chat transport | Chat adapter |
-| `adapters/voice/router.py` | HTTP voice and LiveKit transport | Voice adapter |
-| `adapters/voice/livekit_agent.py` | LiveKit STT/TTS worker | Voice provider adapter |
-| `adapters/video_calls/router.py` | Video-call lifecycle transport | Video adapter |
-| `adapters/video_calls/signaling.py` | Socket.IO/WebRTC room signaling | Video transport adapter |
-| `api/session_router.py` | Legacy interview session endpoints | Session API adapter |
+| `adapters/chat/api/router.py` | HTTP chat transport | Chat adapter |
+| `adapters/voice/api/router.py` | HTTP voice endpoints and Voice Lab | Voice adapter |
+| `adapters/voice/runtime/livekit_agent.py` | LiveKit runtime worker | Voice provider adapter |
+| `adapters/video_calls/api/router.py` | Video-call lifecycle transport | Video adapter |
+| `adapters/video_calls/api/signaling.py` | Socket.IO/WebRTC room signaling | Video transport adapter |
+| `adapters/voice/stt/` | STT provider, recognition, correction, transcript quality and evaluation | Voice input processing |
+| `adapters/voice/tts/` | TTS providers, audio cache and pronunciation | Voice output processing |
+| `adapters/voice/conversation/` | Answer buffering, interruption policy, events and voice-only phrases | Voice turn-taking behavior |
 | `core/interview_engine.py` | runtime FSM and pacing | Current deterministic kernel |
 | `core/interview_types.py` | turn/stage contracts | Core domain contracts |
 | `evaluation/` | P4 report generation | Async evaluation pipeline |
@@ -35,9 +37,9 @@ and evaluation responsibilities.
 | `agent/checkpoints.py` | PostgreSQL checkpoint lifecycle on API startup |
 | `application/agent_runtime.py` | binds existing planner, selector, chat runtime, evaluation to graph |
 | `agent/interview_agent.py` | single graph execution entry point; keeps turn-level core compatibility |
-| `adapters/input/chat.py` | chat message normalization |
-| `adapters/input/voice.py` | final STT transcript normalization |
-| `adapters/input/video.py` | final transcript + optional observations |
+| `adapters/chat/input/turn_input.py` | chat message normalization |
+| `adapters/voice/input/turn_input.py` | final STT transcript normalization |
+| `adapters/video_calls/input/turn_input.py` | final transcript + optional observations |
 
 The structured endpoints for plan, question freeze, chat start/message/complete
 and evaluation call `run_interview_command`. LiveKit final voice transcripts use

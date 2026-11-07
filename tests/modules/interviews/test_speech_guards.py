@@ -14,7 +14,7 @@ from src.modules.interviews.core.interview_engine import (
     clarify_rejection_reason,
     validate_probe_text,
 )
-from src.modules.interviews.core.interviewer_voice import (
+from src.modules.interviews.core.dialogue.policy import (
     candidate_block,
     looks_like_injection,
     probe_rejection_reason,

@@ -11,10 +11,7 @@ import unicodedata
 from dataclasses import asdict, dataclass
 from typing import Literal
 
-try:
-    from .answer_window import SCRIPT
-except ImportError:  # Executed directly by the API's LiveKit subprocess.
-    from answer_window import SCRIPT  # type: ignore[no-redef]
+from .answer_window import VOICE_SCRIPT
 
 InterruptionIntent = Literal["backchannel", "hold", "content"]
 InterruptionAction = Literal["resume", "hold", "forward"]
@@ -315,8 +312,8 @@ def resolve_interruption(
 
 
 def listening_acknowledgement(locale: str) -> str:
-    return SCRIPT.LISTENING_ACK_VI if locale.lower().startswith("vi") else SCRIPT.LISTENING_ACK_EN
+    return VOICE_SCRIPT.LISTENING_ACK_VI if locale.lower().startswith("vi") else VOICE_SCRIPT.LISTENING_ACK_EN
 
 
 def hold_acknowledgement(locale: str) -> str:
-    return SCRIPT.HOLD_ACK_VI if locale.lower().startswith("vi") else SCRIPT.HOLD_ACK_EN
+    return VOICE_SCRIPT.HOLD_ACK_VI if locale.lower().startswith("vi") else VOICE_SCRIPT.HOLD_ACK_EN
