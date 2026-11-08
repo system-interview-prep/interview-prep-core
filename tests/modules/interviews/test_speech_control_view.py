@@ -81,10 +81,10 @@ def test_reasons_sources_style_and_recent_drafts() -> None:
 
 
 def test_config_reads_the_switches(monkeypatch) -> None:
-    monkeypatch.setenv("INTERVIEWER_ACK_MODE", "topic")
     monkeypatch.setenv("INTERVIEWER_VOICE_DIALECT", "nam")
     config = config_view()
-    assert config["ackMode"] == "topic" and config["dialect"] == "nam"
+    assert "ackMode" not in config
+    assert config["dialect"] == "nam"
     assert config["maxNhePerTurn"] == 1
 
 

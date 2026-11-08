@@ -97,7 +97,7 @@ def test_candidate_block_cannot_be_closed_and_long_answers_are_cut() -> None:
     ],
 )
 def test_praise_and_verdicts_in_acknowledgements_are_rejected(ack: str) -> None:
-    assert acknowledgement_rejection_reason(ack, True, answer=ANSWER)
+    assert acknowledgement_rejection_reason(ack, answer=ANSWER)
 
 
 @pytest.mark.parametrize(
@@ -111,7 +111,7 @@ def test_praise_and_verdicts_in_acknowledgements_are_rejected(ack: str) -> None:
     ],
 )
 def test_neutral_acknowledgements_still_pass(ack: str) -> None:
-    assert acknowledgement_rejection_reason(ack, True, answer=ANSWER) is None
+    assert acknowledgement_rejection_reason(ack, answer=ANSWER) is None
 
 
 # --- Câu hỏi thêm -------------------------------------------------------------------
@@ -157,9 +157,9 @@ def test_good_follow_ups_pass(probe: str) -> None:
 
 def test_checked_probe_drops_a_hint_from_the_rubric() -> None:
     probe = "Có nhiều node thì bạn dùng pub/sub hay cách nào để đồng bộ?"
-    assert checked_probe(probe, is_vi=True, question=QUESTION, answer=ANSWER, rubric=RUBRIC) is None
+    assert checked_probe(probe, question=QUESTION, answer=ANSWER, rubric=RUBRIC) is None
     # Without the rubric the same line is a fair question.
-    assert checked_probe(probe, is_vi=True, question=QUESTION, answer=ANSWER) == probe
+    assert checked_probe(probe, question=QUESTION, answer=ANSWER) == probe
 
 
 # --- Câu giải thích lại --------------------------------------------------------------
@@ -168,10 +168,10 @@ def test_checked_probe_drops_a_hint_from_the_rubric() -> None:
 def test_clarification_may_not_name_the_expected_answer_or_judge_difficulty() -> None:
     hinted = "Ý mình là khi cache cũ, bạn làm gì, ví dụ dùng write-through hoặc versioning?"
     unsure = "Em chưa hiểu"
-    assert clarify_rejection_reason(hinted, is_vi=True, question=QUESTION, answer=unsure, rubric=RUBRIC)
-    assert clarify_rejection_reason("Câu này dễ thôi, bạn cứ nói cách xoá cache.", is_vi=True) == "evaluative"
+    assert clarify_rejection_reason(hinted, question=QUESTION, answer=unsure, rubric=RUBRIC)
+    assert clarify_rejection_reason("Câu này dễ thôi, bạn cứ nói cách xoá cache.") == "evaluative"
     fair = "Ý mình là khi dữ liệu trong cache khác với database, bạn làm gì để chúng khớp lại?"
-    assert clarify_rejection_reason(fair, is_vi=True, question=QUESTION, answer=unsure, rubric=RUBRIC) is None
+    assert clarify_rejection_reason(fair, question=QUESTION, answer=unsure, rubric=RUBRIC) is None
 
 
 # --- Trả lời câu hỏi ngược --------------------------------------------------------------

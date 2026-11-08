@@ -8,10 +8,8 @@ from src.modules.interviews.adapters.voice.speech.language import (
     speakable_text,
 )
 from src.modules.interviews.core.conversation.turn_engine import (
-    SAFE_FALLBACK_PROBE_VI,
     InterviewCoreEngine,
 )
-from src.modules.interviews.core.dialogue.language import response_matches_locale
 
 
 class _EnglishDriftLLM:
@@ -181,39 +179,26 @@ def test_interviewer_speech_reads_notation_as_words() -> None:
     assert speakable_text("1/2 dữ liệu, https://a.com/x", locale="vi-VN") == "1/2 dữ liệu, https://a.com/x"
 
 
-def test_generated_response_language_guard_allows_technical_code_switching() -> None:
-    assert response_matches_locale(
-        "Bạn xử lý retry và circuit breaker như thế nào?", is_vi=True
-    )
-    assert not response_matches_locale(
-        "How would you handle retries and circuit breakers?", is_vi=True
-    )
-    assert not response_matches_locale("Explain Redis replication.", is_vi=True)
-    assert response_matches_locale("Redis hay PostgreSQL phù hợp hơn?", is_vi=True)
-    assert response_matches_locale("How would you handle retries?", is_vi=False)
-    assert not response_matches_locale("Bạn xử lý retry thế nào?", is_vi=False)
-
-
 @pytest.mark.asyncio
-async def test_english_probe_is_replaced_in_vietnamese_session() -> None:
+async def test_probe_response_is_no_longer_rejected_by_locale_guard() -> None:
     engine = InterviewCoreEngine(llm_client=_EnglishDriftLLM())
     result = await engine._generate_probe_question(
         "Em dùng exponential backoff.",
         {"main_prompt": "Bạn xử lý lỗi gọi API như thế nào?"},
         is_vi=True,
     )
-    assert result == SAFE_FALLBACK_PROBE_VI
+    assert result == "How would you handle retries and circuit breakers?"
 
 
 @pytest.mark.asyncio
-async def test_english_clarification_is_replaced_in_vietnamese_session() -> None:
+async def test_clarification_response_is_no_longer_rejected_by_locale_guard() -> None:
     engine = InterviewCoreEngine(llm_client=_EnglishDriftLLM())
     result = await engine._generate_clarify_text(
         {"main_prompt": "Bạn xử lý lỗi gọi API như thế nào?"},
         "Bạn giải thích lại giúp mình?",
         is_vi=True,
     )
-    assert result.startswith("Mình hỏi theo cách khác nhé:")
+    assert result == "How would you handle retries and circuit breakers?"
 
 
 def test_interviewer_speech_reads_numbers_units_and_layout_aloud() -> None:

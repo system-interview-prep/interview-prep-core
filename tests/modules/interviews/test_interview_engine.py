@@ -333,8 +333,8 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(output.message_text.endswith(f" {probe}"))
         self.assertTrue(any(output.message_text.startswith(p) for p in REPEAT_PREFIX_VI))
 
-    async def test_no_probe_when_turn_in_question_is_already_1(self):
-        """3. Đã ở lượt probe (turn_in_question=1) -> Bắt buộc chuyển câu hỏi tiếp theo, không probe lặp."""
+    async def test_no_probe_when_two_followups_have_already_been_used(self):
+        """Sau hai lượt hỏi phụ, câu trả lời thiếu vẫn phải khép câu và chuyển tiếp."""
         llm = MockLLM(eval_result={"score": 5.0, "is_sufficient": False, "acknowledgement": "Ghi nhận ý kiến."})
         engine = InterviewCoreEngine(llm_client=llm)
 
@@ -349,7 +349,7 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
             "target_duration_minutes": 25,
             "questions_pool": self.sample_questions_pool,
             "asked_question_ids": ["q-val-1"],
-            "current_turn_in_question": 1,
+            "current_turn_in_question": 2,
             "current_question_context": {"main_prompt": "Bạn có ghi từng tối ưu Redis..."},
         }
 

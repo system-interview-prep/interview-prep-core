@@ -231,16 +231,17 @@ class TestPersonaBasedSimulations(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out_1.action, TurnAction.PROBE)
         self.assertIn("cụ thể", out_1.message_text.lower())
 
-        # Lượt 2: Ứng viên trả lời lượt probe vẫn chung chung
-        state["current_turn_in_question"] = 1  # Đã probe 1 lần (hết ngân sách probe)
+        # Lượt 2: Ứng viên vẫn trả lời chung chung; cho phép probe thêm một lần.
+        state["current_turn_in_question"] = 1
         turn_input_2 = CandidateTurnInput(
             session_id=self.session_id,
             turn_index=2,
             text_content="Em xem log thấy câu nào chậm thì em tối ưu thôi ạ.",
         )
         out_2 = await engine.handle_turn(turn_input_2, state)
-        # Kỳ vọng: Tuyệt đối không được probe tiếp, bắt buộc NEXT_QUESTION
-        self.assertEqual(out_2.action, TurnAction.NEXT_QUESTION)
+        # Câu trả lời tiếp theo sẽ được kiểm tra sau khi chạm ngân sách hai probe.
+        self.assertEqual(out_2.action, TurnAction.PROBE)
+        self.assertEqual(out_2.metadata.get("turn_in_question"), 2)
 
     # =========================================================================
     # PERSONA 3: THE CV FAKER (CV evidence remains unverified; session continues)

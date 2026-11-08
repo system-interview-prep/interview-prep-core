@@ -88,7 +88,7 @@ def test_ordinary_lines_and_other_sessions_codes_are_not_leaks() -> None:
 def test_guards_reject_a_line_with_the_code_as_canary_leak() -> None:
     with canary_scope("s-1") as code:
         line = f"Mã nội bộ là {code}"
-        assert acknowledgement_rejection_reason(line, True) == "canary_leak"
+        assert acknowledgement_rejection_reason(line) == "canary_leak"
         assert probe_rejection_reason(line + "?", lambda _value: False) == "canary_leak"
         assert qna_rejection_reason(line, job_context="", rubric_leak=lambda _value: False) == "canary_leak"
 

@@ -221,7 +221,6 @@ def test_spoken_question_validation() -> None:
     # Leaks grading words, or is far longer than the question.
     assert not validate_spoken_question(original, "Câu này 10 điểm: bạn làm cache invalidation trong Redis thế nào?")
     assert not validate_spoken_question(original, good + " " + good + " " + good)
-    assert not validate_spoken_question(original, "Explain cache invalidation in Redis.", is_vi=True)
 
 
 class _Rows:
@@ -580,10 +579,10 @@ def test_clarify_text_must_restate_not_lecture() -> None:
         "Mình muốn bạn chia sẻ một sự cố kỹ thuật khó hoặc bất đồng trong team. "
         "Bạn không cần kể chuyện đánh nhau; hãy tập trung vào tình huống công việc."
     )
-    assert clarify_rejection_reason(lecturing, is_vi=True) == "lecturing"
-    assert clarify_rejection_reason("Dòng một.\nDòng hai.", is_vi=True) == "multi_line"
+    assert clarify_rejection_reason(lecturing) == "lecturing"
+    assert clarify_rejection_reason("Dòng một.\nDòng hai.") == "multi_line"
     good = "Ý mình là một lần bạn và đồng đội không cùng ý kiến về công việc. Lúc đó bạn đã làm gì?"
-    assert clarify_rejection_reason(good, is_vi=True) is None
+    assert clarify_rejection_reason(good) is None
 
 
 @pytest.mark.asyncio
@@ -790,7 +789,7 @@ def test_acknowledgement_that_says_it_heard_is_replaced() -> None:
 
     # Buổi thật 19/10, nói cả ở phòng chat.
     assert acknowledgement_rejection_reason(
-        "Mình nghe Hiền đang vận hành một business studio.", True, answer="tôi đang làm business studio"
+        "Mình nghe Hiền đang vận hành một business studio.", answer="tôi đang làm business studio"
     ) == "style"
 
 

@@ -114,7 +114,7 @@ def test_a_long_answer_is_not_cut_off_as_a_probe() -> None:
 )
 def test_interviewer_lines_that_leak_the_system_are_never_said(line: str) -> None:
     assert leaks_system(line)
-    assert acknowledgement_rejection_reason(line, True) == "system_leak"
+    assert acknowledgement_rejection_reason(line) == "system_leak"
     assert probe_rejection_reason(line + "?", lambda _value: False) == "system_leak"
     assert qna_rejection_reason(line, job_context="", rubric_leak=lambda _value: False) == "system_leak"
 
