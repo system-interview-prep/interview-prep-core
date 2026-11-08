@@ -34,7 +34,6 @@ from src.modules.interviews.core.dialogue.policy import (
     INTERJECTION_SHARE,
     INTERJECTION_WINDOW,
     MAX_NHE_PER_TURN,
-    ack_mode,
     count_nhe,
     first_paragraph,
     opening_interjection,
@@ -61,7 +60,6 @@ def config_view() -> dict[str, Any]:
 
     return {
         "speechV2": speech_v2_enabled(),
-        "ackMode": ack_mode(),
         "dialect": voice_dialect(),
         "maxNhePerTurn": MAX_NHE_PER_TURN,
         "interjectionShare": INTERJECTION_SHARE,

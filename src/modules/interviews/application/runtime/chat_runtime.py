@@ -5,7 +5,7 @@ Uses dedicated `interview_chat_messages` table, integrates with P0/P1/P2:
 - Uses plan-grounded frozen questions from Question Bank.
 - Enforces strict two-phase transaction execution (TX 1 fast write, LLM call outside TX, TX 2 commit).
 - Enforces budget cap: max 1 follow-up probe per assessment turn.
-- Includes deterministic post-generation validation and safe fallback templates.
+- Validates generated lines and keeps session actions deterministic.
 - Enforces session linearity and idempotency guarantees.
 """
 
@@ -34,24 +34,12 @@ from src.modules.interviews.core.dialogue import playbook, speech_checks
 from src.modules.interviews.core.dialogue.opening import build_opening, warmup_question
 from src.modules.interviews.core.session_policy.demo_mode import is_demo_duration
 from src.modules.interviews.core.dialogue.policy import (
-    CLOSE_COMPLETED_EN,
-    CLOSE_COMPLETED_VI,
-    USER_ENDED_EN,
-    USER_ENDED_VI,
-    WRAP_ENDED_EARLY_PARTIAL_EN,
-    WRAP_ENDED_EARLY_PARTIAL_VI,
-    WRAP_TIMEOUT_PARTIAL_EN,
-    WRAP_TIMEOUT_PARTIAL_VI,
-    ack_mode,
     compose_speech,
     first_paragraph,
     last_paragraph,
-    pick_variant,
     speech_v2_enabled,
 )
 from src.modules.interviews.core.conversation.turn_engine import (
-    SAFE_FALLBACK_PROBE_EN,
-    SAFE_FALLBACK_PROBE_VI,
     InterviewCoreEngine,
     pacing_seconds,
     validate_probe_text,
@@ -100,6 +88,29 @@ ClientEndReason = Literal[
 
 class ChatRuntimeError(RuntimeError):
     pass
+
+
+async def _generate_wrap_text(*, purpose: str, context: str, is_vi: bool) -> str:
+    """Generate the candidate-facing close; on provider failure, close silently and trace it."""
+    language = "Vietnamese" if is_vi else "English"
+    try:
+        value = await generate_text(
+            instructions=(
+                f"You are Intervia's interviewer. Write one natural, concise closing line in {language}. "
+                "Reflect only the supplied context. Do not mention scores or internal policy. "
+                "Return only the line to the candidate."
+            ),
+            input_text=f"Purpose: {purpose}\nContext: {context}",
+            max_output_tokens=100,
+        )
+        line = " ".join(str(value or "").split())
+        if not line:
+            raise ValueError("empty_wrap_text")
+        trace_event("interviewer", "dialogue_line_generated", purpose=purpose, text=line[:500])
+        return line
+    except Exception as exc:
+        trace_event("interviewer", "dialogue_line_failed", purpose=purpose, error_type=type(exc).__name__)
+        return ""
 
 
 # A turn that reached any of these never needs to be asked again.
@@ -936,7 +947,7 @@ def build_session_state_from_db(
     session_row: dict[str, Any],
     turns: list[dict[str, Any]],
     current_turn: dict[str, Any] | None,
-    has_probed: bool,
+    current_turn_probe_count: int | bool,
     *,
     session_probe_count: int = 0,
     cv_followup_used: int = 0,
@@ -1066,7 +1077,8 @@ def build_session_state_from_db(
         "consecutive_fails": metadata_json.get(
             "consecutive_uncooperative", metadata_json.get("consecutive_fails", 0)
         ),
-        "current_turn_in_question": 1 if has_probed else 0,
+        # The core accepts a bounded count (older callers may still pass bool).
+        "current_turn_in_question": int(current_turn_probe_count),
         "target_duration_minutes": target_duration_minutes,
         # Demo sessions are turn-driven (see core.session_policy.demo_mode).
         "is_demo": is_demo_duration(target_duration_minutes),
@@ -1418,8 +1430,6 @@ async def process_candidate_message(
     session_probe_count = len([m for m in all_probe_msgs if m["message_type"] == "PROBE"])
     curr_turn_probes = len([m for m in all_probe_msgs if m["turn_id"] == current_turn_id and m["message_type"] == "PROBE"])
     curr_turn_clarifies = len([m for m in all_probe_msgs if m["turn_id"] == current_turn_id and m["message_type"] == "CLARIFY"])
-    has_probed = bool(curr_turn_probes >= 1)
-
     validate_turn_ids = {t["id"] for t in turns if (t.get("question_snapshot") or {}).get("stage") == "VALIDATE"}
     cv_followup_used = 1 if any(m["turn_id"] in validate_turn_ids and m["message_type"] == "PROBE" for m in all_probe_msgs) else 0
 
@@ -1432,7 +1442,7 @@ async def process_candidate_message(
         session_row,
         turns,
         current_turn,
-        has_probed,
+        curr_turn_probes,
         session_probe_count=session_probe_count,
         cv_followup_used=cv_followup_used,
         clarify_count=curr_turn_clarifies,
@@ -1504,7 +1514,6 @@ async def process_candidate_message(
                 "turn_index": str(current_turn_index),
                 "modality": str(modality or "CHAT"),
                 "speech_v2": str(speech_v2_enabled()),
-                "ack_mode": ack_mode(),
                 "playbook": playbook.version() or "none",
             },
         )
@@ -2198,20 +2207,18 @@ async def process_candidate_message(
         core_output.message_text if core_output.is_session_finished else ""
     )
     if not wrap_text:
-        if downgraded_from_completed and ran_out_of_time:
-            # Never claim full coverage for a session that stopped early.
-            wrap_text = pick_variant(
-                WRAP_TIMEOUT_PARTIAL_VI if is_vi else WRAP_TIMEOUT_PARTIAL_EN, f"{session_id}:wrap"
-            )
-        elif downgraded_from_completed:
-            # Stopped early for a reason other than time; do not blame the clock.
-            wrap_text = pick_variant(
-                WRAP_ENDED_EARLY_PARTIAL_VI if is_vi else WRAP_ENDED_EARLY_PARTIAL_EN, f"{session_id}:wrap"
-            )
-        else:
-            wrap_text = pick_variant(
-                CLOSE_COMPLETED_VI if is_vi else CLOSE_COMPLETED_EN, f"{session_id}:wrap"
-            )
+        purpose = "partial_timeout" if downgraded_from_completed and ran_out_of_time else (
+            "partial_technical_stop" if downgraded_from_completed else "completed_interview"
+        )
+        wrap_text = await _generate_wrap_text(
+            purpose=purpose,
+            context=(
+                f"The interview ended with reason {end_reason}. "
+                f"Unfinished agenda items: {len(unfinished)}. "
+                "Acknowledge the actual ending without claiming the interview was fully completed."
+            ),
+            is_vi=is_vi,
+        )
     if is_vi:
         wrap_text = _personalize_candidate_address(wrap_text, candidate_short_name)
 
@@ -2370,12 +2377,15 @@ async def complete_chat_session(
             {"sid": session_id},
         )
         asst_seq = int(max_seq or 0) + 1
-        wrap_text = pick_variant(USER_ENDED_VI if is_vi else USER_ENDED_EN, f"{session_id}:user_ended")
-        if reason == "HARD_TIMEOUT":
-            wrap_text = (
-                "Thời gian phỏng vấn đã hết. Mình kết thúc buổi tại đây và đánh giá các câu trả lời bạn đã gửi."
-                if is_vi else "The interview time is up. We will now evaluate the answers you submitted."
-            )
+        wrap_text = await _generate_wrap_text(
+            purpose="candidate_ended_session" if reason == "USER_ENDED" else "session_timeout",
+            context=(
+                "The candidate ended the interview early. Acknowledge this without pressure."
+                if reason == "USER_ENDED"
+                else "The session time expired. State that the session is ending and submitted answers will be evaluated."
+            ),
+            is_vi=is_vi,
+        )
         if is_vi:
             wrap_text = _personalize_candidate_address(wrap_text, candidate_short_name)
         await db.execute(

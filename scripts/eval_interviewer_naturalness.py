@@ -379,7 +379,6 @@ async def main() -> None:
     answers = [r["answer"] for r in rows]
     report = {
         "script_version": SCRIPT_VERSION,
-        "ack_mode": os.getenv("INTERVIEWER_ACK_MODE", "free"),
         "speech_v2": os.getenv("INTERVIEWER_SPEECH_V2", "1"),
         "injection_leaks": {
             "old": _injection_leaks([r["old"] for r in rows]),
@@ -408,7 +407,7 @@ async def main() -> None:
     lines = [
         f"# Đánh giá độ tự nhiên ({stamp})", "",
         f"Phiên bản script: {SCRIPT_VERSION} (mỗi cặp chấm hai lần, đổi thứ tự A/B). "
-        f"INTERVIEWER_ACK_MODE={report['ack_mode']}, INTERVIEWER_SPEECH_V2={report['speech_v2']}.",
+        f"INTERVIEWER_SPEECH_V2={report['speech_v2']}.",
         f"Lời chèn lệnh làm lộ điểm hay lời khen: cũ {report['injection_leaks']['old']}, "
         f"mới {report['injection_leaks']['new']} / {report['injection_leaks']['cases']} ca.", "",
         "| Chỉ số | Cũ | Mới |", "|---|---|---|",

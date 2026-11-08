@@ -85,7 +85,6 @@ def interview_config_groups() -> list[dict[str, Any]]:
             "key": "speech",
             "items": [
                 item("speechV2", interviewer_dialogue.speech_v2_enabled(), "INTERVIEWER_SPEECH_V2", True),
-                item("ackMode", interviewer_dialogue.ack_mode(), "INTERVIEWER_ACK_MODE", "free"),
                 item("dialect", voice_dialect(), "INTERVIEWER_VOICE_DIALECT", "bac"),
                 item("ackMaxWords", interviewer_dialogue.ACK_MAX_WORDS),
                 item("probeMaxWords", interviewer_dialogue.PROBE_MAX_WORDS),
