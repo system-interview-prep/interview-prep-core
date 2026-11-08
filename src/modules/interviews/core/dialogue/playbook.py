@@ -1,17 +1,15 @@
-"""The interviewer's playbook: lessons from past interviews that a person approved.
+"""Sổ tay của người phỏng vấn: những bài học từ các cuộc phỏng vấn trước đã được một người phê duyệt.
 
-"AI tích luỹ skill phỏng vấn" (DOC_AND_PLAN/plan/interview/ADVISOR_FEEDBACK_RESEARCH_2026-10-26.md,
-section 3). Modelled on ACE (Agentic Context Engineering): short, itemised
-lessons with ids, edited one at a time, never a rewrite of the whole context.
+"AI tích luỹ skill phỏng vấn". Được xây dựng theo ACE (Agentic Context Engineering): các bài học ngắn,
+được liệt kê và có id, chỉnh sửa từng bài một, không bao giờ viết lại toàn bộ ngữ cảnh.
 
-This module only holds the ACTIVE entries in memory and renders them into the
-prompts of the engine steps that read a candidate's answer, write a follow-up
-or re-explain a question. The application layer
-(``application/interviewer_playbook.py``) loads them from the database and
-proposes new ones; only entries a person approved ever reach a prompt, and the
-block always sits below the fixed rules, which win on any conflict.
+Mô-đun này chỉ lưu các mục ĐANG HOẠT ĐỘNG trong bộ nhớ và đưa chúng vào
+prompt của các bước trong engine dùng để đọc câu trả lời của ứng viên, viết câu hỏi
+tiếp theo hoặc giải thích lại một câu hỏi. Tầng ứng dụng tải chúng từ cơ sở dữ liệu và
+đề xuất các mục mới; chỉ những mục được một người phê duyệt mới được đưa vào prompt,
+và khối này luôn nằm bên dưới các quy tắc cố định, vốn được ưu tiên khi có xung đột.
 
-Empty playbook = no block = the prompts are exactly as before.
+Sổ tay trống = không có khối nội dung = các prompt hoàn toàn giống như trước đây.
 """
 
 from __future__ import annotations

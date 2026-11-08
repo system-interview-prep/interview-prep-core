@@ -1,1 +1,1 @@
-"""C?u h?nh c?u tr?c, v?ng v? ch? ?? c?a m?t bu?i ph?ng v?n."""
+"""Cấu hình cấu trúc, vùng vực và chỉ số của một buổi phỏng vấn."""

@@ -19,62 +19,6 @@ from contextvars import ContextVar
 from src.modules.interviews.core.dialogue import speech_checks
 
 # Câu chữ nằm ở dialogue/phrases.py; tên cũ được giữ để code khác import từ đây.
-from src.modules.interviews.core.dialogue.phrases import (  # noqa: F401
-    ABORT_CONFIRMATION_EN,
-    ABORT_CONFIRMATION_VI,
-    ACK_FALLBACK_EN,
-    ACK_FALLBACK_VI,
-    ACK_TOPIC_FRAMES_EN,
-    ACK_TOPIC_FRAMES_VI,
-    CLOSE_COMPLETED_EN,
-    CLOSE_COMPLETED_VI,
-    CODING_FAILED_ACK_EN,
-    CODING_FAILED_ACK_VI,
-    CODING_PASSED_ACK_EN,
-    CODING_PASSED_ACK_VI,
-    EARLY_STOP_EN,
-    EARLY_STOP_VI,
-    FAREWELL_EN,
-    FAREWELL_VI,
-    GIVE_UP_ACK_EN,
-    GIVE_UP_ACK_VI,
-    INTRO_ACK_EN,
-    INTRO_ACK_VI,
-    LAST_QNA_CLOSING_EN,
-    LAST_QNA_CLOSING_VI,
-    NON_ANSWER_ACK_EN,
-    NON_ANSWER_ACK_VI,
-    PROBE_ACK_EN,
-    PROBE_ACK_VI,
-    PROBE_FALLBACK_EN,
-    PROBE_FALLBACK_VI,
-    QNA_FALLBACK_EN,
-    QNA_FALLBACK_VI,
-    QNA_MORE_EN,
-    QNA_MORE_VI,
-    REPEAT_PREFIX_EN,
-    REPEAT_PREFIX_VI,
-    SKIP_ACK_EN,
-    SKIP_ACK_SHORT_EN,
-    SKIP_ACK_SHORT_VI,
-    SKIP_ACK_VI,
-    TIMEOUT_EN,
-    TIMEOUT_VI,
-    TRANSITION_SKILL_EN,
-    TRANSITION_SKILL_VI,
-    TRANSITION_STAGE_EN,
-    TRANSITION_STAGE_SOFT_EN,
-    TRANSITION_STAGE_VI,
-    USER_ENDED_EN,
-    USER_ENDED_VI,
-    WARMUP_SHORT_ACK_EN,
-    WARMUP_SHORT_ACK_VI,
-    WRAP_ENDED_EARLY_PARTIAL_EN,
-    WRAP_ENDED_EARLY_PARTIAL_VI,
-    WRAP_TIMEOUT_PARTIAL_EN,
-    WRAP_TIMEOUT_PARTIAL_VI,
-)
-
 
 def speech_v2_enabled() -> bool:
     """Cách ghép lời nói từ 25/10 (tài liệu INTERVIEWER_SPEECH_INTERNALS_2026-10-24).
@@ -155,6 +99,21 @@ ACK_BAD_EXAMPLES_EN: tuple[str, ...] = (
 
 def style_guide(is_vi: bool) -> str:
     return INTERVIEWER_STYLE_VI if is_vi else INTERVIEWER_STYLE_EN
+
+
+# Các ràng buộc nội dung dùng chung cho mọi phản hồi do AI tự tạo.
+SPEECH_RULES_VI: tuple[str, ...] = (
+    "Không khen, không chê, không nói đúng hay sai, không nhắc điểm, tiêu chí hay barem.",
+    "Không gợi ý đáp án; không đưa thuật ngữ kỹ thuật mới mà câu hỏi và câu trả lời chưa nhắc.",
+    "Khi nhắc tới điều ứng viên đã nói, dùng đúng từ ứng viên đã dùng cho khái niệm đó.",
+    "Chỉ dùng thông tin có trong câu hỏi, câu trả lời và phần thông tin được cung cấp; không bịa.",
+)
+SPEECH_RULES_EN: tuple[str, ...] = (
+    "Never praise, criticise or say right or wrong; never mention scores, criteria or rubrics.",
+    "Never hint at the answer; introduce no technical term the question and answer have not used.",
+    "When referring to something the candidate said, use the candidate's own words for it.",
+    "Use only the question, the answer and the information given; invent nothing.",
+)
 
 
 def ack_examples_block(is_vi: bool) -> str:
@@ -812,11 +771,6 @@ _QNA_ALLOWED_NAMES = frozenset(
 )
 
 
-def abort_confirmation(is_vi: bool, *, spoken: bool = False) -> str:
-    """Câu xin xác nhận dừng: một câu cho mọi kênh (``spoken`` giữ cho code cũ)."""
-    return ABORT_CONFIRMATION_VI if is_vi else ABORT_CONFIRMATION_EN
-
-
 def _normalize(text_value: str) -> str:
     return re.sub(r"\s+", " ", unicodedata.normalize("NFC", str(text_value or ""))).strip().casefold()
 
@@ -863,6 +817,10 @@ _HARDER_RE = re.compile(r"khó hơn|harder", re.IGNORECASE)
 # Nhãn kỹ năng mặc định hoặc dạng mã máy thì không đọc lên được.
 _GENERIC_COMPETENCIES = {"", "chuyên môn", "expertise", "hỏi đáp & văn hóa doanh nghiệp", "hỏi đáp & tổng kết"}
 
+_NHE_RE = re.compile(r"(?<!\w)nhé(?!\w)", re.IGNORECASE)
+_TRAILING_NHE_RE = re.compile(r",?\s+nhé(?=\s*[.!?…:]?\s*$)", re.IGNORECASE)
+MAX_NHE_PER_TURN = 1
+
 
 def _speakable_label(label: str | None) -> str | None:
     value = str(label or "").strip()
@@ -874,47 +832,6 @@ def _speakable_label(label: str | None) -> str | None:
     ):
         return None
     return value
-
-
-def transition_line(
-    *,
-    previous_stage: str | None,
-    next_stage: str | None,
-    previous_competency: str | None,
-    next_competency: str | None,
-    is_vi: bool,
-    seed: str,
-    after_struggle: bool = False,
-) -> str:
-    """Câu chuyển khi đổi giai đoạn hoặc kỹ năng; cùng chủ đề thì không cần câu nối.
-
-    ``after_struggle``: ứng viên vừa nói không biết hoặc xin qua câu. Buổi thật
-    17/10: AI nói "Mình thử một tình huống khó hơn" ngay sau đó, nghe như trêu.
-    """
-    prev_stage = str(previous_stage or "").upper()
-    nxt_stage = str(next_stage or "").upper()
-    stage_pools = TRANSITION_STAGE_VI if is_vi else TRANSITION_STAGE_EN
-    if nxt_stage and nxt_stage != prev_stage and nxt_stage in stage_pools:
-        pool = stage_pools[nxt_stage]
-        if after_struggle:
-            pool = tuple(line for line in pool if not _HARDER_RE.search(line)) or (
-                TRANSITION_STAGE_SOFT_EN.get(nxt_stage, ()) if not is_vi else ()
-            )
-            if not pool:
-                return ""
-        return pick_variant(pool, f"{seed}:stage:{nxt_stage}")
-    nxt_label = _speakable_label(next_competency)
-    prev_label = _speakable_label(previous_competency)
-    if nxt_label and prev_label and nxt_label.casefold() != prev_label.casefold():
-        pool = TRANSITION_SKILL_VI if is_vi else TRANSITION_SKILL_EN
-        return pick_variant(pool, f"{seed}:skill:{nxt_label}").format(next=nxt_label)
-    return ""
-
-
-_NHE_RE = re.compile(r"(?<!\w)nhé(?!\w)", re.IGNORECASE)
-# "…sang câu khác nhé." / "…nhé:" → bỏ "nhé" ở cuối, giữ dấu câu.
-_TRAILING_NHE_RE = re.compile(r",?\s+nhé(?=\s*[.!?…:]?\s*$)", re.IGNORECASE)
-MAX_NHE_PER_TURN = 1
 
 
 def count_nhe(text_value: str) -> int:
@@ -993,7 +910,7 @@ def compose_turn(
         {"act": act, "source": source or "-"}
         for act, text, source in (
             ("ACK", acknowledgement, ack_source),
-            ("TRANSITION", transition, "script"),
+            ("TRANSITION", transition, "llm"),
             ("QUESTION", question, question_source),
         )
         if text
@@ -1013,48 +930,6 @@ def sounds_closed(text_value: str) -> bool:
     return bool(_CLOSURE_RE.search(str(text_value or "")))
 
 
-def acknowledgement_for_action(
-    acknowledgement: str,
-    *,
-    action: str,
-    is_vi: bool,
-    seed: str,
-    recent: Iterable[str] = (),
-    answer: str = "",
-    stage: str | None = None,
-) -> tuple[str, str | None]:
-    """Câu ghi nhận khớp với việc làm ngay sau đó; trả về (câu, lý do đổi hoặc None).
-
-    Câu ghi nhận được viết (bởi AI hoặc chọn từ nhóm) trước khi code quyết định
-    hỏi thêm hay sang câu mới. Hai chỗ lệch thấy trong buổi thật:
-
-    * ``PROBE``: "Mình hình dung được rồi." rồi hỏi thêm ngay.
-    * Lời giới thiệu chỉ là câu chào ("xin chào"): AI nói "Mình đang chờ phần
-      giới thiệu của bạn." rồi chuyển luôn sang câu dự án.
-    """
-    if not speech_v2_enabled():
-        return acknowledgement, None
-    if str(stage or "").upper() == "WARM_UP" and action == "NEXT_QUESTION" and len(answer.split()) <= 3:
-        pool = WARMUP_SHORT_ACK_VI if is_vi else WARMUP_SHORT_ACK_EN
-        speech_checks.record("ack", "fix", "warmup_greeting_only", acknowledgement)
-        return pick_variant(pool, f"{seed}:warmup_short", recent), "warmup_greeting_only"
-    if action == "PROBE" and sounds_closed(acknowledgement):
-        pool = PROBE_ACK_VI if is_vi else PROBE_ACK_EN
-        speech_checks.record("ack", "fix", "closed_before_probe", acknowledgement)
-        return pick_variant(pool, f"{seed}:probe_ack", recent), "closed_before_probe"
-    return acknowledgement, None
-
-
-# --------------------------------------------------------------------------- #
-# Tiếng đệm, tiểu từ theo giọng, câu ghi nhận dạng khung (25/10)
-# --------------------------------------------------------------------------- #
-
-# Nghiên cứu 24/10, mục 5.3: tiếng đệm đầu câu (À, Ừ, Ừm, Ok, Vâng) không quá 60%
-# số lượt, và không hai lượt liền cùng một tiếng.
-INTERJECTION_SHARE = 0.6
-INTERJECTION_WINDOW = 5
-
-
 def opening_interjection(text_value: str) -> str:
     """The "à/ừ/ừm/ok/vâng…" a line opens with, lower-cased; "" when none."""
     match = _INTERJECTION_RE.match(str(text_value or ""))
@@ -1062,6 +937,8 @@ def opening_interjection(text_value: str) -> str:
 
 
 _opening_interjection = opening_interjection
+INTERJECTION_SHARE = 0.6
+INTERJECTION_WINDOW = 5
 
 
 def balance_interjection(acknowledgement: str, recent: Iterable[str] = ()) -> str:
@@ -1077,11 +954,6 @@ def balance_interjection(acknowledgement: str, recent: Iterable[str] = ()) -> st
     if openings[-1] == own or crowded:
         return strip_leading_interjection(acknowledgement)
     return acknowledgement
-
-
-def ack_mode() -> str:
-    """"free": AI viết cả câu ghi nhận (mặc định). "topic": AI chỉ điền cụm chủ đề, code ráp khung."""
-    return "topic" if os.getenv("INTERVIEWER_ACK_MODE", "free").strip().casefold() == "topic" else "free"
 
 
 ACK_TOPIC_MAX_WORDS = 7
@@ -1111,39 +983,6 @@ def topic_rejection_reason(topic: str, answer: str) -> str | None:
     if sum(word in said for word in words) / len(words) < ACK_TOPIC_MIN_OVERLAP:
         return "not_from_answer"
     return None
-
-
-def acknowledgement_from_topic(topic: str, *, is_vi: bool, seed: str, recent: Iterable[str] = ()) -> str:
-    """Put a checked topic phrase into a scripted frame: "À, vậy là khoá dòng khi trừ tồn kho."."""
-    value = str(topic or "").strip().strip(" .!…,")
-    value = value[0].lower() + value[1:] if value[:1].isupper() and not value[:2].isupper() else value
-    frame = pick_variant(ACK_TOPIC_FRAMES_VI if is_vi else ACK_TOPIC_FRAMES_EN, f"{seed}:topic", ())
-    line = frame.format(topic=value)
-    avoided = {_normalize(item) for item in recent if item}
-    if _normalize(line) in avoided:
-        for other in ACK_TOPIC_FRAMES_VI if is_vi else ACK_TOPIC_FRAMES_EN:
-            candidate = other.format(topic=value)
-            if _normalize(candidate) not in avoided:
-                return candidate
-    return line
-
-
-# --------------------------------------------------------------------------- #
-# Khung prompt chung cho mọi lời AI tự viết (nghiên cứu 24/10, mục 5.1)
-# --------------------------------------------------------------------------- #
-
-SPEECH_RULES_VI: tuple[str, ...] = (
-    "Không khen, không chê, không nói đúng hay sai, không nhắc điểm, tiêu chí hay barem.",
-    "Không gợi ý đáp án; không đưa thuật ngữ kỹ thuật mới mà câu hỏi và câu trả lời chưa nhắc.",
-    "Khi nhắc tới điều ứng viên đã nói, dùng đúng từ ứng viên đã dùng cho khái niệm đó.",
-    "Chỉ dùng thông tin có trong câu hỏi, câu trả lời và phần thông tin được cung cấp; không bịa.",
-)
-SPEECH_RULES_EN: tuple[str, ...] = (
-    "Never praise, criticise or say right or wrong; never mention scores, criteria or rubrics.",
-    "Never hint at the answer; introduce no technical term the question and answer have not used.",
-    "When referring to something the candidate said, use the candidate's own words for it.",
-    "Use only the question, the answer and the information given; invent nothing.",
-)
 
 
 def speech_prompt(

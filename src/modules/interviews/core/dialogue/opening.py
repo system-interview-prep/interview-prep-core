@@ -1,13 +1,9 @@
-"""Build the opening of an interview: one script for chat, voice and video.
+"""
+Deterministic ngôn ngữ đầu ra kiểm tra cho lời nói của người phỏng vấn được tạo ra.
 
-Built the way structured interviews open: a short introduction, the length of
-the session, the parts it will go through, and an easy first question. Every
-room says the same words (wording in ``dialogue/phrases.py``); the voice
-agent only cleans it up for speech.
 """
 
 from __future__ import annotations
-
 from collections.abc import Sequence
 
 from src.modules.interviews.core.dialogue.phrases import (
@@ -35,7 +31,10 @@ from src.modules.interviews.core.dialogue.phrases import (
 
 
 def warmup_question(*, is_vi: bool, is_demo: bool) -> str:
-    """The first question: easy to start, with a length and a shape to follow."""
+    """
+    Trả về câu hỏi khởi động cho ứng viên, dựa trên ngôn ngữ
+    và chế độ demo hay không.
+    """
     if is_vi:
         return WARMUP_QUESTION_DEMO_VI if is_demo else WARMUP_QUESTION_VI
     return WARMUP_QUESTION_DEMO_EN if is_demo else WARMUP_QUESTION_EN
@@ -68,10 +67,9 @@ def build_opening(
     planned_stages: Sequence[str],
     first_question: str,
 ) -> str:
-    """Build the opening message, ending with the first question.
-
-    Two paragraphs separated by a blank line: the introduction, then the
-    question. ``mode`` no longer changes the words; it is kept for callers.
+    """
+    Xây dựng lời mở đầu cho phiên phỏng vấn, dựa trên ngôn ngữ, chế độ demo,
+    thời lượng, vai trò, tên gọi, các giai đoạn dự kiến và câu hỏi đầu tiên.
     """
     del mode
     is_demo = bool(duration_minutes) and int(duration_minutes) <= 3
