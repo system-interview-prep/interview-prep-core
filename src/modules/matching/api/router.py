@@ -21,13 +21,10 @@ from src.modules.matching.application.input_resolver import resume_owner_scope
 from src.modules.matching.application.service import run_match
 from src.modules.matching.domain.schemas import (
     CandidatePreferences,
-    CompatibilityResult,
-    FactorResult,
     MatchAccepted,
     MatchingPolicy,
     MatchRequest,
     MatchResult,
-    RequirementResult,
 )
 from src.workers.tasks.matching import match_cv_to_jd
 
@@ -57,79 +54,6 @@ class MatchIdsRequest(BaseModel):
 
 
 
-
-
-def _sample_match_result(cv_id: str, job_id: str) -> MatchResult:
-    return MatchResult(
-        schema_version="2.1",
-        pipeline_version="one-to-one-evidence-fusion-v1",
-        resume_id=cv_id,
-        job_id=job_id,
-        policy_version="balanced-v1",
-        eligibility="eligible",
-        compatibility_status="compatible",
-        suitability_score=0.78,
-        fit_band="strong_fit",
-        decision="assessed",
-        requirement_results=[
-            RequirementResult(
-                requirement_id="req-sql-advanced",
-                status="met",
-                score=0.92,
-                confidence=0.95,
-                evidence_refs=["sample-ev-1"],
-                reason_code="skill_claim_verified",
-            ),
-            RequirementResult(
-                requirement_id="req-core-domain",
-                status="met",
-                score=0.84,
-                confidence=0.90,
-                evidence_refs=["sample-ev-2"],
-                reason_code="skill_claim_verified",
-            ),
-        ],
-        compatibility_results=[
-            CompatibilityResult(
-                criterion="work_mode",
-                status="compatible",
-                confidence=0.95,
-                reason_code="candidate_accepts_hybrid",
-            ),
-        ],
-        factor_results=[
-            FactorResult(
-                factor="skill",
-                status="scored",
-                raw_score=0.88,
-                reliability=0.95,
-                policy_weight=0.3,
-                effective_weight=0.3,
-                evidence_refs=["sample-ev-1"],
-            ),
-            FactorResult(
-                factor="experience",
-                status="scored",
-                raw_score=0.82,
-                reliability=0.90,
-                policy_weight=0.3,
-                effective_weight=0.3,
-                evidence_refs=["sample-ev-2"],
-            ),
-            FactorResult(
-                factor="semantic",
-                status="scored",
-                raw_score=0.76,
-                reliability=0.92,
-                policy_weight=0.4,
-                effective_weight=0.4,
-                dense_score=0.79,
-                sparse_score=0.72,
-                evidence_refs=["sample-ev-1", "sample-ev-2"],
-            ),
-        ],
-        warnings=[],
-    )
 
 
 # Every matching call spends embedding/LLM budget and may read a stored CV:
@@ -217,11 +141,6 @@ async def _handle_match_ids(
     job_id = payload.resolved_job_id
     if not cv_id or not job_id:
         raise HTTPException(status_code=422, detail="Cần cung cấp candidateId (hoặc cvId) và jobId")
-
-    # Support sample context for demo / walkthrough
-    if cv_id.startswith("sample-") or job_id.startswith("sample-"):
-        response.status_code = status.HTTP_200_OK
-        return _sample_match_result(cv_id, job_id)
 
     with run_tracking.match_run("match", user_id=user.get("sub"), resume_id=cv_id, job_id=job_id) as run:
         run_tracking.emit(

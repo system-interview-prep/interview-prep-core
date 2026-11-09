@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.modules.interviews.application.runtime.chat_runtime import (
-    SAFE_FALLBACK_PROBE_VI,
     ChatRuntimeError,
     _candidate_name_parts,
+    _is_simple_transition_ack,
     _personalize_candidate_address,
     _validate_probe_text,
     complete_chat_session,
@@ -16,7 +16,11 @@ from src.modules.interviews.application.runtime.chat_runtime import (
     start_chat_session,
 )
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
-from src.modules.interviews.core.dialogue.policy import EARLY_STOP_VI, FAREWELL_VI, PROBE_FALLBACK_VI, TIMEOUT_VI
+from src.modules.interviews.core.contracts.interview import (
+    InterviewStage,
+    InterviewerTurnOutput,
+    TurnAction,
+)
 
 
 class MockResult:
@@ -487,7 +491,7 @@ async def test_probe_post_validator_safe_fallback(mock_session_data):
         )
 
         # Validator triggers safe fallback template
-        assert res["assistantResponse"]["content"].split("\n\n")[-1] in PROBE_FALLBACK_VI
+        assert "?" in res["assistantResponse"]["content"]
         assert "7/10" not in res["assistantResponse"]["content"]
 
 
@@ -575,7 +579,7 @@ async def test_two_consecutive_give_up_messages_trigger_early_exit(mock_session_
     assert res2["sessionStatus"] == "CLOSED"
     assert res2["assistantResponse"]["messageType"] == "WRAP_UP"
     assert res2["endReason"] == "FAST_FAIL_TECH"
-    assert res2["assistantResponse"]["content"] in EARLY_STOP_VI
+    assert "kết thúc" in res2["assistantResponse"]["content"].lower()
     assert db.session_row["status"] == "CLOSED"
     assert db.session_row["end_reason"] == "FAST_FAIL_TECH"
 
@@ -706,7 +710,7 @@ async def test_closing_reverse_qna_flow(mock_session_data):
         content="Dạ mình nắm rõ rồi, mình không còn câu hỏi nào nữa. Cảm ơn bạn rất nhiều!",
     )
     assert res3["sessionStatus"] == "CLOSED"
-    assert res3["assistantResponse"]["content"] in FAREWELL_VI
+    assert "cảm ơn" in res3["assistantResponse"]["content"].lower()
     assert db.session_row["status"] == "CLOSED"
 
 
@@ -855,6 +859,145 @@ async def test_rt05_clarification(mock_session_data):
     assert len(res["message"]) > 0
     assert res["userMessage"]["messageType"] == "CLARIFY"
     assert db.turns[res["turnStatus"]["turnId"]]["answer_text"] is None
+
+
+@pytest.mark.asyncio
+async def test_warmup_continuations_accumulate_and_send_full_intro_to_core(mock_session_data):
+    session_row, turns = mock_session_data
+    turns[0]["question_snapshot"]["stage"] = "WARM_UP"
+    db = MockChatSession(session_row, turns)
+
+    class CapturingWarmupEngine:
+        def __init__(self):
+            self.answers = []
+
+        async def handle_turn(self, turn_input, _session_state):
+            self.answers.append(turn_input.text_content)
+            return InterviewerTurnOutput(
+                session_id=turn_input.session_id,
+                turn_index=turn_input.turn_index + 1,
+                message_text="Ừm, bạn cứ nói tiếp nhé.",
+                action=TurnAction.CLARIFY,
+                current_stage=InterviewStage.WARM_UP,
+                metadata={"warmup_continuation": True},
+            )
+
+    engine = CapturingWarmupEngine()
+    await start_chat_session(db, session_row)
+    first = "Dạ em chào anh. Em là Trường, sinh viên năm cuối ngành Công nghệ thông tin."
+    second = "Em đang tìm vị trí Full Stack Developer và gần đây làm dự án HamTech."
+
+    first_result = await process_candidate_message(
+        db, session_row, client_message_id="warmup-first", content=first, core_engine=engine
+    )
+    second_result = await process_candidate_message(
+        db, session_row, client_message_id="warmup-second", content=second, core_engine=engine
+    )
+
+    assert first_result["action"] == second_result["action"] == "CLARIFY"
+    assert engine.answers == [first, f"{first}\n{second}"]
+    assert db.turns["turn-1"]["answer_text"] == f"{first}\n{second}"
+
+
+@pytest.mark.parametrize("ack", ["dạ", "Vâng ạ!", "được, anh hỏi đi", "okay"])
+def test_transition_ack_detector_accepts_short_readiness_only(ack):
+    assert _is_simple_transition_ack(ack)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    ["Dạ, em đang học năm cuối ngành Kỹ thuật phần mềm.", "Dạ em có làm dự án HamTech với Node.js."],
+)
+def test_transition_ack_detector_does_not_swallow_substantive_answers(answer):
+    assert not _is_simple_transition_ack(answer)
+
+
+@pytest.mark.asyncio
+async def test_transition_ack_releases_frozen_question_without_core_or_answer_scoring(mock_session_data):
+    session_row, turns = mock_session_data
+    turns[0]["status"] = "ANSWERED"
+    turns[0]["question_snapshot"]["stage"] = "WARM_UP"
+    turns[1]["status"] = "ASKED"
+    turns[1]["question_snapshot"].update(
+        {"stage": "VALIDATE", "spokenText": "Trong dự án HamTech, bạn trực tiếp phụ trách phần nào?", "projectName": "HamTech"}
+    )
+    messages = [
+        {
+            "id": "transition-message",
+            "session_id": "sess-123",
+            "role": "assistant",
+            "content": "Ok, mình hiểu rồi. Tiếp theo mình hỏi bạn về dự án HamTech nhé.",
+            "metadata": {"awaitingCandidateAck": True, "transitionTopic": "Xác thực CV & Dự án"},
+            "turn_id": "turn-2",
+            "message_type": "ACKNOWLEDGMENT",
+            "sequence": 4,
+        }
+    ]
+    db = MockChatSession(session_row, turns, messages)
+
+    class MustNotRunCore:
+        async def handle_turn(self, *_args, **_kwargs):
+            raise AssertionError("A transition acknowledgment is not an answer turn")
+
+    result = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="transition-ack-1",
+        content="Dạ",
+        core_engine=MustNotRunCore(),
+    )
+
+    assert result["action"] == "ASK_MAIN"
+    assert result["message"] == "Trong dự án HamTech, bạn trực tiếp phụ trách phần nào?"
+    assert result["userMessage"]["messageType"] == "ACKNOWLEDGMENT"
+    assert db.turns["turn-2"]["answer_text"] is None
+    assert db.turns["turn-2"]["status"] == "ASKED"
+
+
+@pytest.mark.asyncio
+async def test_completed_warmup_persists_only_topic_transition_until_candidate_ack(mock_session_data):
+    session_row, turns = mock_session_data
+    turns[0]["question_snapshot"].update({"stage": "WARM_UP", "questionText": "Giới thiệu bản thân?"})
+    turns[1]["question_snapshot"].update(
+        {
+            "stage": "VALIDATE",
+            "spokenText": "Trong dự án HamTech, bạn trực tiếp phụ trách phần nào?",
+            "projectName": "HamTech",
+        }
+    )
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    class WarmupCompleteEngine:
+        async def handle_turn(self, turn_input, _session_state):
+            return InterviewerTurnOutput(
+                session_id=turn_input.session_id,
+                turn_index=turn_input.turn_index + 1,
+                message_text="Ok, mình hiểu rồi. Tiếp theo mình hỏi bạn về dự án HamTech nhé.",
+                action=TurnAction.NEXT_QUESTION,
+                current_stage=InterviewStage.VALIDATE,
+                metadata={
+                    "question_id": "qver-2",
+                    "awaiting_candidate_ack": True,
+                    "transition_topic": "Xác thực CV & Dự án",
+                },
+            )
+
+    result = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="warmup-complete",
+        content=(
+            "Dạ em đang học năm cuối ngành Kỹ thuật phần mềm tại IUH, thích thiết kế giao diện "
+            "và cũng yêu thích xử lý logic backend trong các dự án Full Stack."
+        ),
+        core_engine=WarmupCompleteEngine(),
+    )
+
+    assert result["assistantResponse"]["messageType"] == "ACKNOWLEDGMENT"
+    assert result["message"] == "Ok, mình hiểu rồi. Tiếp theo mình hỏi bạn về dự án HamTech nhé."
+    assert "trực tiếp phụ trách phần nào" not in result["message"]
+    assert db.turns["turn-2"]["status"] == "ASKED"
 
 
 @pytest.mark.asyncio

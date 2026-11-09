@@ -8,7 +8,17 @@ from src.core.trace_logging import trace_event
 from src.modules.user_cvs.application import run_tracking
 from src.modules.user_cvs.domain.schemas import ParsedResume
 from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
-from src.modules.user_cvs.parsing.domain.source import SourceDocument
+from src.modules.user_cvs.parsing.domain.source import (
+    SHREDDED_TEXT_RATIO,
+    SourceDocument,
+    character_shredded_ratio,
+)
+
+
+# The measure and threshold live in the domain so the PDF extractor can pick a
+# repair strategy from the same definition the pipeline reports coverage with.
+_character_shredded_ratio = character_shredded_ratio
+_SHREDDED_TEXT_RATIO = SHREDDED_TEXT_RATIO
 
 
 def _coverage_snapshot(parsed: ParsedResume, source: SourceDocument) -> dict:
@@ -24,6 +34,12 @@ def _coverage_snapshot(parsed: ParsedResume, source: SourceDocument) -> dict:
     raw_coverage = "complete" if source.text.strip() else "unavailable"
     if any(item.severity == "error" for item in warnings):
         raw_coverage = "partial" if source.text.strip() else "unavailable"
+    # Character-shredded text is present but unreadable: counting it as a
+    # complete read is what lets a damaged CV reach matching as a candidate
+    # with no skills, instead of as a document that needs re-extraction.
+    text_shredded = _character_shredded_ratio(source.text) >= _SHREDDED_TEXT_RATIO
+    if text_shredded and raw_coverage == "complete":
+        raw_coverage = "partial"
 
     section_values = {
         "profile": bool(resume.profile.headline or resume.profile.summary),
@@ -57,6 +73,10 @@ def _coverage_snapshot(parsed: ParsedResume, source: SourceDocument) -> dict:
     )
     evidence_coverage = "complete" if evidence_valid else "partial" if resume.evidence else "unavailable"
     reasons: list[str] = []
+    if text_shredded:
+        # Named separately from the generic code so the fix is actionable:
+        # this document needs a different extractor, not a better parser.
+        reasons.append("raw_text_character_shredded")
     if raw_coverage != "complete":
         reasons.append("raw_text_incomplete")
     if any(value == "partial" for value in section_coverage.values()):

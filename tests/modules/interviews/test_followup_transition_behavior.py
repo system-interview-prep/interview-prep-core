@@ -24,6 +24,55 @@ class OverlongLineLLM:
         return "Được rồi, mình ghi nhận dự án HamTech bạn vừa nhắc đến. Bây giờ mình muốn chuyển sang hỏi thêm về cách bạn thiết kế API và xử lý dữ liệu trong ứng dụng đó."
 
 
+class WarmupGreetingLLM:
+    def __init__(self):
+        self.system_context = ""
+        self.probe_question = "Bạn đang học hay đã đi làm rồi?"
+
+    async def generate_json(self, *, system_prompt: str, user_content: str):
+        self.system_context = system_prompt
+        return {
+            "intent": "ANSWER",
+            "sufficiency_status": "INSUFFICIENT",
+            "is_sufficient": False,
+            "missing_aspect": "self-introduction",
+            "acknowledgement": "Chào bạn, mình bắt đầu nhé.",
+            "probe_question": self.probe_question,
+            "score": 1.0,
+        }
+
+    async def generate_text(self, *, system_prompt: str, user_content: str):
+        raise AssertionError("Warm-up continuation should reuse the evaluation response")
+
+
+class WarmupHistoryLLM(WarmupGreetingLLM):
+    def __init__(self):
+        super().__init__()
+        self.evaluation_context = ""
+
+    async def generate_json(self, *, system_prompt: str, user_content: str):
+        self.evaluation_context = user_content
+        return await super().generate_json(system_prompt=system_prompt, user_content=user_content)
+
+
+class WarmupCompleteLLM:
+    def __init__(self):
+        self.transition_prompt = ""
+
+    async def generate_json(self, *, system_prompt: str, user_content: str):
+        return {
+            "intent": "ANSWER",
+            "sufficiency_status": "SUFFICIENT",
+            "is_sufficient": True,
+            "acknowledgement": "Mình ghi nhận rồi.",
+            "score": 6.0,
+        }
+
+    async def generate_text(self, *, system_prompt: str, user_content: str):
+        self.transition_prompt = user_content
+        return "Ok, mình hiểu rồi. Tiếp theo mình hỏi bạn về dự án HamTech nhé."
+
+
 class TransitionCapturingEngine(InterviewCoreEngine):
     async def _transition_for(self, *args, **kwargs):
         self.transition_call = kwargs
@@ -111,3 +160,120 @@ async def test_overlong_ai_transition_does_not_fail_the_chat_turn() -> None:
 
     assert "HamTech" in line
     assert "xử lý dữ liệu" in line
+
+
+@pytest.mark.asyncio
+async def test_warmup_greeting_keeps_opening_turn_and_invites_candidate_to_continue() -> None:
+    llm = WarmupGreetingLLM()
+    engine = InterviewCoreEngine(llm_client=llm)
+    opening_question = "Bạn giới thiệu ngắn về bản thân trong một, hai phút nhé?"
+
+    result = await engine.handle_turn(
+        CandidateTurnInput(session_id="session-1", turn_index=0, text_content="Dạ em chào anh ạ"),
+        {
+            "current_stage": InterviewStage.WARM_UP.value,
+            "started_at": datetime.now(timezone.utc),
+            "target_duration_minutes": 25,
+            "questions_pool": {
+                "VALIDATE": [
+                    {
+                        "question_id": "project-question-1",
+                        "competency": "Xác thực CV & Dự án",
+                        "stage": "VALIDATE",
+                        "main_prompt": "Bạn trực tiếp đóng góp gì cho dự án?",
+                    }
+                ]
+            },
+            "current_question_context": {
+                "question_id": "warmup-intro",
+                "competency": "Giới thiệu & Khởi động",
+                "main_prompt": opening_question,
+            },
+        },
+    )
+
+    assert result.action == TurnAction.CLARIFY
+    assert result.current_stage == InterviewStage.WARM_UP
+    assert result.metadata["warmup_continuation"] is True
+    assert result.message_text == "Bạn đang học hay đã đi làm rồi?"
+    assert result.metadata["speech_plan"] == [
+        {"act": "QUESTION", "source": "llm_evaluation"}
+    ]
+    assert "HƯỚNG DẪN RIÊNG CHO PHẦN MỞ ĐẦU" in llm.system_context
+    assert "Không hỏi lại" in llm.system_context
+
+
+@pytest.mark.asyncio
+async def test_warmup_continuation_uses_accumulated_intro_context() -> None:
+    llm = WarmupHistoryLLM()
+    llm.probe_question = "Bạn đang học năm mấy rồi?"
+    engine = InterviewCoreEngine(llm_client=llm)
+    earlier = "Em là Trường, đang học ngành Công nghệ thông tin ở IUH."
+    latest = "Em cũng đang tìm cơ hội làm Full Stack Developer."
+    accumulated_intro = f"{earlier}\n{latest}"
+
+    result = await engine.handle_turn(
+        CandidateTurnInput(session_id="session-1", turn_index=0, text_content=accumulated_intro),
+        {
+            "current_stage": InterviewStage.WARM_UP.value,
+            "started_at": datetime.now(timezone.utc),
+            "target_duration_minutes": 25,
+            "questions_pool": {"VALIDATE": []},
+            "current_question_context": {
+                "question_id": "warmup-intro",
+                "competency": "Giới thiệu & Khởi động",
+                "main_prompt": "Bạn giới thiệu ngắn về bản thân, công việc hiện tại và lý do quan tâm vị trí này?",
+            },
+        },
+    )
+
+    assert result.metadata["warmup_continuation"] is True
+    assert result.message_text.endswith("Bạn đang học năm mấy rồi?")
+    assert earlier in llm.evaluation_context
+    assert latest in llm.evaluation_context
+
+
+@pytest.mark.asyncio
+async def test_completed_warmup_announces_topic_without_asking_or_summarizing() -> None:
+    llm = WarmupCompleteLLM()
+    engine = InterviewCoreEngine(llm_client=llm)
+    next_prompt = "Trong dự án HamTech, bạn trực tiếp phụ trách phần nào?"
+    result = await engine.handle_turn(
+        CandidateTurnInput(
+            session_id="session-1",
+            turn_index=0,
+            text_content=(
+                "Dạ em là sinh viên năm cuối ngành Kỹ thuật phần mềm tại IUH và em đang tìm cơ hội "
+                "Full Stack Developer. Em thích thiết kế giao diện, đồng thời cũng quan tâm đến logic "
+                "backend và cách các luồng dữ liệu được xử lý trong ứng dụng."
+            ),
+        ),
+        {
+            "current_stage": InterviewStage.WARM_UP.value,
+            "started_at": datetime.now(timezone.utc),
+            "target_duration_minutes": 25,
+            "questions_pool": {
+                "VALIDATE": [
+                    {
+                        "question_id": "project-question-1",
+                        "competency": "Xác thực CV & Dự án",
+                        "stage": "VALIDATE",
+                        "main_prompt": next_prompt,
+                    }
+                ]
+            },
+            "current_question_context": {
+                "question_id": "warmup-intro",
+                "competency": "Giới thiệu & Khởi động",
+                "main_prompt": "Giới thiệu ngắn về bản thân và lý do quan tâm vị trí này?",
+            },
+        },
+    )
+
+    assert result.action == TurnAction.NEXT_QUESTION
+    assert result.metadata["awaiting_candidate_ack"] is True
+    assert result.message_text == "Ok, mình hiểu rồi. Tiếp theo mình hỏi bạn về dự án HamTech nhé."
+    assert "?" not in result.message_text
+    assert next_prompt not in result.message_text
+    assert "năm cuối" not in result.message_text
+    assert "Không tóm tắt" in llm.transition_prompt

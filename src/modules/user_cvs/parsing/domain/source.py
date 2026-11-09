@@ -7,6 +7,31 @@ from src.modules.user_cvs.domain.schemas import EvidenceSpan
 from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
 
 
+# Measured over the 230-CV corpus: readable documents reach at most 0.30 (a CV
+# whose skills parse cleanly but whose spaced-out heading inflates the count),
+# while genuinely shredded ones start at 0.46. The threshold sits in that gap.
+SHREDDED_TEXT_RATIO = 0.40
+
+
+def character_shredded_ratio(text: str) -> float:
+    """Share of whitespace tokens that are a single alphanumeric character.
+
+    Some PDFs store each glyph with its own positioning, and a text-layer
+    extractor then emits "S o f t w a r e E n g i n e e r". The document looks
+    fine to a reader and carries a normal character count, but no skill, degree
+    or company name survives as a matchable token, so the CV silently parses to
+    almost nothing. Measuring it lets the extractor pick a repair strategy and
+    the pipeline report a damaged read rather than publish an empty profile as
+    if the candidate had listed nothing.
+    """
+    tokens = text.split()
+    if len(tokens) < 40:
+        # Too short to tell a shredded document from ordinary initials.
+        return 0.0
+    singles = sum(1 for token in tokens if len(token) == 1 and token.isalnum())
+    return singles / len(tokens)
+
+
 @dataclass(frozen=True)
 class SourceBlock:
     block_id: str

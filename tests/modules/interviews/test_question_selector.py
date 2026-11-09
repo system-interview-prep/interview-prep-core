@@ -2,9 +2,20 @@ from src.modules.interviews.planning.question_selector import (
     _allowed_purposes,
     _Candidate,
     _candidate_rank,
+    _is_single_focus_question,
     _prioritize_repeat,
     _snapshot,
 )
+
+
+def test_generated_project_question_must_have_one_focus():
+    assert _is_single_focus_question("Trong dự án HamTech, bạn trực tiếp phụ trách phần nào?")
+    assert not _is_single_focus_question(
+        "Trong dự án HamTech, bạn đóng góp phần nào và giải quyết vấn đề kỹ thuật nào?"
+    )
+    assert not _is_single_focus_question(
+        "What did you own in the project, and why did you choose that approach?"
+    )
 
 
 def candidate(**overrides):

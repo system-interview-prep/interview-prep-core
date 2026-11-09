@@ -11,7 +11,7 @@ Bảo đảm:
   ``questionText`` gốc; ``spokenText`` chỉ dùng khi hỏi và khi nhắc lại.
 * Mỗi bản nói phải qua ``validate_spoken_question``: giữ đủ thuật ngữ của câu
   gốc, không thêm thuật ngữ nào từ đáp án mong đợi (không lộ ý cần có), không
-  chứa từ về điểm hay barem, đúng ngôn ngữ, độ dài gần câu gốc. Trượt thì giữ
+  chứa từ về điểm hay barem, độ dài gần câu gốc. Trượt thì giữ
   câu gốc.
 * Không chặn việc khoá câu hỏi: lỗi, hết thời gian hay tắt bằng biến môi trường
   ``INTERVIEW_SPOKEN_QUESTIONS=0`` đều chỉ có nghĩa là buổi đó dùng câu gốc.
@@ -96,13 +96,11 @@ def validate_spoken_question(
     spoken: str,
     *,
     expected_text: str = "",
-    is_vi: bool = True,
 ) -> bool:
     """True khi ``spoken`` là bản nói an toàn của ``original``."""
     # Imported here: the core package imports planning modules at load time.
     from src.modules.interviews.core.conversation.turn_engine import PROHIBITED_LEAK_PATTERNS
     from src.modules.interviews.core.dialogue.policy import is_evaluative
-    from src.modules.interviews.core.dialogue.language import response_matches_locale
 
     original = str(original or "").strip()
     spoken = str(spoken or "").strip()
@@ -129,7 +127,7 @@ def validate_spoken_question(
         or _similarity(original, spoken) > 0.95
     ):
         return False
-    if is_evaluative(spoken) or not response_matches_locale(spoken, is_vi=is_vi):
+    if is_evaluative(spoken):
         return False
     original_terms = _tech_tokens(original)
     spoken_terms = _tech_tokens(spoken)
@@ -266,7 +264,7 @@ async def add_spoken_versions(
     for turn_id, snapshot in pending.items():
         spoken = rewritten.get(turn_id, "")
         if not validate_spoken_question(
-            snapshot["questionText"], spoken, expected_text=_expected_text(snapshot), is_vi=is_vi
+            snapshot["questionText"], spoken, expected_text=_expected_text(snapshot)
         ):
             rejected += int(bool(spoken))
             rejected_turn_ids.append(str(turn_id))

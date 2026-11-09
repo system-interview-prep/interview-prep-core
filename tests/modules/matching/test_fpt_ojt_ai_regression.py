@@ -264,7 +264,11 @@ def test_fpt_ojt_ai_sample_is_evidence_evaluated_without_duplicate_requirements(
 
     factors = {item.factor: item for item in result.factor_results}
     assert factors["requirement_coverage"].status == "scored"
-    assert factors["requirement_coverage"].raw_score == pytest.approx(0.842519685)
+    # "Đam mê nghiên cứu và ứng dụng công nghệ AI" is an attitude the posting
+    # asks for but a CV cannot evidence, so it is demoted out of the must-have
+    # gate.  Its lighter importance weight is what moves coverage off the old
+    # all-must-have figure of 0.842519685.
+    assert factors["requirement_coverage"].raw_score == pytest.approx(0.8245614035)
     assert factors["skill"].status == "scored"
     assert factors["language"].status == "scored"
     assert factors["experience"].status == "not_applicable"
@@ -273,7 +277,7 @@ def test_fpt_ojt_ai_sample_is_evidence_evaluated_without_duplicate_requirements(
     assert result.score_provenance.supported_requirement_count == 7
     assert result.score_provenance.scored_requirement_count == 7
     assert result.score_provenance.unknown_requirement_count == 0
-    assert result.score_provenance.requirement_coverage == pytest.approx(0.842519685)
+    assert result.score_provenance.requirement_coverage == pytest.approx(0.8245614035)
     assert sum(result.score_provenance.factor_contributions.values()) == pytest.approx(
         result.diagnostic_score
     )

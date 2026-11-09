@@ -10,25 +10,9 @@ from typing import Any, Dict, Literal, Optional, Sequence
 from src.core.trace_logging import trace_event
 from src.modules.interviews.core.dialogue import speech_checks
 from src.modules.interviews.core.contracts.interview import InterviewStage
-from src.modules.interviews.core.dialogue.phrases import (
-    CLARIFY_FALLBACK_EN,
-    CLARIFY_FALLBACK_VI,
-    CODING_FALLBACK_PROBE_EN,
-    CODING_FALLBACK_PROBE_VI,
-    QUESTION_RESPONSES_EN,
-    QUESTION_RESPONSES_VI,
-    QUESTION_RETURN_EN,
-    QUESTION_RETURN_VI,
-)
 from src.modules.interviews.core.dialogue.policy import (
-    ACK_FALLBACK_EN,
-    ACK_FALLBACK_VI,
     ACK_MAX_WORDS,
     ACK_MIN_WORDS,
-    INTRO_ACK_EN,
-    INTRO_ACK_VI,
-    PROBE_FALLBACK_EN,
-    PROBE_FALLBACK_VI,
     breaks_house_style,
     first_question_only,
     hint_rejection_reason,
@@ -40,13 +24,11 @@ from src.modules.interviews.core.dialogue.policy import (
     is_parroting,
     judges_difficulty,
     looks_like_system_probe,
-    pick_variant,
     probe_rejection_reason,
     recent_contains,
     speech_v2_enabled,
     system_leak_reason,
 )
-from src.modules.interviews.core.dialogue.language import response_matches_locale
 
 
 def _loads_llm_json(raw: str) -> Any:
@@ -74,12 +56,6 @@ PROHIBITED_LEAK_PATTERNS = [
 ]
 
 # The first variant of each pool, kept as the name older callers and tests use.
-SAFE_FALLBACK_PROBE_VI = PROBE_FALLBACK_VI[0]
-SAFE_FALLBACK_PROBE_EN = PROBE_FALLBACK_EN[0]
-_FIXED_PROBES = frozenset(
-    {*PROBE_FALLBACK_VI, *PROBE_FALLBACK_EN, CODING_FALLBACK_PROBE_VI, CODING_FALLBACK_PROBE_EN}
-)
-
 
 # What a deepening probe (challenge tier, sufficient answer) pushes on.
 DEEPEN_ASPECT_VI = (
@@ -94,40 +70,8 @@ DEEPEN_ASPECT_EN = (
 )
 
 
-def fallback_probe(is_vi: bool, seed: str = "", recent: Any = ()) -> str:
-    """A fixed follow-up; varies by session and turn so it does not repeat verbatim."""
-    pool = PROBE_FALLBACK_VI if is_vi else PROBE_FALLBACK_EN
-    if not seed:
-        return pool[0]
-    return pick_variant(pool, f"{seed}:probe", recent)
-
-
-def fallback_acknowledgement(
-    is_vi: bool, seed: str = "", recent: Any = (), pool: Optional[Sequence[str]] = None
-) -> str:
-    if pool is None:
-        pool = ACK_FALLBACK_VI if is_vi else ACK_FALLBACK_EN
-    return pick_variant(pool, f"{seed}:ack", recent)
-
-
-def acknowledgement_pool(is_vi: bool, stage: Any = None) -> Sequence[str]:
-    """Câu dự phòng theo giai đoạn: lời tự giới thiệu có nhóm câu riêng."""
-    if str(getattr(stage, "value", stage) or "").upper() == "WARM_UP":
-        return INTRO_ACK_VI if is_vi else INTRO_ACK_EN
-    return ACK_FALLBACK_VI if is_vi else ACK_FALLBACK_EN
-
-
-# Câu giải thích lại câu hỏi: buổi thật 17/10 AI viết "Hiền không cần kể chuyện
-# đánh nhau; hãy tập trung…", nghe như lên lớp. Chỉ được nói lại câu hỏi.
-CLARIFY_MAX_WORDS = 45
-_CLARIFY_LECTURING_RE = re.compile(
-    r"\b(hãy|không cần|đừng|không nên|vui lòng|cần phải|phải tập trung|you should|don't|do not|please focus)\b",
-    re.IGNORECASE,
-)
-
-
 def clarify_rejection_reason(
-    text_value: str, *, is_vi: bool, question: str = "", answer: str = "", rubric: str = ""
+    text_value: str, *, question: str = "", answer: str = "", rubric: str = ""
 ) -> Optional[str]:
     value = str(text_value or "").strip()
     if not value:
@@ -146,14 +90,15 @@ def clarify_rejection_reason(
     hint = hint_rejection_reason(value, question=question, answer=answer, rubric=rubric)
     if hint and hint != "leading_question":
         return hint
-    if not response_matches_locale(value, is_vi=is_vi):
-        return "wrong_language"
     return None
 
 
-def clarify_fallback_text(question_prompt: str, *, is_vi: bool) -> str:
-    """Fixed clarification used when the model reply is missing or rejected."""
-    return (CLARIFY_FALLBACK_VI if is_vi else CLARIFY_FALLBACK_EN).format(question=question_prompt)
+# Quy tắc kiểm tra nội dung câu diễn đạt lại, không phải câu thoại dự phòng.
+CLARIFY_MAX_WORDS = 45
+_CLARIFY_LECTURING_RE = re.compile(
+    r"\b(hãy|không cần|đừng|không nên|vui lòng|cần phải|phải tập trung|you should|don't|do not|please focus)\b",
+    re.IGNORECASE,
+)
 
 
 def validate_probe_text(probe_text: str) -> bool:
@@ -178,12 +123,12 @@ def probe_is_sayable(probe_text: str) -> bool:
 
 
 def checked_probe(
-    raw_probe: str, *, is_vi: bool, question: str = "", answer: str = "", rubric: str = ""
+    raw_probe: str, *, question: str = "", answer: str = "", rubric: str = ""
 ) -> str | None:
     """The AI's follow-up as it can be asked, or None; each change goes to the admin view.
 
     Keeps the first question only (a second one is cut, recorded as a fix),
-    then applies the same guard as ``probe_is_sayable`` plus the locale check.
+    then applies the same content and rubric-leak guard as ``probe_is_sayable``.
     """
     raw = str(raw_probe or "").strip()
     if not raw:
@@ -201,8 +146,6 @@ def checked_probe(
             answer=answer,
             rubric=rubric,
         )
-    if reason is None and not response_matches_locale(probe, is_vi=is_vi):
-        reason = "wrong_language"
     if reason:
         trace_event("interviewer", "probe_rejected", reason=reason, probe=probe[:200])
         speech_checks.record("probe", "reject", reason, probe)
@@ -335,8 +278,22 @@ def normalize_candidate_pronoun(text_value: str, is_vi: bool = True) -> str:
     return _CANDIDATE_PRONOUN_RE.sub(_swap, text_value)
 
 
+# Các từ/cụm từ dùng để phân loại ý định ứng viên; đây không phải lời thoại AI.
+DEFINITE_GIVE_UP_KEYWORDS = {
+    "ko biết", "không biết", "chịu", "em chịu", "mình chịu", "bỏ qua", "pass",
+    "chưa học", "chưa rõ", "không rõ", "qua câu", "don't know", "no idea", "skip",
+    "idk", "dunno", "k biet", "k biết", "chua hoc", "chua ro", "bó tay", "dont know",
+    "have no idea", "skip question", "chịu thua", "bó tay rồi", "em ko biết",
+    "em không biết", "mình không biết",
+}
+AMBIGUOUS_KEYWORDS = {
+    "ừm", "um", "uhm", "uh", "ơ", "ờ", "k", "ko", "không", "chưa", "ok", "pk",
+    "khong", "chua", "chưa ạ", "không ạ", "chưa từng", "dạ chưa", "dạ không",
+}
+
+
 def acknowledgement_rejection_reason(
-    raw: Any, is_vi: bool, *, recent: Any = (), answer: str = ""
+    raw: Any, *, recent: Any = (), answer: str = ""
 ) -> Optional[str]:
     """Why an LLM acknowledgement cannot be said as is, or None when it can.
 
@@ -376,90 +333,7 @@ def acknowledgement_rejection_reason(
         return "repeats_recent"
     if speech_v2_enabled() and breaks_house_style(text_value):
         return "style"
-    if not response_matches_locale(text_value, is_vi=is_vi):
-        return "wrong_language"
     return None
-
-
-def safe_acknowledgement(
-    raw: Any,
-    is_vi: bool,
-    *,
-    seed: str = "",
-    recent: Any = (),
-    answer: str = "",
-    pool: Optional[Sequence[str]] = None,
-) -> str:
-    """Return the evaluator's acknowledgement only if it is a short, neutral line.
-
-    The acknowledgement is LLM output shaped by the candidate's own answer and
-    is shown/spoken verbatim, so an injected answer could make the interviewer
-    announce a score or say anything else. Anything long, multi-line, asking a
-    question, matching the rubric-leak patterns, judging the answer ("đúng
-    rồi", "chưa đủ"), curt, a keyword fragment, unfinished, or repeating a
-    line just said falls back to a neutral line picked from a pool, so the
-    fallback itself does not repeat either.
-    """
-    if acknowledgement_rejection_reason(raw, is_vi, recent=recent, answer=answer):
-        return fallback_acknowledgement(is_vi, seed, recent or (), pool)
-    return normalize_candidate_pronoun(str(raw or "").strip(), is_vi)
-
-
-# Tập từ khóa CHẮC CHẮN LÀ BỎ CUỘC (Không bao giờ nhầm với Yes/No)
-DEFINITE_GIVE_UP_KEYWORDS = {
-    "ko biết",
-    "không biết",
-    "chịu",
-    "em chịu",
-    "mình chịu",
-    "bỏ qua",
-    "pass",
-    "chưa học",
-    "chưa rõ",
-    "không rõ",
-    "qua câu",
-    "don't know",
-    "no idea",
-    "skip",
-    "idk",
-    "dunno",
-    "k biet",
-    "k biết",
-    "chua hoc",
-    "chua ro",
-    "bó tay",
-    "dont know",
-    "have no idea",
-    "skip question",
-    "chịu thua",
-    "bó tay rồi",
-    "em ko biết",
-    "em không biết",
-    "mình không biết",
-}
-
-# Tập từ khóa trung tính / mập mờ (Chỉ nghi vấn nếu câu hỏi KHÔNG PHẢI Yes/No)
-AMBIGUOUS_KEYWORDS = {
-    "ừm",
-    "um",
-    "uhm",
-    "uh",
-    "ơ",
-    "ờ",
-    "k",
-    "ko",
-    "không",
-    "chưa",
-    "ok",
-    "pk",
-    "khong",
-    "chua",
-    "chưa ạ",
-    "không ạ",
-    "chưa từng",
-    "dạ chưa",
-    "dạ không",
-}
 
 
 def is_yes_no_question(question_prompt: str) -> bool:
@@ -826,43 +700,12 @@ def classify_candidate_question(text: str) -> CandidateQuestionIntent | None:
     return None
 
 
-def candidate_question_response(
-    intent: CandidateQuestionIntent,
-    *,
-    current_question: str,
-    is_vi: bool,
-    duration_minutes: int,
-    spoken: bool = True,
-) -> str:
-    """Answer a meta question, then repeat the current question.
-
-    Every room repeats it: after an aside the candidate should not have to
-    scroll back (chat) or remember it (voice). ``spoken`` is kept for older
-    callers and no longer changes the wording.
-    """
-    del spoken
-    responses = QUESTION_RESPONSES_VI if is_vi else QUESTION_RESPONSES_EN
-    answer = responses.get(str(intent), responses["OFF_TOPIC"]).format(minutes=duration_minutes)
-    back = (QUESTION_RETURN_VI if is_vi else QUESTION_RETURN_EN).format(question=current_question)
-    return f"{answer}\n\n{back}"
-
-
 __all__ = [
     "_loads_llm_json",
     "TIME_THRESHOLDS",
     "PROHIBITED_LEAK_PATTERNS",
-    "SAFE_FALLBACK_PROBE_VI",
-    "SAFE_FALLBACK_PROBE_EN",
-    "_FIXED_PROBES",
     "DEEPEN_ASPECT_VI",
     "DEEPEN_ASPECT_EN",
-    "fallback_probe",
-    "fallback_acknowledgement",
-    "acknowledgement_pool",
-    "CLARIFY_MAX_WORDS",
-    "_CLARIFY_LECTURING_RE",
-    "clarify_rejection_reason",
-    "clarify_fallback_text",
     "validate_probe_text",
     "probe_is_sayable",
     "checked_probe",
@@ -878,7 +721,6 @@ __all__ = [
     "_CANDIDATE_PRONOUN_RE",
     "normalize_candidate_pronoun",
     "acknowledgement_rejection_reason",
-    "safe_acknowledgement",
     "DEFINITE_GIVE_UP_KEYWORDS",
     "AMBIGUOUS_KEYWORDS",
     "is_yes_no_question",
@@ -908,5 +750,4 @@ __all__ = [
     "_ANSWER_REQUEST",
     "_OFF_TOPIC_MARKERS",
     "classify_candidate_question",
-    "candidate_question_response",
 ]

@@ -168,7 +168,11 @@ def test_unmentioned_requirement_is_not_met_and_counted_in_coverage() -> None:
 
     coverage = next(item for item in result.factor_results if item.factor == "requirement_coverage")
     assert coverage.raw_score == 0.5
-    assert coverage.reliability == pytest.approx(1.0)
+    # Every applicable requirement was evaluated, so none of the confidence loss
+    # comes from unevaluated requirements.  Reliability is still below 1.0
+    # because two requirements are a narrow basis for judging a whole role:
+    # confidence in requirement coverage scales with breadth.
+    assert coverage.reliability == pytest.approx((2 / 5) ** 0.5)
     assert result.score_provenance.unknown_requirement_count == 0
     assert result.requirement_results[-1].status == "not_met"
 

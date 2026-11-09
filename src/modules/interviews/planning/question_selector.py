@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -25,16 +26,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
 from src.core.trace_logging import trace_event
+from src.modules.ai.facade import generate_text
 from src.modules.interviews.core.session_policy.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
 from src.modules.interviews.core.session_policy.blueprint import InterviewBlueprint, blueprint_from_payload
 from src.modules.interviews.core.dialogue.opening import warmup_question
 from src.modules.interviews.planning.spoken_questions import add_spoken_versions
-from src.modules.interviews.core.dialogue.policy import speech_v2_enabled
 from src.modules.interviews.planning.project_evidence import (
-    build_project_validation_question,
     extract_project_evidences,
     select_best_project,
-    spoken_project_question,
 )
 from src.modules.question_bank.facade import GENERATED_QUESTION_AUTHOR
 
@@ -47,6 +46,17 @@ _DIFFICULTY_ORDER = {
     "intermediate": 1,
     "advanced": 2,
 }
+
+_QUESTION_FOCUS_CUES = re.compile(
+    r"\b(?:nào|gì|vì sao|tại sao|như thế nào|thế nào|bao lâu|khi nào|ở đâu|"
+    r"what|why|how|when|where|which|who)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_single_focus_question(question: str) -> bool:
+    """Reject generated questions that combine multiple interview prompts."""
+    return bool(question and "?" in question and len(_QUESTION_FOCUS_CUES.findall(question)) <= 1)
 
 
 class QuestionUnavailableError(ValueError):
@@ -1589,11 +1599,18 @@ async def select_and_freeze_questions(
     blueprint = blueprint_from_payload((blueprint_record or {}).get("policy"))
     validate_enabled = blueprint.validate_cv.enabled
 
+    project_context: dict[str, Any] = {"job_title": job_title}
     if selected_project:
-        validate_text = build_project_validation_question(
-            project=selected_project,
-            job_title=job_title,
-            locale=locale,
+        project_context.update(
+            {
+                "project_name": selected_project.name,
+                "role": selected_project.role,
+                "role_status": selected_project.role_status,
+                "technologies": selected_project.technologies,
+                "problem_domain": selected_project.problem_domain,
+                "decisions": selected_project.decisions,
+                "outcomes": selected_project.outcomes,
+            }
         )
         trace_event(
             "interviewer",
@@ -1611,27 +1628,55 @@ async def select_and_freeze_questions(
             selection_reason=selected_project.selection_reason,
         )
     elif project_name:
-        validate_text = (
-            f"Trong '{project_name}', bạn trực tiếp làm phần nào, và bài toán khó nhất bạn giải quyết là gì?"
-            if is_vi
-            else f"In '{project_name}', which parts did you do yourself, and what was the hardest problem you solved?"
-        )
-        if speech_v2_enabled():
-            validate_text = spoken_project_question(project_name, is_vi=is_vi)
+        project_context["project_name"] = project_name
     elif key_technologies:
-        tech_str = ", ".join(key_technologies[:3])
-        validate_text = (
-            f"CV của bạn có {tech_str}. Kể một bài toán gần đây bạn giải quyết bằng các công nghệ này?"
-            if is_vi
-            else f"Your CV lists {tech_str}. What is a recent problem you solved with them?"
-        )
+        project_context["technologies"] = key_technologies[:3]
     else:
-        validate_text = (
-            "Dự án kỹ thuật nổi bật nhất của bạn là gì: bạn làm phần nào, và bài toán khó nhất là gì?"
-            if is_vi
-            else "What is your most notable technical project: which part was yours, and what was the hardest problem?"
-        )
+        project_context["project_evidence"] = "No structured project or technology was found in the CV."
 
+    is_vi = (locale or "vi").lower().startswith("vi")
+    question_language = "Vietnamese" if is_vi else "English"
+    validate_text = ""
+    if validate_enabled:
+        validate_text = str(
+            await generate_text(
+                instructions=(
+                    f"Write exactly one natural spoken interview question in {question_language} about the candidate's project evidence. "
+                    "Use only the supplied CV facts. Choose exactly ONE focus: personal contribution, a technical decision, "
+                    "or a concrete problem solved. Never combine two focuses, never use 'and why/how', and do not ask a second question. "
+                    "If the CV has no project details, ask one open project question without assuming facts. "
+                    "Do not add an introduction, evaluation, answer hint, or rubric. Output only the question."
+                ),
+                input_text=json.dumps(project_context, ensure_ascii=False),
+                max_output_tokens=120,
+            )
+        ).strip()
+        if (
+            not validate_text
+            or len(validate_text.split()) > 40
+            or not _is_single_focus_question(validate_text)
+        ):
+            # Fail closed to a short, single-focus prompt instead of freezing a
+            # compound question into every session using this plan.
+            project_label = str(project_context.get("project_name") or "dự án trong CV").strip()
+            validate_text = (
+                f"Trong dự án {project_label}, bạn trực tiếp phụ trách phần nào?"
+                if is_vi
+                else f"What part of {project_label} did you personally own?"
+            )
+            trace_event(
+                "interviewer",
+                "project_question_replaced_multi_focus",
+                session_id=session_row.get("id"),
+                project_name=project_label,
+            )
+        trace_event(
+            "interviewer",
+            "project_question_generated",
+            session_id=session_row.get("id"),
+            project_name=project_context.get("project_name"),
+            text=validate_text[:500],
+        )
     warmup_snapshot = {
         "schemaVersion": "1.0",
         "selectorPolicyVersion": SELECTOR_POLICY_VERSION,

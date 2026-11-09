@@ -15,13 +15,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.modules.interviews.core.dialogue.phrases import (
-    PROJECT_QUESTION_EN,
-    PROJECT_QUESTION_UNNAMED_EN,
-    PROJECT_QUESTION_UNNAMED_VI,
-    PROJECT_QUESTION_VI,
-)
-from src.modules.interviews.core.dialogue.policy import speech_v2_enabled
 
 _COMMON_TECH_TOKENS = {
     "python", "java", "typescript", "javascript", "golang", "go", "c++", "c#", "rust",
@@ -346,41 +339,3 @@ def spoken_project_name(name: str | None) -> str | None:
     if _DESCRIPTION_START_RE.match(value) or re.search(r"\b(and|và)\b.*\b(and|và)\b", value, re.IGNORECASE):
         return None
     return value
-
-
-def spoken_project_question(name: str | None, *, is_vi: bool) -> str:
-    """The VALIDATE question from the shared script, with a sayable project name."""
-    spoken = spoken_project_name(name)
-    if spoken:
-        return (PROJECT_QUESTION_VI if is_vi else PROJECT_QUESTION_EN).format(project=spoken)
-    return PROJECT_QUESTION_UNNAMED_VI if is_vi else PROJECT_QUESTION_UNNAMED_EN
-
-
-def build_project_validation_question(
-    project: StructuredProjectEvidence,
-    job_title: str = "ứng viên",
-    locale: str = "vi",
-) -> str:
-    """One short, grounded question about the candidate's CV project.
-
-    A real interviewer asks one thing at a time: what the candidate did and the
-    hardest decision. Only the CV's project name is quoted, never invented; a
-    missing role is asked, not asserted. The role, technology list and stated
-    outcome made the question about 40 syllables long and steered the probe to
-    whichever technology came first, so they are left to the follow-up probe.
-    """
-    is_vi = (locale or "vi").lower().startswith("vi")
-    if speech_v2_enabled():
-        return spoken_project_question(project.name, is_vi=is_vi)
-    has_role = project.role_status == "present" and bool(project.role)
-
-    if is_vi:
-        ask = "bạn trực tiếp làm phần nào, và quyết định kỹ thuật khó nhất là gì?"
-        if has_role:
-            return f"Trong dự án '{project.name}', {ask}"
-        return f"CV chưa ghi rõ vai trò của bạn trong dự án '{project.name}'. {ask[0].upper()}{ask[1:]}"
-
-    ask = "which parts did you build yourself, and what was the hardest technical decision?"
-    if has_role:
-        return f"In the '{project.name}' project, {ask}"
-    return f"Your CV does not state your role in the '{project.name}' project. {ask[0].upper()}{ask[1:]}"

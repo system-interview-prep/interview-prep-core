@@ -37,7 +37,9 @@ SLOW_DB_MS = 500
 QUEUE_BACKLOG_WARN = 20
 # An open room with people in it gets voice events every few seconds while the agent talks.
 AGENT_IDLE_SECONDS = 300
-MIGRATIONS_DIR = Path(__file__).resolve().parents[3] / "migrations" / "versions"
+# src/modules/admin/system/system_health.py -> repo root is five levels up:
+# system (1) admin (2) modules (3) src (4) repo root (5).
+MIGRATIONS_DIR = Path(__file__).resolve().parents[4] / "migrations" / "versions"
 _REVISION_RE = re.compile(r'^revision(?:\s*:\s*str)?\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
 _DOWN_RE = re.compile(r'^down_revision(?:\s*:[^=]+)?\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
 

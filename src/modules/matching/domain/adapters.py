@@ -5,6 +5,7 @@ from src.modules.job_descriptions.schemas import (
     JobRequirement,
     resolve_known_skill_concepts,
 )
+from src.modules.matching.domain.requirement_gating import classify_requirement_gate
 from src.modules.matching.domain.schemas import (
     CanonicalJob,
     GroundedJobText,
@@ -85,6 +86,20 @@ def job_description_to_matching_job(
                 f"unsupported requirement priority '{requirement.priority}' "
                 f"for requirement '{requirement.requirement_id}'"
             )
+
+        # A posting's wording decides what it says; it does not decide what may
+        # disqualify a person.  Negated lines ("No experience required") state
+        # the absence of a condition, and attitude or protected-attribute lines
+        # cannot be confirmed from a CV at all.  Keep them for context, but
+        # never let the eligibility gate fire on them.
+        gate = classify_requirement_gate(requirement.raw_label, requirement.kind)
+        if gate.gate_class == "vacuous":
+            # Not a condition.  Scoring it would penalise every candidate for
+            # failing to evidence a requirement the employer waived.
+            continue
+        if not gate.may_gate and priority == "must_have":
+            priority = "nice_to_have" if gate.gate_class == "soft_signal" else "context"
+
         common = {
             "requirementId": requirement.requirement_id,
             "priority": priority,

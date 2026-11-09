@@ -69,8 +69,6 @@ def _inputs_from_body(request: MatchRequest) -> None:
 async def _resolve_match_request(
     payload: MatchClarificationIdsRequest, db: AsyncSession, user: dict
 ) -> MatchRequest:
-    if payload.candidate_id.startswith("sample-") or payload.job_id.startswith("sample-"):
-        raise HTTPException(status_code=422, detail="Sample matches do not support clarification answers")
     started = time.perf_counter()
     which = "resume"
     try:

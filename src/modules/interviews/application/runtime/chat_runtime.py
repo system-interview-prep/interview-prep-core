@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from time import perf_counter
@@ -54,6 +55,20 @@ from src.modules.interviews.core.contracts.interview import (
 from src.modules.user_cvs.facade import candidate_name_from_text
 
 _validate_probe_text = validate_probe_text
+
+
+def _is_simple_transition_ack(text_value: str) -> bool:
+    """Recognize a short readiness response without swallowing a real answer."""
+    normalized = unicodedata.normalize("NFKD", str(text_value or "").lower())
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = normalized.replace("đ", "d")
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+    return normalized in {
+        "da", "da a", "da anh hoi di", "da chi hoi di", "da ban hoi di",
+        "da minh nghe", "vang", "vang a", "duoc", "duoc a", "ok", "ok a",
+        "duoc anh hoi di", "duoc chi hoi di", "okay", "okay a", "roi", "uh", "uhm", "minh san sang",
+        "yes", "yes go ahead", "sure", "ready", "okay go ahead",
+    }
 
 MessageType = Literal[
     "GREETING",
@@ -466,6 +481,19 @@ def _trace_spoken_turn(
 
 def _turn_stage(turn: dict[str, Any]) -> str:
     return str((turn.get("question_snapshot") or {}).get("stage") or "UNKNOWN")
+
+
+def _accumulate_turn_answer(previous: str, current: str, *, warmup: bool) -> str:
+    """Combine answer fragments while keeping warm-up speech readable to the AI."""
+    previous = str(previous or "").strip()
+    current = str(current or "").strip()
+    if not previous:
+        return current
+    if not current:
+        return previous
+    if warmup:
+        return f"{previous}\n{current}"
+    return f"{previous}\n\n[Follow-up Answer]: {current}"
 
 
 def _session_overrun_seconds(session_row: dict[str, Any]) -> int:
@@ -1191,7 +1219,7 @@ async def process_candidate_message(
     last_asst_msg_res = await db.execute(
         text(
             """
-            SELECT id, turn_id, message_type, sequence
+            SELECT id, turn_id, message_type, sequence, content, metadata
             FROM interview_chat_messages
             WHERE session_id = :sid AND role = 'assistant'
             ORDER BY sequence DESC LIMIT 1
@@ -1227,6 +1255,7 @@ async def process_candidate_message(
 
     current_turn_id = current_turn["id"]
     current_turn_index = current_turn["turn_index"]
+    is_warmup_turn = _turn_stage(current_turn) == "WARM_UP"
 
     # Serialize messages per session. Phase 1 commits before the LLM call, so a
     # second message arriving meanwhile used to take the sequence reserved for
@@ -1340,6 +1369,122 @@ async def process_candidate_message(
                 "Vui lòng thử lại đúng tin nhắn đó."
             )
 
+    # A stage transition is a separate conversational beat. A short "dạ" only
+    # confirms readiness; it must not be evaluated or stored as the answer to
+    # the question that follows.
+    transition_metadata = (last_asst_msg or {}).get("metadata") or {}
+    if isinstance(transition_metadata, str):
+        try:
+            transition_metadata = json.loads(transition_metadata)
+        except ValueError:
+            transition_metadata = {}
+    if (
+        not recovered_phase1
+        and isinstance(transition_metadata, dict)
+        and transition_metadata.get("awaitingCandidateAck") is True
+        and _is_simple_transition_ack(cleaned_content)
+    ):
+        snap = current_turn.get("question_snapshot") or {}
+        next_question_text = (
+            snap.get("spokenText")
+            or snap.get("questionText")
+            or snap.get("question_text")
+            or ("Câu hỏi tiếp theo dành cho bạn." if (session_row.get("locale") or "vi").lower().startswith("vi") else "Here is your next question.")
+        )
+        max_seq = await db.scalar(
+            text("SELECT COALESCE(MAX(sequence), 0) FROM interview_chat_messages WHERE session_id = :sid"),
+            {"sid": session_id},
+        )
+        ack_seq = int(max_seq or 0) + 1
+        question_seq = ack_seq + 1
+        ack_id = str(uuid4())
+        question_message_id = str(uuid4())
+        stage = str(snap.get("stage") or "")
+        question_meta = {
+            "turnIndex": current_turn_index,
+            "transitionAckConsumed": True,
+        }
+        if stage:
+            question_meta["stage"] = stage
+        if snap.get("projectName"):
+            question_meta["project_name"] = snap["projectName"]
+        if snap.get("projectId"):
+            question_meta["project_id"] = snap["projectId"]
+        await db.execute(
+            text(
+                """
+                INSERT INTO interview_chat_messages
+                (id, session_id, role, content, metadata, turn_id, message_type, sequence, client_message_id, created_at)
+                VALUES (:id, :sid, 'user', :content, CAST(:metadata AS jsonb), :turn_id, 'ACKNOWLEDGMENT', :seq, :cid, now())
+                """
+            ),
+            {
+                "id": ack_id,
+                "sid": session_id,
+                "content": cleaned_content,
+                "metadata": json.dumps({"purpose": "transition_ready"}),
+                "turn_id": current_turn_id,
+                "seq": ack_seq,
+                "cid": client_message_id,
+            },
+        )
+        await db.execute(
+            text(
+                """
+                INSERT INTO interview_chat_messages
+                (id, session_id, role, content, metadata, turn_id, message_type, sequence, created_at)
+                VALUES (:id, :sid, 'assistant', :content, CAST(:metadata AS jsonb), :turn_id, 'MAIN_QUESTION', :seq, now())
+                """
+            ),
+            {
+                "id": question_message_id,
+                "sid": session_id,
+                "content": next_question_text,
+                "metadata": json.dumps(question_meta),
+                "turn_id": current_turn_id,
+                "seq": question_seq,
+            },
+        )
+        await db.commit()
+        now_iso = datetime.now(UTC).isoformat()
+        return {
+            "sessionId": session_id,
+            "currentStage": stage or "VALIDATE",
+            "currentTurnIndex": current_turn_index,
+            "action": "ASK_MAIN",
+            "message": next_question_text,
+            "remainingTimeSeconds": _session_remaining_seconds(
+                session_row, elapsed_override_seconds=elapsed_override_seconds
+            ),
+            "probeCount": 0,
+            "completed": False,
+            "userMessage": {
+                "messageId": ack_id,
+                "role": "user",
+                "messageType": "ACKNOWLEDGMENT",
+                "turnId": current_turn_id,
+                "sequence": ack_seq,
+                "content": cleaned_content,
+                "createdAt": now_iso,
+            },
+            "assistantResponse": {
+                "messageId": question_message_id,
+                "role": "assistant",
+                "messageType": "MAIN_QUESTION",
+                "turnId": current_turn_id,
+                "sequence": question_seq,
+                "content": next_question_text,
+                "createdAt": now_iso,
+            },
+            "turnStatus": {
+                "turnId": current_turn_id,
+                "turnIndex": current_turn_index,
+                "isFollowUp": False,
+                "completed": False,
+            },
+            "sessionStatus": "OPEN",
+        }
+
     # =========================================================================
     # PHASE 1: Fast Write Candidate Message (Committed immediately)
     # =========================================================================
@@ -1380,10 +1525,8 @@ async def process_candidate_message(
             )
 
         existing_answer = previous_answer or ""
-        new_accumulated = (
-            f"{existing_answer}\n\n[Follow-up Answer]: {cleaned_content}"
-            if existing_answer
-            else cleaned_content
+        new_accumulated = _accumulate_turn_answer(
+            existing_answer, cleaned_content, warmup=is_warmup_turn
         )
         await db.execute(
             text(
@@ -1485,7 +1628,15 @@ async def process_candidate_message(
     turn_input = CandidateTurnInput(
         session_id=session_id,
         turn_index=current_turn_index,
-        text_content=cleaned_content,
+        # The warm-up is one answer assembled from several chat messages.
+        # Keep the chat transcript messages separate, but let the interviewer
+        # evaluate the full self-introduction rather than forgetting earlier
+        # details after every short continuation.
+        text_content=(
+            _accumulate_turn_answer(previous_answer or "", cleaned_content, warmup=True)
+            if is_warmup_turn
+            else cleaned_content
+        ),
         modality=modality,
         duration_seconds=duration_seconds,
         telemetry=telemetry or {},
@@ -1723,11 +1874,12 @@ async def process_candidate_message(
     if core_output.action == TurnAction.CLARIFY:
         candidate_question_intent = core_output.metadata.get("candidate_question_intent")
         repeat_request = bool(core_output.metadata.get("repeat_request"))
+        warmup_continuation = bool(core_output.metadata.get("warmup_continuation"))
         user_message_type = "CANDIDATE_QUESTION" if candidate_question_intent else "CLARIFY"
-        # A request directed at the interviewer is part of the conversation,
-        # but it is not assessment evidence for the current question. Phase 1
-        # writes optimistically before the engine runs, so restore the previous
-        # accumulated answer and correct the persisted user-message type here.
+        # A request directed at the interviewer is not assessment evidence.
+        # Warm-up continuations are different: those messages are fragments of
+        # one self-introduction, so retain the combined answer for the next
+        # attempt. Other clarification messages restore the previous answer.
         await db.execute(
             text(
                 """
@@ -1736,7 +1888,12 @@ async def process_candidate_message(
                 WHERE id = :turn_id
                 """
             ),
-            {"previous_answer": previous_answer, "turn_id": current_turn_id},
+            {
+                "previous_answer": (
+                    turn_input.text_content if warmup_continuation else previous_answer
+                ),
+                "turn_id": current_turn_id,
+            },
         )
         await db.execute(
             text(
@@ -1754,6 +1911,8 @@ async def process_candidate_message(
                     if candidate_question_intent
                     else {"repeatRequest": True}
                     if repeat_request
+                    else {"warmupContinuation": True}
+                    if warmup_continuation
                     else {"clarificationRequest": True}
                 ),
                 "message_id": user_msg_id,
@@ -1778,6 +1937,8 @@ async def process_candidate_message(
                         if candidate_question_intent
                         else {"repeatRequest": True}
                         if repeat_request
+                        else {"warmupContinuation": True}
+                        if warmup_continuation
                         else {}
                     )
                     | _provenance_metadata(core_output)
@@ -2073,18 +2234,27 @@ async def process_candidate_message(
             # core_output.message_text is already personalised, so compare like with like.
             next_q_text = _personalize_candidate_address(next_q_text, candidate_short_name)
 
-        # Bridge: the core already said "acknowledgement\n\n[transition] question".
-        next_content = core_output.message_text
-        if not next_content:
-            next_content = next_q_text
-        elif next_q_text not in next_content:
-            # The core asked a different question than the one the turn queue
-            # opens (e.g. a reordered stage): keep its acknowledgement and ask
-            # the queued question. This used to insert a stock "Chúng ta hãy
-            # cùng chuyển sang câu hỏi tiếp theo nhé:" paragraph.
-            next_content = compose_speech(first_paragraph(next_content), next_q_text)
-        if is_vi:
-            next_content = _personalize_candidate_address(next_content, candidate_short_name)
+        awaiting_candidate_ack = bool(
+            (core_output.metadata or {}).get("awaiting_candidate_ack")
+        )
+        if awaiting_candidate_ack:
+            # Send only the topic signpost now. The frozen question follows
+            # after a short readiness response, handled without invoking Core.
+            next_content = core_output.message_text or (
+                "Mình chuyển sang phần dự án nhé." if is_vi else "Let's move on to your project experience."
+            )
+            if is_vi:
+                next_content = _personalize_candidate_address(next_content, candidate_short_name)
+        else:
+            # Bridge: the core may say "acknowledgement + transition + question".
+            next_content = core_output.message_text
+            if not next_content:
+                next_content = next_q_text
+            elif next_q_text not in next_content:
+                # Keep the model's acknowledgement and ask the queued question.
+                next_content = compose_speech(first_paragraph(next_content), next_q_text)
+            if is_vi:
+                next_content = _personalize_candidate_address(next_content, candidate_short_name)
 
         q_meta = {
             "questionVersionId": str(next_turn["question_version_id"])
@@ -2098,13 +2268,18 @@ async def process_candidate_message(
             q_meta["project_name"] = next_snap["projectName"]
         if next_snap.get("projectId"):
             q_meta["project_id"] = next_snap["projectId"]
+        assistant_message_type = "MAIN_QUESTION"
+        if awaiting_candidate_ack:
+            assistant_message_type = "ACKNOWLEDGMENT"
+            q_meta["awaitingCandidateAck"] = True
+            q_meta["transitionTopic"] = (core_output.metadata or {}).get("transition_topic")
         await db.execute(
             text(
                 """
                 INSERT INTO interview_chat_messages
                 (id, session_id, role, content, metadata, turn_id, message_type, sequence, created_at)
                 VALUES
-                (:id, :sid, 'assistant', :content, CAST(:metadata AS jsonb), :turn_id, 'MAIN_QUESTION', :seq, now())
+                (:id, :sid, 'assistant', :content, CAST(:metadata AS jsonb), :turn_id, :msg_type, :seq, now())
                 """
             ),
             {
@@ -2113,6 +2288,7 @@ async def process_candidate_message(
                 "content": next_content,
                 "metadata": json.dumps(q_meta),
                 "turn_id": next_turn["id"],
+                "msg_type": assistant_message_type,
                 "seq": asst_seq,
             },
         )
@@ -2139,7 +2315,7 @@ async def process_candidate_message(
             "assistantResponse": {
                 "messageId": asst_msg_id,
                 "role": "assistant",
-                "messageType": "MAIN_QUESTION",
+                "messageType": assistant_message_type,
                 "turnId": next_turn["id"],
                 "sequence": asst_seq,
                 "content": next_content,

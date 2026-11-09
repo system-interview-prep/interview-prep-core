@@ -194,6 +194,9 @@ class EvidenceCandidateTrace(CanonicalModel):
 NOT_EVIDENCED_REASON_CODES = frozenset(
     {
         "skill_not_evidenced",
+        # Absence of a skill passage when the CV itself parsed incompletely:
+        # inconclusive rather than negative, mirroring ``gpa_evidence_missing``.
+        "skill_evidence_missing",
         "concept_not_evidenced",
         "concept_group_not_evidenced",
         "requirement_not_evidenced",
@@ -317,6 +320,19 @@ class MatchResult(CanonicalModel):
     # so clients can show useful feedback without implying eligibility.
     diagnostic_score: float | None = Field(default=None, ge=0, le=1)
     suitability_score: float | None = Field(default=None, ge=0, le=1)
+    # The second published metric, of equal standing with suitability and
+    # answering a different question: how much of this posting is reflected
+    # anywhere in this CV, read straight off the semantic factor.  It is never
+    # blended with requirement coverage and never gated by eligibility, so a
+    # rejected pair still gets one - which is the point, since ``suitability``
+    # is deliberately withheld there.
+    #
+    # It is NOT a hiring signal.  A CV can read as a close textual match and
+    # still miss a mandatory condition outright; that is what ``suitability``
+    # and ``eligibility`` are for.  ``None`` only when the semantic factor did
+    # not score, in which case that factor carries the explaining warning code.
+    profile_match_score: float | None = Field(default=None, ge=0, le=1)
+    profile_match_band: Literal["below_typical", "typical", "above_typical"] | None = None
     fit_band: Literal["strong_fit", "partial_fit", "review_required", "not_eligible", "insufficient_evidence"]
     decision: Literal["assessed", "abstained"]
     failed_must_have_requirements: list[str] = Field(default_factory=list)

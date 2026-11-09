@@ -515,6 +515,31 @@ def _section_headings(text: str) -> dict[int, tuple[str, bool]]:
     return found
 
 
+def section_ranges_all(text: str, kind: str) -> list[tuple[int, int]]:
+    """Every span belonging to one section kind, in document order.
+
+    ``_ranges`` keeps only the last span per kind because its callers want a
+    single authoritative section.  A posting that repeats a section - most often
+    a bilingual listing carrying "Requirements" and "Yêu cầu" as two separate
+    blocks - genuinely has several, and treating only the last one as real
+    discards the other block's requirements entirely.
+    """
+    headings: list[tuple[int, str]] = []
+    for offset, (section_kind, by_keyword) in _section_headings(text).items():
+        if section_kind == "preferred" or (
+            by_keyword and headings and headings[-1][1] == section_kind
+        ):
+            continue
+        headings.append((offset, section_kind))
+    headings.sort()
+    spans: list[tuple[int, int]] = []
+    for index, (start, section_kind) in enumerate(headings):
+        if section_kind == kind:
+            end = headings[index + 1][0] if index + 1 < len(headings) else len(text)
+            spans.append((start, end))
+    return spans
+
+
 def _ranges(text: str) -> dict[str, tuple[int, int]]:
     headings: list[tuple[int, str]] = []
     for offset, (kind, by_keyword) in _section_headings(text).items():

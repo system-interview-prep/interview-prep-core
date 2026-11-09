@@ -115,6 +115,34 @@ async def test_match_ids_passes_the_signed_in_user_as_cv_owner(
     assert seen["owner_id"] == "user-a"
 
 
+async def test_sample_ids_are_resolved_normally_and_never_short_circuited(
+    client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A "sample-" id gets no special treatment: every score comes from the matcher.
+
+    The endpoint used to return a hand-written MatchResult for ids starting with
+    "sample-", so a caller could receive a 200 with scores no part of the
+    pipeline had produced.  Ids are now just ids - an unknown one fails
+    resolution like any other.
+    """
+    seen = {}
+
+    async def fake_resolve_resume(_db, cv_id, *, owner_id):
+        seen["cv_id"] = cv_id
+        raise HTTPException(status_code=404, detail="not found")
+
+    monkeypatch.setattr(matching_router, "_resolve_resume", fake_resolve_resume)
+    response = client.post(
+        "/api/v1/matching/match-ids",
+        json={"candidateId": "sample-cv-1", "jobId": "sample-job-1"},
+    )
+
+    assert response.status_code == 404
+    # Resolution was actually attempted rather than bypassed.
+    assert seen["cv_id"] == "sample-cv-1"
+    assert not hasattr(matching_router, "_sample_match_result")
+
+
 def test_match_async_enqueues_unified_payload_and_returns_202(
     client, monkeypatch: pytest.MonkeyPatch
 ) -> None:

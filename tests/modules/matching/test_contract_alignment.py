@@ -447,7 +447,11 @@ def test_2b_ctx_001_context_skill_requirement_behavior_in_facade() -> None:
     Proves:
     1. Context requirement does NOT enter Must-have Gate (_eligibility).
     2. Context requirement enters the Skill Factor together with must-have skills.
-    3. Context requirement contributes to suitabilityScore computation.
+    3. Context requirement contributes to suitabilityScore through requirement
+       coverage.  The skill factor itself is a per-category *diagnostic*: it is
+       a filtered view of the same requirement results coverage already
+       aggregates, so giving it its own share of the score would count the same
+       evidence twice.
     """
     from src.modules.matching.application.facade import MatchingFacade
     from src.modules.matching.domain.schemas import MatchRequest
@@ -463,7 +467,10 @@ def test_2b_ctx_001_context_skill_requirement_behavior_in_facade() -> None:
     skill_factor = next(f for f in result.factor_results if f.factor == "skill")
     assert skill_factor.status == "scored"
     assert skill_factor.raw_score == 1.0
-    assert skill_factor.effective_weight > 0.0
+    # Reported for explainability, but not separately weighted.
+    assert skill_factor.effective_weight == 0.0
+    coverage = next(f for f in result.factor_results if f.factor == "requirement_coverage")
+    assert coverage.effective_weight > 0.0
 
     # 3. Suitability: Participates in overall score
     assert result.suitability_score is not None

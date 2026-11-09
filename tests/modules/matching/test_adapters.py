@@ -192,7 +192,7 @@ def test_adapter_keeps_baseline_when_current_hybrid_adds_new_llm_claim() -> None
                     evidenceRefs=["jd-ev"],
                 ),
             ],
-            "parsing": _parsed_jd().parsing.model_copy(update={"parser_version": "hybrid-jd-v4"}),
+            "parsing": _parsed_jd().parsing.model_copy(update={"parser_version": "hybrid-jd-v5"}),
         }
     )
 

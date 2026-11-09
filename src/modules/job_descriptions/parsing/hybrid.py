@@ -23,6 +23,7 @@ from src.modules.job_descriptions.parsing.deterministic import (
     _key,
     _ranges,
     is_in_application_section,
+    section_ranges_all,
     is_probable_requirement_heading_at,
     is_probable_requirement_heading_value,
 )
@@ -35,7 +36,13 @@ from src.modules.taxonomy.facade import alias_pattern
 from src.modules.user_cvs.facade import EvidenceMapper, SourceDocument
 from src.modules.user_cvs.schemas import ParserWarning, TaxonomyRef
 
-PARSER_VERSION = "hybrid-jd-v4"
+# v5: a JD with more than one requirements block (a bilingual posting listing
+# the same requirements under an English and a Vietnamese heading) no longer
+# loses every block but the last. Bumped because parses are persisted and read
+# back without re-parsing: without a new version there is no way to tell a
+# stored parse that predates this fix from one that followed it, and therefore
+# no way to target a backfill.
+PARSER_VERSION = "hybrid-jd-v5"
 
 
 def _near_duplicate_claim(left: str, right: str) -> bool:
@@ -311,7 +318,10 @@ class HybridJobDescriptionParser:
         # provenance. This retains stable IDs and structured numeric fields while
         # preventing the same source requirement from becoming two canonical rows.
         requirements = list(baseline.requirements)
-        requirement_section = _ranges(source.text).get("requirements")
+        # Accept any requirements block, not just the last one: bilingual
+        # postings list the same requirements twice under two headings, and
+        # recognising only one block silently drops the other block's items.
+        requirement_sections = section_ranges_all(source.text, "requirements")
         for index, item in enumerate(candidate.requirements, start=1):
             evidence_id = ground("requirement", item)
             if not evidence_id:
@@ -330,9 +340,9 @@ class HybridJobDescriptionParser:
                     source="hybrid_candidate",
                 )
                 continue
-            if requirement_section and not (
-                requirement_section[0] <= grounded_span.char_start
-                and grounded_span.char_end <= requirement_section[1]
+            if requirement_sections and not any(
+                start <= grounded_span.char_start and grounded_span.char_end <= end
+                for start, end in requirement_sections
             ):
                 trace_event(
                     "jd_parser",
