@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, NamedTuple
 
 from pydantic import ValidationError
 
@@ -36,13 +36,50 @@ from src.modules.taxonomy.facade import alias_pattern
 from src.modules.user_cvs.facade import EvidenceMapper, SourceDocument
 from src.modules.user_cvs.schemas import ParserWarning, TaxonomyRef
 
+# A scraped posting often stores its whole requirements block as one run-on
+# line.  The deterministic parser is line-bounded, so it then yields a single
+# requirement whose evidence span covers the entire block.  A baseline row that
+# contains this many much smaller claims is a container for them, not a peer of
+# any one of them - see ``_merge``.
+_CONTAINER_MIN_MEMBERS = 2
+_CONTAINER_MEMBER_SHARE = 0.5
+
+
+class _RequirementClaim(NamedTuple):
+    """One grounded LLM requirement claim, ready to reconcile with the baseline."""
+
+    index: int
+    item: TextCandidate
+    evidence_id: str
+    char_start: int
+    char_end: int
+    concept: TaxonomyRef | None
+    experience_months: int | None
+    operator: str | None
+
+
+def _carries_structured_detail(requirement: JobRequirement) -> bool:
+    """Numeric or credential detail a sentence-level claim cannot restate.
+
+    A container holding one of these is still the only source of it, so it is
+    kept rather than dropped once its members are promoted.
+    """
+    return any(
+        (
+            requirement.minimum_experience_months is not None,
+            requirement.threshold is not None,
+            requirement.scale is not None,
+            requirement.credential is not None,
+        )
+    )
+
 # v5: a JD with more than one requirements block (a bilingual posting listing
 # the same requirements under an English and a Vietnamese heading) no longer
 # loses every block but the last. Bumped because parses are persisted and read
 # back without re-parsing: without a new version there is no way to tell a
 # stored parse that predates this fix from one that followed it, and therefore
 # no way to target a backfill.
-PARSER_VERSION = "hybrid-jd-v5"
+PARSER_VERSION = "hybrid-jd-v6"
 
 
 def _near_duplicate_claim(left: str, right: str) -> bool:
@@ -322,6 +359,12 @@ class HybridJobDescriptionParser:
         # postings list the same requirements twice under two headings, and
         # recognising only one block silently drops the other block's items.
         requirement_sections = section_ranges_all(source.text, "requirements")
+
+        # Ground and filter every candidate before reconciling any of them.
+        # Whether a baseline row describes one requirement or a whole block can
+        # only be told by looking at all the claims at once, which the single
+        # pass this replaced could not do.
+        claims: list[_RequirementClaim] = []
         for index, item in enumerate(candidate.requirements, start=1):
             evidence_id = ground("requirement", item)
             if not evidence_id:
@@ -372,13 +415,64 @@ class HybridJobDescriptionParser:
                     source="hybrid_candidate",
                 )
                 continue
-            concept = self._resolve_concept(item.quote)
             exp_months = self._deterministic._experience_months(item.quote)
-            op_val = "gte" if exp_months is not None else None
+            claims.append(
+                _RequirementClaim(
+                    index=index,
+                    item=item,
+                    evidence_id=evidence_id,
+                    char_start=grounded_span.char_start,
+                    char_end=grounded_span.char_end,
+                    concept=self._resolve_concept(item.quote),
+                    experience_months=exp_months,
+                    operator="gte" if exp_months is not None else None,
+                )
+            )
+
+        def evidence_hull(refs: list[str]) -> tuple[int, int] | None:
+            """The outermost offsets this requirement is grounded in."""
+            spans = [evidence[ref] for ref in refs if ref in evidence]
+            if not spans:
+                return None
+            return (
+                min(span.char_start for span in spans),
+                max(span.char_end for span in spans),
+            )
+
+        # Identify the containers.  Reconciling by bare span intersection made
+        # every claim inside such a row merge into it, each merge overwriting
+        # the previous one's label and concept: across ten real postings 116
+        # extracted requirements collapsed into 26 rows, one of them carrying
+        # ten evidence refs, an education id, a CSS concept and the text of the
+        # last claim.  Members are promoted to rows of their own instead.
+        container_members: dict[int, list[int]] = {}
+        for requirement_index, requirement in enumerate(requirements):
+            hull = evidence_hull(requirement.evidence_refs)
+            if hull is None:
+                continue
+            hull_start, hull_end = hull
+            hull_length = hull_end - hull_start
+            if hull_length <= 0:
+                continue
+            members = [
+                position
+                for position, claim in enumerate(claims)
+                if hull_start <= claim.char_start
+                and claim.char_end <= hull_end
+                and (claim.char_end - claim.char_start) < _CONTAINER_MEMBER_SHARE * hull_length
+            ]
+            if len(members) >= _CONTAINER_MIN_MEMBERS:
+                container_members[requirement_index] = members
+        containers = set(container_members)
+
+        for claim in claims:
+            index, item, evidence_id = claim.index, claim.item, claim.evidence_id
+            concept, exp_months, op_val = claim.concept, claim.experience_months, claim.operator
             matching_indices = [
                 requirement_index
                 for requirement_index, requirement in enumerate(requirements)
-                if any(overlaps(ref, evidence_id) for ref in requirement.evidence_refs)
+                if requirement_index not in containers
+                and any(overlaps(ref, evidence_id) for ref in requirement.evidence_refs)
                 and (
                     concept is None
                     or requirement.concept is None
@@ -423,8 +517,8 @@ class HybridJobDescriptionParser:
                     "requirement_filtered",
                     document_id=source.document_id,
                     raw_label=item.value.strip(),
-                    char_start=grounded_span.char_start,
-                    char_end=grounded_span.char_end,
+                    char_start=claim.char_start,
+                    char_end=claim.char_end,
                     reason_code="covered_by_multiple_requirements",
                     classifier="evidence_overlap",
                     source="hybrid_candidate",
@@ -443,6 +537,50 @@ class HybridJobDescriptionParser:
                     evidenceRefs=[evidence_id],
                 )
             )
+
+        # A container's claim is now carried by the rows promoted out of it.
+        # Keep it only when it holds a structured field none of them could
+        # restate, and demote it so it can no longer disqualify anyone:
+        # ``preferred`` maps to ``nice_to_have`` at the matching boundary
+        # (``matching/domain/adapters.py``), which never gates eligibility.
+        superseded: set[int] = set()
+        for requirement_index, members in container_members.items():
+            requirement = requirements[requirement_index]
+            if _carries_structured_detail(requirement):
+                if requirement.priority == "must_have":
+                    requirements[requirement_index] = requirement.model_copy(
+                        update={"priority": "preferred"}
+                    )
+                trace_event(
+                    "jd_parser",
+                    "requirement_demoted",
+                    document_id=source.document_id,
+                    requirement_id=requirement.requirement_id,
+                    raw_label=requirement.raw_label,
+                    member_count=len(members),
+                    reason_code="container_kept_for_structured_detail",
+                    classifier="evidence_containment",
+                    source="hybrid_post_merge",
+                )
+                continue
+            superseded.add(requirement_index)
+            trace_event(
+                "jd_parser",
+                "requirement_filtered",
+                document_id=source.document_id,
+                requirement_id=requirement.requirement_id,
+                raw_label=requirement.raw_label,
+                member_count=len(members),
+                reason_code="container_superseded_by_members",
+                classifier="evidence_containment",
+                source="hybrid_post_merge",
+            )
+        if superseded:
+            requirements = [
+                requirement
+                for position, requirement in enumerate(requirements)
+                if position not in superseded
+            ]
 
         # Run the structural guard once more over the merged canonical list.
         # This is deliberately source-position based: it protects against a

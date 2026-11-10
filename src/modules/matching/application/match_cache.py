@@ -28,7 +28,11 @@ from src.modules.matching.domain.schemas import MatchRequest, MatchResult
 logger = logging.getLogger(__name__)
 
 # Bump when matching logic changes in a way that should invalidate stored results.
-CACHE_VERSION = "3"
+# "4": requirement gating learned to demote aspirations, working-style claims,
+# voice, equipment and lines the posting itself calls a bonus, so results stored
+# under "3" can hold an eligibility decided by a requirement that may no longer
+# gate.
+CACHE_VERSION = "4"
 # Taxonomy aliases and embeddings live outside the request; refresh eventually.
 MAX_AGE = timedelta(days=30)
 

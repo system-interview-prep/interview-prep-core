@@ -89,16 +89,24 @@ def job_description_to_matching_job(
 
         # A posting's wording decides what it says; it does not decide what may
         # disqualify a person.  Negated lines ("No experience required") state
-        # the absence of a condition, and attitude or protected-attribute lines
-        # cannot be confirmed from a CV at all.  Keep them for context, but
-        # never let the eligibility gate fire on them.
+        # the absence of a condition; attitude, protected-attribute, voice and
+        # equipment lines cannot be confirmed from a CV at all; and a line the
+        # posting itself marks optional ("là 1 lợi thế") is not a condition of
+        # entry.  Keep them for context, but never let the gate fire on them.
         gate = classify_requirement_gate(requirement.raw_label, requirement.kind)
         if gate.gate_class == "vacuous":
             # Not a condition.  Scoring it would penalise every candidate for
             # failing to evidence a requirement the employer waived.
             continue
         if not gate.may_gate and priority == "must_have":
-            priority = "nice_to_have" if gate.gate_class == "soft_signal" else "context"
+            # ``soft_signal`` and ``optional`` still carry fit signal, so they
+            # keep scoring as ``nice_to_have``.  The rest carry none and drop
+            # to ``context``, which neither gates nor scores.
+            priority = (
+                "nice_to_have"
+                if gate.gate_class in ("soft_signal", "optional")
+                else "context"
+            )
 
         common = {
             "requirementId": requirement.requirement_id,
