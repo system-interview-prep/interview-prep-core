@@ -959,10 +959,13 @@ class MatchingFacade:
         *,
         started: float | None = None,
         bm25_used: str | None = None,
+        sparse_resolved: bool = False,
     ) -> tuple[FactorResult, str | None]:
         started = time.perf_counter() if started is None else started
         with track_bm25_provider() as used:
-            factor, warning, outcome = self._semantic_factor_scored(payload, policy_weight, sparse_score)
+            factor, warning, outcome = self._semantic_factor_scored(
+                payload, policy_weight, sparse_score, sparse_resolved=sparse_resolved
+            )
         if run_tracking.active_run() is not None:
             policy = payload.matching_policy
             run_tracking.emit(
@@ -982,7 +985,12 @@ class MatchingFacade:
         return factor, warning
 
     def _semantic_factor_scored(
-        self, payload: MatchRequest, policy_weight: float, sparse_score: float | None = None
+        self,
+        payload: MatchRequest,
+        policy_weight: float,
+        sparse_score: float | None = None,
+        *,
+        sparse_resolved: bool = False,
     ) -> tuple[FactorResult, str | None, str | None]:
         """The semantic factor, its warning, and the embedding outcome
         (ok | disk_cache | disabled | error, None when no embedding was needed)."""
@@ -1019,7 +1027,10 @@ class MatchingFacade:
         if not resume_text or not job_text:
             return (*self._unknown_semantic(policy_weight, "semantic_input_not_evidenced"), None)
 
-        if sparse_score is None:
+        mode = payload.matching_policy.semantic_mode
+        bm25_w = payload.matching_policy.bm25_weight
+
+        if not sparse_resolved and sparse_score is None and mode != "dense_only":
             if payload.matching_policy.bm25_provider_mode == "in_memory":
                 sparse_score = bm25_similarity(job_text, resume_text)
             else:
@@ -1027,8 +1038,17 @@ class MatchingFacade:
                 sparse_score = self._bm25_provider.score(
                     query_text=job_text, doc_text=resume_text, doc_id=doc_id
                 )
-        mode = payload.matching_policy.semantic_mode
-        bm25_w = payload.matching_policy.bm25_weight
+
+        sparse_warning: str | None = None
+        if sparse_score is None and mode != "dense_only":
+            # The index could not answer: this CV has no stored text, or
+            # ParadeDB was unreachable. Nothing is borrowed from the in-memory
+            # formula - it is on a different scale, so quoting it would report a
+            # score nobody computed. Embeddings need no index, so semantic is
+            # still scored, on dense alone, and the caller is told which half
+            # is missing.
+            sparse_warning = "semantic_sparse_unavailable"
+            mode = "dense_only"
 
         if mode == "sparse_only":
             return (
@@ -1075,20 +1095,22 @@ class MatchingFacade:
                 final_score = dense_score
             else:  # hybrid
                 final_score = (1.0 - bm25_w) * dense_score + bm25_w * sparse_score
+            # Reliability drops when half the hybrid signal is missing.
+            reliability = 0.85 if sparse_warning else 1.0
 
             return (
                 FactorResult(
                     factor="semantic",
                     status="scored",
                     rawScore=_unit(round(final_score, 4)),
-                    reliability=1.0,
+                    reliability=reliability,
                     policyWeight=policy_weight,
                     effectiveWeight=0.0,
                     evidenceRefs=[item.evidence_id for item in payload.resume.evidence],
                     denseScore=round(dense_score, 4),
-                    sparseScore=round(sparse_score, 4),
+                    sparseScore=None if sparse_score is None else round(sparse_score, 4),
                 ),
-                None,
+                sparse_warning,
                 embedding_outcome,
             )
 
@@ -1097,7 +1119,7 @@ class MatchingFacade:
             return (*self._unknown_semantic(policy_weight, "semantic_scorer_unavailable"), embedding_outcome)
 
         # Dense failed unexpectedly: graceful sparse degradation
-        if sparse_score > 0.0:
+        if sparse_score is not None and sparse_score > 0.0:
             return (
                 FactorResult(
                     factor="semantic",
@@ -1113,7 +1135,13 @@ class MatchingFacade:
                 embedding_outcome,
             )
 
-        return (*self._unknown_semantic(policy_weight, "semantic_scorer_unavailable"), embedding_outcome)
+        return (
+            *self._unknown_semantic(
+                policy_weight,
+                "semantic_sparse_unavailable" if sparse_warning else "semantic_scorer_unavailable",
+            ),
+            embedding_outcome,
+        )
 
     async def _semantic_factor_async(
         self, payload: MatchRequest, policy_weight: float
@@ -1153,7 +1181,10 @@ class MatchingFacade:
         if not resume_text or not job_text:
             return self._semantic_factor(payload, policy_weight, started=started)
         bm25_used: str | None = None
-        if payload.matching_policy.bm25_provider_mode == "in_memory":
+        sparse_score: float | None = None
+        if payload.matching_policy.semantic_mode == "dense_only":
+            pass  # embeddings only: the index is not consulted at all
+        elif payload.matching_policy.bm25_provider_mode == "in_memory":
             sparse_score = bm25_similarity(job_text, resume_text)
         else:
             with track_bm25_provider() as used:
@@ -1167,7 +1198,12 @@ class MatchingFacade:
         # The remaining semantic work is CPU-only and shares the established
         # scoring implementation without touching the database again.
         return self._semantic_factor(
-            payload, policy_weight, sparse_score=sparse_score, started=started, bm25_used=bm25_used
+            payload,
+            policy_weight,
+            sparse_score=sparse_score,
+            started=started,
+            bm25_used=bm25_used,
+            sparse_resolved=True,
         )
 
     @staticmethod

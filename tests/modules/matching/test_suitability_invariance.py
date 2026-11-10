@@ -67,19 +67,27 @@ _SCENARIOS = {
 }
 
 _EXPECTED_FINGERPRINT = {
-    "eligible_scored": "00d69092ca761003755b45cef6d4745ce16747af0648d45858f819c2a1dfc342",
-    "ineligible_insufficient_duration": "4810cfbbb178608d7e1190dcac0af41cfba2bc99c2e0f82e7b1c157c19468b9a",
-    "ineligible_skill_absent": "1c02e84002119e097ca4cb7e65ad4700fc59447ef1b315a37e7c6fb3ee30dd06",
-    "eligible_no_duration_claim": "71bbb5d0f25ee8f08cb143aa30f207ce2d085a8a24c050b7f86bb72f110617cb",
+    "eligible_scored": "802f654f487db57d88e7a4a25811a5f70a61543f05b245a00cd3a9002c86aa97",
+    "ineligible_insufficient_duration": "21e5978de04fa1834a0a3df97abbca0a2a4fe2b400de950fed2e0b0c95b9aa07",
+    "ineligible_skill_absent": "8ceebb02c90088fafb63a2a1c48544f96fbb18f92969fc650fec1ab1ebe08eb8",
+    "eligible_no_duration_claim": "387a464067e6eded35905b95b46263ace798c66fc01e01542902d031dfa7055f",
 }
 
+# Re-pinned 2026-11-10. The earlier numbers were produced by a defect, not by
+# this fixture changing: these resumes are synthetic and have no row in
+# user_cvs, and ParadeDB answered "no matching row" with a sparse score of 0.0
+# - a confident "shares nothing with the job" for a document it never searched.
+# The index now reports not-indexed as unknown, so semantic falls back to the
+# embedding half alone (reliability 0.85, sparseScore None). These values no
+# longer depend on whether Postgres is reachable: unreachable and not-indexed
+# both resolve to the same unknown.
 # Readable companions to the fingerprints: when one of these fails the message
 # names the number that moved, instead of only reporting a hash mismatch.
 _EXPECTED_VERDICT = {
-    "eligible_scored": ("eligible", "strong_fit", "assessed", 0.8565719305454851, 0.8565719305454851),
-    "ineligible_insufficient_duration": ("ineligible", "not_eligible", "assessed", None, 0.2151421041817723),
-    "ineligible_skill_absent": ("ineligible", "not_eligible", "assessed", None, 0.2151421041817723),
-    "eligible_no_duration_claim": ("review_required", "review_required", "abstained", None, 0.503785526045443),
+    "eligible_scored": ("eligible", "strong_fit", "assessed", 1.0, 1.0),
+    "ineligible_insufficient_duration": ("ineligible", "not_eligible", "assessed", None, 0.32210947515634997),
+    "ineligible_skill_absent": ("ineligible", "not_eligible", "assessed", None, 0.32210947515634997),
+    "eligible_no_duration_claim": ("review_required", "review_required", "abstained", None, 0.6271602113359924),
 }
 
 

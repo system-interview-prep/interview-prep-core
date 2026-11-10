@@ -82,12 +82,16 @@ async def match(
     if resume_owner_scope(user) is not None:
         # The resume here is client-supplied, so its documentId is not proven to
         # be the caller's CV. A stored-CV BM25 lookup by that id would let a user
-        # probe another user's CV text one keyword at a time; score the text
-        # that was sent instead. /match-ids resolves the CV with owner scoping.
+        # probe another user's CV text one keyword at a time, so the index must
+        # not be consulted. Scoring the sent text with the in-memory formula is
+        # no longer an option either: it is a different formula on a different
+        # scale (about 4.7x lower on real pairs), so the same CV and JD would
+        # score differently here than on /match-ids. Semantic therefore comes
+        # from embeddings alone, which need no corpus and no stored document.
         payload = payload.model_copy(
             update={
                 "matching_policy": payload.matching_policy.model_copy(
-                    update={"bm25_provider_mode": "in_memory"}
+                    update={"bm25_provider_mode": "in_memory", "semantic_mode": "dense_only"}
                 )
             }
         )
