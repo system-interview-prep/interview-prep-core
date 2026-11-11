@@ -148,6 +148,28 @@ async def clone_cv(src_id: str, mutate) -> str:
     return new_id
 
 
+async def requirement_labels(jd_id: str) -> dict[str, str]:
+    """requirementId -> rawLabel for one posting.
+
+    The match response carries requirement ids but not their text, and MR5
+    needs the text to append it to a CV.
+    """
+    async with SessionFactory() as db:
+        row = (await db.execute(
+            text("SELECT structured_data FROM job_descriptions WHERE id = :id"), {"id": jd_id}
+        )).mappings().one()
+    data = row["structured_data"]
+    if isinstance(data, str):
+        data = json.loads(data)
+    out: dict[str, str] = {}
+    for item in data.get("requirements") or []:
+        rid = str(item.get("requirementId") or "")
+        label = (item.get("rawLabel") or "").strip()
+        if rid and label:
+            out[rid] = label
+    return out
+
+
 async def drop_clone(table: str, clone_id: str) -> None:
     async with SessionFactory() as db:
         await db.execute(text(f"DELETE FROM {table} WHERE id = :id"), {"id": clone_id})
@@ -171,11 +193,15 @@ def _requirements(data: dict) -> list:
     return data.get("requirements") or []
 
 
-def mr0_jd(data):
+# Every mutator takes ``ctx``: {"control": <observed dict>, "labels": {...}}.
+# MR4 and MR5 need to see what the pair is already doing; the others ignore it
+# but keep the parameter so the driver can call them all the same way.
+
+def mr0_jd(data, ctx):
     return data                                     # control: no change at all
 
 
-def mr1_jd(data):
+def mr1_jd(data, ctx):
     reqs = _requirements(data)
     if len(reqs) < 2:
         raise Skip("fewer than two requirements, permutation is a no-op")
@@ -184,14 +210,26 @@ def mr1_jd(data):
     return data
 
 
-def mr2_jd(data):
+# Semantically unmeetable for any software CV. Several, so a measured effect
+# cannot be an artefact of one string. They must NOT borrow words from the CV:
+# that would make the requirement satisfiable and void the relation.
+MR2_PROBES = (
+    "Kinh nghiem van hanh lo phan ung hat nhan",
+    "Chung chi lan bien sau chuyen nghiep tren 200 met",
+    "Kinh nghiem huan luyen chim ung san moi",
+    "Giay phep dieu khien tau pha bang vung cuc",
+)
+
+
+def mr2_jd(data, ctx):
     reqs = _requirements(data)
     if not reqs:
         raise Skip("no requirement to copy a shape from")
+    seed = hashlib.sha256(str(ctx.get("jd_id", "")).encode()).hexdigest()[:8]
     probe = copy.deepcopy(reqs[0])
     probe["requirementId"] = "mr2-unsatisfiable"
     probe["priority"] = "preferred"
-    probe["rawLabel"] = "Kinh nghiem van hanh lo phan ung hat nhan"
+    probe["rawLabel"] = MR2_PROBES[int(seed, 16) % len(MR2_PROBES)]
     for key in ("concept", "atomicConcepts", "skill", "minimumExperienceMonths",
                 "operator", "threshold", "groupOperator"):
         probe.pop(key, None)
@@ -200,17 +238,25 @@ def mr2_jd(data):
     return data
 
 
-def mr4_jd(data):
+def mr4_jd(data, ctx):
+    # Demote a must-have the control reports as FAILING. Demoting one that
+    # already passes relieves no gate, so the relation could not be violated
+    # and the pair would carry no evidence either way.
+    failing = set(ctx.get("control", {}).get("failed_must_have") or [])
+    if not failing:
+        raise Skip("no failing must_have: demoting one would relieve no gate")
     reqs = _requirements(data)
-    idx = next((i for i, r in enumerate(reqs) if r.get("priority") == "must_have"), None)
+    idx = next((i for i, r in enumerate(reqs)
+                if r.get("priority") == "must_have"
+                and str(r.get("requirementId")) in failing), None)
     if idx is None:
-        raise Skip("no must_have requirement to demote")
+        raise Skip("the failing must_have is not in this posting's requirement list")
     reqs[idx] = {**reqs[idx], "priority": "preferred"}
     data["requirements"] = reqs
     return data
 
 
-def mr3_cv(parsed, raw_text):
+def mr3_cv(parsed, raw_text, ctx):
     skills = parsed.get("skills") or []
     if not skills:
         raise Skip("CV has no skill entry to duplicate")
@@ -220,14 +266,77 @@ def mr3_cv(parsed, raw_text):
     return parsed, raw_text
 
 
-def mr5_cv(parsed, raw_text):
-    # Append a line that evidences something; the relation only asks that
-    # coverage must not go DOWN when a CV gains content.
-    return parsed, raw_text + "\nAdditional project: maintained production services."
+def mr5_cv(parsed, raw_text, ctx):
+    # Append the text of a requirement the control reports as not_met. The
+    # relation is "give the CV evidence for something it was missing, coverage
+    # must not fall" - a fixed sentence that evidences nothing tests nothing.
+    unmet = [r for r in (ctx.get("control", {}).get("requirements") or [])
+             if r.get("status") == "not_met"]
+    if not unmet:
+        raise Skip("no requirement is not_met: there is nothing to evidence")
+    labels = ctx.get("labels") or {}
+    target = next((r for r in unmet if labels.get(str(r.get("id")))), None)
+    if target is None:
+        raise Skip("no text available for any unmet requirement")
+    # Appending to raw_text alone changes nothing: CanonicalResume.evidence is
+    # taken from parsed_data["evidence"] and never re-derived from the text, so
+    # a line added to raw_text is invisible to requirement evaluation. Measured:
+    # coverage stood still on every pair. The CV has to gain the evidence record
+    # a parser would have produced for the new span.
+    existing = parsed.get("evidence") or []
+    if not existing:
+        raise Skip("CV carries no evidence records to extend")
+    sample = existing[0]
+    line = labels[str(target["id"])]
+    start = len(raw_text) + 1
+    parsed["evidence"] = existing + [{
+        "evidenceId": "ev-mr5-" + hashlib.sha256(line.encode()).hexdigest()[:12],
+        "text": line,
+        "charStart": start,
+        "charEnd": start + len(line),
+        "page": sample.get("page", 1),
+        "section": sample.get("section"),
+        "documentId": sample.get("documentId"),
+        "documentSha256": sample.get("documentSha256"),
+        "evidenceSource": sample.get("evidenceSource", "document"),
+        "sourceBlockId": sample.get("sourceBlockId"),
+        "readingOrder": max((e.get("readingOrder") or 0) for e in existing) + 1,
+        "boundingBox": None,
+        "sourceRequirementId": None,
+    }]
+    return parsed, raw_text + "\n" + line
 
 
-def mr6_cv(parsed, raw_text):
-    # Whitespace and case only - the token sequence is preserved.
+def _upper(value):
+    return value.upper() if isinstance(value, str) else value
+
+
+def mr6_cv(parsed, raw_text, ctx):
+    # Case and whitespace only, on BOTH halves of the input. raw_text feeds the
+    # sparse index; the parsed labels feed the embedding. Mutating raw_text
+    # alone left the dense half untouched, so the relation tested half a system.
+    for claim in parsed.get("skills") or []:
+        concept = claim.get("concept")
+        if isinstance(concept, dict):
+            concept["label"] = _upper(concept.get("label"))
+    for item in parsed.get("careerClassifications") or []:
+        if isinstance(item, dict):
+            item["label"] = _upper(item.get("label"))
+    for project in parsed.get("projects") or []:
+        if isinstance(project, dict):
+            project["name"] = _upper(project.get("name"))
+            project["description"] = _upper(project.get("description"))
+    for employment in parsed.get("employment") or []:
+        if not isinstance(employment, dict):
+            continue
+        if isinstance(employment.get("responsibilities"), list):
+            employment["responsibilities"] = [
+                _upper(t) for t in employment["responsibilities"]
+            ]
+        for achievement in employment.get("achievements") or []:
+            if isinstance(achievement, dict):
+                achievement["text"] = _upper(achievement.get("text"))
+
     collapsed = re.sub(r"[ \t]+", " ", raw_text)
     collapsed = re.sub(r"\n{3,}", "\n\n", collapsed)
     return parsed, collapsed.upper()
@@ -237,7 +346,7 @@ class Skip(Exception):
     """This pair cannot carry this relation; not a violation."""
 
 
-def mr0_cv(parsed, raw_text):
+def mr0_cv(parsed, raw_text, ctx):
     return parsed, raw_text                     # control for the CV side
 
 
@@ -266,6 +375,11 @@ def observed(body: dict) -> dict:
         "unknown": sum(1 for r in reqs if r.get("status") == "unknown"),
         "failed_must_have": sorted(body.get("failedMustHaveRequirements") or []),
         "coverage": centesimal(cov.get("rawScore")),
+        # Per-requirement status, so a mutation can be aimed at what
+        # this pair is actually doing instead of chosen blind.
+        "requirements": [
+            {"id": r.get("requirementId"), "status": r.get("status")} for r in reqs
+        ],
     }
 
 
@@ -421,16 +535,18 @@ def pick(rows: list[dict], limit: int, seed: int) -> list[dict]:
     return out
 
 
-async def measure(session, relation, cv_id, jd_id):
+async def measure(session, relation, cv_id, jd_id, ctx=None):
     """Match one pair through a clone. Returns (observed, status_code, detail)."""
     table = "job_descriptions" if relation in JD_SIDE else "user_cvs"
     clone_id = None
     try:
         if relation in JD_SIDE:
-            clone_id = await clone_jd(jd_id, JD_MUTATORS[relation])
+            mutate = JD_MUTATORS[relation]
+            clone_id = await clone_jd(jd_id, lambda d: mutate(d, ctx or {}))
             code, body = match(session, cv_id, clone_id)
         else:
-            clone_id = await clone_cv(cv_id, CV_MUTATORS[relation])
+            mutate = CV_MUTATORS[relation]
+            clone_id = await clone_cv(cv_id, lambda p, t: mutate(p, t, ctx or {}))
             code, body = match(session, clone_id, jd_id)
         if code != 200:
             return None, code, str(body)[:300]
@@ -484,9 +600,13 @@ async def run(limit: int, baseline: Path, checkpoint: Path, out: Path, seed: int
                     tally[relation]["errors"] += 1
                 continue
 
+            # What the control saw, so a mutation can be aimed rather than guessed.
+            ctx = {"control": before, "jd_id": jd_id,
+                   "labels": await requirement_labels(jd_id)}
             for relation in group:
                 try:
-                    after, code, detail = await measure(session, relation, cv_id, jd_id)
+                    after, code, detail = await measure(
+                        session, relation, cv_id, jd_id, ctx)
                 except Skip as why:
                     tally[relation]["skipped"] += 1
                     records.append({"pair_id": pair_id, "relation": relation,
