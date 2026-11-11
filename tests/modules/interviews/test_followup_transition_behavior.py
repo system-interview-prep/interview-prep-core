@@ -277,3 +277,146 @@ async def test_completed_warmup_announces_topic_without_asking_or_summarizing() 
     assert next_prompt not in result.message_text
     assert "năm cuối" not in result.message_text
     assert "Không tóm tắt" in llm.transition_prompt
+
+
+class LeakyTransitionLLM(WarmupCompleteLLM):
+    """Model đọc lại đúng nhãn nội bộ, như buổi thật 11/11."""
+
+    async def generate_text(self, *, system_prompt: str, user_content: str):
+        self.transition_prompt = user_content
+        return "Mình chuyển sang phần Xác thực CV và Dự án, bạn xác nhận để mình bắt đầu."
+
+
+def _warmup_state(next_prompt: str, snapshot_extras: dict | None = None) -> dict:
+    question = {
+        "question_id": "project-question-1",
+        "competency": "Xác thực CV & Dự án",
+        "concept_id": "cv-validation",
+        "stage": "VALIDATE",
+        "main_prompt": next_prompt,
+        **(snapshot_extras or {}),
+    }
+    return {
+        "current_stage": InterviewStage.WARM_UP.value,
+        "started_at": datetime.now(timezone.utc),
+        "target_duration_minutes": 25,
+        "questions_pool": {"VALIDATE": [question]},
+        "current_question_context": {
+            "question_id": "warmup-intro",
+            "competency": "Giới thiệu & Khởi động",
+            "concept_id": "warmup",
+            "main_prompt": "Giới thiệu ngắn về bản thân và lý do quan tâm vị trí này?",
+        },
+    }
+
+
+_FULL_INTRO = (
+    "Dạ em là sinh viên năm cuối ngành Kỹ thuật phần mềm tại IUH và em đang tìm cơ hội "
+    "Full Stack Developer vì em thích cả giao diện lẫn logic backend."
+)
+
+
+@pytest.mark.asyncio
+async def test_transition_prompt_never_carries_the_internal_label() -> None:
+    llm = WarmupCompleteLLM()
+    engine = InterviewCoreEngine(llm_client=llm)
+
+    result = await engine.handle_turn(
+        CandidateTurnInput(session_id="session-1", turn_index=0, text_content=_FULL_INTRO),
+        _warmup_state("Trong dự án HamTech, bạn trực tiếp phụ trách phần nào?", {"project_name": "HamTech"}),
+    )
+
+    # Nhãn taxonomy và tên stage không bao giờ đi vào prompt, nên model không có
+    # gì để đọc lại cho ứng viên nghe.
+    assert "Xác thực CV" not in llm.transition_prompt
+    assert "VALIDATE" not in llm.transition_prompt
+    # Chủ đề đưa cho model là tên dự án của chính ứng viên.
+    assert "dự án HamTech" in llm.transition_prompt
+    assert result.metadata["transition_topic"] == "dự án HamTech"
+
+
+@pytest.mark.asyncio
+async def test_transition_that_leaks_the_plan_is_replaced_not_spoken() -> None:
+    engine = InterviewCoreEngine(llm_client=LeakyTransitionLLM())
+
+    result = await engine.handle_turn(
+        CandidateTurnInput(session_id="session-1", turn_index=0, text_content=_FULL_INTRO),
+        _warmup_state("Trong dự án HamTech, bạn trực tiếp phụ trách phần nào?", {"project_name": "HamTech"}),
+    )
+
+    assert result.action == TurnAction.NEXT_QUESTION
+    assert result.metadata["awaiting_candidate_ack"] is True
+    assert "Xác thực CV" not in result.message_text
+    assert "xác nhận" not in result.message_text.lower()
+    assert "dự án HamTech" in result.message_text
+
+
+@pytest.mark.asyncio
+async def test_transition_without_a_sayable_topic_stays_generic() -> None:
+    engine = InterviewCoreEngine(llm_client=LeakyTransitionLLM())
+
+    # Không có tên dự án: chủ đề nói ra là lời chung của khái niệm cv-validation.
+    result = await engine.handle_turn(
+        CandidateTurnInput(session_id="session-1", turn_index=0, text_content=_FULL_INTRO),
+        _warmup_state("Bạn trực tiếp phụ trách phần nào trong dự án gần nhất?"),
+    )
+
+    assert "Xác thực CV" not in result.message_text
+    assert "dự án trong CV của bạn" in result.message_text
+
+
+class WarmupReceiptLLM(WarmupGreetingLLM):
+    """Câu tiếp nhận ngắn, không mang nội dung câu trả lời."""
+
+    def __init__(self, acknowledgement: str):
+        super().__init__()
+        self.acknowledgement = acknowledgement
+        self.probe_question = "Bạn đang quan tâm vị trí này vì điều gì vậy?"
+
+    async def generate_json(self, *, system_prompt: str, user_content: str):
+        data = await super().generate_json(system_prompt=system_prompt, user_content=user_content)
+        return {**data, "acknowledgement": self.acknowledgement}
+
+
+@pytest.mark.asyncio
+async def test_warmup_followup_opens_with_a_short_receipt() -> None:
+    llm = WarmupReceiptLLM("Ừm, mình hiểu rồi.")
+    engine = InterviewCoreEngine(llm_client=llm)
+
+    result = await engine.handle_turn(
+        CandidateTurnInput(
+            session_id="session-1",
+            turn_index=0,
+            text_content="Dạ em đang là sinh viên năm cuối của trường Đại học Công nghiệp TP.HCM ạ.",
+        ),
+        _warmup_state("Bạn trực tiếp phụ trách phần nào trong dự án gần nhất?"),
+    )
+
+    assert result.action == TurnAction.CLARIFY
+    # Một lượt nói liền mạch, không tách đoạn như câu ghi nhận giữa buổi.
+    assert result.message_text == "Ừm, mình hiểu rồi. Bạn đang quan tâm vị trí này vì điều gì vậy?"
+    assert "\n" not in result.message_text
+    assert result.metadata["speech_plan"] == [
+        {"act": "ACK", "source": "warmup_receipt"},
+        {"act": "QUESTION", "source": "llm_evaluation"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_warmup_receipt_that_repeats_the_answer_is_dropped() -> None:
+    # Nhắc lại lời ứng viên ở phần mở đầu nghe như đọc checklist; lượt vẫn chạy,
+    # chỉ còn lại câu hỏi.
+    llm = WarmupReceiptLLM("À, vậy là bạn đang học năm cuối.")
+    engine = InterviewCoreEngine(llm_client=llm)
+
+    result = await engine.handle_turn(
+        CandidateTurnInput(
+            session_id="session-1",
+            turn_index=0,
+            text_content="Dạ em đang là sinh viên năm cuối ạ.",
+        ),
+        _warmup_state("Bạn trực tiếp phụ trách phần nào trong dự án gần nhất?"),
+    )
+
+    assert result.message_text == "Bạn đang quan tâm vị trí này vì điều gì vậy?"
+    assert result.metadata["ack_source"] == "warmup_receipt_rejected"

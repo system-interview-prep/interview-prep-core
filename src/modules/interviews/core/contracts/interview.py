@@ -106,4 +106,8 @@ class QuestionItem(BaseModel):
     spoken_prompt: Optional[str] = None
     rubric_criteria: Optional[Any] = ""
     difficulty: str = "intermediate"  # foundational | intermediate | advanced
+    # Chủ đề nói ra cho ứng viên lấy từ hai trường này, không lấy từ
+    # ``competency``: nhãn taxonomy là tên nội bộ (xem ``core.dialogue.topics``).
+    concept_id: Optional[str] = None
+    project_name: Optional[str] = None
     model_config = {"extra": "ignore"}

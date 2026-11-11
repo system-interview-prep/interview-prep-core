@@ -18,6 +18,7 @@ from src.modules.interviews.core.dialogue.policy import (
     hint_rejection_reason,
     is_evaluative,
     is_grader_style,
+    is_greeting,
     is_incomplete_clause,
     is_judgmental,
     is_keyword_fragment,
@@ -26,9 +27,12 @@ from src.modules.interviews.core.dialogue.policy import (
     looks_like_system_probe,
     probe_rejection_reason,
     recent_contains,
+    sentence_count,
+    shares_answer_content,
     speech_v2_enabled,
     system_leak_reason,
 )
+from src.modules.interviews.core.dialogue.topics import names_internal_structure
 
 
 def _loads_llm_json(raw: str) -> Any:
@@ -333,6 +337,57 @@ def acknowledgement_rejection_reason(
         return "repeats_recent"
     if speech_v2_enabled() and breaks_house_style(text_value):
         return "style"
+    return None
+
+
+# Câu tiếp nhận ngắn hơn câu ghi nhận: nó không nói nội dung nào nên không cần
+# đủ 4 từ như ``ACK_MIN_WORDS`` ("Ừ, rõ rồi." là đủ).
+RECEIPT_MIN_WORDS = 2
+RECEIPT_MAX_WORDS = 8
+
+
+def receipt_rejection_reason(
+    raw: Any, *, recent: Any = (), answer: str = ""
+) -> Optional[str]:
+    """Vì sao một câu tiếp nhận không mở đầu lượt nói được, hoặc None.
+
+    Câu *tiếp nhận* chỉ giữ nhịp hội thoại — "Ừm, mình hiểu rồi." — khác câu
+    *ghi nhận* vốn được phép nhắc lại một chi tiết. Phần mở đầu dùng loại này:
+    buổi thật 11/11 hỏi trống trơn "Bạn đang quan tâm vị trí này vì điều gì?"
+    nghe như biểu mẫu, nhưng nhắc lại lời ứng viên ở đó lại thành đọc checklist
+    (lý do ``acknowledgement`` từng bị bỏ trắng trong WARM_UP). Vì vậy câu này
+    bị từ chối ngay khi mang một chữ nào của câu trả lời.
+    """
+    text_value = str(raw or "").strip()
+    if not text_value:
+        return "empty"
+    words = text_value.split()
+    if len(words) < RECEIPT_MIN_WORDS:
+        return "too_curt"
+    if len(words) > RECEIPT_MAX_WORDS or "\n" in text_value:
+        return "too_long"
+    if "?" in text_value or sentence_count(text_value) > 1:
+        return "not_a_receipt"
+    if is_greeting(text_value):
+        return "greeting"
+    if any(re.search(pattern, text_value, re.IGNORECASE) for pattern in PROHIBITED_LEAK_PATTERNS):
+        return "rubric_leak"
+    if leak := system_leak_reason(text_value):
+        return leak
+    if structure := names_internal_structure(text_value):
+        return structure
+    if is_evaluative(text_value):
+        return "evaluative"
+    if is_judgmental(text_value):
+        return "judgmental"
+    if is_grader_style(text_value):
+        return "grader_style"
+    if breaks_house_style(text_value):
+        return "style"
+    if recent_contains(text_value, recent or ()):
+        return "repeats_recent"
+    if shares_answer_content(text_value, answer):
+        return "paraphrases_answer"
     return None
 
 
@@ -721,6 +776,9 @@ __all__ = [
     "_CANDIDATE_PRONOUN_RE",
     "normalize_candidate_pronoun",
     "acknowledgement_rejection_reason",
+    "RECEIPT_MIN_WORDS",
+    "RECEIPT_MAX_WORDS",
+    "receipt_rejection_reason",
     "DEFINITE_GIVE_UP_KEYWORDS",
     "AMBIGUOUS_KEYWORDS",
     "is_yes_no_question",

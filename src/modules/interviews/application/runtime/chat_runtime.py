@@ -40,6 +40,7 @@ from src.modules.interviews.core.dialogue.policy import (
     last_paragraph,
     speech_v2_enabled,
 )
+from src.modules.interviews.core.dialogue.topics import generic_transition
 from src.modules.interviews.core.conversation.turn_engine import (
     InterviewCoreEngine,
     pacing_seconds,
@@ -69,6 +70,17 @@ def _is_simple_transition_ack(text_value: str) -> bool:
         "duoc anh hoi di", "duoc chi hoi di", "okay", "okay a", "roi", "uh", "uhm", "minh san sang",
         "yes", "yes go ahead", "sure", "ready", "okay go ahead",
     }
+
+
+def _snapshot_concept_id(snapshot: dict[str, Any] | None) -> str | None:
+    """Concept id của một lượt đã đóng băng, dù planner ghi ở khoá nào."""
+    snap = snapshot or {}
+    for key in ("taxonomyTarget", "target"):
+        concept = (snap.get(key) or {}).get("conceptId")
+        if concept:
+            return str(concept)
+    return None
+
 
 MessageType = Literal[
     "GREETING",
@@ -1026,6 +1038,10 @@ def build_session_state_from_db(
             "question_id": q_id,
             "question_version_id": str(t.get("question_version_id")) if t.get("question_version_id") else None,
             "competency": comp,
+            # Core gọi tên chủ đề cho ứng viên từ đây; ``competency`` là nhãn
+            # nội bộ nên không nói ra được (core.dialogue.topics).
+            "concept_id": _snapshot_concept_id(t_snap),
+            "project_name": t_snap.get("projectName") or None,
             "stage": t_stage,
             "main_prompt": prompt,
             "spoken_prompt": t_snap.get("spokenText") or None,
@@ -1136,6 +1152,8 @@ def build_session_state_from_db(
             "main_prompt": q_text,
             "spoken_prompt": snap.get("spokenText") or None,
             "competency": working_memory["current_competency"],
+            "concept_id": _snapshot_concept_id(snap),
+            "project_name": snap.get("projectName") or None,
             "rubric_criteria": rubric_criteria,
             "hard_answer_seconds": (snap.get("hardAnswerSeconds") or 180),
         } if current_turn else {},
@@ -2240,8 +2258,8 @@ async def process_candidate_message(
         if awaiting_candidate_ack:
             # Send only the topic signpost now. The frozen question follows
             # after a short readiness response, handled without invoking Core.
-            next_content = core_output.message_text or (
-                "Mình chuyển sang phần dự án nhé." if is_vi else "Let's move on to your project experience."
+            next_content = core_output.message_text or generic_transition(
+                (core_output.metadata or {}).get("transition_topic"), is_vi
             )
             if is_vi:
                 next_content = _personalize_candidate_address(next_content, candidate_short_name)

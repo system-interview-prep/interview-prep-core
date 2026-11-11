@@ -5,7 +5,8 @@ Các kiểm tra giọng nói có thể bao gồm các loại như:
 - probe: yêu cầu ứng viên cung cấp thêm thông tin hoặc làm rõ câu trả lời,
 - clarify: yêu cầu ứng viên làm rõ câu trả lời,
 - qna: kiểm tra kiến thức hoặc kỹ năng của ứng viên thông qua các câu hỏi
-- compose: yêu cầu ứng viên tạo ra một câu trả lời hoặc giải pháp mới.
+- compose: yêu cầu ứng viên tạo ra một câu trả lời hoặc giải pháp mới,
+- transition: lời chuyển chủ đề, bị từ chối khi lộ cấu trúc buổi phỏng vấn.
 Các kết quả của các kiểm tra giọng nói có thể là: pass, reject, fix, error.
 """
 
@@ -14,7 +15,7 @@ from __future__ import annotations
 import contextvars
 from typing import Any
 
-KINDS = ("ack", "probe", "clarify", "qna", "compose")
+KINDS = ("ack", "probe", "clarify", "qna", "compose", "transition")
 OUTCOMES = ("pass", "reject", "fix", "error")
 DRAFT_CHARS = 200
 MAX_RECORDS = 20

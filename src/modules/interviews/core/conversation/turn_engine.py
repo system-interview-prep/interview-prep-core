@@ -57,9 +57,15 @@ from src.modules.interviews.core.dialogue.policy import (
     compose_turn,
     looks_like_system_probe,
     new_terms,
+    opening_interjection,
     qna_rejection_reason,
     speech_prompt,
     speech_v2_enabled,
+)
+from src.modules.interviews.core.dialogue.topics import (
+    generic_transition,
+    spoken_topic,
+    transition_rejection_reason,
 )
 
 __all__ = [
@@ -541,10 +547,22 @@ class InterviewCoreEngine(InterviewResponseMixin):
             )
             if follow_up:
                 speech_checks.record("probe", "pass", "warmup_from_evaluation")
-                # Keep the greeting and follow-up as one connected utterance;
-                # do not prepend a standalone paraphrase of the candidate.
-                continuation = follow_up
-                speech_plan = [{"act": "QUESTION", "source": "llm_evaluation"}]
+                # Một lượt nói liền mạch: câu tiếp nhận rất ngắn rồi tới câu
+                # hỏi, không tách đoạn và không nhắc lại lời ứng viên (câu ghi
+                # nhận kiểu tóm tắt đã bị chặn ở ``receipt_rejection_reason``).
+                receipt = str(eval_result.get("acknowledgement") or "").strip()
+                if receipt and opening_interjection(follow_up):
+                    # Câu hỏi đã tự mở bằng "À/Ừ/Ok": thêm câu tiếp nhận nữa
+                    # thành hai tiếng đệm dính nhau.
+                    receipt = ""
+                continuation, speech_plan = compose_turn(
+                    receipt,
+                    follow_up,
+                    recent=recent_lines if speech_v2_enabled() else (),
+                    ack_source=str(eval_result.get("ack_source") or "-"),
+                    question_source="llm_evaluation",
+                    inline=True,
+                )
             else:
                 # Keep a natural recovery for malformed/unsafe model output;
                 # the ordinary path above needs only the evaluation call.
@@ -815,27 +833,44 @@ class InterviewCoreEngine(InterviewResponseMixin):
         # kế tiếp được gửi sau khi ứng viên xác nhận đã sẵn sàng; như vậy lời
         # chuyển không bị ghép thành một câu hỏi dài có nhiều ý.
         if current_stage == InterviewStage.WARM_UP:
-            next_topic = str(
-                next_question.competency
-                or getattr(next_question, "project_name", None)
-                or next_question.main_prompt
-                or ("chủ đề tiếp theo" if is_vi else "the next topic")
-            ).strip()
+            # Chủ đề nói ra cho ứng viên, không phải nhãn taxonomy của planner:
+            # ``competency`` ở đây là "Xác thực CV & Dự án" và buổi thật 11/11
+            # đã đọc nguyên nhãn đó lên. Không gọi tên được thì nói chung chung.
+            next_topic = spoken_topic(
+                concept_id=next_question.concept_id,
+                competency=next_question.competency,
+                project_name=next_question.project_name,
+                is_vi=is_vi,
+            )
+            topic_clause = (
+                (f"The next thing you want to ask about is: {next_topic}. " if next_topic else "")
+                if not is_vi
+                else (f"Chuyện bạn sắp hỏi tới là: {next_topic}. " if next_topic else "")
+            )
             transition_line = await self._generate_interviewer_line(
                 purpose="announce_next_topic_wait_for_candidate_ack",
                 context=(
-                    f"The candidate has finished the opening. The next interview topic is: {next_topic}. "
-                    "Do not summarize or repeat anything the candidate said. Do not ask the actual next question. "
-                    "Say one short, friendly sentence that acknowledges the candidate and announces this topic. "
-                    "Wait for the candidate to acknowledge before the next question is sent. Do not end with a question."
+                    "The candidate has finished the opening. "
+                    + topic_clause
+                    + "Do not summarize or repeat anything the candidate said. Do not ask the actual next question. "
+                    "Say one short, friendly sentence telling them what you are about to ask about, then stop. "
+                    "How the interview is organised is yours alone: never name a part, round, stage or step of it, "
+                    "never mention a plan or process, never say how many questions are left, and never ask the "
+                    "candidate to confirm or approve anything. Do not end with a question."
                     if not is_vi
-                    else f"Ứng viên vừa hoàn tất phần mở đầu. Chủ đề tiếp theo là: {next_topic}. "
-                    "Không tóm tắt hay nhắc lại điều ứng viên vừa nói. Chưa hỏi câu hỏi chuyên môn. "
-                    "Nói một câu ngắn, thân thiện để ghi nhận và báo trước chủ đề này; sau đó chờ ứng viên xác nhận rồi mới hỏi. "
+                    else "Ứng viên vừa hoàn tất phần mở đầu. "
+                    + topic_clause
+                    + "Không tóm tắt hay nhắc lại điều ứng viên vừa nói. Chưa hỏi câu hỏi chuyên môn. "
+                    "Nói đúng một câu ngắn, thân thiện, cho biết bạn sắp hỏi sang chuyện đó rồi dừng lại. "
+                    "Buổi phỏng vấn được sắp xếp thế nào là chuyện của riêng bạn: không gọi tên phần, vòng, "
+                    "giai đoạn hay bước nào, không nói về quy trình hay kế hoạch, không cho biết còn bao nhiêu câu, "
+                    "và không xin ứng viên xác nhận hay đồng ý. Kết thúc bằng 'nhé' là đủ để ứng viên đáp lại. "
                     "Không kết thúc bằng dấu hỏi."
                 ),
                 is_vi=is_vi,
                 max_words=22,
+                reject=transition_rejection_reason,
+                fallback=generic_transition(next_topic, is_vi),
             )
             return InterviewerTurnOutput(
                 session_id=session_id,
@@ -854,7 +889,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
                     "sufficiency_status": sufficiency_status,
                     "awaiting_candidate_ack": True,
                     "transition": transition_line,
-                    "transition_topic": next_topic,
+                    "transition_topic": next_topic or "",
                     "speech_plan": [{"act": "TRANSITION", "source": "llm"}],
                     "intent": eval_result.get("intent"),
                 },

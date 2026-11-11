@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from src.core.trace_logging import trace_event
 from src.modules.interviews.core.dialogue import playbook, speech_checks
@@ -16,6 +16,12 @@ from src.modules.interviews.core.conversation.turn_rules import (
     classify_candidate_intent,
     evaluation_schema,
     normalize_candidate_pronoun,
+    receipt_rejection_reason,
+)
+from src.modules.interviews.core.dialogue.topics import (
+    generic_transition,
+    spoken_topic,
+    transition_rejection_reason,
 )
 from src.modules.interviews.core.contracts.interview import InterviewStage, QuestionItem
 from src.modules.interviews.core.dialogue.policy import (
@@ -54,8 +60,17 @@ class InterviewResponseMixin:
         context: str,
         is_vi: bool,
         max_words: int = 35,
+        reject: Optional[Callable[[str], Optional[str]]] = None,
+        fallback: str = "",
     ) -> str:
-        """Ask the model for a concise line; word count is a target, not a turn failure."""
+        """Ask the model for a concise line; word count is a target, not a turn failure.
+
+        ``reject`` là rào chắn hậu sinh cho những lời thoại có ràng buộc nội
+        dung — lời chuyển chủ đề không được lộ cấu trúc buổi phỏng vấn
+        (``core.dialogue.topics``). Prompt đã dặn, nhưng dặn không phải là bảo
+        đảm; câu bị từ chối thì dùng ``fallback`` và ghi trace, không làm hỏng
+        lượt của ứng viên.
+        """
         language = "tiếng Việt" if is_vi else "English"
         system_prompt = speech_prompt(
             is_vi=is_vi,
@@ -86,6 +101,18 @@ class InterviewResponseMixin:
             line = normalize_candidate_pronoun(" ".join(str(raw or "").split()), is_vi)
             if not line:
                 raise ValueError("empty interviewer line")
+            if reject and (reason := reject(line)):
+                speech_checks.record("transition", "reject", reason, line)
+                trace_event(
+                    "interviewer",
+                    "dialogue_line_rejected",
+                    purpose=purpose,
+                    reason=reason,
+                    text=line[:500],
+                )
+                if not fallback:
+                    raise ValueError(f"interviewer line rejected: {reason}")
+                return fallback
             word_count = len(line.split())
             if word_count > max_words:
                 # A verbosity miss should not discard the candidate's answer or
@@ -236,7 +263,8 @@ HƯỚNG DẪN RIÊNG CHO PHẦN MỞ ĐẦU:
 - Nếu ứng viên nói đang đi học nhưng chưa nói năm học, có thể hỏi họ đang học năm mấy hoặc ngành gì. Nếu đã nói các ý đó, đừng hỏi lại; chuyển sang ý còn thiếu.
 - Nếu ứng viên nói đang đi làm nhưng chưa nói thời gian hoặc vai trò, có thể hỏi họ đã làm công việc đó bao lâu. Nếu đã nói rồi, đừng hỏi lại.
 - Khi đã hiểu bối cảnh học tập/công việc, nếu chưa biết lý do quan tâm vị trí thì hỏi riêng lý do đó bằng lời tự nhiên. Mỗi lượt chỉ hỏi một ý, bám vào chi tiết ứng viên vừa kể.
-- Không tạo câu ghi nhận đứng riêng để diễn đạt lại câu trả lời. Để trường acknowledgement rỗng; đưa sắc thái thân thiện và phần nối ý vào chính probe_question, thành một câu hỏi nói liền mạch. Ví dụ về nhịp câu: “À, bạn học Kỹ thuật phần mềm, vậy điều gì khiến bạn hứng thú với Full Stack?” Không chép nguyên ví dụ.
+- Trường acknowledgement ở phần mở đầu KHÔNG theo mô tả chung phía trên. Ở đây nó chỉ là một câu tiếp nhận rất ngắn (2-8 từ) cho thấy bạn đang nghe, rồi mới hỏi tiếp: “Ừm, mình hiểu rồi.”, “À, vậy à.”, “Ừ, rõ rồi.”, “Ok, mình nắm rồi.” Không nhắc lại, không tóm tắt, không nêu bất kỳ chi tiết nào ứng viên vừa nói; đổi cách nói giữa các lượt, không lặp câu vừa dùng. Nếu ứng viên mới chỉ chào, chưa có gì để tiếp nhận thì để trống.
+- probe_question là câu hỏi, nói như đang trò chuyện chứ không như biểu mẫu: có thể mở bằng “Bạn cho mình hỏi…” hoặc kết bằng “vậy”, “nhỉ”, và đổi cách nói giữa các lượt. Không tự thêm câu tiếp nhận hay tiếng đệm vào đầu probe_question: hệ thống đã ghép acknowledgement vào trước.
 - Không hỏi lại một câu ghép như “công việc hiện tại và lý do quan tâm” sau khi ứng viên đã trả lời một phần. Nếu các ý chính đã được trả lời, đánh dấu SUFFICIENT.
 - Các ví dụ trên chỉ là hướng suy nghĩ, không chép nguyên văn. Câu hỏi cần thân thiện, xã giao vừa đủ, như người phỏng vấn đang tìm hiểu ứng viên.
 """
@@ -298,12 +326,19 @@ HƯỚNG DẪN RIÊNG CHO PHẦN MỞ ĐẦU:
             llm_intent = str(data.get("intent", "ANSWER"))
             raw_ack = data.get("acknowledgement")
             if current_stage == InterviewStage.WARM_UP:
-                # The warm-up question itself carries the conversational bridge;
-                # a separate acknowledgement tends to paraphrase the answer and
-                # sound like a detached checklist item.
-                ack_text = ""
-                ack_source = "integrated_question"
-                ack_reason = "warmup_integrated_question"
+                # Phần mở đầu vẫn không dùng câu ghi nhận kiểu nhắc lại nội
+                # dung: ở đây nó nghe như đọc checklist tự giới thiệu. Nhưng bỏ
+                # trắng hẳn thì lượt làm rõ còn trơ câu hỏi ("Bạn đang quan tâm
+                # vị trí này vì điều gì?", buổi thật 11/11). Chỉ nhận một câu
+                # tiếp nhận rất ngắn, không mang chữ nào của câu trả lời.
+                ack_reason = receipt_rejection_reason(
+                    raw_ack, recent=recent_lines, answer=candidate_text
+                )
+                ack_text = "" if ack_reason else normalize_candidate_pronoun(str(raw_ack or "").strip(), is_vi)
+                ack_source = "warmup_receipt" if ack_text else "warmup_receipt_rejected"
+                speech_checks.record(
+                    "ack", "reject" if ack_reason else "pass", ack_reason or "warmup_receipt", str(raw_ack or "")
+                )
             else:
                 ack_reason = acknowledgement_rejection_reason(
                     raw_ack, recent=recent_lines, answer=candidate_text
@@ -529,7 +564,8 @@ Hãy đưa ra câu hỏi probe:"""
     ) -> str:
         if next_question is None:
             return ""
-        previous_competency = (session_state.get("current_question_context") or {}).get("competency") or (
+        previous_context = session_state.get("current_question_context") or {}
+        previous_competency = previous_context.get("competency") or (
             session_state.get("working_memory") or {}
         ).get("current_competency")
         if (
@@ -538,15 +574,32 @@ Hãy đưa ra câu hỏi probe:"""
             and not close_previous_thread
         ):
             return ""
+        # Chủ đề nói ra lấy từ dự án/khái niệm, không từ stage và nhãn taxonomy:
+        # đưa "VALIDATE" hay "Xác thực CV & Dự án" vào prompt thì model đọc lại
+        # đúng như vậy cho ứng viên nghe (buổi thật 11/11).
+        previous_topic = spoken_topic(
+            concept_id=previous_context.get("concept_id"),
+            competency=previous_competency,
+            project_name=previous_context.get("project_name"),
+            is_vi=is_vi,
+        )
+        next_topic = spoken_topic(
+            concept_id=next_question.concept_id,
+            competency=next_question.competency,
+            project_name=next_question.project_name,
+            is_vi=is_vi,
+        )
         context = (
-            f"Ứng viên vừa trả lời xong câu thuộc giai đoạn {current_stage.value}, chủ đề {previous_competency or 'chưa rõ'}. "
+            f"Ứng viên vừa trả lời xong một câu{f' về {previous_topic}' if previous_topic else ''}. "
             f"Ý chính trong câu trả lời vừa rồi: {str(candidate_answer or '').strip()[:500] or 'không có'}. "
-            f"Câu tiếp theo thuộc giai đoạn {next_stage.value}, chủ đề {next_question.competency or 'chưa rõ'}. "
+            f"Chuyện bạn sắp hỏi tới: {next_topic or 'một chuyện khác'}. "
             f"Câu hỏi kế tiếp: {next_question.spoken_prompt or next_question.main_prompt}. "
             f"Ứng viên có thể vừa xin bỏ qua hoặc gặp khó khăn: {after_struggle}. "
             f"Đóng chủ đề/câu hỏi vừa rồi trước khi chuyển: {close_previous_thread}. "
-            "Nếu chuyển câu hoặc chủ đề, hãy ghi nhận ngắn gọn điều ứng viên vừa nói và báo rõ rằng bạn sẽ hỏi sang câu/chủ đề khác. "
-            "Có thể diễn đạt linh hoạt như 'Được rồi, mình ghi nhận phần đó. Giờ mình muốn hỏi bạn về…', không chép nguyên câu mẫu. "
+            "Nếu chuyển câu hoặc chủ đề, hãy ghi nhận ngắn gọn điều ứng viên vừa nói và báo rằng bạn sẽ hỏi sang chuyện khác. "
+            "Có thể diễn đạt linh hoạt như 'Được rồi, mình nắm phần đó. Giờ mình muốn hỏi bạn về…', không chép nguyên câu mẫu. "
+            "Buổi phỏng vấn được sắp xếp thế nào là chuyện của riêng bạn: không gọi tên phần, vòng, giai đoạn hay bước nào, "
+            "không nói về quy trình hay kế hoạch, không cho biết còn bao nhiêu câu, và không xin ứng viên xác nhận hay đồng ý. "
             "Không làm ứng viên tưởng bạn vẫn hỏi tiếp chủ đề cũ; không khen/chê, chấm điểm hay tiết lộ đánh giá."
         )
         return await self._generate_interviewer_line(
@@ -554,6 +607,8 @@ Hãy đưa ra câu hỏi probe:"""
             context=context,
             is_vi=is_vi,
             max_words=20,
+            reject=transition_rejection_reason,
+            fallback=generic_transition(next_topic, is_vi),
         )
 
     async def _generate_clarify_text(

@@ -245,6 +245,34 @@ def is_parroting(ack: str, answer: str) -> bool:
     return _longest_common_run(_content_words(ack), _content_words(answer)) >= PARROT_MIN_RUN
 
 
+# Từ của riêng câu tiếp nhận: nói "mình đang nghe", không nói nội dung nào.
+RECEIPT_WORDS = frozenset(
+    "à ừ ừm ồ ô ok okay vâng mm mmm mình tôi hiểu rồi nghe nắm được rõ ra vậy thế "
+    "ý thì là có cũng đó này ấy nhé nha ạ "
+    "i see got it right sure alright understood follow you that makes sense".split()
+)
+
+
+def shares_answer_content(text_value: str, answer: str) -> bool:
+    """Câu này có dựa vào nội dung câu trả lời không.
+
+    Dùng để phân biệt câu *tiếp nhận* ("Ừm, mình hiểu rồi.") với câu *ghi nhận*
+    ("À, vậy là khoá dòng khi trừ tồn kho."). Câu tiếp nhận không được mang chữ
+    nào của ứng viên: nó chỉ giữ nhịp hội thoại, nên không bao giờ thành bản
+    tóm tắt câu trả lời.
+    """
+    words = set(_content_words(text_value)) - RECEIPT_WORDS
+    return bool(words & set(_content_words(answer)))
+
+
+_GREETING_RE = re.compile(r"^\W*(?:xin\s+)?(?:chào|hi|hello|hey)(?!\w)", re.IGNORECASE)
+
+
+def is_greeting(text_value: str) -> bool:
+    """Lời chào: mở đầu buổi đã chào rồi, giữa buổi chào lại là máy móc."""
+    return bool(_GREETING_RE.match(str(text_value or "")))
+
+
 _INJECTION_RE = re.compile(
     r"(bỏ qua|phớt lờ|quên|bỏ hết)\s+(hết\s+)?(mọi|tất cả|các|những)?\s*"
     r"(hướng dẫn|chỉ dẫn|yêu cầu|lệnh|quy tắc|luật)"
@@ -822,7 +850,12 @@ _TRAILING_NHE_RE = re.compile(r",?\s+nhé(?=\s*[.!?…:]?\s*$)", re.IGNORECASE)
 MAX_NHE_PER_TURN = 1
 
 
-def _speakable_label(label: str | None) -> str | None:
+def speakable_label(label: str | None) -> str | None:
+    """Nhãn kỹ năng đọc lên được, hoặc None với nhãn mặc định/dạng mã máy.
+
+    ``core.dialogue.topics`` lọc thêm các nhãn nội bộ của planner trước khi
+    dùng nhãn này làm chủ đề nói ra.
+    """
     value = str(label or "").strip()
     if (
         not value
@@ -871,11 +904,14 @@ def compose_turn(
     recent: Iterable[str] = (),
     ack_source: str | None = None,
     question_source: str | None = None,
+    inline: bool = False,
 ) -> tuple[str, list[dict[str, str]]]:
     """Bộ ráp duy nhất của một lượt nói: (văn bản, kế hoạch lượt nói).
 
     Câu ghi nhận là đoạn đầu (chat tách đoạn đầu ra làm câu ghi nhận); câu chuyển
-    đứng ngay trước câu hỏi trong đoạn sau.
+    đứng ngay trước câu hỏi trong đoạn sau. ``inline=True`` ghép tất cả vào một
+    đoạn, dùng cho phần mở đầu: ở đó câu tiếp nhận rất ngắn và tách đoạn làm nó
+    đứng lẻ như một dòng hệ thống.
 
     Luật cho cả lượt (từ 25/10): tối đa một "nhé". Các câu soạn sẵn đều đúng
     văn phong khi đứng riêng, nhưng ghép lại thành "…sang câu khác nhé. Mình
@@ -915,7 +951,8 @@ def compose_turn(
         )
         if text
     ]
-    return "\n\n".join(part for part in (acknowledgement, ask) if part), plan
+    separator = " " if inline else "\n\n"
+    return separator.join(part for part in (acknowledgement, ask) if part), plan
 
 
 # Câu ghi nhận nói như đã hiểu trọn ý: đứng trước câu hỏi thêm thì mâu thuẫn.
