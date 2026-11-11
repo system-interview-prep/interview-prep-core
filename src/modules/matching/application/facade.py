@@ -1024,10 +1024,15 @@ class MatchingFacade:
         )))
         contextual_job_text.extend(sorted(set(item.text for item in payload.job.responsibilities)))
         contextual_job_text.extend(sorted(set(item.label for item in payload.job.career_classifications)))
-        resume_text = "\n".join(contextual_resume_text) or "\n".join(
+        # Folded to lower case before it reaches the embedding. Case carries no
+        # meaning for a skill label, but an embedding is case sensitive: the same
+        # CV written in capitals scored 2.6 to 5.0 points lower on every pair
+        # tested (MR6). The sparse half is unaffected - its query already goes
+        # through tokenize_text, which casefolds.
+        resume_text = ("\n".join(contextual_resume_text) or "\n".join(
             item.text for item in payload.resume.evidence
-        )
-        job_text = "\n".join(contextual_job_text) or "\n".join(item.text for item in payload.job.evidence)
+        )).casefold()
+        job_text = ("\n".join(contextual_job_text) or "\n".join(item.text for item in payload.job.evidence)).casefold()
         if not resume_text or not job_text:
             return (*self._unknown_semantic(policy_weight, "semantic_input_not_evidenced"), None)
 
@@ -1178,10 +1183,15 @@ class MatchingFacade:
         )))
         contextual_job_text.extend(sorted(set(item.text for item in payload.job.responsibilities)))
         contextual_job_text.extend(sorted(set(item.label for item in payload.job.career_classifications)))
-        resume_text = "\n".join(contextual_resume_text) or "\n".join(
+        # Folded to lower case before it reaches the embedding. Case carries no
+        # meaning for a skill label, but an embedding is case sensitive: the same
+        # CV written in capitals scored 2.6 to 5.0 points lower on every pair
+        # tested (MR6). The sparse half is unaffected - its query already goes
+        # through tokenize_text, which casefolds.
+        resume_text = ("\n".join(contextual_resume_text) or "\n".join(
             item.text for item in payload.resume.evidence
-        )
-        job_text = "\n".join(contextual_job_text) or "\n".join(item.text for item in payload.job.evidence)
+        )).casefold()
+        job_text = ("\n".join(contextual_job_text) or "\n".join(item.text for item in payload.job.evidence)).casefold()
         if not resume_text or not job_text:
             return self._semantic_factor(payload, policy_weight, started=started)
         bm25_used: str | None = None

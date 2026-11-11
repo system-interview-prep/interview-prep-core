@@ -252,10 +252,17 @@ def test_semantic_factor_prefers_responsibility_project_and_achievement_context(
 
     MatchingFacade(embedder).match(MatchRequest.model_validate(payload))
 
-    assert "Designed payment APIs" in embedder.texts[0]
-    assert "Reduced API latency by 35%" in embedder.texts[0]
-    assert "Java" in embedder.texts[1]
-    assert "Build reliable payment APIs" in embedder.texts[1]
+    # What this test is about is which contexts reach the embedder, not how
+    # they are capitalised. The semantic text is folded to lower case first:
+    # an embedding is case sensitive, so the same CV written in capitals used
+    # to score 2.6 to 5.0 points lower (MR6, on every pair tested).
+    assert "designed payment apis" in embedder.texts[0]
+    assert "reduced api latency by 35%" in embedder.texts[0]
+    assert "java" in embedder.texts[1]
+    assert "build reliable payment apis" in embedder.texts[1]
+    # Pin the folding itself, so losing it is a failure rather than a drift.
+    assert embedder.texts[0] == embedder.texts[0].casefold()
+    assert embedder.texts[1] == embedder.texts[1].casefold()
 
 
 def test_matching_facade_builds_the_default_embedder_once_per_batch(monkeypatch) -> None:
