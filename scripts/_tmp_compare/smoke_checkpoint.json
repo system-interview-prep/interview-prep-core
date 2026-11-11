@@ -1,0 +1,453 @@
+{
+  "cv_ids": {
+    "CV01": "eda214a1-f84d-44a6-ba1c-91e62abce25a",
+    "CV02": "3f415b69-dbff-4f87-abab-be290ac8d687",
+    "CV03": "be9fe9a1-331d-4503-a2a0-fa14679d573d",
+    "CV04": "e8fddc37-2389-4a1d-b9b7-e96bf4472ed7",
+    "CV05": "ffcadf9d-c509-4811-b0dd-b3488708a211",
+    "CV06": "6dad095f-89cc-441d-875e-093e3e48964e",
+    "CV07": "323842a6-9429-426f-8736-db0ce52665dc",
+    "CV08": "3a6426ff-3bc5-4310-9634-b259abbf3fbe",
+    "CV09": "d280dc53-57fe-4df2-b5a8-f362dce11ea8",
+    "CV10": "f44df223-e638-41c2-ad92-6a289ef7a844"
+  },
+  "jd_ids": {
+    "2165": "240623cd-95f6-42a5-9dbc-0d40141766c3",
+    "published:2165": "240623cd-95f6-42a5-9dbc-0d40141766c3",
+    "taxonomy:2165": "technology.software-engineering.backend",
+    "2632": "6f9db4c4-f164-40af-a3fc-6ff5479aec18",
+    "published:2632": "6f9db4c4-f164-40af-a3fc-6ff5479aec18",
+    "taxonomy:2632": "technology.software-engineering.frontend",
+    "9177": "f1241f99-4799-4f8a-a20b-ca4d35ca89c3",
+    "published:9177": "f1241f99-4799-4f8a-a20b-ca4d35ca89c3",
+    "taxonomy:9177": "technology.software-engineering.backend",
+    "10588": "552f9363-c03a-4046-b1d9-90fae320591d",
+    "published:10588": "552f9363-c03a-4046-b1d9-90fae320591d",
+    "taxonomy:10588": "technology.software-engineering.backend",
+    "8700": "9722e668-d3c1-40e6-bf68-395333619e8d",
+    "published:8700": "9722e668-d3c1-40e6-bf68-395333619e8d",
+    "taxonomy:8700": "technology.software-engineering.mobile",
+    "9250": "364cc093-9b00-4b8d-8c66-7f8c7e40ae83",
+    "published:9250": "364cc093-9b00-4b8d-8c66-7f8c7e40ae83",
+    "taxonomy:9250": "technology.software-engineering",
+    "8087": "a1988c9e-0b36-4097-a5f0-9573183f7502",
+    "published:8087": "a1988c9e-0b36-4097-a5f0-9573183f7502",
+    "taxonomy:8087": "technology.quality-assurance",
+    "7603": "184d7c1b-7d21-443b-ad4f-b0f51af3dd77",
+    "published:7603": "184d7c1b-7d21-443b-ad4f-b0f51af3dd77",
+    "taxonomy:7603": "technology.software-engineering",
+    "6832": "da01a974-1a43-4ec7-bcee-c3d526caea6d",
+    "published:6832": "da01a974-1a43-4ec7-bcee-c3d526caea6d",
+    "taxonomy:6832": "technology.software-engineering",
+    "11199": "cdc1a14a-7ce1-47cb-8f2b-c496c78eea7a",
+    "published:11199": "cdc1a14a-7ce1-47cb-8f2b-c496c78eea7a",
+    "taxonomy:11199": "technology.software-engineering.mobile"
+  },
+  "matches": {
+    "jobscan_0001": {
+      "status_code": 200,
+      "elapsed_ms": 73.1
+    },
+    "jobscan_0002": {
+      "status_code": 200,
+      "elapsed_ms": 68.2
+    },
+    "jobscan_0003": {
+      "status_code": 200,
+      "elapsed_ms": 69.6
+    },
+    "jobscan_0004": {
+      "status_code": 200,
+      "elapsed_ms": 70.2
+    },
+    "jobscan_0005": {
+      "status_code": 200,
+      "elapsed_ms": 67.6
+    },
+    "jobscan_0006": {
+      "status_code": 200,
+      "elapsed_ms": 64.5
+    },
+    "jobscan_0007": {
+      "status_code": 200,
+      "elapsed_ms": 74.0
+    },
+    "jobscan_0008": {
+      "status_code": 200,
+      "elapsed_ms": 81.7
+    },
+    "jobscan_0009": {
+      "status_code": 200,
+      "elapsed_ms": 75.1
+    },
+    "jobscan_0010": {
+      "status_code": 200,
+      "elapsed_ms": 74.8
+    },
+    "jobscan_0011": {
+      "status_code": 200,
+      "elapsed_ms": 80.3
+    },
+    "jobscan_0012": {
+      "status_code": 200,
+      "elapsed_ms": 73.5
+    },
+    "jobscan_0013": {
+      "status_code": 200,
+      "elapsed_ms": 75.0
+    },
+    "jobscan_0014": {
+      "status_code": 200,
+      "elapsed_ms": 79.4
+    },
+    "jobscan_0015": {
+      "status_code": 200,
+      "elapsed_ms": 78.2
+    },
+    "jobscan_0016": {
+      "status_code": 200,
+      "elapsed_ms": 72.1
+    },
+    "jobscan_0017": {
+      "status_code": 200,
+      "elapsed_ms": 65.9
+    },
+    "jobscan_0018": {
+      "status_code": 200,
+      "elapsed_ms": 78.7
+    },
+    "jobscan_0019": {
+      "status_code": 200,
+      "elapsed_ms": 86.2
+    },
+    "jobscan_0020": {
+      "status_code": 200,
+      "elapsed_ms": 91.6
+    },
+    "jobscan_0021": {
+      "status_code": 200,
+      "elapsed_ms": 107.2
+    },
+    "jobscan_0022": {
+      "status_code": 200,
+      "elapsed_ms": 101.0
+    },
+    "jobscan_0023": {
+      "status_code": 200,
+      "elapsed_ms": 84.3
+    },
+    "jobscan_0024": {
+      "status_code": 200,
+      "elapsed_ms": 82.0
+    },
+    "jobscan_0025": {
+      "status_code": 200,
+      "elapsed_ms": 80.9
+    },
+    "jobscan_0026": {
+      "status_code": 200,
+      "elapsed_ms": 83.1
+    },
+    "jobscan_0027": {
+      "status_code": 200,
+      "elapsed_ms": 91.5
+    },
+    "jobscan_0028": {
+      "status_code": 200,
+      "elapsed_ms": 89.9
+    },
+    "jobscan_0029": {
+      "status_code": 200,
+      "elapsed_ms": 82.1
+    },
+    "jobscan_0030": {
+      "status_code": 200,
+      "elapsed_ms": 87.7
+    },
+    "jobscan_0031": {
+      "status_code": 200,
+      "elapsed_ms": 86.9
+    },
+    "jobscan_0032": {
+      "status_code": 200,
+      "elapsed_ms": 88.8
+    },
+    "jobscan_0033": {
+      "status_code": 200,
+      "elapsed_ms": 76.9
+    },
+    "jobscan_0034": {
+      "status_code": 200,
+      "elapsed_ms": 83.8
+    },
+    "jobscan_0035": {
+      "status_code": 200,
+      "elapsed_ms": 80.1
+    },
+    "jobscan_0036": {
+      "status_code": 200,
+      "elapsed_ms": 78.7
+    },
+    "jobscan_0037": {
+      "status_code": 200,
+      "elapsed_ms": 83.7
+    },
+    "jobscan_0038": {
+      "status_code": 200,
+      "elapsed_ms": 76.3
+    },
+    "jobscan_0039": {
+      "status_code": 200,
+      "elapsed_ms": 83.0
+    },
+    "jobscan_0040": {
+      "status_code": 200,
+      "elapsed_ms": 74.6
+    },
+    "jobscan_0041": {
+      "status_code": 200,
+      "elapsed_ms": 6620.8
+    },
+    "jobscan_0042": {
+      "status_code": 200,
+      "elapsed_ms": 125.5
+    },
+    "jobscan_0043": {
+      "status_code": 200,
+      "elapsed_ms": 97.6
+    },
+    "jobscan_0044": {
+      "status_code": 200,
+      "elapsed_ms": 10177.0
+    },
+    "jobscan_0045": {
+      "status_code": 200,
+      "elapsed_ms": 78.9
+    },
+    "jobscan_0046": {
+      "status_code": 200,
+      "elapsed_ms": 76.8
+    },
+    "jobscan_0047": {
+      "status_code": 200,
+      "elapsed_ms": 71.9
+    },
+    "jobscan_0048": {
+      "status_code": 200,
+      "elapsed_ms": 65.0
+    },
+    "jobscan_0049": {
+      "status_code": 200,
+      "elapsed_ms": 68.1
+    },
+    "jobscan_0050": {
+      "status_code": 200,
+      "elapsed_ms": 62.8
+    },
+    "jobscan_0051": {
+      "status_code": 200,
+      "elapsed_ms": 80.7
+    },
+    "jobscan_0052": {
+      "status_code": 200,
+      "elapsed_ms": 78.4
+    },
+    "jobscan_0053": {
+      "status_code": 200,
+      "elapsed_ms": 89.0
+    },
+    "jobscan_0054": {
+      "status_code": 200,
+      "elapsed_ms": 74.4
+    },
+    "jobscan_0055": {
+      "status_code": 200,
+      "elapsed_ms": 73.9
+    },
+    "jobscan_0056": {
+      "status_code": 200,
+      "elapsed_ms": 76.2
+    },
+    "jobscan_0057": {
+      "status_code": 200,
+      "elapsed_ms": 70.2
+    },
+    "jobscan_0058": {
+      "status_code": 200,
+      "elapsed_ms": 72.4
+    },
+    "jobscan_0059": {
+      "status_code": 200,
+      "elapsed_ms": 78.1
+    },
+    "jobscan_0060": {
+      "status_code": 200,
+      "elapsed_ms": 73.1
+    },
+    "jobscan_0061": {
+      "status_code": 200,
+      "elapsed_ms": 10688.7
+    },
+    "jobscan_0062": {
+      "status_code": 200,
+      "elapsed_ms": 8438.5
+    },
+    "jobscan_0063": {
+      "status_code": 200,
+      "elapsed_ms": 91.9
+    },
+    "jobscan_0064": {
+      "status_code": 200,
+      "elapsed_ms": 11307.5
+    },
+    "jobscan_0065": {
+      "status_code": 200,
+      "elapsed_ms": 74.1
+    },
+    "jobscan_0066": {
+      "status_code": 200,
+      "elapsed_ms": 66.3
+    },
+    "jobscan_0067": {
+      "status_code": 200,
+      "elapsed_ms": 66.0
+    },
+    "jobscan_0068": {
+      "status_code": 200,
+      "elapsed_ms": 77.1
+    },
+    "jobscan_0069": {
+      "status_code": 200,
+      "elapsed_ms": 66.6
+    },
+    "jobscan_0070": {
+      "status_code": 200,
+      "elapsed_ms": 62.3
+    },
+    "jobscan_0071": {
+      "status_code": 200,
+      "elapsed_ms": 58.0
+    },
+    "jobscan_0072": {
+      "status_code": 200,
+      "elapsed_ms": 65.8
+    },
+    "jobscan_0073": {
+      "status_code": 200,
+      "elapsed_ms": 81.4
+    },
+    "jobscan_0074": {
+      "status_code": 200,
+      "elapsed_ms": 82.4
+    },
+    "jobscan_0075": {
+      "status_code": 200,
+      "elapsed_ms": 80.9
+    },
+    "jobscan_0076": {
+      "status_code": 200,
+      "elapsed_ms": 83.8
+    },
+    "jobscan_0077": {
+      "status_code": 200,
+      "elapsed_ms": 78.7
+    },
+    "jobscan_0078": {
+      "status_code": 200,
+      "elapsed_ms": 83.2
+    },
+    "jobscan_0079": {
+      "status_code": 200,
+      "elapsed_ms": 78.0
+    },
+    "jobscan_0080": {
+      "status_code": 200,
+      "elapsed_ms": 77.3
+    },
+    "jobscan_0081": {
+      "status_code": 200,
+      "elapsed_ms": 72.1
+    },
+    "jobscan_0082": {
+      "status_code": 200,
+      "elapsed_ms": 63.9
+    },
+    "jobscan_0083": {
+      "status_code": 200,
+      "elapsed_ms": 71.1
+    },
+    "jobscan_0084": {
+      "status_code": 200,
+      "elapsed_ms": 68.7
+    },
+    "jobscan_0085": {
+      "status_code": 200,
+      "elapsed_ms": 66.0
+    },
+    "jobscan_0086": {
+      "status_code": 200,
+      "elapsed_ms": 78.0
+    },
+    "jobscan_0087": {
+      "status_code": 200,
+      "elapsed_ms": 71.5
+    },
+    "jobscan_0088": {
+      "status_code": 200,
+      "elapsed_ms": 70.3
+    },
+    "jobscan_0089": {
+      "status_code": 200,
+      "elapsed_ms": 70.0
+    },
+    "jobscan_0090": {
+      "status_code": 200,
+      "elapsed_ms": 66.8
+    },
+    "jobscan_0091": {
+      "status_code": 200,
+      "elapsed_ms": 68.4
+    },
+    "jobscan_0092": {
+      "status_code": 200,
+      "elapsed_ms": 60.4
+    },
+    "jobscan_0093": {
+      "status_code": 200,
+      "elapsed_ms": 56.8
+    },
+    "jobscan_0094": {
+      "status_code": 200,
+      "elapsed_ms": 59.2
+    },
+    "jobscan_0095": {
+      "status_code": 200,
+      "elapsed_ms": 76.9
+    },
+    "jobscan_0096": {
+      "status_code": 200,
+      "elapsed_ms": 97.7
+    },
+    "jobscan_0097": {
+      "status_code": 200,
+      "elapsed_ms": 92.0
+    },
+    "jobscan_0098": {
+      "status_code": 200,
+      "elapsed_ms": 73.8
+    },
+    "jobscan_0099": {
+      "status_code": 200,
+      "elapsed_ms": 68.3
+    },
+    "jobscan_0100": {
+      "status_code": 200,
+      "elapsed_ms": 67.6
+    }
+  },
+  "failures": [],
+  "manifest": "D:\\NCKH\\thucnghiem\\matching_run_10cv_100jd_20261106\\matching_manifest_1000.csv",
+  "started_at": "2026-11-10T06:28:26Z",
+  "auth_user": "77a1d3fe-6655-4cc1-9a0e-22ccd2318b9b",
+  "completed_at": "2026-11-10T06:46:10Z"
+}
