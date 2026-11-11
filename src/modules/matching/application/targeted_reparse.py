@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import hashlib
 import json
 import logging
@@ -136,43 +134,6 @@ class OpenAIEvidenceSearcher:
 evidence_search_failed: ContextVar[bool] = ContextVar("evidence_search_failed", default=False)
 
 
-_PRIORITY_RANK = {"must_have": 0, "nice_to_have": 1, "context": 2}
-
-_SEARCH_CACHE_DIR = Path("models_cache/evidence_search_cache")
-
-
-def _cached_search(searcher, raw_text: str, requirements: list[dict[str, str]]):
-    """Ask the evidence searcher once per distinct input.
-
-    The model is not deterministic: on repeated matches of an unchanged pair it
-    answered differently, which showed up as two identical runs disagreeing on
-    28 pairs out of 30. Caching by content removes that source of variance, and
-    stops re-paying for calls whose input has not changed.
-
-    A cache miss, an unreadable entry or an unwritable directory must never
-    fail a match, so every cache operation degrades to calling the searcher.
-    """
-    payload = json.dumps(
-        {"cv": raw_text, "requirements": requirements}, ensure_ascii=False, sort_keys=True
-    )
-    key = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    path = _SEARCH_CACHE_DIR / f"{key}.json"
-    try:
-        if path.is_file():
-            return EvidenceSearchResult.model_validate_json(path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        logger.warning("evidence search cache unreadable, recomputing: %s", path.name)
-    result = searcher.search(raw_text, requirements)
-    if isinstance(result, dict):
-        result = EvidenceSearchResult.model_validate(result)
-    try:
-        _SEARCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_text(result.model_dump_json(), encoding="utf-8")
-    except Exception:  # noqa: BLE001
-        logger.warning("evidence search cache not written: %s", path.name)
-    return result
-
-
 def _default_evidence_searcher() -> EvidenceSearcher | None:
     settings = get_settings()
     if not settings.matching_llm_evidence_search_enabled or not settings.openai_api_key:
@@ -296,7 +257,6 @@ def reparse_partial_resume(
     existing = {item.evidence_id for item in resume.evidence}
     recovered: list[EvidenceSpan] = []
     unresolved_search: list[dict[str, str]] = []
-    search_priority: dict[str, str] = {}
     recovered_by_requirement: dict[str, dict[str, object]] = {}
     valid_requirement_ids: set[str] = set()
     for requirement in job.requirements:
@@ -325,7 +285,6 @@ def reparse_partial_resume(
             unresolved_search.append(
                 {"requirement_id": requirement.requirement_id, "requirement_text": requirement_text[:500]}
             )
-            search_priority[requirement.requirement_id] = getattr(requirement, "priority", "")
         refs: list[str] = []
         matched_aliases: list[str] = []
         concept_ids: list[str] = []
@@ -370,22 +329,12 @@ def reparse_partial_resume(
         if len(raw_text) > settings.matching_llm_evidence_search_max_chars:
             llm_status = "skipped_input_too_large"
         else:
-            # Canonical order before the cut: taking the first N of an array
-            # ordered by the posting meant a must-have listed thirteenth was
-            # never searched, and that permuting the posting changed both the
-            # prompt and the chosen subset.
-            unresolved_search.sort(
-                key=lambda item: (
-                    _PRIORITY_RANK.get(search_priority.get(item["requirement_id"], ""), 9),
-                    item["requirement_id"],
-                )
-            )
             allowed = unresolved_search[: settings.matching_llm_evidence_search_max_requirements]
             allowed_ids = {item["requirement_id"] for item in allowed}
             llm_requested = len(allowed)
             seen_requirement_ids: set[str] = set()
             try:
-                proposed = _cached_search(searcher, raw_text, allowed)
+                proposed = searcher.search(raw_text, allowed)
                 if isinstance(proposed, dict):
                     proposed = EvidenceSearchResult.model_validate(proposed)
                 for item in proposed.items:

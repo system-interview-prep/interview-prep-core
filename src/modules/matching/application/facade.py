@@ -997,33 +997,29 @@ class MatchingFacade:
         contextual_resume_text = [
             value for value in (payload.resume.profile.headline, payload.resume.profile.summary) if value
         ]
-        # Each group below is sorted before it joins the text. An embedding is
-        # not order-invariant, so leaving the incoming array order in meant a
-        # posting whose requirements were merely listed differently scored
-        # differently.
-        contextual_resume_text.extend(sorted(set(claim.concept.label for claim in payload.resume.skills)))
-        contextual_resume_text.extend(sorted(set(item.label for item in payload.resume.career_classifications)))
-        contextual_resume_text.extend(sorted(set(project.name for project in payload.resume.projects)))
-        contextual_resume_text.extend(sorted(set(
+        contextual_resume_text.extend(claim.concept.label for claim in payload.resume.skills)
+        contextual_resume_text.extend(item.label for item in payload.resume.career_classifications)
+        contextual_resume_text.extend(project.name for project in payload.resume.projects)
+        contextual_resume_text.extend(
             text for employment in payload.resume.employment for text in employment.responsibilities
-        )))
-        contextual_resume_text.extend(sorted(set(
+        )
+        contextual_resume_text.extend(
             achievement.text
             for employment in payload.resume.employment
             for achievement in employment.achievements
-        )))
-        contextual_resume_text.extend(sorted(set(
+        )
+        contextual_resume_text.extend(
             project.description for project in payload.resume.projects if project.description
-        )))
+        )
         contextual_job_text = [value for value in (payload.job.job_title,) if value]
-        contextual_job_text.extend(sorted(set(
+        contextual_job_text.extend(
             item.raw_label for item in payload.job.requirements if isinstance(item, UnresolvedRequirement)
-        )))
-        contextual_job_text.extend(sorted(set(
+        )
+        contextual_job_text.extend(
             item.skill.label for item in payload.job.requirements if isinstance(item, SkillRequirement)
-        )))
-        contextual_job_text.extend(sorted(set(item.text for item in payload.job.responsibilities)))
-        contextual_job_text.extend(sorted(set(item.label for item in payload.job.career_classifications)))
+        )
+        contextual_job_text.extend(item.text for item in payload.job.responsibilities)
+        contextual_job_text.extend(item.label for item in payload.job.career_classifications)
         resume_text = "\n".join(contextual_resume_text) or "\n".join(
             item.text for item in payload.resume.evidence
         )
@@ -1155,29 +1151,29 @@ class MatchingFacade:
         contextual_resume_text = [
             value for value in (payload.resume.profile.headline, payload.resume.profile.summary) if value
         ]
-        contextual_resume_text.extend(sorted(set(claim.concept.label for claim in payload.resume.skills)))
-        contextual_resume_text.extend(sorted(set(item.label for item in payload.resume.career_classifications)))
-        contextual_resume_text.extend(sorted(set(project.name for project in payload.resume.projects)))
-        contextual_resume_text.extend(sorted(set(
+        contextual_resume_text.extend(claim.concept.label for claim in payload.resume.skills)
+        contextual_resume_text.extend(item.label for item in payload.resume.career_classifications)
+        contextual_resume_text.extend(project.name for project in payload.resume.projects)
+        contextual_resume_text.extend(
             text for employment in payload.resume.employment for text in employment.responsibilities
-        )))
-        contextual_resume_text.extend(sorted(set(
+        )
+        contextual_resume_text.extend(
             achievement.text
             for employment in payload.resume.employment
             for achievement in employment.achievements
-        )))
-        contextual_resume_text.extend(sorted(set(
+        )
+        contextual_resume_text.extend(
             project.description for project in payload.resume.projects if project.description
-        )))
+        )
         contextual_job_text = [value for value in (payload.job.job_title,) if value]
-        contextual_job_text.extend(sorted(set(
+        contextual_job_text.extend(
             item.raw_label for item in payload.job.requirements if isinstance(item, UnresolvedRequirement)
-        )))
-        contextual_job_text.extend(sorted(set(
+        )
+        contextual_job_text.extend(
             item.skill.label for item in payload.job.requirements if isinstance(item, SkillRequirement)
-        )))
-        contextual_job_text.extend(sorted(set(item.text for item in payload.job.responsibilities)))
-        contextual_job_text.extend(sorted(set(item.label for item in payload.job.career_classifications)))
+        )
+        contextual_job_text.extend(item.text for item in payload.job.responsibilities)
+        contextual_job_text.extend(item.label for item in payload.job.career_classifications)
         resume_text = "\n".join(contextual_resume_text) or "\n".join(
             item.text for item in payload.resume.evidence
         )

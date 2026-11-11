@@ -32,13 +32,7 @@ logger = logging.getLogger(__name__)
 # voice, equipment and lines the posting itself calls a bonus, so results stored
 # under "3" can hold an eligibility decided by a requirement that may no longer
 # gate.
-# 5: the scoring pipeline changed under Phase 1 - the semantic text is now
-# sorted and de-duplicated, the evidence search is canonically ordered and
-# cached, and a generic requirement needs a majority of its content tokens.
-# Entries written by version 4 describe the old behaviour, and because the
-# key is content-based rather than id-based they would otherwise keep
-# serving it to every measurement.
-CACHE_VERSION = "5"
+CACHE_VERSION = "4"
 # Taxonomy aliases and embeddings live outside the request; refresh eventually.
 MAX_AGE = timedelta(days=30)
 
