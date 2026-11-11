@@ -118,6 +118,15 @@ async def main() -> None:
             print(f"{tag:<28}{obs['coverage']:>10}{str(obs['eligibility']):>18}   "
                   f"{focus.get('status')}/{len(focus.get('evidenceRefs') or [])}ev "
                   f"({str(focus.get('reasonCode'))[:30]})")
+            # Who ended up holding each fallback span. If a span the control
+            # gave to one requirement turns up under ANOTHER one, the recovery
+            # loop handed it to whichever requirement matched it first and
+            # stamped it with that requirement's source block, which the
+            # facade's per-requirement scoping then hides from everyone else.
+            for r in body.get("requirementResults") or []:
+                refs = [x for x in (r.get("evidenceRefs") or []) if str(x).startswith("fallback-")]
+                if refs:
+                    print(f"      {r.get('requirementId'):<16} {refs}")
         finally:
             await drop_clone("user_cvs", clone)
 
