@@ -556,7 +556,22 @@ def _evaluate_generic_requirement(
     # C# and .NET in separate spans). Capability phrases need two substantive
     # lexical hits so a generic adjective such as ``high`` cannot suppress the
     # semantic retrieval pass.
-    minimum_overlap = 1 if is_named_technology(requirement.raw_label) else 2
+    # Vietnamese is written one syllable per token, so splitting a label on
+    # whitespace yields syllables, not words, and stripping diacritics makes
+    # them collide (phuc covers both "phuc vu" and "phuc tap"; nhan covers
+    # "nhan", "nhan" and "nhan"). A flat floor of two hits therefore got
+    # WEAKER as a requirement got more specific: a thirteen-syllable sentence
+    # needed the same two hits as a two-syllable phrase.
+    #
+    # Measured on the frozen corpus that rule credited a bachelor's-degree line
+    # as evidence for "van hanh lo phan ung hat nhan", and 83% of the verdicts
+    # it produced failed a majority test. Requiring a strict majority of the
+    # requirement's content syllables to appear in one span scales the bar with
+    # the size of the claim. What it rejects becomes "unknown", which raises a
+    # clarification question - it does not reject the candidate.
+    minimum_overlap = (
+        1 if is_named_technology(requirement.raw_label) else max(2, len(terms) // 2 + 1)
+    )
     exact_candidates = sorted(
         _dedupe_evidence(evidence for _, evidence in ranked_candidates),
         key=lambda item: (-_STRENGTH_RANK[_evidence_strength(item)], item.char_start, item.evidence_id),
