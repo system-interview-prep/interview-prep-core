@@ -30,6 +30,11 @@ from src.modules.matching.domain.requirement_gating import (
     GateDecision,
     classify_requirement_gate,
 )
+from src.modules.matching.evaluation.coverage_semantic import (
+    ScoredRequirement,
+    ScoredSpan,
+    score_by_coverage,
+)
 from src.modules.matching.evaluation.requirement_evaluators import (
     evaluate_unresolved_requirement,
     select_evaluator,
@@ -164,6 +169,18 @@ _INCONCLUSIVE_ABSENCE_CONFIDENCE = 0.2
 # well enough to conclude absence".  Such a finding is reported and scored, but
 # it may not by itself disqualify a candidate; it routes the pair to review.
 _INCONCLUSIVE_ABSENCE_REASON_CODES = frozenset({"skill_evidence_missing"})
+
+
+def _requirement_label(requirement: Requirement) -> str:
+    """The posting's own wording for a requirement, for scoring it on its own."""
+    if isinstance(requirement, SkillRequirement):
+        return requirement.raw_label or requirement.skill.label or ""
+    if isinstance(requirement, UnresolvedRequirement):
+        return requirement.raw_label or ""
+    if isinstance(requirement, LanguageRequirement):
+        level = f" {requirement.minimum_level}" if requirement.minimum_level else ""
+        return f"language {requirement.language_code}{level}"
+    return ""
 
 
 def _requirement_gate(requirement: Requirement) -> GateDecision:
@@ -1043,6 +1060,8 @@ class MatchingFacade:
     ) -> tuple[FactorResult, str | None, str | None]:
         """The semantic factor, its warning, and the embedding outcome
         (ok | disk_cache | disabled | error, None when no embedding was needed)."""
+        if payload.matching_policy.semantic_aggregation == "requirement_coverage":
+            return self._coverage_semantic_factor(payload, policy_weight)
         contextual_resume_text = [
             value for value in (payload.resume.profile.headline, payload.resume.profile.summary) if value
         ]
@@ -1201,11 +1220,94 @@ class MatchingFacade:
             embedding_outcome,
         )
 
+    def _coverage_semantic_factor(
+        self, payload: MatchRequest, policy_weight: float
+    ) -> tuple[FactorResult, str | None, str | None]:
+        """Score the pair by the share of its needs the CV answers.
+
+        Each requirement is scored against each passage by the same two halves
+        in the same proportion as before, only at a smaller grain, and the
+        assignment between them is settled under a budget. What the pair scores
+        then depends on which needs are answered rather than on how many terms
+        the posting happens to contain.
+        """
+        requirements = [
+            ScoredRequirement(
+                requirement_id=item.requirement_id,
+                priority=item.priority,
+                text=_requirement_label(item),
+            )
+            for item in payload.job.requirements
+        ]
+        spans = [
+            ScoredSpan(evidence_id=item.evidence_id, text=item.text)
+            for item in payload.resume.evidence
+            if item.text
+        ]
+
+        vectors: dict[str, list[float]] = {}
+        embedding_outcome: str | None = None
+        warning: str | None = None
+        if payload.matching_policy.semantic_mode != "sparse_only":
+            texts = sorted({item.text for item in requirements if item.text.strip()} | {
+                item.text for item in spans
+            })
+            try:
+                if self._embedder is None:
+                    self._embedder = build_embedding_adapter_from_env()
+                embedded = embed_texts_for(
+                    self._embedder, texts, purpose="matching.semantic.embeddings"
+                )
+                if len(embedded) != len(texts):
+                    raise ValueError("embedding provider returned an invalid vector count")
+                vectors = dict(zip(texts, embedded, strict=True))
+                embedding_outcome = last_embedding_outcome() or "ok"
+            except Exception as exc:  # noqa: BLE001 - a missing half is reported, not raised
+                vectors = {}
+                embedding_outcome = "disabled" if "disabled" in str(exc).lower() else "error"
+                warning = "semantic_dense_provider_fallback_to_sparse"
+
+        def dense(left: str, right: str) -> float | None:
+            if left not in vectors or right not in vectors:
+                return None
+            return cosine_similarity(vectors[left], vectors[right])
+
+        result = score_by_coverage(
+            requirements,
+            spans,
+            sparse_similarity=lambda left, right: bm25_similarity(left, right, reference_length=40.0),
+            dense_similarity=dense if vectors else None,
+            bm25_weight=payload.matching_policy.bm25_weight,
+        )
+        if result is None:
+            return (
+                *self._unknown_semantic(policy_weight, "semantic_input_not_evidenced"),
+                embedding_outcome,
+            )
+        return (
+            FactorResult(
+                factor="semantic",
+                status="scored",
+                rawScore=_unit(round(result.score, 4)),
+                reliability=1.0 if vectors else 0.85,
+                policyWeight=policy_weight,
+                effectiveWeight=0.0,
+                evidenceRefs=list(result.evidence_refs),
+            ),
+            warning,
+            embedding_outcome,
+        )
+
     async def _semantic_factor_async(
         self, payload: MatchRequest, policy_weight: float
     ) -> tuple[FactorResult, str | None]:
         """Async equivalent of the semantic factor's sparse-score portion."""
         started = time.perf_counter()
+        if payload.matching_policy.semantic_aggregation == "requirement_coverage":
+            # Coverage scores each requirement against each passage, so the
+            # document-level index query this method exists to make would be
+            # work nobody reads.
+            return self._semantic_factor(payload, policy_weight, started=started)
         contextual_resume_text = [
             value for value in (payload.resume.profile.headline, payload.resume.profile.summary) if value
         ]

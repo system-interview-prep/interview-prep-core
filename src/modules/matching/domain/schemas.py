@@ -142,6 +142,12 @@ class MatchingPolicy(CanonicalModel):
     unknown_handling: Literal["manual_review", "penalize"] = "manual_review"
     semantic_mode: Literal["hybrid", "dense_only", "sparse_only"] = "hybrid"
     bm25_weight: float = Field(default=0.4, ge=0.0, le=1.0)
+    # ``document`` scores one joined query against one joined document, so the
+    # score moves when the posting gets longer. ``requirement_coverage`` scores
+    # each requirement against each passage and reports the share of the
+    # posting's weighted needs the CV answers. The default keeps the frozen
+    # baselines comparable until a run measures the change.
+    semantic_aggregation: Literal["document", "requirement_coverage"] = "document"
     bm25_provider_mode: Literal["auto", "in_memory", "paradedb"] = "auto"
 
 
