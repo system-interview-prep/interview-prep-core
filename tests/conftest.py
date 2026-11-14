@@ -45,6 +45,28 @@ def _trace_logs_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest
     monkeypatch.setattr(get_settings(), "trace_logs_dir", str(tmp_path_factory.mktemp("trace-logs")))
 
 
+@pytest.fixture(autouse=True)
+def _evidence_search_cache_in_tmp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Keep the fake searchers' answers out of models_cache/.
+
+    The cache is keyed by content and shared with real runs, so a test that
+    answered for a made-up CV left an entry a measured run could read back as
+    if a model had produced it. It also made the suite depend on its own
+    history: `test_targeted_reparse` passed on a cold cache and failed on the
+    second run, because the entry it had just written answered for it and the
+    fake searcher was never called.
+    """
+    from src.modules.matching.application import targeted_reparse
+
+    monkeypatch.setattr(
+        targeted_reparse,
+        "_SEARCH_CACHE_DIR",
+        tmp_path_factory.mktemp("evidence-search-cache"),
+    )
+
+
 @pytest.fixture
 def client() -> Iterator[TestClient]:
     from src.main import create_app

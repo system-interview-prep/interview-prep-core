@@ -141,6 +141,66 @@ _PRIORITY_RANK = {"must_have": 0, "nice_to_have": 1, "context": 2}
 _SEARCH_CACHE_DIR = Path("models_cache/evidence_search_cache")
 
 
+def _cache_key_text(text: str) -> str:
+    """Fold the differences that must not buy a second model call.
+
+    Case and run-length of whitespace change the bytes of a CV without
+    changing what it says, and the key used to read them literally: the same
+    CV in capitals missed the cache, paid for a fresh call, and the model
+    answered differently - 30 of 30 pairs disagreed with their own uppercase
+    twin, median 1.84 points. Folding both here makes the two variants share
+    one entry and therefore one answer.
+
+    This is only the cache key. The searcher still receives the CV as written,
+    so capitalisation remains available to the model that reads it.
+    """
+    collapsed = re.sub(r"[ \t]+", " ", text)
+    collapsed = re.sub(r"\n{3,}", "\n\n", collapsed)
+    return collapsed.lower()
+
+
+def locate_quote(raw_text: str, quote: str) -> tuple[int, int] | None:
+    """Find a quoted passage in the CV and return its offsets in that CV.
+
+    A literal ``str.find`` was enough while every answer came from the very
+    text it was asked about. Once two spellings of one CV share a cache entry,
+    the quote that comes back may carry the other spelling's capitals or its
+    double spaces, and a literal search drops the evidence instead - which is
+    the same silent loss the shared entry was meant to prevent.
+
+    Matching therefore ignores case and treats any run of whitespace as one
+    separator, while the offsets returned always index the CV as given, so the
+    caller can slice the document's own characters.
+    """
+    folded: list[str] = []
+    origin: list[int] = []
+    previous_was_space = False
+    for index, character in enumerate(raw_text):
+        if character.isspace():
+            if previous_was_space:
+                continue
+            folded.append(" ")
+            origin.append(index)
+            previous_was_space = True
+            continue
+        previous_was_space = False
+        lowered = character.lower()
+        # Lowering is not always one character ("İ" becomes two), and a shifted
+        # offset would point at the wrong passage. Keep the original there.
+        folded.append(lowered if len(lowered) == 1 else character)
+        origin.append(index)
+
+    needle = re.sub(r"\s+", " ", quote).strip().lower()
+    if not needle:
+        return None
+    position = "".join(folded).find(needle)
+    if position < 0:
+        return None
+    start = origin[position]
+    end = origin[position + len(needle) - 1] + 1
+    return start, end
+
+
 def _cached_search(searcher, raw_text: str, requirements: list[dict[str, str]]):
     """Ask the evidence searcher once per distinct input.
 
@@ -153,7 +213,9 @@ def _cached_search(searcher, raw_text: str, requirements: list[dict[str, str]]):
     fail a match, so every cache operation degrades to calling the searcher.
     """
     payload = json.dumps(
-        {"cv": raw_text, "requirements": requirements}, ensure_ascii=False, sort_keys=True
+        {"cv": _cache_key_text(raw_text), "requirements": requirements},
+        ensure_ascii=False,
+        sort_keys=True,
     )
     key = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     path = _SEARCH_CACHE_DIR / f"{key}.json"
@@ -398,10 +460,13 @@ def reparse_partial_resume(
                     quote = item.exact_quote.strip()
                     if not quote or len(quote) > 600:
                         continue
-                    start = raw_text.find(quote)
-                    if start < 0:
+                    located = locate_quote(raw_text, quote)
+                    if located is None:
                         continue
-                    end = start + len(quote)
+                    start, end = located
+                    # The document's own characters, not the model's copy of
+                    # them, so the span still reads back verbatim.
+                    quote = raw_text[start:end]
                     seen_requirement_ids.add(item.requirement_id)
                     evidence_id = _evidence_id(resume, start, end, quote)
                     if evidence_id in existing:
