@@ -171,6 +171,22 @@ _INCONCLUSIVE_ABSENCE_CONFIDENCE = 0.2
 _INCONCLUSIVE_ABSENCE_REASON_CODES = frozenset({"skill_evidence_missing"})
 
 
+def _fold(value: str | None) -> str:
+    """Case-fold one item before it takes part in an order.
+
+    The groups below are sorted so the text handed to the embedding does not
+    depend on the order they arrived in - an embedding is not order-invariant.
+    But sorting ran on the strings as written and the folding came afterwards,
+    on the joined text, so case still decided the order: in ASCII the capitals
+    sort before the lower case, and ["Python", "docker"] orders one way while
+    ["PYTHON", "DOCKER"] orders the other. The same CV in capitals therefore
+    produced a different text, a different vector and a different score - MR6,
+    30 of 30 pairs, through every fix aimed at the cache. Fold first, then
+    sort, and the order stops depending on how the CV was typed.
+    """
+    return (value or "").casefold()
+
+
 def _requirement_label(requirement: Requirement) -> str:
     """The posting's own wording for a requirement, for scoring it on its own."""
     if isinstance(requirement, SkillRequirement):
@@ -1069,29 +1085,29 @@ class MatchingFacade:
         # not order-invariant, so leaving the incoming array order in meant a
         # posting whose requirements were merely listed differently scored
         # differently.
-        contextual_resume_text.extend(sorted(set(claim.concept.label for claim in payload.resume.skills)))
-        contextual_resume_text.extend(sorted(set(item.label for item in payload.resume.career_classifications)))
-        contextual_resume_text.extend(sorted(set(project.name for project in payload.resume.projects)))
-        contextual_resume_text.extend(sorted(set(
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (claim.concept.label for claim in payload.resume.skills))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (item.label for item in payload.resume.career_classifications))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (project.name for project in payload.resume.projects))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (
             text for employment in payload.resume.employment for text in employment.responsibilities
-        )))
-        contextual_resume_text.extend(sorted(set(
+        ))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (
             achievement.text
             for employment in payload.resume.employment
             for achievement in employment.achievements
-        )))
-        contextual_resume_text.extend(sorted(set(
+        ))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (
             project.description for project in payload.resume.projects if project.description
-        )))
+        ))))
         contextual_job_text = [value for value in (payload.job.job_title,) if value]
-        contextual_job_text.extend(sorted(set(
+        contextual_job_text.extend(sorted(set(_fold(x) for x in (
             item.raw_label for item in payload.job.requirements if isinstance(item, UnresolvedRequirement)
-        )))
-        contextual_job_text.extend(sorted(set(
+        ))))
+        contextual_job_text.extend(sorted(set(_fold(x) for x in (
             item.skill.label for item in payload.job.requirements if isinstance(item, SkillRequirement)
-        )))
-        contextual_job_text.extend(sorted(set(item.text for item in payload.job.responsibilities)))
-        contextual_job_text.extend(sorted(set(item.label for item in payload.job.career_classifications)))
+        ))))
+        contextual_job_text.extend(sorted(set(_fold(x) for x in (item.text for item in payload.job.responsibilities))))
+        contextual_job_text.extend(sorted(set(_fold(x) for x in (item.label for item in payload.job.career_classifications))))
         # Folded to lower case before it reaches the embedding. Case carries no
         # meaning for a skill label, but an embedding is case sensitive: the same
         # CV written in capitals scored 2.6 to 5.0 points lower on every pair
@@ -1311,29 +1327,29 @@ class MatchingFacade:
         contextual_resume_text = [
             value for value in (payload.resume.profile.headline, payload.resume.profile.summary) if value
         ]
-        contextual_resume_text.extend(sorted(set(claim.concept.label for claim in payload.resume.skills)))
-        contextual_resume_text.extend(sorted(set(item.label for item in payload.resume.career_classifications)))
-        contextual_resume_text.extend(sorted(set(project.name for project in payload.resume.projects)))
-        contextual_resume_text.extend(sorted(set(
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (claim.concept.label for claim in payload.resume.skills))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (item.label for item in payload.resume.career_classifications))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (project.name for project in payload.resume.projects))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (
             text for employment in payload.resume.employment for text in employment.responsibilities
-        )))
-        contextual_resume_text.extend(sorted(set(
+        ))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (
             achievement.text
             for employment in payload.resume.employment
             for achievement in employment.achievements
-        )))
-        contextual_resume_text.extend(sorted(set(
+        ))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (
             project.description for project in payload.resume.projects if project.description
-        )))
+        ))))
         contextual_job_text = [value for value in (payload.job.job_title,) if value]
-        contextual_job_text.extend(sorted(set(
+        contextual_job_text.extend(sorted(set(_fold(x) for x in (
             item.raw_label for item in payload.job.requirements if isinstance(item, UnresolvedRequirement)
-        )))
-        contextual_job_text.extend(sorted(set(
+        ))))
+        contextual_job_text.extend(sorted(set(_fold(x) for x in (
             item.skill.label for item in payload.job.requirements if isinstance(item, SkillRequirement)
-        )))
-        contextual_job_text.extend(sorted(set(item.text for item in payload.job.responsibilities)))
-        contextual_job_text.extend(sorted(set(item.label for item in payload.job.career_classifications)))
+        ))))
+        contextual_job_text.extend(sorted(set(_fold(x) for x in (item.text for item in payload.job.responsibilities))))
+        contextual_job_text.extend(sorted(set(_fold(x) for x in (item.label for item in payload.job.career_classifications))))
         # Folded to lower case before it reaches the embedding. Case carries no
         # meaning for a skill label, but an embedding is case sensitive: the same
         # CV written in capitals scored 2.6 to 5.0 points lower on every pair

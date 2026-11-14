@@ -347,6 +347,22 @@ def mr6_cv(parsed, raw_text, ctx):
             if isinstance(achievement, dict):
                 achievement["text"] = _upper(achievement.get("text"))
 
+    # The evidence spans carry the CV text too, and leaving them in their
+    # original case hands the system a CV whose raw_text and whose spans
+    # disagree - a different CV, not the same one in capitals.
+    # MR6_FOLD_EVIDENCE=1 folds them as well, so the relation delivers what
+    # it claims to deliver.
+    if os.environ.get("MR6_FOLD_EVIDENCE") == "1":
+        for span in parsed.get("evidence") or []:
+            if isinstance(span, dict):
+                span["text"] = _upper(span.get("text"))
+    # Collapsing whitespace shifts every character offset in raw_text while
+    # the evidence spans keep the offsets they were given, so the CV that
+    # reaches the system is internally inconsistent. A difference in score may
+    # then be the system noticing that, not the system being case sensitive.
+    # MR6_CASE_ONLY=1 drops the collapsing so the two can be told apart.
+    if os.environ.get("MR6_CASE_ONLY") == "1":
+        return parsed, raw_text.upper()
     collapsed = re.sub(r"[ \t]+", " ", raw_text)
     collapsed = re.sub(r"\n{3,}", "\n\n", collapsed)
     return parsed, collapsed.upper()
