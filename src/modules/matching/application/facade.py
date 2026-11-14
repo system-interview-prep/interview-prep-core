@@ -26,6 +26,10 @@ from src.modules.matching.domain.schemas import (
     SkillRequirement,
     UnresolvedRequirement,
 )
+from src.modules.matching.domain.requirement_gating import (
+    GateDecision,
+    classify_requirement_gate,
+)
 from src.modules.matching.evaluation.requirement_evaluators import (
     evaluate_unresolved_requirement,
     select_evaluator,
@@ -160,6 +164,26 @@ _INCONCLUSIVE_ABSENCE_CONFIDENCE = 0.2
 # well enough to conclude absence".  Such a finding is reported and scored, but
 # it may not by itself disqualify a candidate; it routes the pair to review.
 _INCONCLUSIVE_ABSENCE_REASON_CODES = frozenset({"skill_evidence_missing"})
+
+
+def _requirement_gate(requirement: Requirement) -> GateDecision:
+    """Ask the same question the adapter asked, of the converted requirement.
+
+    The adapter classifies the posting's own line and spends the answer on the
+    requirement's priority, which is all it needs; the class itself is not
+    carried on the requirement. Rather than widen the contract to carry it,
+    this asks ``classify_requirement_gate`` again, with the same function and
+    the same wording the adapter used.
+    """
+    if isinstance(requirement, SkillRequirement):
+        return classify_requirement_gate(
+            requirement.raw_label or requirement.skill.label or "", "skill"
+        )
+    if isinstance(requirement, LanguageRequirement):
+        return classify_requirement_gate(f"language {requirement.language_code}", "language")
+    if isinstance(requirement, UnresolvedRequirement):
+        return classify_requirement_gate(requirement.raw_label, requirement.kind)
+    return GateDecision("objective")
 
 
 def _not_evidenced_text(label: str) -> str:
@@ -364,6 +388,31 @@ class MatchingFacade:
         ]
         results: list[RequirementResult] = []
         for requirement in job.requirements:
+            # A line a CV cannot answer must not be answered. Gating already
+            # keeps these out of eligibility and out of the score, but it left
+            # them to the evaluators, which returned a verdict anyway: on the
+            # frozen corpus "Nam từ 25 đến 35 tuổi" came back ``met``, citing
+            # the candidate's degree line as the evidence for it. A posting's
+            # demand about someone's sex, age or appearance may not be reported
+            # as answered - nor as unanswered, which reads as the candidate
+            # falling short of it. It is not a question this system asks.
+            gate = _requirement_gate(requirement)
+            if gate.gate_class == "non_assessable":
+                results.append(
+                    RequirementResult(
+                        requirementId=requirement.requirement_id,
+                        status="not_applicable",
+                        score=None,
+                        confidence=1.0,
+                        reasonCode=gate.reason_code or "requirement_not_assessable_from_a_cv",
+                        evidenceExplanation=(
+                            "Yêu cầu này không thể đánh giá từ hồ sơ nên không được chấm, "
+                            "không tham gia quyết định đủ điều kiện, và không được tính là "
+                            "đáp ứng hay không đáp ứng."
+                        ),
+                    )
+                )
+                continue
             scoped_document_evidence = [
                 item
                 for item in document_evidence
