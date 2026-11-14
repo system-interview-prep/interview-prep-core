@@ -45,6 +45,33 @@ IMPORTANCE = {"must_have": 1.0, "nice_to_have": 0.35, "context": 0.15}
 MINIMUM_SIMILARITY = 0.30
 
 
+def content_tokens(text: str) -> list[str]:
+    """The syllables a requirement is actually about, folded for comparison."""
+    return [token for token in _fold(text).split() if len(token) > 1]
+
+
+def shares_enough_wording(requirement_text: str, span_text: str) -> bool:
+    """Whether the span repeats enough of the requirement to be about it.
+
+    A similarity floor alone is not a guard in Vietnamese. Whitespace yields
+    syllables rather than words, and folding the diacritics makes them collide,
+    so a long requirement built from common syllables can clear any floor
+    against text that has nothing to do with it: measured here, the probe
+    "kinh nghiem van hanh lo phan ung hat nhan" drew real mass from an ordinary
+    CV and raised the pair's score.
+
+    The requirement evaluator already answers this with a strict majority of
+    the requirement's own syllables, scaling the bar with the size of the
+    claim. The same rule applies here, for the same reason.
+    """
+    wanted = content_tokens(requirement_text)
+    if not wanted:
+        return False
+    present = set(content_tokens(span_text))
+    needed = max(2, len(wanted) // 2 + 1) if len(wanted) > 1 else 1
+    return sum(1 for token in wanted if token in present) >= needed
+
+
 @dataclass(frozen=True)
 class ScoredRequirement:
     requirement_id: str
@@ -117,7 +144,14 @@ def score_by_coverage(
     similarity: dict[tuple[str, str], float] = {}
     for requirement in scorable:
         for span in unique_spans:
-            sparse = sparse_similarity(requirement.text, span.text)
+            # The guard belongs to the sparse half alone. Syllable collision is
+            # a property of matching on shared characters; an embedding does
+            # not confuse a nuclear reactor with a degree because they spell
+            # alike. Suppressing the lexical half here rather than dropping the
+            # pair leaves the dense half free to do the job it is there for -
+            # recognising the same thing said in other words.
+            lexical_support = shares_enough_wording(requirement.text, span.text)
+            sparse = sparse_similarity(requirement.text, span.text) if lexical_support else 0.0
             dense = dense_similarity(requirement.text, span.text) if dense_similarity else None
             if sparse is None and dense is None:
                 continue
@@ -138,14 +172,32 @@ def score_by_coverage(
         requirement_mass=masses,
     )
 
+    # A requirement's credit is its own best evidence, not its share of the
+    # transported mass. Mass is a shared resource, so reading credit off it
+    # made one requirement's score depend on how many others were in the
+    # posting: measured under MR2, adding a single unmeetable requirement
+    # moved the pair by +14, +16 and once +54 points, where the aggregation it
+    # replaced moved by less than one. The budget still decides *who* may
+    # count a contested passage - that is what it is for - but once it has
+    # decided, what the holder scores is a property of that pair alone.
+    credits: dict[str, float] = {}
+    for item in scorable:
+        held = [
+            similarity[(item.requirement_id, span.evidence_id)]
+            for span in unique_spans
+            if (item.requirement_id, span.evidence_id) in similarity
+            and item.requirement_id in assignment.holders_of(span.evidence_id)
+        ]
+        credits[item.requirement_id] = max(held) if held else 0.0
+
     demand = sum(masses.values())
-    answered = sum(assignment.mass_for(item.requirement_id) for item in scorable)
+    answered = sum(masses[key] * value for key, value in credits.items())
     score = min(1.0, max(0.0, answered / demand)) if demand else 0.0
 
     answered_ids = tuple(
         item.requirement_id
         for item in scorable
-        if assignment.mass_for(item.requirement_id) >= MATERIAL_SHARE * masses[item.requirement_id]
+        if credits[item.requirement_id] >= MINIMUM_SIMILARITY
     )
     held = {
         span.evidence_id

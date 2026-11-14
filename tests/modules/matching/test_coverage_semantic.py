@@ -11,6 +11,7 @@ from src.modules.matching.evaluation.coverage_semantic import (
     ScoredSpan,
     deduplicate_spans,
     score_by_coverage,
+    shares_enough_wording,
 )
 
 
@@ -221,3 +222,41 @@ class TestHybridHalves:
             bm25_weight=0.9,
         )
         assert heavy_dense.score > (heavy_sparse.score if heavy_sparse else 0.0)
+
+
+class TestSyllableCollisionGuard:
+    """A floor on similarity is not a guard when syllables collide.
+
+    Measured on the corpus: the probe below drew real mass from an ordinary CV
+    and raised the pair's score, which is the same collision the requirement
+    evaluator already answers with a strict majority of the claim's syllables.
+    """
+
+    PROBE = "Kinh nghiem van hanh lo phan ung hat nhan"
+
+    def test_a_degree_line_does_not_answer_a_nuclear_reactor_requirement(self):
+        assert not shares_enough_wording(
+            self.PROBE,
+            "Cử nhân ngành Hệ thống Thông tin - Trường Đại học Công nghệ Thông tin",
+        )
+
+    def test_text_that_really_is_about_it_still_answers(self):
+        assert shares_enough_wording(
+            self.PROBE, "Vận hành lò phản ứng hạt nhân tại nhà máy, kinh nghiệm 5 năm"
+        )
+
+    def test_the_bar_scales_with_the_size_of_the_claim(self):
+        """Two hits carried a thirteen-syllable sentence under a flat floor."""
+        long_claim = "van hanh he thong giam sat phong xa trong lo phan ung hat nhan"
+        assert not shares_enough_wording(long_claim, "he thong giam sat")
+        assert shares_enough_wording("he thong giam sat", "he thong giam sat nhiet do")
+
+    def test_the_dense_half_is_not_blocked_by_the_guard(self):
+        """Different words for the same thing is what the dense half is for."""
+        result = score_by_coverage(
+            [requirement("req-1", "java backend service")],
+            [span("ev-1", "wrote server side software in a jvm language")],
+            sparse_similarity=keyword_similarity,
+            dense_similarity=lambda a, b: 0.9,
+        )
+        assert result is not None and result.score > 0.4

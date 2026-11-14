@@ -71,11 +71,21 @@ def login(session: requests.Session) -> None:
     session.headers["Authorization"] = f"Bearer {res.json()['access_token']}"
 
 
+# A relation is measured against whatever policy the run is testing, so the
+# policy has to travel with the request rather than being baked in here.
+# MR_MATCHING_POLICY carries it as JSON, e.g.
+# {"semanticAggregation": "requirement_coverage"}.
+MATCHING_POLICY = json.loads(os.environ.get("MR_MATCHING_POLICY", "") or "{}")
+
+
 def match(session: requests.Session, cv_id: str, jd_id: str) -> tuple[int, dict]:
+    body = {"candidateId": cv_id, "jobId": jd_id,
+            "asyncProcessing": False, "recordFitHistory": False}
+    if MATCHING_POLICY:
+        body["matchingPolicy"] = MATCHING_POLICY
     res = session.post(
         f"{BASE_URL}/api/v1/matching/match-ids",
-        json={"candidateId": cv_id, "jobId": jd_id,
-              "asyncProcessing": False, "recordFitHistory": False},
+        json=body,
         timeout=300,
     )
     try:
