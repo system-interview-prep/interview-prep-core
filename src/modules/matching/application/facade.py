@@ -1309,6 +1309,8 @@ class MatchingFacade:
                 policyWeight=policy_weight,
                 effectiveWeight=0.0,
                 evidenceRefs=list(result.evidence_refs),
+                denseScore=result.mean_dense,
+                sparseScore=result.mean_sparse,
             ),
             warning,
             embedding_outcome,

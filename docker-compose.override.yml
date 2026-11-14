@@ -1,6 +1,0 @@
-# Tam thoi cho phep do nhanh: bat lan luot tung yeu cau cho bo tim bang chung.
-# Tep nay chi phuc vu phep do Phase 4/5, khong thuoc cau hinh chay that.
-services:
-  backend:
-    environment:
-      MATCHING_LLM_EVIDENCE_SEARCH_PER_REQUIREMENT: "${MATCHING_LLM_EVIDENCE_SEARCH_PER_REQUIREMENT:-false}"

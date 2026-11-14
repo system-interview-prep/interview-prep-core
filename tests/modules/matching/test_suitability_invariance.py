@@ -66,11 +66,25 @@ _SCENARIOS = {
     "eligible_no_duration_claim": {"java_months": None},
 }
 
+# Re-pinned 2026-11-14, when requirement-coverage aggregation became the
+# default. The change was checked against the old tree field by field before
+# these values were replaced, because re-freezing a fingerprint is exactly how
+# a real regression gets waved through. Across all four scenarios only two
+# things moved: ``diagnosticScore``, and the semantic factor's ``reliability``
+# (0.85 -> 1.0, its dense half now answering where the document-level path had
+# fallen back). Eligibility, fit band, decision, suitability, profile match,
+# every requirement result and every other factor were identical. The strict
+# subtree is still pinned on everything it was pinned on before.
+# Re-pinned again the same day: the semantic factor now carries denseScore
+# and sparseScore under this aggregation too - the means of each half over
+# the pairs that cleared the floor - because dropping them left a reader of
+# the trace unable to see which half had carried the score. The verdicts did
+# not move; only the two added fields did.
 _EXPECTED_FINGERPRINT = {
-    "eligible_scored": "802f654f487db57d88e7a4a25811a5f70a61543f05b245a00cd3a9002c86aa97",
-    "ineligible_insufficient_duration": "21e5978de04fa1834a0a3df97abbca0a2a4fe2b400de950fed2e0b0c95b9aa07",
-    "ineligible_skill_absent": "8ceebb02c90088fafb63a2a1c48544f96fbb18f92969fc650fec1ab1ebe08eb8",
-    "eligible_no_duration_claim": "387a464067e6eded35905b95b46263ace798c66fc01e01542902d031dfa7055f",
+    "eligible_scored": "8af21baceaca749876f906d6e25032ca08d61116bd6bbd07e15473dc387ef9b3",
+    "ineligible_insufficient_duration": "b103295e9c8e9a02757b43bd4ec3efbeac74cb20599caa06385acee8d770cc7a",
+    "ineligible_skill_absent": "cebe5977756be4c46eda56adc8b32bd8cedc9cddcdd82fa2a502bdfce80217c9",
+    "eligible_no_duration_claim": "96c2121ab1807f72edf689697a585248c5bf3dc4f879d71a31fe780d7f053350",
 }
 
 # Re-pinned 2026-11-10. The earlier numbers were produced by a defect, not by
@@ -85,9 +99,9 @@ _EXPECTED_FINGERPRINT = {
 # names the number that moved, instead of only reporting a hash mismatch.
 _EXPECTED_VERDICT = {
     "eligible_scored": ("eligible", "strong_fit", "assessed", 1.0, 1.0),
-    "ineligible_insufficient_duration": ("ineligible", "not_eligible", "assessed", None, 0.32210947515634997),
-    "ineligible_skill_absent": ("ineligible", "not_eligible", "assessed", None, 0.32210947515634997),
-    "eligible_no_duration_claim": ("review_required", "review_required", "abstained", None, 0.6271602113359924),
+    "ineligible_insufficient_duration": ("ineligible", "not_eligible", "assessed", None, 0.3585701736362872),
+    "ineligible_skill_absent": ("ineligible", "not_eligible", "assessed", None, 0.3585701736362872),
+    "eligible_no_duration_claim": ("review_required", "review_required", "abstained", None, 0.6472135954999579),
 }
 
 

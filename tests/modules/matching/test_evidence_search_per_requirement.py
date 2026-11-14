@@ -118,5 +118,7 @@ class TestOneAtATime:
 
 
 class TestSettingDefault:
-    def test_it_is_off_until_a_run_measures_it(self):
-        assert get_settings().matching_llm_evidence_search_per_requirement is False
+    def test_it_is_on_now_that_a_run_has_measured_it(self):
+        """Off until 2026-11-14, when the shared prompt was measured changing a
+        different requirement's verdict. On costs roughly 3.7x the calls."""
+        assert get_settings().matching_llm_evidence_search_per_requirement is True

@@ -231,6 +231,12 @@ def test_title_alone_does_not_make_experience_factor_applicable() -> None:
 
 def test_semantic_factor_prefers_responsibility_project_and_achievement_context() -> None:
     payload = _payload()
+    # This pins the document-level semantic factor, which is no longer the
+    # default: requirement-coverage scores each requirement against each
+    # passage and cites the passages the assignment kept, so it has no single
+    # joined document to prefer one section of.
+    payload["matchingPolicy"] = {**payload.get("matchingPolicy", {}),
+                                 "semanticAggregation": "document"}
     payload["resume"]["employment"] = [
         {
             "employmentId": "employment-1",

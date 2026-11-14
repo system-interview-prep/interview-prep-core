@@ -147,7 +147,7 @@ class MatchingPolicy(CanonicalModel):
     # each requirement against each passage and reports the share of the
     # posting's weighted needs the CV answers. The default keeps the frozen
     # baselines comparable until a run measures the change.
-    semantic_aggregation: Literal["document", "requirement_coverage"] = "document"
+    semantic_aggregation: Literal["document", "requirement_coverage"] = "requirement_coverage"
     bm25_provider_mode: Literal["auto", "in_memory", "paradedb"] = "auto"
 
 

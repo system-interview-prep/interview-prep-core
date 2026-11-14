@@ -88,6 +88,11 @@ class ScoredSpan:
 @dataclass(frozen=True)
 class CoverageResult:
     score: float
+    # Mean of each half over the pairs that cleared the floor. The score itself
+    # has no single document-level sparse or dense value any more, but a reader
+    # of the trace still needs to see which half carried it.
+    mean_sparse: float | None
+    mean_dense: float | None
     assignment: TransportPlan
     similarity: dict[tuple[str, str], float]
     duplicate_claims_removed: int
@@ -142,6 +147,8 @@ def score_by_coverage(
         return None
 
     similarity: dict[tuple[str, str], float] = {}
+    sparse_parts: list[float] = []
+    dense_parts: list[float] = []
     for requirement in scorable:
         for span in unique_spans:
             # The guard belongs to the sparse half alone. Syllable collision is
@@ -163,6 +170,10 @@ def score_by_coverage(
                 value = (1.0 - bm25_weight) * dense + bm25_weight * sparse
             if value >= minimum_similarity:
                 similarity[(requirement.requirement_id, span.evidence_id)] = min(1.0, value)
+                if sparse is not None:
+                    sparse_parts.append(sparse)
+                if dense is not None:
+                    dense_parts.append(dense)
 
     masses = {item.requirement_id: IMPORTANCE[item.priority] for item in scorable}
     assignment = assign_evidence(
@@ -213,6 +224,8 @@ def score_by_coverage(
     )
     return CoverageResult(
         score=round(score, 6),
+        mean_sparse=round(sum(sparse_parts) / len(sparse_parts), 6) if sparse_parts else None,
+        mean_dense=round(sum(dense_parts) / len(dense_parts), 6) if dense_parts else None,
         assignment=assignment,
         similarity=similarity,
         duplicate_claims_removed=max(0, claimed - kept),

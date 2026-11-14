@@ -106,7 +106,11 @@ class Settings(BaseSettings):
     # Separate calls close it, at roughly 3.7x the calls on a cold cache -
     # a cost decision, so it stays a setting and defaults to the old
     # behaviour until a run measures it.
-    matching_llm_evidence_search_per_requirement: bool = False
+    # Measured on, 2026-11-14: separate calls are what stop one requirement's
+    # answer depending on another's presence, and that defect changed a
+    # candidate's conclusion. Roughly 3.7x the calls on a cold cache; set it
+    # to false to trade the correctness back for the cost.
+    matching_llm_evidence_search_per_requirement: bool = True
     matching_llm_evidence_search_max_chars: int = Field(default=12_000, ge=1_000, le=100_000)
     matching_llm_evidence_search_max_requirements: int = Field(default=12, ge=1, le=30)
     # Kept as text so a deliberately blank .env.example value stays valid.
