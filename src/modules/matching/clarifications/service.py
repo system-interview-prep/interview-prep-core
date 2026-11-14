@@ -188,6 +188,16 @@ def get_clarification_question_service() -> ClarificationQuestionService | None:
     return build_clarification_question_service_from_env()
 
 
+@lru_cache
+def get_clarification_selection() -> tuple[str, int]:
+    """Which unknowns reach the Jev gate, and how many questions at most."""
+
+    from src.core.config import Settings
+
+    settings = Settings()
+    return settings.matching_clarification_selection, settings.matching_clarification_max_questions
+
+
 async def run_match_with_clarifications(payload: MatchRequest) -> MatchClarificationAnalysis:
     """Run matching first, then analyze only the requirements left ``unknown``.
 
@@ -203,6 +213,8 @@ async def run_match_with_clarifications(payload: MatchRequest) -> MatchClarifica
         payload,
         result,
         get_ambiguity_analyzer(),
+        None,
+        *get_clarification_selection(),
     )
     requests = await _generate_requests(plans, token_status="not_applicable")
     trace_event(
@@ -238,6 +250,8 @@ async def prepare_match_clarifications(payload: MatchRequest) -> MatchClarificat
         payload,
         result,
         get_ambiguity_analyzer(),
+        None,
+        *get_clarification_selection(),
     )
     trace_event(
         "clarification",
@@ -290,6 +304,7 @@ async def generate_match_clarifications(
             result,
             get_ambiguity_analyzer(),
             requirement_ids,
+            *get_clarification_selection(),
         )
     requests = await _generate_requests(plans, token_status=token_status["token_status"])
     trace_event(

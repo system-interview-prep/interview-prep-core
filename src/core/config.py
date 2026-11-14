@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -90,6 +90,13 @@ class Settings(BaseSettings):
     jev_timeout_seconds: float = Field(default=5.0, gt=0)
     jev_clarification_confidence_threshold: float = Field(default=0.75, ge=0, le=1)
     jev_max_evidence_items: int = Field(default=5, ge=1, le=20)
+    # ``threshold`` keeps the gate's historical behaviour: one LLM call per
+    # unknown requirement, in requirement-id order.  ``information_gain`` ranks
+    # the unknowns by expected reduction in decision entropy first and calls the
+    # gate only for those whose answer could change the decision.  The default
+    # stays ``threshold`` so frozen baselines remain comparable.
+    matching_clarification_selection: Literal["threshold", "information_gain"] = "threshold"
+    matching_clarification_max_questions: int = Field(default=0, ge=0, le=30)
     matching_clarification_questions_enabled: bool = False
     matching_clarification_model: str = "gpt-5.4-mini"
     matching_llm_evidence_search_enabled: bool = True

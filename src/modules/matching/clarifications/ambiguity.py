@@ -20,6 +20,11 @@ import httpx
 
 from src.core.pipeline_events import ai_call_timer
 from src.core.trace_logging import trace_event
+from src.modules.matching.clarifications.information_gain import (
+    UnknownRequirement,
+    met_probability_for,
+    rank_by_information_gain,
+)
 from src.modules.matching.clarifications.question_generation import (
     ClarificationPlan,
     ClarificationQuestion,
@@ -381,19 +386,30 @@ def build_clarification_plans(
     result: MatchResult,
     analyzer: AmbiguityAnalyzer,
     requirement_ids: set[str] | None = None,
+    selection: str | None = None,
+    max_questions: int | None = None,
 ) -> list[ClarificationPlan]:
     """Run the Jev eligibility gate for requirements already marked unknown.
 
     This is intentionally a post-processing step. ``result`` is read-only here;
     no scores, statuses, eligibility, or fit-band values are changed.
+
+    ``selection`` picks which unknowns reach the gate at all.  The default
+    keeps every unknown and visits them in requirement order.  Under
+    ``information_gain`` the unknowns are ranked by expected reduction in
+    decision entropy first, and those whose answer provably cannot change the
+    decision never reach the gate, so they cost no LLM call.
     """
 
     started = time.perf_counter()
     results_by_id = {item.requirement_id: item for item in result.requirement_results}
     plans: list[ClarificationPlan] = []
+    ordered_requirements, selection_trace = _select_requirements(
+        payload, result, results_by_id, requirement_ids, selection, max_questions
+    )
     with gate_stats() as stats:
         stats["unknown"] = sum(item.status == "unknown" for item in result.requirement_results)
-        for requirement in payload.job.requirements:
+        for requirement in ordered_requirements:
             if requirement_ids is not None and requirement.requirement_id not in requirement_ids:
                 continue
             requirement_result = results_by_id.get(requirement.requirement_id)
@@ -428,8 +444,53 @@ def build_clarification_plans(
             rejected_by_reason=dict(stats["rejected"]),
             jev_failures=stats["failures"],
             duration_ms=int((time.perf_counter() - started) * 1000),
+            **selection_trace,
         )
     return plans
+
+
+def _select_requirements(
+    payload: MatchRequest,
+    result: MatchResult,
+    results_by_id: dict,
+    requirement_ids: set[str] | None,
+    selection: str | None,
+    max_questions: int | None,
+) -> tuple[list[Requirement], dict]:
+    """Decide which unknown requirements reach the gate, and in what order."""
+
+    if selection != "information_gain":
+        return list(payload.job.requirements), {"selection": selection or "threshold"}
+
+    unknowns = [
+        UnknownRequirement(
+            requirement_id=requirement.requirement_id,
+            is_must_have=requirement.priority == "must_have",
+            met_probability=met_probability_for(
+                getattr(results_by_id.get(requirement.requirement_id), "reason_code", None),
+                getattr(results_by_id.get(requirement.requirement_id), "confidence", None),
+            ),
+        )
+        for requirement in payload.job.requirements
+        if getattr(results_by_id.get(requirement.requirement_id), "status", None) == "unknown"
+        and (requirement_ids is None or requirement.requirement_id in requirement_ids)
+    ]
+    # ``failedMustHaveRequirements`` is the facade's own list of must-haves that
+    # actually disqualify, so this reads the decision rather than re-deriving it.
+    already_disqualified = bool(result.failed_must_have_requirements)
+    ranked = rank_by_information_gain(unknowns, already_disqualified=already_disqualified)
+    if max_questions:
+        ranked = ranked[:max_questions]
+
+    by_id = {item.requirement_id: item for item in payload.job.requirements}
+    selected = [by_id[item.requirement_id] for item in ranked if item.requirement_id in by_id]
+    return selected, {
+        "selection": "information_gain",
+        "already_disqualified": already_disqualified,
+        "ranked_count": len(ranked),
+        "skipped_zero_gain_count": len(unknowns) - len(ranked),
+        "information_gain_top": round(ranked[0].information_gain, 4) if ranked else 0.0,
+    }
 
 
 def build_clarification_requests_from_plans(
