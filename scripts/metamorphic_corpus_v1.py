@@ -471,9 +471,41 @@ def vacuity(relation: str, before: dict, after: dict) -> str | None:
     return None
 
 
+# Which part of the system each observed field belongs to. A relation asserted
+# on a composite says that something broke without saying what: measured on
+# MR2, four of five violations moved `coverage` while the semantic half stayed
+# put, and a whole phase was scoped against the wrong half because nobody had
+# decomposed it. Reporting the component with the clause is what makes the next
+# plan aim at the right place.
+COMPONENT = {
+    "coverage": "requirement_coverage",
+    "profile_match": "semantic",
+    "unknown": "requirement_status",
+    "requirement_count": "jd_parser",
+    "failed_must_have": "eligibility_gate",
+    "eligibility": "decision",
+    "decision": "decision",
+    "fit_band": "decision",
+    "diagnostic": "composite",
+    "suitability": "composite",
+}
+
+
+def component_of(field: str) -> str:
+    return COMPONENT.get(field, "other")
+
+
 def judge(relation: str, before: dict, after: dict) -> list[str]:
-    """Return the list of broken clauses; empty means the relation held."""
+    """Return the list of broken clauses; empty means the relation held.
+
+    Each clause is prefixed with the component it belongs to, so a violation
+    names the half of the system that moved rather than only the number that
+    came out of it.
+    """
     bad = []
+
+    def note(field, message):
+        bad.append(f"[{component_of(field)}] {message}")
 
     def same(field, tol=EPS):
         a, b = before.get(field), after.get(field)
@@ -481,23 +513,23 @@ def judge(relation: str, before: dict, after: dict) -> list[str]:
             return
         if isinstance(a, (int, float)) and isinstance(b, (int, float)):
             if abs(a - b) > tol:
-                bad.append(f"{field}: {a} -> {b}")
+                note(field, f"{field}: {a} -> {b}")
         elif a != b:
-            bad.append(f"{field}: {a!r} -> {b!r}")
+            note(field, f"{field}: {a!r} -> {b!r}")
 
     def not_above(field, tol=EPS):
         a, b = before.get(field), after.get(field)
         if a is None or b is None:
             return
         if b > a + tol:
-            bad.append(f"{field} increased: {a} -> {b}")
+            note(field, f"{field} increased: {a} -> {b}")
 
     def not_below(field, tol=EPS):
         a, b = before.get(field), after.get(field)
         if a is None or b is None:
             return
         if b < a - tol:
-            bad.append(f"{field} decreased: {a} -> {b}")
+            note(field, f"{field} decreased: {a} -> {b}")
 
     if relation in ("MR0", "MR1"):
         for f in ("eligibility", "decision", "fit_band", "diagnostic", "suitability",
@@ -505,17 +537,24 @@ def judge(relation: str, before: dict, after: dict) -> list[str]:
             same(f)
         if before.get("failed_must_have") is not None and after.get("failed_must_have") is not None:
             if before["failed_must_have"] != after["failed_must_have"]:
-                bad.append("failed_must_have set changed")
+                note("failed_must_have", "failed_must_have set changed")
     elif relation in ("MR2", "MR3"):
+        # The composite and the two halves that feed it. Asserting only the
+        # composite is what hid, for a whole phase, that the semantic half was
+        # responsible for one violation in five.
         not_above("suitability")
         not_above("diagnostic")
+        not_above("coverage")
+        not_above("profile_match")
         if before.get("eligibility") and after.get("eligibility"):
             if ORDER[after["eligibility"]] > ORDER[before["eligibility"]]:
-                bad.append(f"eligibility improved: {before['eligibility']} -> {after['eligibility']}")
+                note("eligibility",
+                     f"eligibility improved: {before['eligibility']} -> {after['eligibility']}")
     elif relation == "MR4":
         if before.get("eligibility") and after.get("eligibility"):
             if ORDER[after["eligibility"]] < ORDER[before["eligibility"]]:
-                bad.append(f"eligibility worsened: {before['eligibility']} -> {after['eligibility']}")
+                note("eligibility",
+                     f"eligibility worsened: {before['eligibility']} -> {after['eligibility']}")
     elif relation == "MR5":
         not_below("coverage")
     elif relation == "MR6":
@@ -580,7 +619,8 @@ async def run(limit: int, baseline: Path, checkpoint: Path, out: Path, seed: int
     session.headers["User-Agent"] = "metamorphic-corpus/2.0"
     login(session)
 
-    tally = {r: {"held": 0, "vacuous": 0, "violations": 0, "skipped": 0, "errors": 0}
+    tally = {r: {"held": 0, "vacuous": 0, "violations": 0, "skipped": 0, "errors": 0,
+                 "violations_by_component": {}}
              for r in relations}
     records = []
     started = time.time()
@@ -637,6 +677,11 @@ async def run(limit: int, baseline: Path, checkpoint: Path, out: Path, seed: int
                 bad = judge(relation, before, after)
                 if bad:
                     tally[relation]["violations"] += 1
+                    # A pair is counted once per component it broke, so the
+                    # summary says where to aim rather than only how many.
+                    for component in {c.split("]")[0].lstrip("[") for c in bad}:
+                        by = tally[relation]["violations_by_component"]
+                        by[component] = by.get(component, 0) + 1
                     records.append({"pair_id": pair_id, "relation": relation,
                                     "outcome": "violation", "broken": bad,
                                     "before": before, "after": after})
@@ -655,7 +700,10 @@ async def run(limit: int, baseline: Path, checkpoint: Path, out: Path, seed: int
         if n % 5 == 0 or n == len(sample):
             rate = (time.time() - started) / n
             line = "  ".join(
-                f"{r}:{t['held']}/{t['vacuous']}/{t['violations']}" for r, t in tally.items()
+                f"{r}:{t['held']}/{t['vacuous']}/{t['violations']}"
+                + (("[" + ",".join(f"{k}={v}" for k, v in sorted(t["violations_by_component"].items())) + "]")
+                   if t["violations_by_component"] else "")
+                for r, t in tally.items()
             )
             print(f"  {n}/{len(sample)}  held/vacuous/viol  {line}  {rate:.1f}s/pair", flush=True)
 

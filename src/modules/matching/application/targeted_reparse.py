@@ -235,6 +235,34 @@ def _cached_search(searcher, raw_text: str, requirements: list[dict[str, str]]):
     return result
 
 
+def _search_requirements(searcher, raw_text: str, requirements: list[dict[str, str]]):
+    """Ask about the requirements together, or one at a time.
+
+    Together is one call and one answer, and that one answer is a channel
+    between requirements that should not exist: adding a line the candidate
+    could never meet changed what the model returned for the others, which
+    flipped a different requirement's status and took it off the failed
+    must-have list. The posting's wording about one thing decided the verdict
+    on another.
+
+    One call per requirement closes the channel - nothing a requirement did
+    not ask about can reach its answer - and makes each answer cacheable on
+    its own, so the same requirement against the same CV is paid for once
+    across every posting that asks it. It costs roughly 3.7x more calls on a
+    cold cache, which is why it is a setting rather than simply the behaviour.
+    """
+    if len(requirements) <= 1 or not get_settings().matching_llm_evidence_search_per_requirement:
+        return _cached_search(searcher, raw_text, requirements)
+
+    items: list = []
+    for requirement in requirements:
+        answer = _cached_search(searcher, raw_text, [requirement])
+        if isinstance(answer, dict):
+            answer = EvidenceSearchResult.model_validate(answer)
+        items.extend(answer.items)
+    return EvidenceSearchResult(items=items)
+
+
 def _default_evidence_searcher() -> EvidenceSearcher | None:
     settings = get_settings()
     if not settings.matching_llm_evidence_search_enabled or not settings.openai_api_key:
@@ -447,7 +475,7 @@ def reparse_partial_resume(
             llm_requested = len(allowed)
             seen_requirement_ids: set[str] = set()
             try:
-                proposed = _cached_search(searcher, raw_text, allowed)
+                proposed = _search_requirements(searcher, raw_text, allowed)
                 if isinstance(proposed, dict):
                     proposed = EvidenceSearchResult.model_validate(proposed)
                 for item in proposed.items:
