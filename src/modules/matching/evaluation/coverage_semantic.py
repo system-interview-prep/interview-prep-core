@@ -72,6 +72,37 @@ def shares_enough_wording(requirement_text: str, span_text: str) -> bool:
     return sum(1 for token in wanted if token in present) >= needed
 
 
+def credit_for(similarity_value: float, floor: float) -> float:
+    """What a requirement earns for its best evidence, measured from the floor.
+
+    ``floor`` is a noise gate: below it a pair carries no signal worth
+    transporting. Reading the gate's threshold back as a credit conflates two
+    questions - whether to count a passage at all, and what it is worth - and
+    makes the score jump. Evidence at 0.299 earned nothing and evidence at
+    0.301 earned 0.301, a step of nearly a third of the scale for a difference
+    no reader could see. On a posting with three requirements that step is
+    about ten points of the published profile match, enough to put two
+    near-identical CVs in different bands.
+
+    It also left a residue of the very defect this module exists to remove.
+    The score is a weighted mean, so adding a requirement raises it whenever
+    that requirement outscores the mean - and below the floor *everything*
+    that clears the gate does. Measured under MR2 on the frozen corpus, three
+    of the four surviving violations were pairs scoring 0.109, 0.233 and
+    0.261, each lifted by a probe nobody could meet that landed just above the
+    gate. The fourth, scoring 0.281, is the control: there the probe cleared
+    nothing, and the score fell as it should.
+
+    Credit therefore grows from the floor: evidence at the noise floor is
+    worth nothing, which is what calling it a noise floor means.
+    """
+    if similarity_value < floor:
+        return 0.0
+    if floor >= 1.0:
+        return 1.0
+    return (similarity_value - floor) / (1.0 - floor)
+
+
 @dataclass(frozen=True)
 class ScoredRequirement:
     requirement_id: str
@@ -191,6 +222,7 @@ def score_by_coverage(
     # replaced moved by less than one. The budget still decides *who* may
     # count a contested passage - that is what it is for - but once it has
     # decided, what the holder scores is a property of that pair alone.
+    best_evidence: dict[str, float] = {}
     credits: dict[str, float] = {}
     for item in scorable:
         held = [
@@ -199,16 +231,22 @@ def score_by_coverage(
             if (item.requirement_id, span.evidence_id) in similarity
             and item.requirement_id in assignment.holders_of(span.evidence_id)
         ]
-        credits[item.requirement_id] = max(held) if held else 0.0
+        best_evidence[item.requirement_id] = max(held) if held else 0.0
+        credits[item.requirement_id] = credit_for(
+            best_evidence[item.requirement_id], minimum_similarity
+        )
 
     demand = sum(masses.values())
     answered = sum(masses[key] * value for key, value in credits.items())
     score = min(1.0, max(0.0, answered / demand)) if demand else 0.0
 
+    # Reported on the evidence itself, not on the rescaled credit: a
+    # requirement whose passage cleared the gate *is* answered, even where the
+    # credit it earns above the gate rounds to little.
     answered_ids = tuple(
         item.requirement_id
         for item in scorable
-        if credits[item.requirement_id] >= MINIMUM_SIMILARITY
+        if best_evidence[item.requirement_id] >= minimum_similarity
     )
     held = {
         span.evidence_id

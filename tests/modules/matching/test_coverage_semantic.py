@@ -7,8 +7,10 @@ Phase 1 for this change, stated at the level the score is actually computed.
 import pytest
 
 from src.modules.matching.evaluation.coverage_semantic import (
+    MINIMUM_SIMILARITY,
     ScoredRequirement,
     ScoredSpan,
+    credit_for,
     deduplicate_spans,
     score_by_coverage,
     shares_enough_wording,
@@ -203,7 +205,12 @@ class TestHybridHalves:
             dense_similarity=lambda a, b: 0.95,
         )
         assert sparse_only is not None and sparse_only.score < 0.05
-        assert with_dense.score > 0.4
+        # Stated as the gap over the sparse-only baseline, not as an absolute
+        # cut.  2026-11-15: credit now grows from the noise floor, so the same
+        # dense similarity of 0.95 scores 0.386 where it scored 0.570 before.
+        # What is under test is that the dense half carries a pair the lexical
+        # half cannot - that is the gap, not the number.
+        assert with_dense.score > sparse_only.score + 0.3
 
     def test_the_weight_between_halves_is_respected(self):
         spans = [span("ev-1", "unrelated wording entirely")]
@@ -253,10 +260,95 @@ class TestSyllableCollisionGuard:
 
     def test_the_dense_half_is_not_blocked_by_the_guard(self):
         """Different words for the same thing is what the dense half is for."""
+        requirements = [requirement("req-1", "java backend service")]
+        spans = [span("ev-1", "wrote server side software in a jvm language")]
+        blocked = score_by_coverage(
+            requirements, spans, sparse_similarity=keyword_similarity
+        )
         result = score_by_coverage(
-            [requirement("req-1", "java backend service")],
-            [span("ev-1", "wrote server side software in a jvm language")],
+            requirements,
+            spans,
             sparse_similarity=keyword_similarity,
             dense_similarity=lambda a, b: 0.9,
         )
-        assert result is not None and result.score > 0.4
+        # The guard silences the lexical half here, so without the dense half
+        # the requirement is unanswered.  With it, the requirement is answered
+        # and the pair scores for it.
+        assert blocked is not None and blocked.score == 0.0
+        assert result is not None
+        assert result.answered_requirement_ids == ("req-1",)
+        assert result.score > blocked.score + 0.3
+
+
+class TestCreditGrowsFromTheFloor:
+    """The noise gate decides whether to count a passage, not what it is worth.
+
+    Credit used to be read straight off the similarity, which the gate had
+    already forced to be either zero or at least the floor.  The step at the
+    gate was nearly a third of the scale.
+    """
+
+    def test_evidence_at_the_floor_is_worth_nothing(self):
+        assert credit_for(MINIMUM_SIMILARITY, MINIMUM_SIMILARITY) == 0.0
+
+    def test_credit_is_continuous_across_the_floor(self):
+        below = credit_for(MINIMUM_SIMILARITY - 1e-6, MINIMUM_SIMILARITY)
+        above = credit_for(MINIMUM_SIMILARITY + 1e-6, MINIMUM_SIMILARITY)
+        assert above - below < 1e-5
+
+    def test_credit_rises_with_the_evidence(self):
+        weak = credit_for(0.4, MINIMUM_SIMILARITY)
+        strong = credit_for(0.8, MINIMUM_SIMILARITY)
+        assert 0.0 < weak < strong
+
+    def test_perfect_evidence_still_scores_in_full(self):
+        assert credit_for(1.0, MINIMUM_SIMILARITY) == pytest.approx(1.0)
+
+    def test_a_probe_that_only_grazes_the_floor_cannot_lift_a_weak_pair(self):
+        """MR2 on the frozen corpus, measured 2026-11-14.
+
+        Three of the four surviving violations were pairs scoring 0.109, 0.233
+        and 0.261 - all below the floor - lifted by a requirement nobody could
+        meet whose evidence landed just above it.  Any pair under the floor
+        rose this way, because everything that cleared the gate outscored the
+        pair's own mean.
+
+        The arrangement below reproduces it: one requirement answered at 0.75,
+        two unanswered, and a probe grazing the floor at 0.31 on a passage of
+        its own.  The probe needs its own passage - with a single shared one
+        the transport budget hands it to the strongest claimant and the probe
+        holds nothing, which is the budget working, not this defect.
+
+        Measured both ways: under the old rule the pair went 0.250 -> 0.265;
+        under this one it goes 0.214 -> 0.164.
+        """
+        spans = [
+            span("ev-1", "built a java backend service at acme"),
+            span("ev-2", "volunteered at a local community centre"),
+        ]
+        strength = {
+            ("java backend service", "built a java backend service at acme"): 0.75,
+            ("piloting a commercial airliner", "volunteered at a local community centre"): 0.31,
+        }
+
+        def dense(left: str, right: str) -> float:
+            return strength.get((left, right), 0.10)
+
+        def pair(requirements):
+            return score_by_coverage(
+                requirements,
+                spans,
+                sparse_similarity=lambda left, right: 0.0,
+                dense_similarity=dense,
+                bm25_weight=0.0,
+            )
+
+        answered = [
+            requirement("req-java", "java backend service"),
+            requirement("req-x", "kubernetes operations"),
+            requirement("req-y", "financial auditing"),
+        ]
+        before = pair(answered)
+        after = pair(answered + [requirement("req-probe", "piloting a commercial airliner")])
+        assert before.score == pytest.approx(0.2143, abs=5e-4)
+        assert after.score < before.score

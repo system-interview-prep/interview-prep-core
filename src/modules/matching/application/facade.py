@@ -126,10 +126,11 @@ _SCORING_FACTORS = frozenset({"requirement_coverage", "semantic"})
 # saturates here rather than starting at 1.0.
 _COVERAGE_BREADTH_TARGET = 5.0
 
-# Credit for a requirement whose CV passage was retrieved and cited but whose
-# confirmation is still pending.  Deliberately below the midpoint: it must stay
-# clearly weaker than a confirmed ``met`` while remaining distinguishable from
-# an outright ``not_met``.
+# The most a requirement can earn while its CV passage is retrieved and cited
+# but unconfirmed.  Deliberately below the midpoint: it must stay clearly
+# weaker than a confirmed ``met`` while remaining distinguishable from an
+# outright ``not_met``.  It is a ceiling, not a payment - see
+# ``_unconfirmed_credit``.
 _UNCONFIRMED_EVIDENCE_CREDIT = 0.45
 
 # Quartiles of the semantic factor measured across the 1000-pair CV/JD corpus:
@@ -253,6 +254,46 @@ def _resume_absence_is_conclusive(resume: CanonicalResume) -> bool:
     section_coverage = parsing.canonical_section_coverage or {}
     return section_coverage.get("skills") in ("complete", "complete_empty")
 
+
+
+def _unconfirmed_credit(result: RequirementResult) -> float:
+    """What a cited-but-unconfirmed passage earns, scaled by how well it fits.
+
+    The ceiling used to be paid out flat, to any ``unknown`` that cited any
+    passage, without ever looking at the passage.  Retrieval returns its best
+    k candidates whether or not any of them is about the requirement, so
+    "a passage was found" is close to contentless on its own - and the credit
+    was the same for a passage squarely on the subject and one that merely
+    came back first.
+
+    Two things followed.  A constant was published as a measurement: on
+    jobscan_0260 of the frozen corpus every requirement was ``unknown`` with a
+    citation, so the pair's requirement coverage was 45.0 exactly - the
+    constant itself, carrying nothing about that candidate.  And because
+    coverage is a weighted mean, a requirement paid a constant pulls the mean
+    toward that constant: measured under MR2, adding a requirement nobody
+    could meet raised coverage on every pair sitting below 0.45 and lowered it
+    on every pair above, which is drift toward the prior rather than an
+    answer about the candidate.
+
+    Retrieval already scores how well each candidate passage fits the
+    requirement, so that score decides the payout and the ceiling stays a
+    ceiling.
+
+    Where no retrieval scored the cited passage - the targeted LLM search and
+    self-reported answers arrive without a trace - the flat ceiling is kept,
+    because there is no measurement to scale by.  That path is unchanged and
+    still drifts; it is a known residue, not a fix.
+    """
+    cited = set(result.evidence_refs)
+    measured = [
+        candidate.semantic_score
+        for candidate in result.retrieval_candidates
+        if candidate.evidence_ref in cited
+    ]
+    if not measured:
+        return _UNCONFIRMED_EVIDENCE_CREDIT
+    return _UNCONFIRMED_EVIDENCE_CREDIT * max(measured)
 
 class MatchingFacade:
     """The only application entry point for one CV-to-one-JD fit assessment."""
@@ -915,13 +956,15 @@ class MatchingFacade:
         # confirmation is pending.  Dropping both alike discards the weaker of
         # the two real signals, so cited-but-unconfirmed evidence earns partial
         # credit here while its ``unknown`` status - and therefore the review
-        # decision it triggers - stays untouched.
+        # decision it triggers - stays untouched.  How much it earns is set by
+        # how well the passage fits, not by the fact that one came back:
+        # see ``_unconfirmed_credit``.
         evaluated = [
             (requirement, result, result.score)
             for requirement, result in applicable
             if result.score is not None
         ] + [
-            (requirement, result, _UNCONFIRMED_EVIDENCE_CREDIT)
+            (requirement, result, _unconfirmed_credit(result))
             for requirement, result in applicable
             if result.score is None and result.status == "unknown" and result.evidence_refs
         ]
