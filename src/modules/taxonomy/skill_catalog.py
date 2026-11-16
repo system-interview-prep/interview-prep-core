@@ -27,6 +27,7 @@ EMBEDDED = "technology.software-engineering.embedded"
 QA = "technology.quality-assurance"
 DATA = "technology.data-engineering"
 SECURITY = "technology.cybersecurity"
+BA = "technology.business-analysis"
 
 
 @dataclass(frozen=True)
@@ -295,6 +296,83 @@ SKILL_CATALOG: dict[str, SkillEntry] = {
         ("skill-natural-language-processing",),
         (AI,),
     ),
+    # Business analysis
+    # Before these entries no skill signalled technology.business-analysis at
+    # all, so a BA CV was classified from whatever generic tooling it listed
+    # (SQL Server -> backend). Keep them BA-specific: anything a developer also
+    # writes on a CV (SQL, Jira, Figma) must NOT carry this role, or every
+    # backend CV picks up a business-analysis signal.
+    "skill-business-analysis": SkillEntry(
+        "Business Analysis",
+        ("business analysis", "business analyst", "phân tích nghiệp vụ"),
+        roles=(BA,),
+    ),
+    "skill-requirement-analysis": SkillEntry(
+        "Requirement Analysis",
+        (
+            "requirement analysis",
+            "requirements analysis",
+            "requirement gathering",
+            "requirements gathering",
+            "requirement elicitation",
+            "requirements elicitation",
+            "phân tích yêu cầu",
+            "thu thập yêu cầu",
+        ),
+        roles=(BA,),
+    ),
+    "skill-bpmn": SkillEntry("BPMN", ("bpmn", "business process model and notation"), roles=(BA,)),
+    "skill-uml": SkillEntry(
+        "UML",
+        (
+            "uml",
+            "unified modeling language",
+            "activity diagram",
+            "sequence diagram",
+            "class diagram",
+        ),
+        roles=(BA,),
+    ),
+    "skill-use-case": SkillEntry(
+        "Use Case", ("use case", "use cases", "use case diagram", "biểu đồ use case"), roles=(BA,)
+    ),
+    "skill-user-story": SkillEntry("User Story", ("user story", "user stories"), roles=(BA,)),
+    "skill-brd": SkillEntry(
+        "Business Requirements Document",
+        ("brd", "business requirements document", "business requirement document"),
+        roles=(BA,),
+    ),
+    "skill-functional-requirements": SkillEntry(
+        "Functional & Non-functional Requirements",
+        ("functional requirements", "non-functional requirements", "non functional requirements"),
+        roles=(BA,),
+    ),
+    "skill-process-modeling": SkillEntry(
+        "Process Modeling",
+        (
+            "process modeling",
+            "process modelling",
+            "business process analysis",
+            "mô hình hóa quy trình",
+            "phân tích quy trình",
+        ),
+        roles=(BA,),
+    ),
+    "skill-stakeholder-analysis": SkillEntry(
+        "Stakeholder Analysis",
+        ("stakeholder analysis", "stakeholder management", "phân tích các bên liên quan"),
+        roles=(BA,),
+    ),
+    "skill-erd": SkillEntry(
+        "Entity Relationship Diagram",
+        ("erd", "entity relationship diagram", "entity-relationship diagram"),
+        roles=(BA, DATA),
+    ),
+    "skill-data-dictionary": SkillEntry(
+        "Data Dictionary", ("data dictionary", "từ điển dữ liệu"), roles=(BA, DATA)
+    ),
+    "skill-drawio": SkillEntry("Draw.io", ("draw.io", "drawio", "diagrams.net"), roles=(BA,)),
+    "skill-confluence": SkillEntry("Confluence", ("confluence",)),
     # Tools
     "skill-jira": SkillEntry("Jira", ("jira",)),
     "skill-selenium": SkillEntry("Selenium", ("selenium",), ("skill-automation-testing",), (QA,)),
@@ -310,6 +388,7 @@ SKILL_CATALOG: dict[str, SkillEntry] = {
 # because "#" and "+" are not separators.
 LIST_ONLY_ALIASES = frozenset({
     "excel", "rest", "ai", "ml", "monitoring", "c", "go", "rust", "swift", "dart", "spark",
+    "use case", "use cases", "brd", "uml", "erd",
     "rails", "networking", "algorithms", "jest", "elt", "mcu",
 })
 
