@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # Entries written by version 4 describe the old behaviour, and because the
 # key is content-based rather than id-based they would otherwise keep
 # serving it to every measurement.
-CACHE_VERSION = "5"
+CACHE_VERSION = "6"
 # Taxonomy aliases and embeddings live outside the request; refresh eventually.
 MAX_AGE = timedelta(days=30)
 
