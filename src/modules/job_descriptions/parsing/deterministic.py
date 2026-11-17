@@ -226,12 +226,29 @@ def resolve_known_skill_concepts(
             seen.add(concept.concept_id)
     return resolved
 
+# A Vietnamese posting states a cumulative-grade threshold without ever
+# writing "GPA": "Điểm trung bình tích lũy từ 7.0/10 trở lên", "ĐTB >= 3.2/4".
+# Reading only the English token left those lines with no threshold and no
+# scale, so they were not education requirements at all downstream - they fell
+# through to the skill evaluator, which searched the CV for a technology named
+# "điểm trung bình tích lũy" and of course did not find one.
+_GPA_NAMED = (
+    r"(?:GPA|CPA|ĐTB"
+    r"|điểm\s*trung\s*bình(?:\s*tích\s*lũy)?"
+    r"|điểm\s*tích\s*lũy"
+    r"|điểm\s*TBTL)"
+)
+_GPA_COMPARATOR = r"(?:>=|>|=|≥|tối\s*thiểu|từ|đạt|:)"
 _GPA_RE = re.compile(
-    r"\b(?:GPA|CPA|Điểm\s*(?:GPA)?)\s*(?:>=|>=|≥|tối\s*thiểu|từ|\s*:\s*)?\s*(?P<thresh>\d+(?:\.\d+)?)\s*(?:/|\s*trên\s*)(?P<scale>\d+(?:\.\d+)?)",
+    rf"\b(?:{_GPA_NAMED}|Điểm\s*(?:GPA)?)(?:\s*{_GPA_COMPARATOR})*\s*"
+    r"(?P<thresh>\d+(?:\.\d+)?)\s*(?:/|\s*trên\s*)(?P<scale>\d+(?:\.\d+)?)",
     re.I,
 )
+# Without an explicit scale the subject has to carry the meaning on its own, so
+# a bare "Điểm" is not enough here, and a comparator is required: "điểm trung
+# bình 3 môn chuyên ngành" must not be read as a 3.0 threshold.
 _GPA_STANDALONE_RE = re.compile(
-    r"\b(?:GPA|CPA)\s*(?:>=|>=|≥|tối\s*thiểu|từ|\s*:\s*)\s*(?P<thresh>\d+(?:\.\d+)?)",
+    rf"\b{_GPA_NAMED}(?:\s*{_GPA_COMPARATOR})+\s*(?P<thresh>\d+(?:\.\d+)?)",
     re.I,
 )
 _LANG_CERT_RE = re.compile(
