@@ -113,6 +113,17 @@ class Settings(BaseSettings):
     matching_llm_evidence_search_per_requirement: bool = True
     matching_llm_evidence_search_max_chars: int = Field(default=12_000, ge=1_000, le=100_000)
     matching_llm_evidence_search_max_requirements: int = Field(default=12, ge=1, le=30)
+    # Grounded LLM reading in matching (src/modules/matching/judge), two readers
+    # behind one switch. The gate judge reads each posting line once and may
+    # demote a line the rules call objective to a class that cannot gate; it
+    # can never promote one. The entailment judge reads CV spans against each
+    # unresolved requirement and may raise a rule verdict to met with verbatim
+    # evidence; it can never lower one. Both degrade to the rules without
+    # OPENAI_API_KEY. False is the rules-only baseline, for measurement.
+    matching_judge_enabled: bool = True
+    matching_judge_model: str | None = None
+    matching_judge_top_k: int = Field(default=8, ge=1, le=20)
+    matching_judge_max_output_tokens: int = Field(default=600, ge=128, le=4_000)
     # Kept as text so a deliberately blank .env.example value stays valid.
     matching_clarification_semantic_threshold: str | None = None
     voice_lab_enabled: bool = False

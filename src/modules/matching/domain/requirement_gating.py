@@ -23,7 +23,10 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from src.modules.matching.judge.readings import GateReading
 
 GateClass = Literal["objective", "optional", "soft_signal", "non_assessable", "vacuous"]
 
@@ -42,8 +45,14 @@ class GateDecision:
 
     @property
     def is_scorable(self) -> bool:
-        """Vacuous, protected and equipment lines carry no fit signal."""
-        return self.gate_class in ("objective", "optional", "soft_signal")
+        """Only lines a CV can evidence carry fit signal.
+
+        ``soft_signal`` used to score as well.  A CV cannot evidence "năng
+        động, sáng tạo", so the verdict was always ``not_met`` or a
+        word-overlap ``unknown``, which lowered the score and raised a
+        clarification question nobody can answer usefully.
+        """
+        return self.gate_class in ("objective", "optional")
 
 
 def _normalize(text: str) -> str:
@@ -198,13 +207,51 @@ def _marks_whole_requirement_optional(text: str) -> bool:
     return bool(clauses) and bool(_OPTIONAL_MARKER.search(clauses[0]))
 
 
-def classify_requirement_gate(raw_label: str, kind: str | None = None) -> GateDecision:
+def classify_requirement_gate(
+    raw_label: str,
+    kind: str | None = None,
+    reading: GateReading | None = None,
+) -> GateDecision:
     """Decide whether one requirement may disqualify a candidate.
 
     ``kind`` from the JD parser is advisory only.  It is unreliable in practice
     (education lines arrive as ``skill``, health lines as ``language``), so the
     decision is driven by the requirement text itself.
+
+    ``reading`` is the gate judge's reading of the same line, when the judge
+    is on.  It can only lower a line the rules call ``objective`` to a class
+    that does not gate; it can never raise one, and it cannot touch a line
+    that carries a concrete anchor.  See ``_apply_reading``.
     """
+    decision = _classify_by_rules(raw_label)
+    if reading is None or decision.gate_class != "objective":
+        return decision
+    return _apply_reading(decision, _normalize(raw_label), reading)
+
+
+def _apply_reading(decision: GateDecision, text: str, reading: GateReading) -> GateDecision:
+    """Demote on the judge's word, under the rules' veto.
+
+    Demoting by mistake waives one condition for one posting.  Promoting by
+    mistake rejects a person.  The two are not the same size, so only the
+    first is ever delegated: a reading of ``objective`` or ``unsure`` changes
+    nothing, and a line with a technology, a degree, a duration or a named
+    language in it keeps its gate whatever the reading says - the same anchor
+    that keeps "Tốt nghiệp Đại học CNTT, nhiệt tình" objective under the rules.
+    """
+    if reading.relation in {"objective", "unsure"}:
+        return decision
+    if _OBJECTIVE_ANCHOR.search(text) or _NAMED_LANGUAGE.search(text):
+        return decision
+    reason = {
+        "soft_signal": "judge_attitude_not_verifiable_from_cv",
+        "non_assessable": "judge_not_evidenced_by_a_cv",
+        "optional": "judge_posting_marks_requirement_optional",
+    }[reading.relation]
+    return GateDecision(reading.relation, reason)
+
+
+def _classify_by_rules(raw_label: str) -> GateDecision:
     text = _normalize(raw_label)
     if not text:
         return GateDecision("non_assessable", "requirement_text_empty")

@@ -245,9 +245,12 @@ def test_fpt_ojt_ai_sample_is_evidence_evaluated_without_duplicate_requirements(
     )
 
     statuses = [item.status for item in result.requirement_results]
-    assert statuses.count("met") == 6
+    assert statuses.count("met") == 5
     assert statuses.count("unknown") == 0
     assert statuses.count("not_met") == 1
+    # "Đam mê nghiên cứu và ứng dụng công nghệ AI" is an attitude no CV can
+    # evidence: it is reported as not applicable rather than scored.
+    assert statuses.count("not_applicable") == 1
     assert result.requirement_results[0].evidence_refs == ["cv-education"]
     assert result.requirement_results[2].evidence_refs == ["cv-gpa"]
     assert result.requirement_results[3].reason_code == "language_credential_evidence_missing"
@@ -266,18 +269,21 @@ def test_fpt_ojt_ai_sample_is_evidence_evaluated_without_duplicate_requirements(
     assert factors["requirement_coverage"].status == "scored"
     # "Đam mê nghiên cứu và ứng dụng công nghệ AI" is an attitude the posting
     # asks for but a CV cannot evidence, so it is demoted out of the must-have
-    # gate.  Its lighter importance weight is what moves coverage off the old
-    # all-must-have figure of 0.842519685.
-    assert factors["requirement_coverage"].raw_score == pytest.approx(0.8245614035)
+    # gate.  It used to keep scoring as nice_to_have (coverage 0.8245614035);
+    # a soft signal is now not applicable and carries no fit signal at all,
+    # which is what moves coverage to the figure below.
+    assert factors["requirement_coverage"].raw_score == pytest.approx(0.8130841121)
     assert factors["skill"].status == "scored"
     assert factors["language"].status == "scored"
     assert factors["experience"].status == "not_applicable"
     assert factors["semantic"].status == "scored"
     assert result.score_provenance.mode == "requirement_aware"
     assert result.score_provenance.supported_requirement_count == 7
-    assert result.score_provenance.scored_requirement_count == 7
+    # Six scored: the attitude line is not applicable, so it is neither
+    # credited nor charged.
+    assert result.score_provenance.scored_requirement_count == 6
     assert result.score_provenance.unknown_requirement_count == 0
-    assert result.score_provenance.requirement_coverage == pytest.approx(0.8245614035)
+    assert result.score_provenance.requirement_coverage == pytest.approx(0.8130841121)
     assert sum(result.score_provenance.factor_contributions.values()) == pytest.approx(
         result.diagnostic_score
     )

@@ -16,4 +16,6 @@ trace-logs/
 .pytest-auth-full/
 tmp/
 temp/
-*.tmp
+*.tmp
+.env.*
+!.env.example

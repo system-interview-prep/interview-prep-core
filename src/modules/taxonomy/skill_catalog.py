@@ -405,6 +405,23 @@ def role_skill_ids(role_code: str) -> frozenset[str]:
 
 _SEPARATORS = r"|,;/•·()\[\]:\-"
 
+# A CV and a posting both write the version into the technology's name:
+# "HTML5", "CSS3", "Vue 3", "Java 17", "PHP 8". The catalogue alias is the bare
+# name, and the trailing ``(?!\w)`` rejected every one of them - a CV reading
+# "JavaScript (ES6+), React, HTML5, CSS3" carried no HTML and no CSS skill at
+# all, so a posting asking for "lập trình Web (HTML/CSS)" found nothing to
+# match and the candidate failed a must-have their CV answers in full.
+#
+# Only an alias that is one plain word of three letters or more takes the
+# suffix. That keeps the short and punctuated aliases ("c", "go", "js", "c++",
+# ".net") on their exact boundaries, where a stray digit would change which
+# technology is being named rather than which version of it.
+_VERSION_SUFFIX = r"(?:\s?\d+(?:\.\d+)*)?"
+
+
+def _accepts_version_suffix(alias: str) -> bool:
+    return len(alias) >= 3 and alias.isalpha()
+
 
 @lru_cache(maxsize=4096)
 def alias_pattern(alias: str) -> re.Pattern[str]:
@@ -424,4 +441,5 @@ def alias_pattern(alias: str) -> re.Pattern[str]:
         return re.compile(pattern, re.IGNORECASE | re.MULTILINE)
     # "js" must not match the tail of "node.js".
     before = r"(?<![\w.])" if alias == "js" else r"(?<!\w)"
-    return re.compile(rf"{before}{escaped}(?!\w)", re.IGNORECASE)
+    suffix = _VERSION_SUFFIX if _accepts_version_suffix(alias) else ""
+    return re.compile(rf"{before}{escaped}{suffix}(?!\w)", re.IGNORECASE)

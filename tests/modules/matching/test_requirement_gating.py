@@ -50,12 +50,12 @@ def test_protected_or_physical_attributes_never_gate(label: str) -> None:
         "Chịu được áp lực công việc cao",
     ],
 )
-def test_attitude_requirements_score_but_do_not_gate(label: str) -> None:
-    """A CV cannot prove enthusiasm, so it may inform the score, never the gate."""
+def test_attitude_requirements_neither_gate_nor_score(label: str) -> None:
+    """A CV cannot prove enthusiasm, so the line can neither reject nor rank anyone."""
     decision = classify_requirement_gate(label, None)
     assert decision.gate_class == "soft_signal"
     assert not decision.may_gate
-    assert decision.is_scorable
+    assert not decision.is_scorable
 
 
 @pytest.mark.parametrize(
@@ -164,7 +164,7 @@ def test_an_aspiration_is_not_a_qualification(label: str) -> None:
     decision = classify_requirement_gate(label, "other")
     assert decision.gate_class == "soft_signal"
     assert not decision.may_gate
-    assert decision.is_scorable
+    assert not decision.is_scorable
 
 
 @pytest.mark.parametrize(

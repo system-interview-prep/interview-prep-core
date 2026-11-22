@@ -8,17 +8,28 @@ from datetime import UTC, date, datetime
 from typing import Literal
 
 from src.core.trace_logging import trace_event
+from src.modules.job_descriptions.schemas import requirement_list_is_disjunctive
 from src.modules.matching.domain.schemas import (
     NOT_EVIDENCED_REASON_CODES,
     ConceptResult,
     RequirementResult,
     UnresolvedRequirement,
 )
+from src.modules.matching.evaluation.language_equivalence import (
+    cefr_level_for_score,
+    cefr_level_in_text,
+    cefr_meets,
+    cefr_rank,
+    is_english_credential,
+    scale_is_unambiguous,
+    score_is_on_scale,
+)
 from src.modules.matching.retrieval.evidence_retrieval import (
     EvidenceCandidate,
     is_named_technology,
     retrieve_semantic_evidence,
 )
+from src.modules.taxonomy.facade import SKILL_CATALOG, alias_pattern
 from src.modules.user_cvs.schemas import CanonicalResume, EvidenceSpan, TaxonomyRef
 
 RequirementCategory = Literal["skill", "language", "experience", "education", "other"]
@@ -30,13 +41,32 @@ class EvaluatorSelection:
     category: RequirementCategory
 
 
+# Matched against ``_fold_scale`` output, so the Vietnamese here is already
+# stripped of its diacritics: "điểm trung bình tích lũy" arrives as "diem trung
+# binh tich luy".  The JD parser sets ``threshold``/``scale`` for these lines
+# now, but a requirement can also reach this module from a cached parse or an
+# LLM parse that did not, and the requirement is no less a GPA threshold then.
+_GPA_SUBJECT = (
+    r"(?:gpa|cpa|dtb"
+    r"|diem\s+trung\s+binh(?:\s+tich\s+luy)?"
+    r"|diem\s+tich\s+luy"
+    r"|diem\s+tbtl)"
+)
 _GPA_RE = re.compile(
-    r"\b(?:gpa|cpa)(?:\s*(?:>=|>|=|tu|from|:))?\s*(?P<value>\d+(?:\.\d+)?)"
+    rf"\b{_GPA_SUBJECT}(?:\s*(?:>=|>|=|tu|from|toi\s+thieu|dat|:))*\s*"
+    r"(?P<value>\d+(?:\.\d+)?)"
     r"(?:\s*/\s*(?P<scale>\d+(?:\.\d+)?))?\b",
     re.I,
 )
+# "TOEFL iBT 95", "IELTS Academic 6.5", "TOEIC L&R 900": the variant of the
+# test sits between its name and the score.  Matching only the name stopped at
+# the variant and left the score unread, so a CV that states a result plainly
+# counted as stating nothing.
+_CREDENTIAL_VARIANT = (
+    r"(?:\s*(?:ibt|pbt|cbt|academic|general|overall|band|score|lr|sw|l\s+r|s\s+w))*"
+)
 _CREDENTIAL_RE = re.compile(
-    r"\b(?P<credential>ielts|toeic|toefl|jlpt|hsk)\s*"
+    rf"\b(?P<credential>ielts|toeic|toefl|jlpt|hsk){_CREDENTIAL_VARIANT}\s*"
     r"(?:>=|>|=|tu|from|:)?\s*(?P<value>\d+(?:\.\d+)?)?\s*\+?",
     re.I,
 )
@@ -121,10 +151,79 @@ def _normalize(value: str) -> str:
     return " ".join(re.findall(r"[a-z0-9+#.]+", ascii_value))
 
 
+def _fold_scale(value: str) -> str:
+    """``_normalize`` with ``/`` kept, because a scale is written ``7.0/10``.
+
+    ``_normalize`` drops the slash so that "HTML/CSS" splits into two skill
+    terms, which is right for a skill and wrong for a threshold: it turned
+    "7.0/10" into the separate numbers 7.0 and 10, the scale was then guessed
+    from the threshold's own size, and a 4.0-scale CV was compared against a
+    10-point requirement it already cleared.
+    """
+
+    decomposed = unicodedata.normalize("NFKD", value)
+    ascii_value = "".join(char for char in decomposed if not unicodedata.combining(char))
+    ascii_value = ascii_value.casefold().replace("đ", "d")
+    return " ".join(re.findall(r"[a-z0-9+#./]+", ascii_value))
+
+
 def _has_phrase(text: str, phrases: Iterable[str]) -> bool:
     normalized = _normalize(text).replace(".", " ")
     padded = f" {normalized} "
     return any(f" {_normalize(phrase).replace('.', ' ')} " in padded for phrase in phrases)
+
+
+# How a posting asks for someone who is still studying, or has only just
+# stopped.  "Sinh viên năm cuối" is the ordinary Vietnamese for it and was
+# missing, so "Sinh viên năm cuối chuyên ngành Công nghệ Thông tin" never
+# reached the education evaluator at all: it fell through to the generic
+# word-overlap one, which cited nothing and reported the requirement as absent
+# from a CV that answers it in full - with a graduation date from years ago.
+# The majors a posting means by "chuyên ngành Công nghệ Thông tin".  The list
+# used to hold five English-leaning phrases, so a Vietnamese CV reading "Khoa
+# học máy tính" or "Kỹ thuật phần mềm" did not answer a Vietnamese posting
+# asking for exactly that.
+_IT_FIELD_PHRASES = (
+    "information technology",
+    "software engineering",
+    "computer science",
+    "computer engineering",
+    "information systems",
+    "data science",
+    "artificial intelligence",
+    "cntt",
+    "cong nghe thong tin",
+    "khoa hoc may tinh",
+    "ky thuat phan mem",
+    "cong nghe phan mem",
+    "ky thuat may tinh",
+    "he thong thong tin",
+    "an toan thong tin",
+    "khoa hoc du lieu",
+    "tri tue nhan tao",
+    "mang may tinh",
+    "tin hoc",
+)
+
+_STUDENT_STATUS_PHRASES = (
+    "final year",
+    "final-year",
+    "final year student",
+    "undergraduate student",
+    "sinh vien nam 3",
+    "sinh vien nam 4",
+    "sinh vien nam cuoi",
+    "nam cuoi",
+    "nam 3 nam 4",
+    "sap tot nghiep",
+    "chuan bi tot nghiep",
+    "dang la sinh vien",
+    "dang theo hoc",
+    "recent graduate",
+    "fresh graduate",
+    "moi tot nghiep",
+    "vua tot nghiep",
+)
 
 
 def _required_education_level(text: str) -> int | None:
@@ -150,6 +249,48 @@ def _matching_evidence(
     phrases: Iterable[str],
 ) -> list[EvidenceSpan]:
     return [item for item in resume.evidence if _has_phrase(item.text, phrases)]
+
+
+def _catalog_aliases(concept_id: str) -> tuple[str, ...]:
+    """The shared catalogue's own wordings for a concept.
+
+    ``_CONCEPT_ALIASES`` below is a hand-kept table of thirteen entries that
+    duplicates, badly, the catalogue every parser already matches CVs and
+    postings against.  Where the two disagree the requirement loses: the
+    catalogue lists "algorithms", "cấu trúc dữ liệu" and "giải thuật" for
+    ``skill-data-structures-algorithms``, the table lists nothing, so only the
+    full English label "Data Structures and Algorithms" was ever searched for
+    and a CV certifying "Elementary algorithms, intermediate algorithms" did
+    not evidence it.  Read the catalogue first; the table stays as an override
+    for the abbreviations ("k8s", "psql") it adds on top.
+    """
+    entry = SKILL_CATALOG.get(concept_id)
+    return entry.aliases if entry else ()
+
+
+def _alias_pattern_evidence(
+    resume: CanonicalResume,
+    concept_id: str,
+    phrases: Iterable[str],
+) -> list[EvidenceSpan]:
+    """Evidence found by the same matcher that extracts skills from a CV.
+
+    ``_has_phrase`` compares whole normalised tokens, so "HTML5" does not
+    answer "HTML" and "Vue 3" does not answer "Vue": the posting asks for the
+    technology and the CV names its version.  ``alias_pattern`` is the matcher
+    the CV and JD parsers already use and it reads both, so running it here
+    makes one CV line mean the same thing on both sides of the match.  Purely
+    additive - it widens what counts as a mention, never narrows it.
+    """
+    aliases = [alias for alias in phrases if alias.strip()]
+    if concept_id not in SKILL_CATALOG and len(aliases) <= 1:
+        return []
+    patterns = [alias_pattern(alias) for alias in aliases]
+    return [
+        item
+        for item in resume.evidence
+        if any(pattern.search(item.text) for pattern in patterns)
+    ]
 
 
 def _dedupe_evidence(items: Iterable[EvidenceSpan]) -> list[EvidenceSpan]:
@@ -372,7 +513,7 @@ def select_evaluator(requirement: UnresolvedRequirement) -> EvaluatorSelection |
     text = _normalize(requirement.raw_label)
     if requirement.threshold is not None and requirement.scale is not None:
         return EvaluatorSelection("gpa", "education")
-    if _GPA_RE.search(text):
+    if _GPA_RE.search(_fold_scale(requirement.raw_label)):
         return EvaluatorSelection("gpa", "education")
     # Degree thresholds are identifiable from the requirement text itself.  Do
     # not depend on the JD parser's ``kind`` classification: older/LLM parser
@@ -398,10 +539,7 @@ def select_evaluator(requirement: UnresolvedRequirement) -> EvaluatorSelection |
         ),
     ):
         return EvaluatorSelection("programming_foundation", "skill")
-    if _has_phrase(
-        text,
-        ("sinh vien nam 4", "final year", "final-year", "moi tot nghiep", "recent graduate"),
-    ):
+    if _has_phrase(text, _STUDENT_STATUS_PHRASES):
         return EvaluatorSelection("education_status", "education")
     if _has_phrase(text, ("research", "nghien cuu", "competition", "cuoc thi", "giai thuong")):
         return EvaluatorSelection("research_or_competition", "skill")
@@ -526,9 +664,86 @@ def _absence_result(
     )
 
 
+def _answers_addressed_to(
+    requirement: UnresolvedRequirement, resume: CanonicalResume
+) -> list[EvidenceSpan]:
+    """The candidate's own replies to the question asked about this requirement.
+
+    A clarification answer is not an anonymous CV line.  It was written in
+    reply to a question about this requirement and carries that requirement's
+    id, so its relevance is established by construction.  Ranking it by word
+    overlap with the posting's wording made it prove that relevance a second
+    time, and a Vietnamese answer to an English requirement shares no words at
+    all with it - so the answer was never cited, the rescore step then dropped
+    it as unused, and the system asked a question and ignored the reply.
+    """
+
+    return [
+        item
+        for item in resume.evidence
+        if item.evidence_source == "candidate_self_report"
+        and item.source_requirement_id == requirement.requirement_id
+    ]
+
+
+def _is_candidate_answer(evidence: EvidenceSpan) -> bool:
+    """A span the candidate typed, which never enters through the lexical path.
+
+    Admitting an answer because it shares words with the posting would reward
+    pasting the posting back: an English reply echoing the requirement's own
+    wording scored, while the same claim in Vietnamese did not.  Answers are
+    admitted by the requirement id they carry and the work they describe, so
+    they are taken out here and added back deliberately.
+    """
+
+    return evidence.evidence_source == "candidate_self_report"
+
+
+
+
 def _evaluate_generic_requirement(
     requirement: UnresolvedRequirement,
     resume: CanonicalResume,
+) -> RequirementResult:
+    """Score the requirement, then record any answer that did not earn its way in.
+
+    An answer only improves a verdict when it says what the candidate actually
+    did.  Admitting every answer as evidence moved the requirement from
+    ``not_met`` to ``unknown``, and because ``unknown`` rows are left out of
+    the score, typing anything at all - "tôi không biết", or a line of
+    gibberish - raised it by the same amount as a real answer.  A bare claim is
+    still cited, because the reader must be able to see what was read, but it
+    leaves the verdict exactly where the CV left it.
+    """
+
+    addressed_answers = _answers_addressed_to(requirement, resume)
+    substantive_ids = {
+        item.evidence_id
+        for item in addressed_answers
+        if _evidence_strength(item) in {"applied", "demonstrated"}
+    }
+    result = _generic_requirement_result(requirement, resume, substantive_ids)
+    cited = set(result.evidence_refs)
+    unsubstantiated = [
+        item.evidence_id for item in addressed_answers if item.evidence_id not in cited
+    ]
+    if not unsubstantiated:
+        return result
+    return result.model_copy(
+        update={
+            "evidence_refs": [*result.evidence_refs, *unsubstantiated],
+            "evidence_explanation": (
+                "Hệ thống đã đọc câu trả lời của bạn, nhưng câu trả lời chưa nêu công việc "
+                "cụ thể đã làm, nên tiêu chí giữ nguyên kết luận rút ra từ CV."
+            ),
+        }
+    )
+
+
+def _generic_requirement_result(
+    requirement: UnresolvedRequirement,
+    resume: CanonicalResume,
+    substantive_answer_ids: set[str],
 ) -> RequirementResult:
     terms = _generic_terms(requirement.raw_label)
     if not terms:
@@ -551,6 +766,7 @@ def _evaluate_generic_requirement(
         )
         for evidence in resume.evidence
         if any(_has_phrase(evidence.text, (term,)) for term in terms)
+        and not _is_candidate_answer(evidence)
     ]
     # A concrete technology is independently useful evidence (a CV may place
     # C# and .NET in separate spans). Capability phrases need two substantive
@@ -572,6 +788,25 @@ def _evaluate_generic_requirement(
     minimum_overlap = (
         1 if is_named_technology(requirement.raw_label) else max(2, len(terms) // 2 + 1)
     )
+
+    substantive_answers = [
+        item for item in resume.evidence if item.evidence_id in substantive_answer_ids
+    ]
+    if substantive_answers:
+        ranked_candidates = [
+            *(
+                (overlap, evidence)
+                for overlap, evidence in ranked_candidates
+                if evidence.evidence_id not in substantive_answer_ids
+            ),
+            # The id the answer carries is what makes it relevant, so it enters
+            # at the floor rather than being measured against it instead of
+            # being thrown away for not repeating the posting's wording. Only
+            # answers that describe real work get this far; the caller records
+            # the rest without letting them move the verdict.
+            *((minimum_overlap, item) for item in substantive_answers),
+        ]
+
     exact_candidates = sorted(
         _dedupe_evidence(evidence for _, evidence in ranked_candidates),
         key=lambda item: (-_STRENGTH_RANK[_evidence_strength(item)], item.char_start, item.evidence_id),
@@ -688,7 +923,7 @@ def _evaluate_gpa(
     requirement: UnresolvedRequirement,
     resume: CanonicalResume,
 ) -> RequirementResult:
-    requirement_match = _GPA_RE.search(_normalize(requirement.raw_label))
+    requirement_match = _GPA_RE.search(_fold_scale(requirement.raw_label))
     threshold = requirement.threshold
     scale = requirement.scale
     if threshold is None and requirement_match:
@@ -713,7 +948,9 @@ def _evaluate_gpa(
         linked_evidence = [
             evidence_by_id[ref] for ref in education.evidence_refs if ref in evidence_by_id
         ]
-        gpa_evidence = [item for item in linked_evidence if _GPA_RE.search(_normalize(item.text))]
+        gpa_evidence = [
+            item for item in linked_evidence if _GPA_RE.search(_fold_scale(item.text))
+        ]
         return _result(
             requirement,
             status="met" if meets else "not_met",
@@ -723,7 +960,7 @@ def _evaluate_gpa(
         )
 
     for evidence in resume.evidence:
-        match = _GPA_RE.search(_normalize(evidence.text))
+        match = _GPA_RE.search(_fold_scale(evidence.text))
         if not match:
             continue
         candidate = float(match.group("value"))
@@ -763,19 +1000,87 @@ def _evaluate_language(
             confidence=0.0,
         )
 
+    # The level the posting is asking for, once, so a CV carrying a different
+    # test can be placed against it.  ``None`` whenever the requirement names
+    # no number, or names a test CEFR does not describe (JLPT, HSK).
+    required_level = (
+        cefr_level_for_score(credential, threshold) if threshold is not None else None
+    )
+    best_equivalent: tuple[int, EvidenceSpan, str] | None = None
+
     for evidence in resume.evidence:
-        match = _CREDENTIAL_RE.search(_normalize(evidence.text))
-        if not match or match.group("credential") != credential or not match.group("value"):
+        normalized = _normalize(evidence.text)
+        match = _CREDENTIAL_RE.search(normalized)
+        if match and not scale_is_unambiguous(match.group("credential"), normalized):
+            # The result is real but sits on a scale these bands do not
+            # describe; placing it anyway would be worse than not placing it.
             continue
-        candidate = float(match.group("value"))
-        meets = threshold is None or candidate >= threshold
+        if match and match.group("credential") == credential and match.group("value"):
+            candidate = float(match.group("value"))
+            # A number off the test's own scale is not a result - "TOEIC 2026"
+            # is a year, and reading it as one passed every threshold.
+            if score_is_on_scale(credential, candidate):
+                meets = threshold is None or candidate >= threshold
+                return _result(
+                    requirement,
+                    status="met" if meets else "not_met",
+                    reason_code=(
+                        "language_credential_evidenced"
+                        if meets
+                        else "language_credential_below_minimum"
+                    ),
+                    evidence=[evidence],
+                    confidence=1.0,
+                )
+        if required_level is None:
+            continue
+        candidate_level: str | None = None
+        if match and match.group("value") and is_english_credential(match.group("credential")):
+            candidate_level = cefr_level_for_score(
+                match.group("credential"), float(match.group("value"))
+            )
+        if candidate_level is None:
+            candidate_level = cefr_level_in_text(normalized)
+        if candidate_level is None:
+            continue
+        rank = cefr_rank(candidate_level)
+        if best_equivalent is None or rank > best_equivalent[0]:
+            best_equivalent = (rank, evidence, candidate_level)
+
+    if best_equivalent is not None and required_level is not None:
+        _, evidence, candidate_level = best_equivalent
+        if not cefr_meets(candidate_level, required_level):
+            # Short of the level even under the most generous reading, so the
+            # posting's wording cannot rescue it.
+            return _result(
+                requirement,
+                status="not_met",
+                reason_code="language_credential_below_minimum",
+                evidence=[evidence],
+                confidence=0.9,
+            )
+        if requirement.equivalent_allowed:
+            return _result(
+                requirement,
+                status="met",
+                reason_code="language_credential_equivalent",
+                evidence=[evidence],
+                # One CEFR band wide, not one point: the posting accepted that
+                # when it wrote "hoặc tương đương", but it is a coarser reading
+                # than a same-test comparison and is not claimed as exact.
+                confidence=0.85,
+            )
+        # The posting named one test and did not say another would do.  The
+        # candidate clears the level on a different test, which is a question
+        # for the employer, not grounds for rejecting the candidate outright.
         return _result(
             requirement,
-            status="met" if meets else "not_met",
-            reason_code=("language_credential_evidenced" if meets else "language_credential_below_minimum"),
+            status="unknown",
+            reason_code="language_credential_equivalence_unconfirmed",
             evidence=[evidence],
-            confidence=1.0,
+            confidence=0.5,
         )
+
     return _result(
         requirement,
         status="not_met" if _absence_is_conclusive(resume) else "unknown",
@@ -867,57 +1172,113 @@ def _evaluate_education_status(
     requirement: UnresolvedRequirement,
     resume: CanonicalResume,
 ) -> RequirementResult:
-    status_phrases = ("final year", "final-year", "sinh vien nam 4", "recent graduate", "moi tot nghiep")
-    field_phrases = (
-        "information technology",
-        "software engineering",
-        "computer science",
-        "cntt",
-        "cong nghe thong tin",
-    )
+    """Score a requirement phrased as a stage of study.
+
+    "Sinh viên năm cuối" names a floor, not an exact point: the posting is
+    asking for someone far enough through a degree to be useful, and someone
+    who finished that degree is past that floor, not short of it.  Reading it
+    as an exact point rejected a candidate for holding the qualification the
+    line asks them to be close to obtaining - the same shape of error as
+    reading "Đại học trở lên" to exclude a master's.
+
+    What the line really narrows, therefore, is the *field*, and that is where
+    this reads the CV.
+    """
+    status_phrases = _STUDENT_STATUS_PHRASES
+    field_phrases = _IT_FIELD_PHRASES
+    requirement_names_field = _has_phrase(requirement.raw_label, field_phrases)
     evidence_by_id = {item.evidence_id: item for item in resume.evidence}
-    structured_evidence = []
+
+    on_field: list[tuple[object, bool, list[EvidenceSpan]]] = []
+    off_field: list[tuple[object, list[EvidenceSpan]]] = []
     for education in resume.education:
-        field = _normalize(education.field_of_study or "")
-        inferred_current_student = _education_is_currently_in_progress(education)
-        has_final_year_status = education.student_status in {"final_year", "recent_graduate"}
-        if (has_final_year_status or inferred_current_student) and _has_phrase(
-            field, field_phrases
-        ):
-            linked_evidence = [
-                evidence_by_id[ref] for ref in education.evidence_refs if ref in evidence_by_id
-            ]
-            status_evidence = [
-                item
-                for item in linked_evidence
-                if _has_phrase(item.text, status_phrases)
-                and _has_phrase(item.text, field_phrases)
-            ]
-            structured_evidence.extend(status_evidence or linked_evidence)
-    if structured_evidence:
+        if not _is_degree_programme(education):
+            continue
+        refs = [evidence_by_id[ref] for ref in education.evidence_refs if ref in evidence_by_id]
+        # The parser does not always split a field out of the line, so the
+        # entry's own source text is read alongside ``fieldOfStudy``.
+        described = " ".join([education.field_of_study or "", *(item.text for item in refs)])
+        if not requirement_names_field or _has_phrase(described, field_phrases):
+            # An education entry can link several spans - the degree line and
+            # the GPA line beside it.  Cite the one that carries the status and
+            # the field, so the reader sees what the verdict was read from.
+            on_topic = [item for item in refs if _has_phrase(item.text, field_phrases)]
+            with_status = [item for item in on_topic if _has_phrase(item.text, status_phrases)]
+            on_field.append(
+                (
+                    education,
+                    _education_is_currently_in_progress(education),
+                    with_status or on_topic or refs,
+                )
+            )
+        else:
+            off_field.append((education, refs))
+
+    if on_field:
+        studying = any(in_progress for _, in_progress, _ in on_field)
+        evidence = [item for _, _, refs in on_field for item in refs]
+        finished = max(
+            (end for entry, _, _ in on_field if (end := _education_end_date(entry)) is not None),
+            default=None,
+        )
         return _result(
             requirement,
             status="met",
-            reason_code="education_status_and_field_evidenced",
-            evidence=structured_evidence,
-            confidence=1.0,
+            reason_code=(
+                "education_status_and_field_evidenced" if studying else "education_status_exceeded"
+            ),
+            evidence=evidence,
+            confidence=1.0 if studying else 0.9,
+            evidence_explanation=(
+                None
+                if studying
+                else (
+                    "CV cho thấy đã hoàn tất chương trình đại học đúng chuyên ngành"
+                    + (f" vào {finished.month:02d}/{finished.year}" if finished else "")
+                    + ", tức đã qua giai đoạn mà vị trí yêu cầu."
+                )
+            ),
         )
-    evidence = [
+
+    free_text_evidence = [
         item
         for item in resume.evidence
-        if (
-            _has_phrase(item.text, status_phrases) and _has_phrase(item.text, field_phrases)
-        )
+        if (_has_phrase(item.text, status_phrases) and _has_phrase(item.text, field_phrases))
         or _evidence_indicates_current_education(item.text, field_phrases)
     ]
-    if evidence:
+    if free_text_evidence:
         return _result(
             requirement,
             status="met",
             reason_code="education_status_and_field_evidenced",
-            evidence=evidence,
+            evidence=free_text_evidence,
             confidence=1.0,
         )
+
+    if off_field:
+        # A degree is on the CV, in a field this requirement did not name.  The
+        # vocabulary of named fields is narrower than the majors that actually
+        # qualify, so this asks rather than rejects: ``unknown`` keeps the pair
+        # out of the eligibility gate and raises the question instead.
+        evidence = [item for _, refs in off_field for item in refs]
+        named = ", ".join(
+            dict.fromkeys(
+                str(entry.field_of_study or entry.degree or entry.institution)
+                for entry, _ in off_field
+            )
+        )
+        return _result(
+            requirement,
+            status="unknown",
+            reason_code="education_field_not_confirmed",
+            evidence=evidence,
+            confidence=0.5,
+            evidence_explanation=(
+                f"CV có bằng đại học, nhưng ngành ghi trong CV là “{named}” — "
+                "chưa xác nhận được đúng chuyên ngành vị trí yêu cầu."
+            ),
+        )
+
     return _result(
         requirement,
         status="not_met" if _absence_is_conclusive(resume) else "unknown",
@@ -928,6 +1289,53 @@ def _evaluate_education_status(
         ),
         confidence=0.9 if _absence_is_conclusive(resume) else 0.0,
     )
+
+
+def _education_end_date(education: object) -> date | None:
+    """The month a programme finished, from its grounded end date."""
+    end = getattr(education, "end_date", None)
+    value = getattr(end, "value", None)
+    if not value:
+        return None
+    parts = value.split("-")
+    try:
+        year = int(parts[0])
+        month = int(parts[1]) if len(parts) > 1 else 12
+    except (TypeError, ValueError):
+        return None
+    if not 1 <= month <= 12:
+        return None
+    return date(year, month, 1)
+
+
+_DEGREE_PROGRAMME_MARKERS = (
+    "university",
+    "college",
+    "dai hoc",
+    "cao dang",
+    "hoc vien",
+    "bachelor",
+    "master",
+    "cu nhan",
+    "ky su",
+    "engineer",
+)
+
+
+def _is_degree_programme(education: object) -> bool:
+    """Whether an education entry is the kind a student-status line asks about.
+
+    A posting asking for "sinh viên năm cuối ... tại các trường đại học" is
+    asking about a degree.  A CV also lists short courses and bootcamps, and
+    one of those with no end date must not be read as a degree that might
+    still be running - that is what kept a candidate who graduated in 2017
+    from being recognised as a graduate at all.
+    """
+    haystack = " ".join(
+        str(getattr(education, field, "") or "")
+        for field in ("institution", "degree", "field_of_study")
+    )
+    return _has_phrase(haystack, _DEGREE_PROGRAMME_MARKERS)
 
 
 def _education_is_currently_in_progress(education: object) -> bool:
@@ -1104,6 +1512,14 @@ def _concept_group_operator(
 ) -> Literal["atomic", "all_of", "any_of"]:
     if concept_count <= 1:
         return "atomic"
+    # The posting's own sentence outranks the extractor's label.  A line that
+    # says "ít nhất một" and arrives stored as ``all_of`` is a must-have no
+    # candidate can satisfy: the CV would have to evidence every language the
+    # posting listed as an example.  Only ``all_of`` is overridden - reading a
+    # conjunction as alternatives would waive a real condition, which is the
+    # mirror of the mistake being fixed.
+    if requirement_list_is_disjunctive(requirement.raw_label):
+        return "any_of"
     if requirement.group_operator in {"all_of", "any_of"}:
         return requirement.group_operator
     if fallback_operator in {"all_of", "any_of"}:
@@ -1123,8 +1539,23 @@ def _minimum_evidence_strength(text: str) -> str:
     return "claimed"
 
 
+# A clarification answer is a sentence written in reply to a question, not a
+# line lifted from a CV, so the wording that marks real work in it is wider -
+# and Vietnamese, which the CV lexicon below barely covers. Kept as its own
+# pattern so that widening it can never change how a CV passage is scored, and
+# so the measurements in the paper's CV-side tables stay comparable.
+_ANSWER_APPLIED_RE = re.compile(
+    r"\b(?:optimi[sz]ed|debugged|refactored|fixed|resolved|maintained|automated|"
+    r"monitored|profiled|handled|troubleshot|"
+    r"toi uu|sua loi|go loi|khac phuc|cai thien|nang cap|van hanh|bao tri|"
+    r"kiem thu|thiet ke|phu trach|chiu trach nhiem|truc tiep lam|da lam|tung lam)\b"
+)
+
+
 def _evidence_strength(evidence: EvidenceSpan) -> Literal["mention", "claimed", "applied", "demonstrated"]:
     text = _normalize(evidence.text)
+    if evidence.evidence_source == "candidate_self_report" and _ANSWER_APPLIED_RE.search(text):
+        return "applied"
     if re.search(
         r"\b(?:research(?:ed)?|scientific|benchmark(?:ed)?|evaluat(?:ed|ion)|"
         r"experiment|nghien cuu|danh gia|thu nghiem|\d[\d,.]*\s*"
@@ -1161,14 +1592,16 @@ def _evaluate_atomic_concept(
         for ref in claim.evidence_refs
     ]
     label_key = concept.label.casefold().strip()
-    match_phrases = [concept.label]
+    match_phrases = [concept.label, *_catalog_aliases(concept.concept_id)]
     if label_key in _CONCEPT_ALIASES:
         match_phrases.extend(_CONCEPT_ALIASES[label_key])
     elif concept.concept_id in _CONCEPT_ALIASES:
         match_phrases.extend(_CONCEPT_ALIASES[concept.concept_id])
+    phrases = tuple(dict.fromkeys(match_phrases))
     candidates = _dedupe_evidence(
         [evidence_by_id[ref] for ref in structured_refs if ref in evidence_by_id]
-        + _matching_evidence(resume, tuple(dict.fromkeys(match_phrases)))
+        + _matching_evidence(resume, phrases)
+        + _alias_pattern_evidence(resume, concept.concept_id, phrases)
     )
     ranked = sorted(
         candidates,

@@ -38,7 +38,17 @@ logger = logging.getLogger(__name__)
 # Entries written by version 4 describe the old behaviour, and because the
 # key is content-based rather than id-based they would otherwise keep
 # serving it to every measurement.
-CACHE_VERSION = "6"
+# 7: a cumulative-grade threshold written in Vietnamese ("Điểm trung bình tích
+# lũy từ 7.0/10") is now read as the grade threshold it is, and the scale is
+# taken from the text instead of guessed from the value's size. Entries written
+# before this hold "unknown" for requirements the candidate clears.
+# 8: English credentials are compared through their published CEFR bands, so a
+# TOEIC or TOEFL result can answer an "IELTS 6.0 hoặc tương đương" requirement
+# instead of counting as no evidence at all.
+# 11: soft-signal lines ("năng động, sáng tạo") no longer score; they drop to
+# context like the other lines a CV cannot evidence. Entries written before
+# this carry a fit score lowered by requirements nobody could meet.
+CACHE_VERSION = "11"
 # Taxonomy aliases and embeddings live outside the request; refresh eventually.
 MAX_AGE = timedelta(days=30)
 
@@ -46,9 +56,25 @@ MAX_AGE = timedelta(days=30)
 _PIPELINE_VERSION = MatchResult.model_fields["pipeline_version"].default
 
 
+def _judge_key_material() -> str:
+    """The judge's contribution to the key: its prompt versions, when enabled.
+
+    Results computed with the judge differ from results computed without it,
+    so the two must never share an entry; and a prompt change is a logic
+    change, so it gets fresh keys too.
+    """
+
+    from src.core.config import get_settings
+    from src.modules.matching.judge.readings import GATE_PROMPT_VERSION, PROMPT_VERSION
+
+    if not get_settings().matching_judge_enabled:
+        return ""
+    return f"\x00judge={PROMPT_VERSION}\x00gate={GATE_PROMPT_VERSION}"
+
+
 def match_cache_key(payload: MatchRequest) -> str:
     body = payload.model_dump_json(by_alias=True, exclude={"async_processing"})
-    material = f"{CACHE_VERSION}\x00{_PIPELINE_VERSION}\x00{body}"
+    material = f"{CACHE_VERSION}\x00{_PIPELINE_VERSION}{_judge_key_material()}\x00{body}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 

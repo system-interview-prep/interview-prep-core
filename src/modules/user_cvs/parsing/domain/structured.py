@@ -5,6 +5,7 @@ import unicodedata
 from collections.abc import Iterable
 from dataclasses import replace
 from hashlib import sha1
+from typing import NamedTuple
 
 from src.modules.user_cvs.domain.schemas import (
     CertificationEntry,
@@ -170,6 +171,9 @@ def _add_block_evidence(draft, mapper: EvidenceMapper, block: SourceBlock, kind:
             evidence_id=evidence_id,
             char_start=block.char_start,
             char_end=block.char_end,
+            # A merged item spans several blocks, so the mapper cannot find a
+            # containing one and would label the span "other".
+            section=block.section,
         ),
     )
     return evidence_id
@@ -179,19 +183,58 @@ def _section_blocks(source: SourceDocument, section: str) -> list[SourceBlock]:
     return [block for block in source.blocks if block.section == section]
 
 
+_CLOSERS = {")": "(", "]": "[", "}": "{"}
+# A comma between digits groups one number, it never separates two fields.
+_GROUPED_NUMBER_RE = re.compile(r"\d[.,]\d")
+
+
+def _mask_protected_spans(value: str) -> str:
+    """Blank out spans where a separator character does not separate fields.
+
+    Two such spans exist. Inside brackets, a dash or comma qualifies the field
+    that holds it ("Scientific Affairs Lead, Specialty (I&I - Rare)"); the
+    split there invented an organization called "Rare)". Inside a number, a
+    comma groups digits ("Salary: $138,491 per annum"); the split there made a
+    job title of "Salary: $138" and an employer of "491 per annum".
+
+    Offsets are preserved, so the caller slices the original string and keeps
+    the protected text intact.
+    """
+    out = list(value)
+    depth = 0
+    for index, char in enumerate(value):
+        if char in "([{":
+            depth += 1
+        elif char in _CLOSERS:
+            depth = max(0, depth - 1)
+        elif depth:
+            out[index] = " "
+    for match in _GROUPED_NUMBER_RE.finditer(value):
+        # Mask the separator itself; the digits around it stay addressable.
+        out[match.start() + 1] = " "
+    return "".join(out)
+
+
 def _split_header(value: str, *, dash_separated: bool = False) -> list[str]:
     # Commas are common inside job titles (for example, a department suffix).
     # Prefer explicit separators; only use commas when no stronger delimiter is
     # present in the CV header.
     # A spaced dash ("Backend Developer — Công ty ShopNow") is the usual
     # Vietnamese title/organization separator.
-    if re.search(r"\||@|\bat\b", value, re.I):
+    masked = _mask_protected_spans(value)
+    if re.search(r"\||@|\bat\b", masked, re.I):
         separator = r"\s*(?:\||@|\bat\b)\s*"
-    elif dash_separated and re.search(r"\s[-–—]\s", value):
+    elif dash_separated and re.search(r"\s[-–—]\s", masked):
         separator = r"\s+[-–—]\s+"
     else:
         separator = r"\s*,\s*"
-    return [part.strip(" -–—|,") for part in re.split(separator, value) if part.strip(" -–—|,")]
+    parts: list[str] = []
+    cursor = 0
+    for match in re.finditer(separator, masked):
+        parts.append(value[cursor : match.start()])
+        cursor = match.end()
+    parts.append(value[cursor:])
+    return [part.strip(" -–—|,") for part in parts if part.strip(" -–—|,")]
 
 
 def _is_section_title(value: str) -> bool:
@@ -231,47 +274,102 @@ def _skill_ids_for_blocks(draft, blocks: Iterable[SourceBlock]) -> list[str]:
     return [skill.claim_id for skill in draft.skills if matching_evidence.intersection(skill.evidence_refs)]
 
 
-_BULLET_RE = re.compile(r"^\s*[-*•–—+●▪◦]\s*")
+# Symbol and Wingdings bullets survive PDF extraction as private-use code
+# points, so a bullet list can arrive without one recognisable marker.
+_BULLET_RE = re.compile(r"^\s*[-*•–—+●▪◦]\s*")
+# "Employer:", "Grade/Series:", "Supervisor:" head a field in a labelled resume
+# layout. They open an item; they are never the tail of one.
+_LABELLED_FIELD_RE = re.compile(r"^\s*[A-Z][A-Za-z/ ]{0,24}:")
+# A colon ends a heading or a field label ("EDUCATION:"); what follows is
+# new content, never the tail of a wrapped line.
+_SENTENCE_END_RE = re.compile(r"[.;:!?]\s*$")
+# A wrapped line runs close to the column width. A short line that ends
+# without punctuation is a list entry of its own, not the head of a wrap.
+_WRAP_WIDTH = 60
+
+
+class _Line(NamedTuple):
+    block: SourceBlock
+    start: int
+    end: int
+    text: str
+
+
+def _opens_item(text: str) -> bool:
+    if _BULLET_RE.match(text) is not None or _LABELLED_FIELD_RE.match(text) is not None:
+        return True
+    # "EDUCATION:" is caught by the colon rule, bare "EDUCATION" is not, and a
+    # heading joined onto the bullet above it stops being recognised as one.
+    return _is_section_title(text)
+
+
+def _continues_item(previous: str, text: str) -> bool:
+    """Report whether `text` is the wrapped tail of `previous`."""
+    if _SENTENCE_END_RE.search(previous) or _is_section_title(previous):
+        return False
+    head = text.lstrip()[:1]
+    # A tail starts mid-sentence: lower case, or punctuation such as "(CISA)".
+    return head.islower() or not head.isalnum() or len(previous) >= _WRAP_WIDTH
+
+
+def _merge_lines(group: list[_Line]) -> SourceBlock:
+    """Join wrapped lines into one item, spanning the real source offsets.
+
+    The text is joined with a space so the extractors see one line, while the
+    offsets keep covering the original span, newline included, which is what
+    the evidence quote should show.
+    """
+    first, last = group[0], group[-1]
+    return replace(
+        first.block,
+        text=" ".join(line.text.strip() for line in group),
+        char_start=first.block.char_start + first.start,
+        char_end=last.block.char_start + last.end,
+    )
 
 
 def _line_items(blocks: list[SourceBlock]) -> list[SourceBlock]:
-    """Split blocks into one item per entry header or bullet.
+    """Split a section into one item per entry header or bullet.
 
-    PDF text layers often have no blank line between paragraphs, so a whole
-    section arrives as one block and only its first date range was seen: the
-    second job of a CV was lost. A line with a date range or a bullet starts a
-    new item, and so does the line right after a dated header (a job title
-    under "Công ty ABC (2020 – 2021)"); any other line is a wrapped
-    continuation of the previous one. Offsets stay those of the source text,
-    so evidence spans remain valid.
+    A PDF text layer offers no reliable paragraph boundary. PaddleOCR emits one
+    block per physical line, while an embedded text layer can hand over a whole
+    section as a single block. Both are flattened to lines here and regrouped by
+    one rule, so a bullet wrapped over three lines stays one item.
+
+    This used to rejoin wrapped lines only inside a block, which on the
+    PaddleOCR path never happened, because no block held more than one line: a
+    resume with 45 bullets was reported as 142, and every one of them missed.
+
+    A line carrying a date range opens an entry, and so does the line right
+    after it (a job title under "Công ty ABC (2020 - 2021)"). Offsets stay those
+    of the source text, so evidence spans remain valid.
     """
-    items: list[SourceBlock] = []
+    lines: list[_Line] = []
     for block in blocks:
-        lines: list[tuple[int, int]] = []
-        previous_dated = False
         offset = 0
         for raw_line in block.text.split("\n"):
-            start, end = offset, offset + len(raw_line)
-            offset = end + 1
-            if not raw_line.strip():
-                continue
-            dated = _DATE_RANGE_RE.search(raw_line) is not None
-            starts_item = not lines or dated or previous_dated or _BULLET_RE.match(raw_line) is not None
-            if starts_item:
-                lines.append((start, end))
-            else:
-                lines[-1] = (lines[-1][0], end)
-            previous_dated = dated
-        for start, end in lines:
-            items.append(
-                replace(
-                    block,
-                    text=block.text[start:end],
-                    char_start=block.char_start + start,
-                    char_end=block.char_start + end,
-                )
-            )
-    return items
+            line_start, line_end = offset, offset + len(raw_line)
+            offset = line_end + 1
+            if raw_line.strip():
+                lines.append(_Line(block, line_start, line_end, raw_line))
+
+    groups: list[list[_Line]] = []
+    previous_dated = False
+    for line in lines:
+        dated = _DATE_RANGE_RE.search(line.text) is not None
+        opens = (
+            not groups
+            or dated
+            or previous_dated
+            or _opens_item(line.text)
+            or not _continues_item(groups[-1][-1].text, line.text)
+        )
+        if opens:
+            groups.append([line])
+        else:
+            groups[-1].append(line)
+        previous_dated = dated
+    return [_merge_lines(group) for group in groups]
 
 
 class EmploymentExtractor:

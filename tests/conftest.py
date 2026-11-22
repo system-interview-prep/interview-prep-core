@@ -30,6 +30,16 @@ def _no_live_question_generation(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(targeted_reparse, "_default_evidence_searcher", lambda: None)
 
+    # Same for the matching judges (src/modules/matching/judge), which are on
+    # by default: a test that reached the facade or the adapter would read
+    # every requirement with the real model. Tests of the judges pass a
+    # Settings of their own and a scripted client.
+    from src.core.config import get_settings
+    from src.modules.matching.judge import gate_judge
+
+    monkeypatch.setattr(get_settings(), "matching_judge_enabled", False)
+    gate_judge.reset_gate_memo()
+
 
 @pytest.fixture(autouse=True)
 def _trace_logs_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:

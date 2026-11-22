@@ -11,6 +11,10 @@ from src.modules.job_descriptions.schemas import CanonicalJobDescription
 from src.modules.matching.application import run_tracking
 from src.modules.matching.application.targeted_reparse import reparse_partial_resume
 from src.modules.matching.domain.adapters import job_description_to_matching_job
+from src.modules.matching.domain.requirement_gating import (
+    GateDecision,
+    classify_requirement_gate,
+)
 from src.modules.matching.domain.schemas import (
     CanonicalJob,
     CompatibilityResult,
@@ -26,10 +30,6 @@ from src.modules.matching.domain.schemas import (
     SkillRequirement,
     UnresolvedRequirement,
 )
-from src.modules.matching.domain.requirement_gating import (
-    GateDecision,
-    classify_requirement_gate,
-)
 from src.modules.matching.evaluation.coverage_semantic import (
     ScoredRequirement,
     ScoredSpan,
@@ -39,6 +39,8 @@ from src.modules.matching.evaluation.requirement_evaluators import (
     evaluate_unresolved_requirement,
     select_evaluator,
 )
+from src.modules.matching.judge.gate_judge import gate_reading_for
+from src.modules.matching.judge.reading_pass import build_reading_set
 from src.modules.matching.rag.embedding import (
     EmbeddingAdapter,
     build_embedding_adapter_from_env,
@@ -210,13 +212,16 @@ def _requirement_gate(requirement: Requirement) -> GateDecision:
     the same wording the adapter used.
     """
     if isinstance(requirement, SkillRequirement):
-        return classify_requirement_gate(
-            requirement.raw_label or requirement.skill.label or "", "skill"
-        )
+        label = requirement.raw_label or requirement.skill.label or ""
+        return classify_requirement_gate(label, "skill", gate_reading_for(label, "skill"))
     if isinstance(requirement, LanguageRequirement):
         return classify_requirement_gate(f"language {requirement.language_code}", "language")
     if isinstance(requirement, UnresolvedRequirement):
-        return classify_requirement_gate(requirement.raw_label, requirement.kind)
+        return classify_requirement_gate(
+            requirement.raw_label,
+            requirement.kind,
+            gate_reading_for(requirement.raw_label, requirement.kind),
+        )
     return GateDecision("objective")
 
 
@@ -460,6 +465,10 @@ class MatchingFacade:
         document_evidence = [
             item for item in resume.evidence if item.evidence_source == "document"
         ]
+        # The judge reads every unresolved requirement once, up front, so the
+        # evaluators below stay synchronous and see a fixed set of readings.
+        # None unless Settings.matching_judge_enabled.
+        readings = build_reading_set(resume, job)
         results: list[RequirementResult] = []
         for requirement in job.requirements:
             # A line a CV cannot answer must not be answered. Gating already
@@ -471,7 +480,12 @@ class MatchingFacade:
             # as answered - nor as unanswered, which reads as the candidate
             # falling short of it. It is not a question this system asks.
             gate = _requirement_gate(requirement)
-            if gate.gate_class == "non_assessable":
+            if gate.gate_class in ("non_assessable", "soft_signal"):
+                # A soft signal ("tư duy logic tốt", "năng động") used to be
+                # evaluated anyway, at context weight, and came back not_met
+                # for want of the posting's own words in the CV - so the
+                # reader saw "chưa phù hợp" on a line no CV can answer. It
+                # is reported the way the other unanswerable lines are.
                 results.append(
                     RequirementResult(
                         requirementId=requirement.requirement_id,
@@ -480,7 +494,11 @@ class MatchingFacade:
                         confidence=1.0,
                         reasonCode=gate.reason_code or "requirement_not_assessable_from_a_cv",
                         evidenceExplanation=(
-                            "Yêu cầu này không thể đánh giá từ hồ sơ nên không được chấm, "
+                            "Đây là phẩm chất hoặc thái độ làm việc, không thể đánh giá từ hồ sơ "
+                            "nên không được chấm, không tham gia quyết định đủ điều kiện, và "
+                            "không được tính là đáp ứng hay không đáp ứng."
+                            if gate.gate_class == "soft_signal"
+                            else "Yêu cầu này không thể đánh giá từ hồ sơ nên không được chấm, "
                             "không tham gia quyết định đủ điều kiện, và không được tính là "
                             "đáp ứng hay không đáp ứng."
                         ),
@@ -776,7 +794,9 @@ class MatchingFacade:
                         )
                     )
             elif isinstance(requirement, UnresolvedRequirement):
-                results.append(evaluate_unresolved_requirement(requirement, scoped_resume))
+                results.append(
+                    evaluate_unresolved_requirement(requirement, scoped_resume, readings)
+                )
         # Structured skill/language requirements historically bypassed the
         # evaluator trace. Emit the same grounded event shape so every
         # requirement can be audited, including preferred Docker/Linux rows.

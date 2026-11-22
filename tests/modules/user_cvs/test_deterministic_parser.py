@@ -783,3 +783,154 @@ def test_wrapped_summary_tail_and_project_kind_line_are_not_projects() -> None:
     assert gnn.description is not None
     assert "Research Project" in gnn.description
     assert "PyTorch Geometric" in gnn.description
+
+
+def test_header_separator_is_ignored_inside_brackets() -> None:
+    """A dash inside brackets qualifies one field, it never separates two.
+
+    ResumeBench case a41b9daf turned "Scientific Affairs Lead, Specialty
+    (I&I - Rare)" into an employer named "Rare)". The bracketed qualifier now
+    stays whole; the comma outside it still separates, which is unchanged.
+    """
+    from src.modules.user_cvs.parsing.domain.structured import _split_header
+
+    parts = _split_header(
+        "Scientific Affairs Lead, Specialty (I&I - Rare)", dash_separated=True
+    )
+    assert parts == ["Scientific Affairs Lead", "Specialty (I&I - Rare)"]
+    assert "Rare)" not in parts
+
+    assert _split_header(
+        "Principal Architect (Division Chief), Digital Banking Platform"
+    ) == ["Principal Architect (Division Chief)", "Digital Banking Platform"]
+
+    # Separators outside brackets still split.
+    assert _split_header(
+        "Backend Developer — Công ty ShopNow", dash_separated=True
+    ) == ["Backend Developer", "Công ty ShopNow"]
+    assert _split_header("Data Analyst | Acme Corp") == ["Data Analyst", "Acme Corp"]
+
+
+def test_number_comma_is_not_a_field_separator() -> None:
+    """A comma between digits groups a number, it never separates two fields.
+
+    ResumeBench case federal-resume-marcus-williams carries the header line
+    "Salary: $138,491 per annum Dates: 03/2021 - Present". Splitting on that
+    comma produced a job title of "Salary: $138" and an employer of
+    "491 per annum Dates:", so the entry failed the benchmark's four-field
+    identity gate and all 142 of its description bullets scored zero.
+    """
+    from src.modules.user_cvs.parsing.domain.structured import _split_header
+
+    assert _split_header("Salary: $138,491 per annum Dates:", dash_separated=True) == [
+        "Salary: $138,491 per annum Dates:"
+    ]
+
+    # A comma outside a number still separates.
+    assert _split_header("Data Analyst, Acme Corp") == ["Data Analyst", "Acme Corp"]
+
+
+def test_wrapped_lines_rejoin_across_blocks() -> None:
+    """One bullet wrapped over three lines is one item, not three.
+
+    PaddleOCR emits one block per physical line, so the earlier rejoining,
+    which only looked inside a block, never ran: a resume with 45 bullets was
+    reported as 142. A labelled field such as "Address:" still opens its own
+    item, and so does a line that carries a date range.
+    """
+    from dataclasses import replace
+
+    from src.modules.user_cvs.parsing.domain.source import SourceBlock
+    from src.modules.user_cvs.parsing.domain.structured import _line_items
+
+    lines = [
+        "Salary: $138,491 per annum Dates: 03/2021 - Present",
+        "Employer: Department of Homeland Security, Cybersecurity and Infrastructure Agency",
+        "(CISA)",
+        "Address: 245 Murray Lane SW, Washington, DC 20528",
+        "Serve as technical lead for the Threat Analytics Division, directing a team",
+        "of 8 data scientists in developing machine learning models that process",
+        "2.3 billion network events daily",
+    ]
+    template = SourceBlock(
+        block_id="b",
+        text="",
+        page=1,
+        reading_order=0,
+        bounding_box=None,
+        block_type="text",
+        char_start=0,
+        char_end=0,
+        section="employment",
+    )
+    blocks = []
+    offset = 0
+    for index, line in enumerate(lines):
+        blocks.append(
+            replace(
+                template,
+                block_id=f"b{index}",
+                text=line,
+                reading_order=index,
+                char_start=offset,
+                char_end=offset + len(line),
+            )
+        )
+        offset += len(line) + 1
+
+    items = [item.text for item in _line_items(blocks)]
+
+    assert items == [
+        "Salary: $138,491 per annum Dates: 03/2021 - Present",
+        "Employer: Department of Homeland Security, Cybersecurity and Infrastructure Agency (CISA)",
+        "Address: 245 Murray Lane SW, Washington, DC 20528",
+        "Serve as technical lead for the Threat Analytics Division, directing a team"
+        " of 8 data scientists in developing machine learning models that process"
+        " 2.3 billion network events daily",
+    ]
+
+
+def test_section_title_is_never_merged_into_the_line_above() -> None:
+    """A bare heading opens an item; it is not the tail of the bullet above it.
+
+    The colon rule catches "EDUCATION:" but not "EDUCATION". A heading joined
+    onto a long preceding bullet stops matching _is_section_title, so the
+    extractors no longer skip it and read it as content.
+    """
+    from dataclasses import replace
+
+    from src.modules.user_cvs.parsing.domain.source import SourceBlock
+    from src.modules.user_cvs.parsing.domain.structured import _line_items
+
+    lines = [
+        "Delivered the payment gateway rewrite across four teams and two regions",
+        "EDUCATION",
+        "Bachelor of Engineering in Computer Science",
+    ]
+    template = SourceBlock(
+        block_id="b",
+        text="",
+        page=1,
+        reading_order=0,
+        bounding_box=None,
+        block_type="text",
+        char_start=0,
+        char_end=0,
+        section="employment",
+    )
+    blocks = []
+    offset = 0
+    for index, line in enumerate(lines):
+        blocks.append(
+            replace(
+                template,
+                block_id=f"b{index}",
+                text=line,
+                reading_order=index,
+                char_start=offset,
+                char_end=offset + len(line),
+            )
+        )
+        offset += len(line) + 1
+
+    assert [item.text for item in _line_items(blocks)] == lines

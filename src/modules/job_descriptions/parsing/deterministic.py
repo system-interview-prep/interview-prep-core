@@ -278,6 +278,51 @@ _RESEARCH_COMPETITION_DISJUNCTION = re.compile(
     re.I,
 )
 
+# When a requirement names several technologies, whether they are alternatives
+# or all of them required is the difference between a condition a candidate can
+# meet and one nobody can.  "Thành thạo ít nhất một ngôn ngữ lập trình (C, C++,
+# Java, C#, JavaScript,...)" was read as a conjunction, so a candidate had to
+# evidence all five languages the posting happened to list; a Java and
+# JavaScript developer failed it.  Only "hoặc|hay|or" marked a list as
+# alternatives, which that sentence never says.
+#
+# Three wordings make a list disjunctive, and all three appear in that one
+# line: an explicit count ("ít nhất một"), an illustrative lead-in ("such as",
+# "như"), and an open end ("...", "v.v", "etc") - a list the posting itself
+# says is incomplete cannot be a list of things all of which are required.
+_DISJUNCTIVE_LIST_RE = re.compile(
+    r"\b(?:hoac|hay|or|either)\b"
+    r"|\bit\s*nhat\s*(?:mot|1)\b"
+    r"|\bat\s+least\s+(?:one|1)\b"
+    r"|\bmot\s+trong\b"
+    r"|\b(?:any|one)\s+of\b"
+    r"|\bsuch\s+as\b"
+    r"|\be\s*\.?\s*g\b"
+    r"|\bvi\s*du\b"
+    # "như" introduces examples ("các ngôn ngữ như Java, Python").  The guard
+    # keeps the everyday phrases - "nhu cầu", "như trên|sau|vậy" - out.
+    r"|\bnhu\b(?!\s*(?:cau|tren|sau|vay|the))"
+    r"|\.\s*\.\s*\.|…"
+    r"|\bv\s*\.?\s*v\b|\betc\b",
+    re.I,
+)
+
+
+def _fold_for_grouping(text: str) -> str:
+    decomposed = unicodedata.normalize("NFD", (text or "").lower())
+    stripped = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
+    return stripped.replace("đ", "d")
+
+
+def requirement_list_is_disjunctive(text: str) -> bool:
+    """Whether a requirement's list of named skills offers alternatives.
+
+    Shared with matching so one sentence is read the same way when the posting
+    is parsed and when a CV is scored against it.
+    """
+    return bool(_DISJUNCTIVE_LIST_RE.search(_fold_for_grouping(text)))
+
+
 PARSER_VERSION = "deterministic-jd-v5"
 _HEADERS = {
     "requirements": {
@@ -1122,7 +1167,7 @@ class DeterministicJobDescriptionParser:
                         last_end = s_end
 
                 if len(unique_skills) > 1:
-                    has_disjunction = bool(re.search(r"\b(?:hoặc|hay|or)\b", value, re.I))
+                    has_disjunction = requirement_list_is_disjunctive(value)
                     group_op = "any_of" if has_disjunction else "all_of"
                     group_id = f"req-group-{('any' if has_disjunction else 'all')}-{absolute_start}"
                 else:
