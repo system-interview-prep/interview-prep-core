@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import ValidationError
@@ -22,6 +23,7 @@ from src.modules.user_cvs.domain.schemas import (
     ProjectEntry,
     ResumeProfile,
 )
+from src.modules.user_cvs.parsing.domain.classification import DeterministicCareerClassifier
 from src.modules.user_cvs.parsing.domain.deterministic import DeterministicResumeParser
 from src.modules.user_cvs.parsing.domain.llm_candidate import CV_EXTRACTION_INSTRUCTIONS, ResumeCandidate
 from src.modules.user_cvs.parsing.domain.source import EvidenceMapper, SourceDocument
@@ -29,8 +31,8 @@ from src.modules.user_cvs.parsing.domain.structured import (
     _is_founder_employer_project,
     _looks_like_project_title,
     _project_name_key,
-    _project_names_match,
     _project_title_in_quote,
+    _project_titles_overlap,
 )
 
 PARSER_VERSION = "hybrid-resume-v2"
@@ -89,124 +91,136 @@ def _safe_json_parse(text: str) -> dict[str, Any]:
         raise
 
 
+_STUDENT_STATUSES = {"student", "final_year", "recent_graduate"}
+
+
+def _text(value: Any) -> str:
+    """Coerce an untrusted field to a stripped string, treating null-ish values as empty."""
+    return str(value or "").strip()
+
+
+def _capped(value: Any, limit: int) -> str | None:
+    """Stripped and length-capped, or None when the field carries nothing."""
+    text = _text(value)
+    return text[:limit] if text else None
+
+
+def _first_text(item: dict[str, Any], *keys: str) -> str:
+    """First non-empty value among the spellings a model may emit (camelCase or snake_case)."""
+    for key in keys:
+        text = _text(item.get(key))
+        if text:
+            return text
+    return ""
+
+
+def _string_list(value: Any, limit: int) -> list[str]:
+    """Accept either a newline-joined block or a list, and return clean non-empty lines."""
+    if isinstance(value, str):
+        items = [line.strip() for line in value.split("\n")]
+    elif isinstance(value, list):
+        items = [str(entry).strip() for entry in value]
+    else:
+        return []
+    return [entry for entry in items if entry][:limit]
+
+
+def _gpa_pair(item: dict[str, Any]) -> tuple[float | None, float | None]:
+    """Keep a GPA only when it and its scale are both numeric and mutually consistent."""
+    try:
+        raw_gpa = item.get("gpa")
+        raw_scale = item.get("gpaScale", item.get("gpa_scale"))
+        gpa = float(raw_gpa) if raw_gpa is not None else None
+        scale = float(raw_scale) if raw_scale is not None else None
+    except (TypeError, ValueError):
+        return None, None
+    if gpa is None or scale is None or not (0 < gpa <= scale):
+        return None, None
+    return gpa, scale
+
+
+def _grounded_entries(
+    raw: Any, *, quote_limit: int, limit: int, clean: Callable[[dict[str, Any]], None]
+) -> list[dict[str, Any]]:
+    """Drop entries without a quote - an ungrounded claim is discarded, never repaired."""
+    entries: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        quote = _text(item.get("quote"))
+        if not quote:
+            continue
+        item["quote"] = quote[:quote_limit]
+        clean(item)
+        entries.append(item)
+    return entries[:limit]
+
+
+def _clean_employment(emp: dict[str, Any]) -> None:
+    emp["jobTitle"] = (
+        _first_text(emp, "jobTitle", "job_title") or _text(emp.get("organization")) or "Professional"
+    )[:300]
+    emp["organization"] = _capped(emp.get("organization"), 300)
+    emp["startDate"], _ = _sanitize_date_candidate(emp.get("startDate"))
+    end_date, is_current = _sanitize_date_candidate(emp.get("endDate"))
+    emp["endDate"] = end_date
+    emp["isCurrent"] = is_current or bool(emp.get("isCurrent"))
+    emp["responsibilities"] = _string_list(emp.get("responsibilities"), 20)
+
+
+def _clean_education(edu: dict[str, Any]) -> None:
+    # A degree line stands in for a missing institution rather than losing the entry.
+    edu["institution"] = (_text(edu.get("institution")) or _text(edu.get("degree")) or "Institution")[:500]
+    edu["degree"] = _capped(edu.get("degree"), 300)
+    edu["fieldOfStudy"] = _capped(_first_text(edu, "fieldOfStudy", "field_of_study"), 300)
+    edu["startDate"], _ = _sanitize_date_candidate(edu.get("startDate"))
+    edu["endDate"], _ = _sanitize_date_candidate(edu.get("endDate"))
+    status = _first_text(edu, "studentStatus", "student_status")
+    edu["studentStatus"] = status if status in _STUDENT_STATUSES else None
+    edu["gpa"], edu["gpaScale"] = _gpa_pair(edu)
+
+
+def _clean_project(proj: dict[str, Any]) -> None:
+    proj["name"] = (_text(proj.get("name")) or "Project")[:500]
+    proj["description"] = _capped(proj.get("description"), 4000)
+
+
+def _clean_certification(cert: dict[str, Any]) -> None:
+    cert["name"] = (_text(cert.get("name")) or "Certification")[:500]
+    cert["issuer"] = _capped(cert.get("issuer"), 300)
+    cert["credentialId"] = _capped(_first_text(cert, "credentialId", "credential_id"), 300)
+
+
 def _sanitize_candidate_payload(data: Any) -> dict[str, Any]:
+    """Repair an untrusted LLM payload into the shape ``ResumeCandidate`` accepts.
+
+    The schema's limits reject a payload; this layer caps and coerces instead,
+    so one over-long field does not throw away an otherwise usable extraction.
+    """
     if not isinstance(data, dict):
         return {}
 
     for field in ("headline", "summary"):
         item = data.get(field)
-        if isinstance(item, dict):
-            val = str(item.get("value") or "").strip()
-            quote = str(item.get("quote") or "").strip()
-            if val and quote:
-                data[field] = {"value": val[:2000], "quote": quote[:6000]}
-            else:
-                data[field] = None
-        else:
+        if not isinstance(item, dict):
             data[field] = None
-
-    clean_emp = []
-    for emp in data.get("employment", []):
-        if not isinstance(emp, dict):
             continue
-        quote = str(emp.get("quote") or "").strip()
-        if not quote:
-            continue
-        title = str(emp.get("jobTitle") or emp.get("job_title") or "").strip()
-        if not title:
-            org = str(emp.get("organization") or "").strip()
-            title = org if org else "Professional"
-        emp["jobTitle"] = title[:300]
-        org = str(emp.get("organization") or "").strip()
-        emp["organization"] = org[:300] if org else None
+        value = _capped(item.get("value"), 2_000)
+        quote = _capped(item.get("quote"), 6_000)
+        data[field] = {"value": value, "quote": quote} if value and quote else None
 
-        start_date, _ = _sanitize_date_candidate(emp.get("startDate"))
-        end_date, is_curr = _sanitize_date_candidate(emp.get("endDate"))
-        emp["startDate"] = start_date
-        emp["endDate"] = end_date
-        emp["isCurrent"] = is_curr or bool(emp.get("isCurrent"))
-
-        resp = emp.get("responsibilities")
-        if isinstance(resp, str):
-            resp_list = [s.strip() for s in resp.split("\n") if s.strip()]
-        elif isinstance(resp, list):
-            resp_list = [str(s).strip() for s in resp if str(s).strip()]
-        else:
-            resp_list = []
-        emp["responsibilities"] = resp_list[:20]
-        emp["quote"] = quote[:8000]
-        clean_emp.append(emp)
-    data["employment"] = clean_emp[:20]
-
-    clean_edu = []
-    for edu in data.get("education", []):
-        if not isinstance(edu, dict):
-            continue
-        quote = str(edu.get("quote") or "").strip()
-        if not quote:
-            continue
-        inst = str(edu.get("institution") or "").strip()
-        if not inst:
-            deg = str(edu.get("degree") or "").strip()
-            inst = deg if deg else "Institution"
-        edu["institution"] = inst[:500]
-        deg = str(edu.get("degree") or "").strip()
-        edu["degree"] = deg[:300] if deg else None
-        fos = str(edu.get("fieldOfStudy") or edu.get("field_of_study") or "").strip()
-        edu["fieldOfStudy"] = fos[:300] if fos else None
-
-        start_date, _ = _sanitize_date_candidate(edu.get("startDate"))
-        end_date, _ = _sanitize_date_candidate(edu.get("endDate"))
-        edu["startDate"] = start_date
-        edu["endDate"] = end_date
-        status = str(edu.get("studentStatus") or edu.get("student_status") or "").strip()
-        edu["studentStatus"] = status if status in {"student", "final_year", "recent_graduate"} else None
-        try:
-            gpa = float(edu.get("gpa")) if edu.get("gpa") is not None else None
-            scale_value = edu.get("gpaScale", edu.get("gpa_scale"))
-            gpa_scale = float(scale_value) if scale_value is not None else None
-        except (TypeError, ValueError):
-            gpa = gpa_scale = None
-        if gpa is None or gpa_scale is None or not (0 < gpa <= gpa_scale):
-            gpa = gpa_scale = None
-        edu["gpa"] = gpa
-        edu["gpaScale"] = gpa_scale
-        edu["quote"] = quote[:8000]
-        clean_edu.append(edu)
-    data["education"] = clean_edu[:20]
-
-    clean_proj = []
-    for proj in data.get("projects", []):
-        if not isinstance(proj, dict):
-            continue
-        quote = str(proj.get("quote") or "").strip()
-        if not quote:
-            continue
-        name = str(proj.get("name") or "").strip()
-        proj["name"] = (name if name else "Project")[:500]
-        desc = str(proj.get("description") or "").strip()
-        proj["description"] = desc[:4000] if desc else None
-        proj["quote"] = quote[:8000]
-        clean_proj.append(proj)
-    data["projects"] = clean_proj[:30]
-
-    clean_cert = []
-    for cert in data.get("certifications", []):
-        if not isinstance(cert, dict):
-            continue
-        quote = str(cert.get("quote") or "").strip()
-        if not quote:
-            continue
-        name = str(cert.get("name") or "").strip()
-        cert["name"] = (name if name else "Certification")[:500]
-        issuer = str(cert.get("issuer") or "").strip()
-        cert["issuer"] = issuer[:300] if issuer else None
-        cid = str(cert.get("credentialId") or cert.get("credential_id") or "").strip()
-        cert["credentialId"] = cid[:300] if cid else None
-        cert["quote"] = quote[:4000]
-        clean_cert.append(cert)
-    data["certifications"] = clean_cert[:30]
-
+    data["employment"] = _grounded_entries(
+        data.get("employment", []), quote_limit=8_000, limit=20, clean=_clean_employment
+    )
+    data["education"] = _grounded_entries(
+        data.get("education", []), quote_limit=8_000, limit=20, clean=_clean_education
+    )
+    data["projects"] = _grounded_entries(
+        data.get("projects", []), quote_limit=8_000, limit=30, clean=_clean_project
+    )
+    data["certifications"] = _grounded_entries(
+        data.get("certifications", []), quote_limit=4_000, limit=30, clean=_clean_certification
+    )
     return data
 
 
@@ -219,6 +233,7 @@ class HybridResumeParser:
         client: ModelServiceClient | None = None,
     ) -> None:
         self._deterministic = DeterministicResumeParser(taxonomy=taxonomy, taxonomy_version=taxonomy_version)
+        self._career_classifier = DeterministicCareerClassifier()
         self._client = client
 
     async def parse(
@@ -355,22 +370,50 @@ class HybridResumeParser:
             )
             return evidence_id
 
+        # Both readings are evidence-grounded; this only decides which one wins
+        # a clash. The baseline used to come first everywhere and the LLM could
+        # only append what the baseline's keys did not already contain, so a
+        # wrong baseline entry permanently shadowed the correct LLM one.
+        llm_first = get_settings().parser_llm_first_merge_enabled
+
+        def merge_sources(llm_entries, baseline_entries, same):
+            primary, secondary = (
+                (llm_entries, baseline_entries) if llm_first else (baseline_entries, llm_entries)
+            )
+            merged = list(primary)
+            for entry in secondary:
+                if not any(same(entry, kept) for kept in merged):
+                    merged.append(entry)
+            return merged
+
         profile = baseline.resume.profile
         headline = profile.headline
         summary = profile.summary
-        if candidate.headline and ground("headline", candidate.headline.quote):
-            headline = headline or candidate.headline.value.strip()
-        if candidate.summary and ground("summary", candidate.summary.quote):
-            summary = summary or candidate.summary.value.strip()
+        # Whatever the deterministic pass grounded the headline on, if anything.
+        headline_refs = [
+            item.evidence_id
+            for item in baseline.resume.evidence
+            if item.evidence_id.startswith("ev-headline-")
+        ]
+        if candidate.headline:
+            # Ground it either way: a rejected quote still has to raise its warning.
+            headline_ref = ground("headline", candidate.headline.quote)
+            if headline_ref and (llm_first or not headline):
+                headline = candidate.headline.value.strip()
+                headline_refs = [headline_ref]
+        if candidate.summary:
+            summary_ref = ground("summary", candidate.summary.quote)
+            if summary_ref and (llm_first or not summary):
+                summary = candidate.summary.value.strip()
 
-        employment = list(baseline.resume.employment)
-        seen_employment = {self._key(item.job_title, item.organization) for item in employment}
+        llm_employment: list[EmploymentEntry] = []
+        seen_employment: set[tuple[str, ...]] = set()
         for index, item in enumerate(candidate.employment, start=1):
             ref = ground("employment", item.quote)
             key = self._key(item.job_title, item.organization)
             if not ref or key in seen_employment:
                 continue
-            employment.append(
+            llm_employment.append(
                 EmploymentEntry(
                     employmentId=f"employment-llm-{index:03d}",
                     jobTitle=item.job_title.strip(),
@@ -385,15 +428,21 @@ class HybridResumeParser:
                 )
             )
             seen_employment.add(key)
+        employment = merge_sources(
+            llm_employment,
+            list(baseline.resume.employment),
+            lambda a, b: self._key(a.job_title, a.organization)
+            == self._key(b.job_title, b.organization),
+        )
 
-        education = list(baseline.resume.education)
-        seen_education = {self._key(item.institution, item.degree, item.field_of_study) for item in education}
+        llm_education: list[EducationEntry] = []
+        seen_education: set[tuple[str, ...]] = set()
         for index, item in enumerate(candidate.education, start=1):
             ref = ground("education", item.quote)
             key = self._key(item.institution, item.degree, item.field_of_study)
             if not ref or key in seen_education:
                 continue
-            education.append(
+            llm_education.append(
                 EducationEntry(
                     educationId=f"education-llm-{index:03d}",
                     institution=item.institution.strip(),
@@ -410,16 +459,19 @@ class HybridResumeParser:
                 )
             )
             seen_education.add(key)
+        education = merge_sources(
+            llm_education,
+            list(baseline.resume.education),
+            lambda a, b: self._key(a.institution, a.degree, a.field_of_study)
+            == self._key(b.institution, b.degree, b.field_of_study),
+        )
 
-        projects = list(baseline.resume.projects)
-        seen_projects = {self._key(item.name) for item in projects}
+        llm_projects: list[ProjectEntry] = []
         for index, item in enumerate(candidate.projects, start=1):
-            key = self._key(item.name)
             if (
                 not _looks_like_project_title(item.name)
                 or not _project_title_in_quote(item.name, item.quote)
-                or key in seen_projects
-                or any(_project_names_match(item.name, existing.name) for existing in projects)
+                or any(_project_titles_overlap(item.name, kept.name) for kept in llm_projects)
                 or any(
                     _project_name_key(item.name) == _project_name_key(job.job_title)
                     for job in baseline.resume.employment
@@ -430,7 +482,7 @@ class HybridResumeParser:
             ref = ground("project", item.quote)
             if not ref:
                 continue
-            projects.append(
+            llm_projects.append(
                 ProjectEntry(
                     projectId=f"project-llm-{index:03d}",
                     name=item.name.strip(),
@@ -438,16 +490,20 @@ class HybridResumeParser:
                     evidenceRefs=[ref],
                 )
             )
-            seen_projects.add(key)
+        projects = merge_sources(
+            llm_projects,
+            list(baseline.resume.projects),
+            lambda a, b: _project_titles_overlap(a.name, b.name),
+        )
 
-        certifications = list(baseline.resume.certifications)
-        seen_certifications = {self._key(item.name, item.issuer) for item in certifications}
+        llm_certifications: list[CertificationEntry] = []
+        seen_certifications: set[tuple[str, ...]] = set()
         for index, item in enumerate(candidate.certifications, start=1):
             ref = ground("certification", item.quote)
             key = self._key(item.name, item.issuer)
             if not ref or key in seen_certifications:
                 continue
-            certifications.append(
+            llm_certifications.append(
                 CertificationEntry(
                     certificationId=f"certification-llm-{index:03d}",
                     name=item.name.strip(),
@@ -457,13 +513,27 @@ class HybridResumeParser:
                 )
             )
             seen_certifications.add(key)
+        certifications = merge_sources(
+            llm_certifications,
+            list(baseline.resume.certifications),
+            lambda a, b: self._key(a.name, a.issuer) == self._key(b.name, b.issuer),
+        )
 
         metadata = baseline.resume.parsing
         assert metadata is not None
+        # The baseline classified before the LLM supplied a headline or extra
+        # employment, so a CV whose only role signal is its headline came out
+        # classified from skills alone. Redo it on the merged resume.
         resume = CanonicalResume.model_validate(
             baseline.resume.model_copy(
                 update={
                     "profile": ResumeProfile(headline=headline, summary=summary),
+                    "careerClassifications": self._career_classifier.classify(
+                        skills=baseline.resume.skills,
+                        employment=employment,
+                        headline=headline,
+                        headline_evidence_refs=headline_refs,
+                    ),
                     "employment": employment,
                     "education": education,
                     "projects": projects,

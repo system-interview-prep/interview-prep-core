@@ -262,43 +262,7 @@ def _heading_key(value: str) -> str:
     return re.sub(r"[^a-z0-9 ]+", " ", cleaned).strip()
 
 
-_LEGACY_SECTION_HEADINGS = {
-    "profile": {"profile", "summary", "objective", "gioi thieu", "muc tieu nghe nghiep"},
-    "skills": {"skills", "technical skills", "ky nang", "ky nang chuyen mon"},
-    "employment": {
-        "experience",
-        "work experience",
-        "employment",
-        "kinh nghiem",
-        "kinh nghiem lam viec",
-    },
-    "projects": {"projects", "selected projects", "du an", "du an tieu bieu"},
-    "education": {"education", "academic background", "hoc van", "giao duc"},
-    "certifications": {"certifications", "certificates", "chung chi"},
-    "languages": {"languages", "language", "ngoai ngu"},
-}
-
-
-def is_section_regex_v2_enabled() -> bool:
-    try:
-        from src.core.config import get_settings
-
-        return bool(get_settings().parser_section_regex_v2_enabled)
-    except Exception:
-        return True
-
-
 def _section_for_heading(text: str) -> str | None:
-    if not is_section_regex_v2_enabled():
-        legacy_norm = unicodedata.normalize("NFD", text.casefold())
-        legacy_norm = "".join(char for char in legacy_norm if unicodedata.category(char) != "Mn")
-        legacy_key = re.sub(r"[^a-z0-9 ]+", " ", legacy_norm).strip()
-        legacy_key = re.sub(r"\s+", " ", legacy_key)
-        for section, headings in _LEGACY_SECTION_HEADINGS.items():
-            if legacy_key in headings:
-                return section
-        return None
-
     stripped = text.strip()
     if not stripped or len(stripped) > 80 or len(stripped.splitlines()) > 2:
         return None

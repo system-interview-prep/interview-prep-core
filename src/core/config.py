@@ -149,7 +149,9 @@ class Settings(BaseSettings):
     jd_parser_mode: str = "deterministic"
     cv_parser_max_output_tokens: int = Field(default=4_096, ge=128, le=8_192)
     cv_parser_mode: str = "deterministic"
-    parser_section_regex_v2_enabled: bool = True
+    # Hybrid CV parsing: let the grounded LLM reading win a clash with the
+    # deterministic baseline instead of only filling the baseline's gaps.
+    parser_llm_first_merge_enabled: bool = True
     embedding_provider: str = "openai"
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1024

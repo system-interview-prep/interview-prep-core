@@ -21,6 +21,8 @@ from src.modules.user_cvs.parsing.domain.source import (
 )
 
 _YEAR = r"(?:19|20)\d{2}"
+# A bare four-digit year, used where a block carries no full date range.
+_STANDALONE_YEAR_RE = re.compile(rf"\b({_YEAR})\b")
 _MONTH_EN = (
     r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
     r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
@@ -201,6 +203,13 @@ def _is_section_title(value: str) -> bool:
     raw = stripped.casefold()
     if raw in _SECTION_TITLES or without_marks in _SECTION_TITLES:
         return True
+    # source._section_for_heading strips punctuation before it matches, so a
+    # line like "projects." or "Projects:" opens the projects section there.
+    # Matching exactly here let that same line through as a project, and the
+    # group loop below names a project after it ("projects.").
+    unpunctuated = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", without_marks)).strip()
+    if unpunctuated and unpunctuated in _SECTION_TITLES:
+        return True
     # The broad source heading classifier is useful for headings such as
     # "RESEARCH & AI PROJECTS", but must not swallow project names that merely
     # mention research (e.g. "... (Scientific Research)").
@@ -280,7 +289,7 @@ class EmploymentExtractor:
             elif _BULLET_RE.match(block.text) is None:
                 # A bare year only opens an entry on a header line, never on a
                 # responsibility bullet ("- Đạt giải 2022").
-                single_match = re.search(r"\b((?:19|20)\d{2})\b", block.text)
+                single_match = _STANDALONE_YEAR_RE.search(block.text)
                 if single_match is not None:
                     starts.append(
                         (
@@ -457,7 +466,7 @@ class EducationExtractor:
                     if not end_date:
                         end_date = _partial_date(match.group("end"))
                 else:
-                    year_match = re.search(r"\b((?:19|20)\d{2})\b", b.text)
+                    year_match = _STANDALONE_YEAR_RE.search(b.text)
                     if year_match and not start_date:
                         start_date = _partial_date(year_match.group(1))
 
@@ -577,6 +586,21 @@ _PROJECT_SENTENCE_START_RE = re.compile(
 )
 _PROJECT_TITLE_STOPWORDS = {"a", "an", "and", "as", "for", "in", "of", "the", "to", "with"}
 
+# A line stating only what kind of project the entry above is belongs to that
+# entry; it is not a project of its own. _is_project_header already hard-coded
+# "team ...", which is why "Team Project - Developer & Tester" was handled and
+# "Research Project" was not. Anchored at both ends, so a real name such as
+# "Research Project Tracker" still passes.
+_PROJECT_KIND_ONLY_RE = re.compile(
+    r"^(?:"
+    r"(?:team|group|personal|individual|academic|research|capstone|side|freelance|"
+    r"university|school|class|course|thesis|graduation|final(?:\s+year)?)\s+projects?"
+    r"|dự\s+án\s+(?:cá\s+nhân|nhóm|nghiên\s+cứu|tốt\s+nghiệp)"
+    r"|du\s+an\s+(?:ca\s+nhan|nhom|nghien\s+cuu|tot\s+nghiep)"
+    r")$",
+    re.IGNORECASE,
+)
+
 
 def _looks_like_project_title(value: str, *, explicit_heading: bool = False) -> bool:
     """Avoid treating wrapped description lines as separate project names."""
@@ -642,6 +666,35 @@ def _project_names_match(left: str, right: str) -> bool:
     return len(shorter) <= 3 and len(shorter) < len(longer) and longer[: len(shorter)] == shorter
 
 
+_PROJECT_NAME_LEAD_RE = re.compile(r"^(?:project|projects|du an|de tai)\s+", re.IGNORECASE)
+
+
+def _project_titles_overlap(left: str, right: str) -> bool:
+    """True when two titles name the same project.
+
+    _project_names_match only merges a short alias of at most three words that
+    leads a longer title, so the two readings of one project survived as two
+    entries: "HComic - Comic Reading Platform" (LLM) against "HComic - Comic
+    Reading Platform 07/2026 - Present" (baseline, four words, date suffix not
+    stripped), and "Taskhive - Task Management App" against the baseline's
+    "Project: Taskhive - Task Management App", where the leading "Project:"
+    breaks the prefix relation. Drop that lead-in and allow containment in
+    either direction. Matching on overlapping evidence spans, which also covers
+    run-together text, is a later step.
+    """
+    if _project_names_match(left, right):
+        return True
+    left_key = _PROJECT_NAME_LEAD_RE.sub("", _project_name_key(left)).strip()
+    right_key = _PROJECT_NAME_LEAD_RE.sub("", _project_name_key(right)).strip()
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    shorter, longer = sorted((left_key.split(), right_key.split()), key=len)
+    # Two words is too little to identify a project on its own.
+    return len(shorter) >= 3 and longer[: len(shorter)] == shorter
+
+
 def _project_title_in_quote(name: str, quote: str) -> bool:
     title_tokens = _project_name_key(name).split()
     quote_tokens = _project_name_key(quote).split()
@@ -681,6 +734,8 @@ def _is_project_header(block_text: str, *, explicit_heading: bool = False) -> bo
     if re.match(r"^(?:team\s*size|team\b|technology\s+in\s+use\b|github\b)", without_bullet, re.IGNORECASE):
         return False
     if _PROJECT_DETAIL_PREFIX_RE.search(without_bullet):
+        return False
+    if _PROJECT_KIND_ONLY_RE.match(without_bullet.strip()):
         return False
     if _DATE_OR_STATUS_ONLY_RE.fullmatch(without_bullet):
         return False
@@ -758,7 +813,7 @@ class ProjectExtractor:
                 start_date = _partial_date(match.group("start"))
                 end_date = _partial_date(match.group("end"))
             else:
-                year_match = re.search(r"\b((?:19|20)\d{2})\b", header.text)
+                year_match = _STANDALONE_YEAR_RE.search(header.text)
                 if year_match:
                     start_date = _partial_date(year_match.group(1))
 

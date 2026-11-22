@@ -165,3 +165,89 @@ async def test_hybrid_resume_falls_back_when_grounded_candidate_breaks_domain_in
         _source(), extraction_version="test"
     )
     assert any(warning.code == "llm_fallback" for warning in parsed.resume.parsing.warnings)
+
+
+async def test_llm_reading_wins_a_clash_with_the_deterministic_baseline() -> None:
+    """The baseline used to shadow the LLM whenever their keys collided.
+
+    The deterministic pass names the project from the heading line, dates and
+    all; the LLM names it from the title alone. Both are grounded, so the
+    merge has to keep one -- and it used to keep the baseline's.
+    """
+    raw = (
+        "Jane Doe\nProjects\nHComic - Comic Reading Platform 07/2026 - Present\n"
+        "Role: Fullstack Developer"
+    )
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown=raw,
+            content_list=[
+                {"type": "text", "text": "Jane Doe"},
+                {"type": "title", "text": "Projects"},
+                {"type": "title", "text": "HComic - Comic Reading Platform 07/2026 - Present"},
+                {"type": "text", "text": "Role: Fullstack Developer"},
+            ],
+        ),
+        document_id="cv-hybrid-clash",
+        document_sha256="a" * 64,
+    )
+    payload = json.dumps(
+        {
+            "projects": [
+                {
+                    "name": "HComic - Comic Reading Platform",
+                    "description": "Comic reading platform.",
+                    "quote": "HComic - Comic Reading Platform 07/2026 - Present",
+                }
+            ]
+        }
+    )
+
+    parsed = await HybridResumeParser(client=FakeClient(payload)).parse(
+        source, extraction_version="test"
+    )
+    names = [item.name for item in parsed.resume.projects]
+
+    # One project, named the way the LLM read it.
+    assert names == ["HComic - Comic Reading Platform"]
+
+
+async def test_deterministic_baseline_still_fills_what_the_llm_missed() -> None:
+    """Inverting the precedence must not drop baseline-only entries."""
+    raw = (
+        "Jane Doe\nProjects\nHComic - Comic Reading Platform 07/2026 - Present\n"
+        "URL Shortener Service 04/2026 - 07/2026"
+    )
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown=raw,
+            content_list=[
+                {"type": "text", "text": "Jane Doe"},
+                {"type": "title", "text": "Projects"},
+                {"type": "title", "text": "HComic - Comic Reading Platform 07/2026 - Present"},
+                {"type": "title", "text": "URL Shortener Service 04/2026 - 07/2026"},
+            ],
+        ),
+        document_id="cv-hybrid-gapfill",
+        document_sha256="a" * 64,
+    )
+    payload = json.dumps(
+        {
+            "projects": [
+                {
+                    "name": "HComic - Comic Reading Platform",
+                    "description": "Comic reading platform.",
+                    "quote": "HComic - Comic Reading Platform 07/2026 - Present",
+                }
+            ]
+        }
+    )
+
+    parsed = await HybridResumeParser(client=FakeClient(payload)).parse(
+        source, extraction_version="test"
+    )
+    names = [item.name for item in parsed.resume.projects]
+
+    assert names[0] == "HComic - Comic Reading Platform"
+    assert any("URL Shortener Service" in name for name in names)
+    assert len(names) == 2

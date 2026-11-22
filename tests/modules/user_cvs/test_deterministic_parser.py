@@ -722,26 +722,64 @@ def test_deterministic_parser_negative_heading_and_label_guards() -> None:
     assert "Career Assistant X" not in all_institutions
 
 
-def test_deterministic_parser_rollback_feature_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    from src.core.config import get_settings
-    from src.modules.user_cvs.parsing.domain.source import (
-        _section_for_heading,
-        is_section_regex_v2_enabled,
-    )
+def test_compound_project_headings_are_recognised() -> None:
+    """Headings that combine a qualifier with "projects" still open a projects section."""
+    from src.modules.user_cvs.parsing.domain.source import _section_for_heading
 
-    settings = get_settings()
-
-    # When flag is True (default)
-    monkeypatch.setattr(settings, "parser_section_regex_v2_enabled", True)
-    assert is_section_regex_v2_enabled() is True
     assert _section_for_heading("RESEARCH & AI PROJECTS") == "projects"
     assert _section_for_heading("ADDITIONAL SOFTWARE & AI PROJECTS") == "projects"
-
-    # When flag is False (instant rollback)
-    monkeypatch.setattr(settings, "parser_section_regex_v2_enabled", False)
-    assert is_section_regex_v2_enabled() is False
-    # In legacy headings, compound phrases like "RESEARCH & AI PROJECTS" are not recognized
-    assert _section_for_heading("RESEARCH & AI PROJECTS") is None
-    # Standard legacy headings still work
     assert _section_for_heading("PROJECTS") == "projects"
     assert _section_for_heading("EDUCATION") == "education"
+
+
+def test_wrapped_summary_tail_and_project_kind_line_are_not_projects() -> None:
+    """Three projects in the CV must not parse as five.
+
+    Two separate faults produced the two extras. The summary wrapped onto a
+    line reading only "projects.", which source._section_for_heading matched
+    as the PROJECTS heading because it strips punctuation, while
+    _is_section_title did not strip it, so the line fell through and was
+    named as a project. And "Research Project", the kind line under the third
+    project's title, was read as a fourth heading and swallowed that
+    project's whole body.
+    """
+    # The PDF extractor emits one block per line, which is what leaves the
+    # wrapped summary tail and the kind line on blocks of their own.
+    source = _source(
+        [
+            {"type": "text", "text": line}
+            for line in [
+                "SUMMARY",
+                "Final-year Information Technology student seeking an AI Engineer Intern",
+                "position while contributing to enterprise",
+                "projects.",
+                "PROJECTS",
+                "Mini search engine Mar 2026 - May 2026",
+                "Team Project - Developer & Tester",
+                "Tech Stack: Java SE, Swing, Apache Lucene",
+                "Movie booking Website Nov 2025 - Jan 2026",
+                "Team Project - BE developer & Tester",
+                "Tech Stack: NestJS, TypeScript, MongoDB/Mongoose",
+                "Recommender System using GNN Dec 2024 - May 2025",
+                "Research Project",
+                "Tech Stack: Python, PyTorch, PyTorch Geometric",
+                "Description:",
+                "• Trained a movie recommendation system using Graph Neural Networks.",
+            ]
+        ]
+    )
+
+    parsed = DeterministicResumeParser().parse(source, extraction_version="test-extractor")
+    names = [item.name for item in parsed.resume.projects]
+
+    assert names == [
+        "Mini search engine",
+        "Movie booking",
+        "Recommender System using GNN",
+    ]
+    # The kind line belongs to the project above it, and so does that
+    # project's body, which it used to take with it.
+    gnn = parsed.resume.projects[-1]
+    assert gnn.description is not None
+    assert "Research Project" in gnn.description
+    assert "PyTorch Geometric" in gnn.description
