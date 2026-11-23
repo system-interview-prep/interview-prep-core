@@ -21,7 +21,6 @@ from sqlalchemy import text
 from src.core.security import current_user
 from src.infrastructure.database import SessionFactory, engine, get_db
 from src.main import create_app
-from src.modules.interviews.agent import interview_agent as agent_module
 from src.modules.interviews.application.runtime import agent_runtime, chat_runtime
 from src.modules.interviews.evaluation.evaluation_types import (
     CompetencyScore,
@@ -124,7 +123,6 @@ async def test_chat_interview_runs_from_opening_through_persisted_report(monkeyp
 
     if not use_real_models:
         monkeypatch.setattr(chat_runtime, "InterviewCoreEngine", _DeterministicChatEngine)
-        monkeypatch.setattr(agent_module, "InterviewCoreEngine", _DeterministicChatEngine)
         monkeypatch.setattr(agent_runtime, "evaluate_closed_session", _evaluate_with_fake_grader)
     monkeypatch.setattr(api_router.interview_rate_limiter, "check", no_rate_limit)
 

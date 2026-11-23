@@ -1,6 +1,7 @@
 """Public OpenAI adapter shared by business modules."""
 
 from functools import lru_cache
+from typing import TypedDict
 
 from fastapi.concurrency import run_in_threadpool
 
@@ -46,6 +47,124 @@ def _client():
     # provider could hold an interview turn for half an hour. Callers already
     # fall back on provider errors; fail fast enough for them to do so.
     return OpenAI(api_key=api_key, timeout=settings.ai_request_timeout_seconds, max_retries=1)
+
+
+def _responses_create(options: dict, model: str):
+    """``responses.create`` that drops an option the model or endpoint refuses.
+
+    A model that answered "temperature is not supported", or an endpoint that
+    refused ``reasoning`` or a JSON schema, is remembered so later calls skip the
+    option instead of paying for a rejected request first.
+    """
+    for _ in range(4):
+        try:
+            return _client().responses.create(**options)
+        except Exception as exc:
+            message = str(exc).lower()
+            if "temperature" in message and "temperature" in options:
+                _NO_TEMPERATURE_MODELS.add(model)
+                options.pop("temperature", None)
+            elif "reasoning" in message and "reasoning" in options:
+                _NO_REASONING_MODELS.add(model)
+                options.pop("reasoning", None)
+            elif ("schema" in message or "format" in message) and "text" in options:
+                _NO_SCHEMA_MODELS.add(model)
+                options.pop("text", None)
+            else:
+                raise
+    raise RuntimeError("model call failed after dropping unsupported options")
+
+
+class ToolCall(TypedDict):
+    """One function call the model asked for (Responses API ``function_call`` item)."""
+
+    name: str
+    arguments: dict
+    call_id: str
+
+
+async def generate_tool_calls(
+    *,
+    instructions: str,
+    input_items: str | list[dict],
+    tools: list[dict],
+    tool_choice: str | dict = "required",
+    max_output_tokens: int = 600,
+    purpose: str | None = None,
+    reasoning_effort: str | None = None,
+) -> list[ToolCall]:
+    """One model call that answers with tool calls instead of text.
+
+    Same door as :func:`generate_text` — ``ai_call_logs`` row, Langfuse
+    generation, dropped-option memory — so a decision made by tool calling is
+    as observable as one made by text. ``tools`` are Responses API function
+    tools (``{"type": "function", "name", "description", "parameters",
+    "strict": True}``); ``input_items`` is the user text or the running list
+    of items of a tool loop (earlier ``function_call`` and
+    ``function_call_output`` items included). Returns the ``function_call``
+    items in order; ``[]`` when the model answered with text only.
+    """
+    import json
+
+    settings = get_settings()
+    purpose = purpose or caller_purpose()
+    model = settings.llm_model
+    input_text = input_items if isinstance(input_items, str) else json.dumps(input_items, ensure_ascii=False)
+
+    generation = langfuse.Generation(
+        purpose,
+        model=model,
+        instructions=instructions,
+        input_text=input_text,
+        options={
+            "max_output_tokens": max_output_tokens,
+            "reasoning_effort": reasoning_effort or "",
+            "tools": ",".join(str(tool.get("name", "")) for tool in tools),
+            "tool_choice": tool_choice if isinstance(tool_choice, str) else tool_choice.get("name", ""),
+        },
+    )
+    usage_box: list = []
+
+    def call() -> list[ToolCall]:
+        options: dict = {
+            "model": model,
+            "instructions": instructions,
+            "input": input_items,
+            "max_output_tokens": max_output_tokens,
+            "store": False,
+            "tools": tools,
+            "tool_choice": tool_choice,
+        }
+        if reasoning_effort and model not in _NO_REASONING_MODELS:
+            options["reasoning"] = {"effort": reasoning_effort}
+        timer = ai_call_timer(purpose, provider="openai", model=model, input_text=input_text)
+        with timer as call:
+            response = _responses_create(options, model)
+            calls: list[ToolCall] = []
+            for item in getattr(response, "output", None) or []:
+                if getattr(item, "type", None) != "function_call":
+                    continue
+                raw = getattr(item, "arguments", None) or "{}"
+                try:
+                    arguments = json.loads(raw) if isinstance(raw, str) else dict(raw)
+                except json.JSONDecodeError:
+                    arguments = {"_raw": raw}
+                calls.append(ToolCall(
+                    name=str(getattr(item, "name", "")),
+                    arguments=arguments,
+                    call_id=str(getattr(item, "call_id", "")),
+                ))
+            call.done(json.dumps(calls, ensure_ascii=False), getattr(response, "usage", None))
+            usage_box.append(getattr(response, "usage", None))
+        return calls
+
+    try:
+        calls = await run_in_threadpool(call)
+    except Exception as exc:
+        generation.end(error=exc)
+        raise
+    generation.end(output=json.dumps(calls, ensure_ascii=False), usage=usage_box[0] if usage_box else None)
+    return calls
 
 
 async def generate_text(
@@ -98,26 +217,7 @@ async def generate_text(
             options["text"] = {"format": {"type": "json_schema", "strict": True, **json_schema}}
         timer = ai_call_timer(purpose, provider="openai", model=model, input_text=input_text)
         with timer as call:
-            response = None
-            for _ in range(4):
-                try:
-                    response = _client().responses.create(**options)
-                    break
-                except Exception as exc:
-                    message = str(exc).lower()
-                    if "temperature" in message and "temperature" in options:
-                        _NO_TEMPERATURE_MODELS.add(model)
-                        options.pop("temperature", None)
-                    elif "reasoning" in message and "reasoning" in options:
-                        _NO_REASONING_MODELS.add(model)
-                        options.pop("reasoning", None)
-                    elif ("schema" in message or "format" in message) and "text" in options:
-                        _NO_SCHEMA_MODELS.add(model)
-                        options.pop("text", None)
-                    else:
-                        raise
-            if response is None:
-                raise RuntimeError("model call failed after dropping unsupported options")
+            response = _responses_create(options, model)
             output = str(response.output_text or "").strip()
             call.done(output, getattr(response, "usage", None))
             usage_box.append(getattr(response, "usage", None))
