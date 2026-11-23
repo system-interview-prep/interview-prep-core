@@ -1,4 +1,4 @@
-"""Langfuse tracing of interview turns (src/core/llm_tracing.py), against an in-memory exporter."""
+"""Langfuse tracing of interview turns (src/infrastructure/langfuse/), against an in-memory exporter."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from src.core import llm_tracing
+from src.infrastructure import langfuse as tracing
 
 langfuse = pytest.importorskip("langfuse")
 
@@ -24,21 +24,21 @@ def exported(monkeypatch: pytest.MonkeyPatch) -> Iterator[object]:
         secret_key="sk-lf-test",
         base_url="http://127.0.0.1:9",
         span_exporter=exporter,
-        mask=llm_tracing.mask,
+        mask=tracing.mask,
     )
     monkeypatch.setattr(client, "create_score", lambda **kwargs: scores.append(kwargs))
     scores: list[dict] = []
-    llm_tracing.use_client(client)
+    tracing.use_client(client)
     exporter.scores = scores  # type: ignore[attr-defined]
     try:
         yield exporter
     finally:
         client.flush()
-        llm_tracing.use_client(None)
+        tracing.use_client(None)
 
 
 def _spans(exporter) -> dict[str, dict]:
-    llm_tracing.flush()
+    tracing.flush()
     spans = {}
     for span in exporter.get_finished_spans():
         attributes = dict(span.attributes)
@@ -52,47 +52,47 @@ def _spans(exporter) -> dict[str, dict]:
 
 
 def test_a_turn_is_one_trace_with_its_model_calls_masked(exported, monkeypatch) -> None:
-    monkeypatch.setattr(llm_tracing, "text_sampled", lambda session_id: True)
-    llm_tracing.register_names("Nguyễn Thị Hiền", "Hiền")
-    with llm_tracing.trace(
-        llm_tracing.TURN_TRACE,
+    monkeypatch.setattr("src.infrastructure.langfuse.tracing.text_sampled", lambda session_id: True)
+    tracing.register_names("Nguyễn Thị Hiền", "Hiền")
+    with tracing.trace(
+        tracing.TURN_TRACE,
         session_id="sess-1",
         user_id="user-1",
         input={"question": "Bạn xử lý cache thế nào?"},
         private_input={"answer": "Em là Hiền, mail a@b.com"},
         metadata={"turn_index": "2"},
     ) as turn:
-        generation = llm_tracing.Generation(
+        generation = tracing.Generation(
             "interviews.turn_engine.InterviewCoreEngine._generate_probe_question",
             model="gpt-test",
             instructions="SYSTEM",
             input_text="Hiền gọi 0912345678",
         )
         generation.end(output="Khi Redis lỗi thì sao?")
-        llm_tracing.finish(turn, output={"action": "PROBE"}, flags=[])
+        tracing.finish(turn, output={"action": "PROBE"}, flags=[])
     spans = _spans(exported)
     root, probe = spans["interview_turn"], spans["probe"]
     assert root["session.id"] == "sess-1" and root["user.id"] != "user-1"  # hashed
     assert "[tên]" in root["langfuse.observation.input"] and "[email]" in root["langfuse.observation.input"]
     assert probe["langfuse.observation.type"] == "generation"
     assert "[sđt]" in probe["langfuse.observation.input"]
-    assert probe["langfuse.version"] == llm_tracing.prompt_version("SYSTEM")
+    assert probe["langfuse.version"] == tracing.prompt_version("SYSTEM")
     assert {s["name"]: s["value"] for s in exported.scores} == {"rule.flagged": 0}
 
 
 def test_unsampled_turn_sends_no_text_until_it_is_flagged(exported, monkeypatch) -> None:
-    monkeypatch.setattr(llm_tracing, "text_sampled", lambda session_id: False)
-    with llm_tracing.trace(
-        llm_tracing.TURN_TRACE,
+    monkeypatch.setattr("src.infrastructure.langfuse.tracing.text_sampled", lambda session_id: False)
+    with tracing.trace(
+        tracing.TURN_TRACE,
         session_id="sess-2",
         input={"question": "Q?"},
         private_input={"answer": "secret"},
     ) as turn:
-        generation = llm_tracing.Generation(
+        generation = tracing.Generation(
             "x._evaluate_candidate_response", model="m", instructions="S", input_text="secret"
         )
         generation.end(output='{"intent": "ANSWER"}')
-        llm_tracing.finish(
+        tracing.finish(
             turn,
             output={"action": "PROBE"},
             flags=["probe_off_target"],
@@ -110,18 +110,18 @@ def test_unsampled_turn_sends_no_text_until_it_is_flagged(exported, monkeypatch)
 
 
 def test_everything_is_a_no_op_without_langfuse() -> None:
-    llm_tracing.use_client(None)
-    with llm_tracing.trace(llm_tracing.TURN_TRACE, session_id="s") as turn:
+    tracing.use_client(None)
+    with tracing.trace(tracing.TURN_TRACE, session_id="s") as turn:
         assert turn is None
-        llm_tracing.Generation("x.y", model="m", instructions="i", input_text="t").end(output="o")
-        llm_tracing.finish(turn, output={}, flags=["x"])
-    llm_tracing.score_trace("abc", "human.guard_correct", 1)
+        tracing.Generation("x.y", model="m", instructions="i", input_text="t").end(output="o")
+        tracing.finish(turn, output={}, flags=["x"])
+    tracing.score_trace("abc", "human.guard_correct", 1)
 
 
 def test_step_names_and_masking_helpers() -> None:
     assert (
-        llm_tracing.step_of("interviews.turn_engine.InterviewCoreEngine._generate_clarify_text")
+        tracing.step_of("interviews.turn_engine.InterviewCoreEngine._generate_clarify_text")
         == "clarify"
     )
-    assert llm_tracing.step_of("matching.llm.score") == "score"
-    assert llm_tracing.mask(data={"a": ["gọi 0987 654 321", "x@y.vn"]}) == {"a": ["gọi [sđt]", "[email]"]}
+    assert tracing.step_of("matching.llm.score") == "score"
+    assert tracing.mask(data={"a": ["gọi 0987 654 321", "x@y.vn"]}) == {"a": ["gọi [sđt]", "[email]"]}

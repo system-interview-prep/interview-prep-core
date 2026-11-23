@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # Store truncated model inputs/outputs in ai_call_logs. They contain CV
     # and answer text, so this is off unless an operator turns it on.
     ai_call_log_capture_text: bool = False
-    # Langfuse (src/core/llm_tracing.py): one trace per interview turn and per
+    # Langfuse (src/infrastructure/langfuse/): one trace per interview turn and per
     # grading run, with every model call, the engine's decision, guard results
     # and rule scores. Off unless the keys are set (and the `langfuse` package
     # is installed). Self-hosted: LANGFUSE_BASE_URL=http://host.docker.internal:3000.

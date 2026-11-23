@@ -13,10 +13,12 @@ biết script đang đo module nào. Thư mục nào không có module tương �
 
 ## Không nằm ở đây
 
-- `scripts/langfuse/` — `langfuse_setup.py` cấp phát tài nguyên trên Langfuse
-  (score config, hàng đợi soát, giám khảo AI). Đó là provisioning hạ tầng, không
-  phải phép đo, nên để ngoài `eval/`. Kèm `langfuse_judges.py` (prompt 4 giám
-  khảo) và `langfuse_experiment.py` (bộ đề hồi quy, dữ liệu ở `langfuse/data/`).
+- `scripts/langfuse/` đã bị xoá ngày 23/11/2026: `langfuse_setup.py` (cấp phát
+  score config, hàng đợi soát và giám khảo AI trên Langfuse), `langfuse_judges.py`
+  (prompt 4 giám khảo) và `langfuse_experiment.py` (bộ đề hồi quy + dữ liệu).
+  Lớp giám sát trong `src/` và giao diện quản trị vẫn nguyên; chỉ mất phần dựng
+  tự động, nên muốn tạo lại các tài nguyên đó thì phải làm tay trong giao diện
+  Langfuse. Khôi phục ba file: `git checkout 52af303 -- scripts/langfuse/`.
 - `scripts/ingest_greenhouse_jobs.py`, `scripts/reparse_job_descriptions.py`
   — nạp và parse lại dữ liệu việc làm, là thao tác dữ liệu.
 

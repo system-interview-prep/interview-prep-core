@@ -24,7 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core import llm_tracing
+from src.infrastructure import langfuse
 from src.core.pipeline_events import current_session_id
 from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
@@ -482,7 +482,7 @@ def _trace_spoken_turn(
         new_terms=meta.get("new_terms") or None,
         transition=bool(meta.get("transition")),
         qna_reason=meta.get("qna_rejection_reason"),
-        # LLM monitoring (application/llm_checks.py, src/core/llm_tracing.py).
+        # LLM monitoring (application/llm_checks.py, src/core/langfuse.py).
         decision_rule=decision_rule,
         flags=flags or None,
         langfuse_trace_id=langfuse_trace_id,
@@ -1567,7 +1567,7 @@ async def process_candidate_message(
     job_title = await _get_job_title(db, session_row.get("job_id"))
     candidate_full_name, candidate_short_name = await _candidate_names(db, session_id)
     # Masked out of every payload sent to Langfuse.
-    llm_tracing.register_names(candidate_full_name, candidate_short_name)
+    langfuse.register_names(candidate_full_name, candidate_short_name)
 
     asst_msg_id = str(uuid4())
 
@@ -1662,15 +1662,15 @@ async def process_candidate_message(
     )
 
     # Langfuse: one trace per turn with every model call, the decision and the
-    # rule checks (src/core/llm_tracing.py). A no-op when Langfuse is not configured.
+    # rule checks (src/core/langfuse.py). A no-op when Langfuse is not configured.
     question_ctx = session_state.get("current_question_context") or {}
     question_text = str(question_ctx.get("follow_up_prompt") or question_ctx.get("main_prompt") or "")
     # Approved lessons from past interviews (application/interviewer_playbook.py), cached 60 s.
     await interviewer_playbook.refresh(db)
     lf_stack = ExitStack()
     lf_turn = lf_stack.enter_context(
-        llm_tracing.trace(
-            llm_tracing.TURN_TRACE,
+        langfuse.trace(
+            langfuse.TURN_TRACE,
             session_id=str(session_id),
             user_id=str(session_row.get("user_id") or "") or None,
             input={
@@ -1747,7 +1747,7 @@ async def process_candidate_message(
             langfuse_trace_id=lf_turn.trace_id if lf_turn else None,
             playbook_ids=playbook.ids(),
         )
-        llm_tracing.finish(
+        langfuse.finish(
             lf_turn,
             output={
                 "action": action_value,

@@ -1,7 +1,7 @@
 """Langfuse data shown inside the admin console ("coi được 2 bên").
 
 The interview already sends every turn and every grading run to Langfuse
-(``src/core/llm_tracing.py``). This module reads it back through the Langfuse
+(``tracing.py`` in this package). This module reads it back through the Langfuse
 public API so an admin sees, on our own pages:
 
 * ``trace_view``: one turn's model calls (step, model, latency, tokens, cost,
@@ -26,7 +26,8 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from src.core import llm_tracing
+from src.infrastructure.langfuse import connection as lf_client
+from src.infrastructure.langfuse import tracing
 
 CACHE_SECONDS = 30.0
 IO_MAX_CHARS = 4000
@@ -74,9 +75,9 @@ def _clip(value: Any) -> str | None:
 
 
 def _client() -> tuple[Any, dict[str, Any] | None]:
-    if not llm_tracing.enabled():
+    if not lf_client.enabled():
         return None, {"connected": False, "reason": "not_configured"}
-    lf = llm_tracing.client()
+    lf = lf_client.client()
     if lf is None:
         return None, {"connected": False, "reason": "client_unavailable"}
     return lf, None
@@ -141,7 +142,7 @@ def _trace(trace_id: str) -> dict[str, Any]:
     observations = sorted(
         observations, key=lambda o: getattr(o, "start_time", None) or datetime.min.replace(tzinfo=UTC)
     )
-    project = llm_tracing.project_url()
+    project = lf_client.project_url()
     views = [observation_view(o) for o in observations]
     calls = [v for v in views if v["type"] == "GENERATION"]
     return {
@@ -196,7 +197,7 @@ def _session(session_id: str) -> dict[str, Any]:
             item["cost"] = round(item["cost"] + float(getattr(obs, "total_cost", None) or 0), 6)
         if _level(obs) in {"WARNING", "ERROR"}:
             item["warnings"] += 1
-    project = llm_tracing.project_url()
+    project = lf_client.project_url()
     return {
         "connected": True,
         "sessionUrl": f"{project}/sessions/{session_id}" if project else None,
@@ -265,9 +266,46 @@ async def record_review(trace_id: str, name: str, value: bool, comment: str | No
     """Write a reviewer verdict on a turn as a Langfuse ``human.*`` score."""
     if name not in HUMAN_SCORE_NAMES:
         raise ReviewScoreError("unknown_score")
-    if not llm_tracing.enabled():
+    if not lf_client.enabled():
         raise ReviewScoreError("langfuse_off")
     await asyncio.to_thread(
-        llm_tracing.score_trace, trace_id, name, 1.0 if value else 0.0, comment=(comment or None)
+        tracing.score_trace, trace_id, name, 1.0 if value else 0.0, comment=(comment or None)
     )
     clear_cache(f"trace:{trace_id}")
+
+
+MAX_SCORE_PAGES = 10
+
+
+def verdicts_for_traces(
+    trace_ids: list[str], since: datetime, names: tuple[str, ...]
+) -> dict[str, dict[str, bool]]:
+    """``{trace_id: {score_name: passed}}`` for the given score names since ``since``.
+
+    Used by the interviewer playbook to tell a good turn from a bad one. Empty
+    when Langfuse is off: the caller then falls back to the rule flags.
+    """
+    lf = lf_client.client() if lf_client.enabled() else None
+    if lf is None or not trace_ids:
+        return {}
+    wanted = set(trace_ids)
+    found: dict[str, dict[str, bool]] = {}
+    for name in names:
+        cursor = None
+        for _ in range(MAX_SCORE_PAGES):
+            try:
+                page = lf.api.scores.get_many(
+                    name=name, from_timestamp=since, fields="subject", limit=100, cursor=cursor
+                )
+            except Exception:  # noqa: BLE001
+                break
+            for score in page.data:
+                subject = getattr(score, "subject", None)
+                trace_id = getattr(subject, "trace_id", None) or getattr(subject, "id", None)
+                if trace_id in wanted:
+                    value = getattr(score, "value", None)
+                    found.setdefault(trace_id, {})[name] = value in (1, 1.0, True, "1", "true")
+            cursor = getattr(getattr(page, "meta", None), "cursor", None)
+            if not cursor:
+                break
+    return found

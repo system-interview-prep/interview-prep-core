@@ -657,7 +657,7 @@ def test_script_dump_lists_every_situation() -> None:
     import importlib.util
     from pathlib import Path
 
-    path = Path(__file__).resolve().parents[3] / "scripts" / "dump_interviewer_script.py"
+    path = Path(__file__).resolve().parents[3] / "scripts" / "eval" / "interviews" / "dump_interviewer_script.py"
     spec = importlib.util.spec_from_file_location("dump_interviewer_script", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

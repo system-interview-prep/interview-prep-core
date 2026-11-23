@@ -5,6 +5,8 @@ import sys
 
 from fastapi import APIRouter
 
+from src.infrastructure.langfuse.router import router as langfuse_router
+
 from src.core.module import AppModule
 from src.modules.admin.ai import router as ai_router
 from src.modules.admin.overview import router as overview_router
@@ -23,13 +25,13 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 router.include_router(overview_router)
 router.include_router(sessions_router)
 router.include_router(ai_router)
+router.include_router(langfuse_router)
 router.include_router(processing_router)
 router.include_router(system_router)
 
 _LEGACY_MODULES = {
     "ai_overview": "src.modules.admin.ai.ai_overview",
     "cv_parsing_runs": "src.modules.admin.processing.cv_parsing_runs",
-    "langfuse_view": "src.modules.admin.ai.langfuse_view",
     "matching_runs": "src.modules.admin.processing.matching_runs",
     "practice_stats": "src.modules.admin.overview.practice_stats",
     "room_observer": "src.modules.admin.sessions.room_observer",

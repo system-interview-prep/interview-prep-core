@@ -41,7 +41,8 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core import llm_tracing
+from src.infrastructure import langfuse
+from src.infrastructure.langfuse import reader as lf_reader
 from src.core.trace_logging import trace_event
 from src.infrastructure.database import SessionFactory
 from src.modules.ai.facade import generate_text
@@ -54,8 +55,7 @@ REFRESH_SECONDS = 60.0
 MAX_CASES = 30
 MAX_EVENTS = 1000
 COUNT_DAYS = 30
-MAX_SCORE_PAGES = 10
-# What llm_tracing.mask puts in place of personal data; the interviewer said the real value.
+# What langfuse.mask puts in place of personal data; the interviewer said the real value.
 MASK_MARKERS = ("[tên]", "[email]", "[sđt]")
 MAX_OPS = 5
 MAX_ACTIVE = 40
@@ -130,7 +130,7 @@ def case_from_event(row: dict[str, Any]) -> dict[str, Any]:
         "intent": p.get("intent"),
         "sufficiency": p.get("sufficiency"),
         "missingAspect": (p.get("missing_aspect") or "")[:200] or None,
-        "interviewer": llm_tracing.mask(data=str(p.get("interviewer") or "")[:300]),
+        "interviewer": langfuse.mask(data=str(p.get("interviewer") or "")[:300]),
         "answerChars": p.get("answer_chars"),
         "flags": list(p.get("flags") or []),
         "playbookIds": list(p.get("playbook_ids") or []),
@@ -173,30 +173,8 @@ def verdict_of(case: dict[str, Any]) -> str | None:
 
 
 def _langfuse_verdicts(trace_ids: list[str], since: datetime) -> dict[str, dict[str, bool]]:
-    lf = llm_tracing.client() if llm_tracing.enabled() else None
-    if lf is None or not trace_ids:
-        return {}
-    wanted = set(trace_ids)
-    found: dict[str, dict[str, bool]] = {}
-    for name in (*REVIEW_SCORES, *JUDGE_SCORES):
-        cursor = None
-        for _ in range(MAX_SCORE_PAGES):
-            try:
-                page = lf.api.scores.get_many(
-                    name=name, from_timestamp=since, fields="subject", limit=100, cursor=cursor
-                )
-            except Exception:  # noqa: BLE001
-                break
-            for score in page.data:
-                subject = getattr(score, "subject", None)
-                trace_id = getattr(subject, "trace_id", None) or getattr(subject, "id", None)
-                if trace_id in wanted:
-                    value = getattr(score, "value", None)
-                    found.setdefault(trace_id, {})[name] = value in (1, 1.0, True, "1", "true")
-            cursor = getattr(getattr(page, "meta", None), "cursor", None)
-            if not cursor:
-                break
-    return found
+    """Reviewer and judge verdicts per turn; the Langfuse read is in the langfuse package."""
+    return lf_reader.verdicts_for_traces(trace_ids, since, (*REVIEW_SCORES, *JUDGE_SCORES))
 
 
 async def load_cases(db: AsyncSession, *, days: int) -> list[dict[str, Any]]:

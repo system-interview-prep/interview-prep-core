@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.modules.admin import langfuse_view
+from src.infrastructure.langfuse import reader as langfuse_view
 
 T0 = datetime(2026, 10, 26, 5, 0, tzinfo=UTC)
 
@@ -53,13 +53,13 @@ class _Api:
 @pytest.fixture(autouse=True)
 def _langfuse(monkeypatch):
     langfuse_view.clear_cache()
-    monkeypatch.setattr(langfuse_view.llm_tracing, "enabled", lambda: True)
-    monkeypatch.setattr(langfuse_view.llm_tracing, "project_url", lambda: "https://lf/project/p1")
+    monkeypatch.setattr(langfuse_view.lf_client, "enabled", lambda: True)
+    monkeypatch.setattr(langfuse_view.lf_client, "project_url", lambda: "https://lf/project/p1")
 
 
 def _use(monkeypatch, observations, scores):
     monkeypatch.setattr(
-        langfuse_view.llm_tracing, "client", lambda: SimpleNamespace(api=_Api(observations, scores))
+        langfuse_view.lf_client, "client", lambda: SimpleNamespace(api=_Api(observations, scores))
     )
 
 
@@ -89,15 +89,15 @@ def test_a_turn_not_ingested_yet_is_syncing_not_an_error(monkeypatch) -> None:
 
 
 def test_langfuse_off_or_down_never_raises(monkeypatch) -> None:
-    monkeypatch.setattr(langfuse_view.llm_tracing, "enabled", lambda: False)
+    monkeypatch.setattr(langfuse_view.lf_client, "enabled", lambda: False)
     assert asyncio.run(langfuse_view.trace_view("t3")) == {"connected": False, "reason": "not_configured"}
 
     def _boom():
         raise RuntimeError("503")
 
-    monkeypatch.setattr(langfuse_view.llm_tracing, "enabled", lambda: True)
+    monkeypatch.setattr(langfuse_view.lf_client, "enabled", lambda: True)
     monkeypatch.setattr(
-        langfuse_view.llm_tracing,
+        langfuse_view.lf_client,
         "client",
         lambda: SimpleNamespace(
             api=SimpleNamespace(observations=SimpleNamespace(get_many=lambda **kw: _boom()))
@@ -137,7 +137,7 @@ def test_flagged_turns_keep_trace_subjects_only(monkeypatch) -> None:
 def test_review_writes_only_known_human_scores(monkeypatch) -> None:
     written = []
     monkeypatch.setattr(
-        langfuse_view.llm_tracing,
+        langfuse_view.tracing,
         "score_trace",
         lambda trace_id, name, value, comment=None: written.append((trace_id, name, value, comment)),
     )

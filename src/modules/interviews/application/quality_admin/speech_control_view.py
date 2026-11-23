@@ -28,7 +28,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core import llm_tracing
+from src.infrastructure import langfuse
 from src.modules.interviews.application.quality_admin.pipeline_health import rate
 from src.modules.interviews.core.dialogue.policy import (
     INTERJECTION_SHARE,
@@ -321,7 +321,7 @@ async def review_speech_check(
     await db.commit()
     if verdict != "clear":
         # The same verdict on the turn's Langfuse trace, next to the judge's scores.
-        llm_tracing.score_trace(
+        langfuse.score_trace(
             (payload or {}).get("langfuse_trace_id"),
             "human.guard_correct",
             1 if verdict == "correct" else 0,
