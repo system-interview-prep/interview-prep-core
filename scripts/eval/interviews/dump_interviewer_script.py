@@ -6,7 +6,7 @@ giả chỉ ghi lại prompt. Vì đọc từ code đang chạy nên file luôn 
 
 Chạy trong thư mục interview-prep-core:
 
-    docker compose exec backend python scripts/dump_interviewer_script.py
+    docker compose exec backend python scripts/eval/interviews/dump_interviewer_script.py
 
 Kết quả: trace-logs/interviewer_script.md (ghi đè mỗi lần chạy).
 
@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # chạy được cả khi không đặt PYTHONPATH
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # chạy được cả khi không đặt PYTHONPATH
 
 from src.modules.interviews.adapters.voice.conversation import answer_window
 from src.modules.interviews.core.conversation import turn_engine as engine_module
@@ -125,7 +125,7 @@ def build() -> str:
     lines: list[str] = [
         "# Kịch bản nói của người phỏng vấn AI",
         "",
-        f"Tạo lúc {time.strftime('%Y-%m-%d %H:%M')} bằng `scripts/dump_interviewer_script.py`, đọc thẳng từ code.",
+        f"Tạo lúc {time.strftime('%Y-%m-%d %H:%M')} bằng `scripts/eval/interviews/dump_interviewer_script.py`, đọc thẳng từ code.",
         "Câu soạn sẵn: mỗi nhóm có nhiều câu, mỗi lượt chọn một câu theo mã buổi và tránh câu vừa nói.",
         "Câu AI tự viết: đi qua rào chắn; trượt thì dùng câu soạn sẵn tương ứng.",
         "",

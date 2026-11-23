@@ -9,17 +9,17 @@ ghi một dòng vào bảng ``progress_calibration``; trang Tiến độ đọc 
 Chạy trong thư mục interview-prep-core:
 
     # Đo tất cả: chấm lại 200 câu trả lời đã lưu, mỗi câu 3 lần (gọi AI), rồi ghi kết quả
-    docker compose exec backend python scripts/progress_calibration.py measure
+    docker compose exec backend python scripts/eval/interviews/progress_calibration.py measure
 
     # Chỉ đo từ dữ liệu đã có, không gọi AI
-    docker compose exec backend python scripts/progress_calibration.py measure --regrade 0
+    docker compose exec backend python scripts/eval/interviews/progress_calibration.py measure --regrade 0
 
     # Chưa ghi gì, chỉ in kết quả
-    docker compose exec backend python scripts/progress_calibration.py measure --dry-run
+    docker compose exec backend python scripts/eval/interviews/progress_calibration.py measure --dry-run
 
     # Bộ câu neo: chụp 30 câu trả lời đã lưu làm mốc, rồi chấm lại mỗi khi đổi model hoặc prompt
-    docker compose exec backend python scripts/progress_calibration.py anchors-snapshot
-    docker compose exec backend python scripts/progress_calibration.py anchors-check
+    docker compose exec backend python scripts/eval/interviews/progress_calibration.py anchors-snapshot
+    docker compose exec backend python scripts/eval/interviews/progress_calibration.py anchors-check
 
 Đo gì:
 - Độ lệch khi chấm lại cùng một câu trả lời (bỏ qua bộ nhớ đệm kết quả chấm).
@@ -43,7 +43,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # chạy được cả khi không đặt PYTHONPATH
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # chạy được cả khi không đặt PYTHONPATH
 
 from sqlalchemy import text  # noqa: E402
 

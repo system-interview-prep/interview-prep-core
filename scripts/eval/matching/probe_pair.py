@@ -5,7 +5,7 @@ feeding it something malformed. Reports the parsing fields the evaluator keys
 off (raw_text_coverage, warning codes) alongside each requirement's status and
 reason code.
 
-    python scripts/probe_pair.py jobscan_0986 MR5
+    python scripts/eval/matching/probe_pair.py jobscan_0986 MR5
 """
 from __future__ import annotations
 

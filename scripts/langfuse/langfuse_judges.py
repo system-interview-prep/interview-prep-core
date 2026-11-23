@@ -1,7 +1,7 @@
 """Bảng kiểm cho giám khảo AI (LLM-as-a-judge) chạy trong Langfuse.
 
 Tầng 2 của DOC_AND_PLAN/plan/interview/LLM_MONITORING_DESIGN_2026-10-25.md.
-``scripts/langfuse_setup.py --judges`` tạo các giám khảo này qua API; cũng có
+``scripts/langfuse/langfuse_setup.py --judges`` tạo các giám khảo này qua API; cũng có
 thể dán tay vào Langfuse (Evaluators → New evaluator → LLM-as-a-judge).
 
 Mỗi giám khảo đọc observation ``interview_turn`` (một lượt phỏng vấn):

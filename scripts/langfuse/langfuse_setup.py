@@ -10,12 +10,12 @@ Tạo:
    backend tự đưa lượt bị cờ và 5% lượt có văn bản vào hàng đợi.
 3. (--judges) Bốn giám khảo AI (tầng 2) và một luật chạy chúng trên các lượt có
    tag "text". Cần đã thêm LLM connection (khoá OpenAI) trong Langfuse: Settings →
-   LLM Connections. Nếu API từ chối, tạo tay theo `python scripts/langfuse_judges.py`.
+   LLM Connections. Nếu API từ chối, tạo tay theo `python scripts/langfuse/langfuse_judges.py`.
 
 Chạy trong container backend (đã có LANGFUSE_* trong .env):
 
-    docker compose exec backend python scripts/langfuse_setup.py
-    docker compose exec backend python scripts/langfuse_setup.py --judges --judge-model gpt-4.1
+    docker compose exec backend python scripts/langfuse/langfuse_setup.py
+    docker compose exec backend python scripts/langfuse/langfuse_setup.py --judges --judge-model gpt-4.1
 
 Chạy lại không tạo trùng: thứ đã có (theo tên) được giữ nguyên.
 """
@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from langfuse_judges import JUDGES, judge_prompt  # noqa: E402
 

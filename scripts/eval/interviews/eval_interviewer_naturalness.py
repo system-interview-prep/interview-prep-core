@@ -2,7 +2,7 @@
 
 Chạy trong container backend (đã có OPENAI_API_KEY):
 
-    docker compose exec -T backend python - < scripts/eval_interviewer_naturalness.py
+    docker compose exec -T backend python - < scripts/eval/interviews/eval_interviewer_naturalness.py
 
 Kết quả ghi ra trace-logs/naturalness_eval_<thời gian>.md và .json.
 

@@ -7,7 +7,7 @@ do AI viết hay bị rào chắn thay (và vì sao), độ trễ, có lặp câ
 
 Chạy trong một cửa sổ terminal riêng, trong thư mục interview-prep-core:
 
-    docker compose exec backend python scripts/watch_interviewer.py
+    docker compose exec backend python scripts/eval/interviews/watch_interviewer.py
 
 Tuỳ chọn:
     --session <mã buổi>   chỉ hiện một buổi (gõ vài ký tự đầu là đủ)

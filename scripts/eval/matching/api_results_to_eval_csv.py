@@ -10,7 +10,7 @@ so it is read back from user_cvs. The harness uses it only to flag degenerate
 inputs, and leaving it blank would mark every pair degenerate.
 
 Usage (inside the backend container):
-    python scripts/api_results_to_eval_csv.py \
+    python scripts/eval/matching/api_results_to_eval_csv.py \
         --results <results.jsonl> --checkpoint <checkpoint.json> \
         --manifest <matching_manifest_1000.csv> --out <matching_results.csv>
 """

@@ -3,22 +3,22 @@
 Tầng 4 của DOC_AND_PLAN/plan/interview/LLM_MONITORING_DESIGN_2026-10-25.md.
 
 1. `seed`: tạo (hoặc bổ sung) dataset `interview-turns-golden` từ
-   scripts/data/golden_turns.json. Thêm dần các lượt người soát đã chấm vào file đó.
+   scripts/langfuse/data/golden_turns.json. Thêm dần các lượt người soát đã chấm vào file đó.
 2. `run`: cho engine thật (model thật, prompt hiện tại) trả lời từng mục, chấm
    bằng luật, và ghi thành một lần chạy trong Langfuse (Datasets → interview-turns-golden
    → Runs). Đặt tên lần chạy theo thay đổi (vd "probe-prompt-v3") để so trong Langfuse.
 
 Chạy trong container backend (cần LANGFUSE_* và OPENAI_API_KEY):
 
-    docker compose exec backend python scripts/langfuse_experiment.py seed
-    docker compose exec backend python scripts/langfuse_experiment.py run --name "truoc-khi-sua-prompt"
+    docker compose exec backend python scripts/langfuse/langfuse_experiment.py seed
+    docker compose exec backend python scripts/langfuse/langfuse_experiment.py run --name "truoc-khi-sua-prompt"
 
 Sổ tay người phỏng vấn (interviews/core/dialogue/playbook.py): `--playbook active` chạy với các
 bài học đang dùng, `--playbook candidate` thêm cả các bài học đang chờ duyệt. Chạy hai lần
 rồi so trong Langfuse trước khi duyệt bài học mới:
 
-    docker compose exec backend python scripts/langfuse_experiment.py run --name pb-active --playbook active
-    docker compose exec backend python scripts/langfuse_experiment.py run \
+    docker compose exec backend python scripts/langfuse/langfuse_experiment.py run --name pb-active --playbook active
+    docker compose exec backend python scripts/langfuse/langfuse_experiment.py run \
         --name pb-candidate --playbook candidate
 
 Mỗi lần chạy gọi model khoảng 1–2 lần cho mỗi mục (16 mục ban đầu).
@@ -35,7 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.core import llm_tracing  # noqa: E402
 from src.modules.interviews.application.quality_admin import llm_checks  # noqa: E402

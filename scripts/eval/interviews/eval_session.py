@@ -1,15 +1,15 @@
 """Chấm độ tự nhiên của người phỏng vấn AI trên một buổi phỏng vấn THẬT.
 
 Lấy toàn bộ hội thoại của buổi từ database, tính các chỉ số tự động và nhờ AI
-chấm (giống scripts/eval_interviewer_naturalness.py, nhưng trên dữ liệu thật
+chấm (giống scripts/eval/interviews/eval_interviewer_naturalness.py, nhưng trên dữ liệu thật
 thay vì 40 câu mẫu). Kết quả ghi ra trace-logs/session_eval_<mã buổi>_<giờ>.md
 và .json.
 
 Chạy trong thư mục interview-prep-core, sau khi buổi phỏng vấn kết thúc:
 
-    docker compose exec backend python scripts/eval_session.py latest
-    docker compose exec backend python scripts/eval_session.py <mã buổi>
-    docker compose exec backend python scripts/eval_session.py latest --no-judge   # chỉ chỉ số, không gọi AI
+    docker compose exec backend python scripts/eval/interviews/eval_session.py latest
+    docker compose exec backend python scripts/eval/interviews/eval_session.py <mã buổi>
+    docker compose exec backend python scripts/eval/interviews/eval_session.py latest --no-judge   # chỉ chỉ số, không gọi AI
 
 Chỉ số:
 - Câu ghi nhận: tỉ lệ AI viết / dự phòng (từ trace nếu có), câu khác nhau, câu lặp

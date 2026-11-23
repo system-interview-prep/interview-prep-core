@@ -13,7 +13,7 @@ from livekit import rtc
 from livekit.agents import inference, stt as agent_stt
 from livekit.agents.utils import http_context
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from src.modules.interviews.adapters.voice.stt.evaluation import validate_corpus_manifest  # noqa: E402
 from src.modules.interviews.adapters.voice.speech.language import assemblyai_stream_options  # noqa: E402

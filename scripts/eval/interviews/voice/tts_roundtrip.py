@@ -12,8 +12,8 @@ Kết quả ghi ra trace-logs/tts_roundtrip_<giờ>.md và .json:
 
 Chạy trong container backend, khi server VieNeu đang chạy:
 
-    docker compose exec backend python scripts/tts_roundtrip.py --limit 40
-    docker compose exec backend python scripts/tts_roundtrip.py --file scripts/my_lines.txt
+    docker compose exec backend python scripts/eval/interviews/voice/tts_roundtrip.py --limit 40
+    docker compose exec backend python scripts/eval/interviews/voice/tts_roundtrip.py --file scripts/my_lines.txt
 
 Cần: VIENEU_TTS_BASE_URL (mặc định http://host.docker.internal:8000),
 OPENAI_API_KEY. Mỗi câu tốn một lượt TTS và một lượt nghe lại.

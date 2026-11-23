@@ -1,7 +1,7 @@
 """Diff two API benchmark runs per pair_id.
 
 Usage (inside the backend container):
-    python scripts/api_run_diff.py <before results.jsonl> <after results.jsonl>
+    python scripts/eval/matching/api_run_diff.py <before results.jsonl> <after results.jsonl>
 
 Written to show what removing the in-memory fallback changed on the ParadeDB
 path: which pairs stopped being scored 0.0 for a document that was never

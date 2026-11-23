@@ -1,8 +1,8 @@
 """Print Question Bank coverage (sessions and ACTIVE jobs) as tables for the thesis report.
 
 Usage:
-    python scripts/question_coverage_report.py            # report only
-    python scripts/question_coverage_report.py --prepare  # pre-generate first (LLM calls), then report
+    python scripts/eval/question_bank/question_coverage_report.py            # report only
+    python scripts/eval/question_bank/question_coverage_report.py --prepare  # pre-generate first (LLM calls), then report
 """
 
 import asyncio
@@ -10,7 +10,7 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from src.infrastructure.database import SessionFactory  # noqa: E402
 from src.modules.interviews.planning.question_coverage import (  # noqa: E402

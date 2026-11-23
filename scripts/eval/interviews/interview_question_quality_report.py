@@ -6,9 +6,9 @@ follow-ups the model wrote), time-box overruns, planned-difficulty fit,
 repeats, wrong language and grading-word leaks. No model calls.
 
 Usage:
-    python scripts/interview_question_quality_report.py
-    python scripts/interview_question_quality_report.py --no-demo --exclude-email "e2e.%" --json out.json
-    python scripts/interview_question_quality_report.py --session <session-id>
+    python scripts/eval/interviews/interview_question_quality_report.py
+    python scripts/eval/interviews/interview_question_quality_report.py --no-demo --exclude-email "e2e.%" --json out.json
+    python scripts/eval/interviews/interview_question_quality_report.py --session <session-id>
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from src.infrastructure.database import SessionFactory  # noqa: E402
 from src.modules.interviews.evaluation.question_quality import question_quality_report  # noqa: E402

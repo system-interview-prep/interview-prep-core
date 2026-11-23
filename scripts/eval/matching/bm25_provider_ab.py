@@ -14,7 +14,7 @@ score gap mixes three causes. This isolates them:
 
 Run inside the backend container, which already has DB access:
   docker compose exec -T -e PYTHONPATH=/app -w /app backend \
-      python scripts/bm25_provider_ab.py --checkpoint-json - < checkpoint.json
+      python scripts/eval/matching/bm25_provider_ab.py --checkpoint-json - < checkpoint.json
 """
 
 from __future__ import annotations

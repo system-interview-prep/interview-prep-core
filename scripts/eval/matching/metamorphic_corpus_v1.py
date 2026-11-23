@@ -19,11 +19,11 @@ unstable on its own and is excluded from the other relations rather than being
 reported as a violation.
 
 Usage (inside the container):
-    python scripts/metamorphic_corpus_v1.py --relation MR0 --limit 200 \
+    python scripts/eval/matching/metamorphic_corpus_v1.py --relation MR0 --limit 200 \
         --baseline /tmp/phase1/matching_results.csv \
         --checkpoint /tmp/phase1/checkpoint.json \
         --out /tmp/phase1/mr0.json
-    python scripts/metamorphic_corpus_v1.py --cleanup
+    python scripts/eval/matching/metamorphic_corpus_v1.py --cleanup
 """
 from __future__ import annotations
 
