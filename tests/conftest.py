@@ -47,6 +47,38 @@ def _no_live_question_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(get_settings(), "llm_cache_backend", "file")
 
 
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """``live_llm`` tests run only when LIVE_LLM_TESTS=1: they call the provider."""
+    import os
+
+    if os.getenv("LIVE_LLM_TESTS") == "1":
+        return
+    skip = pytest.mark.skip(reason="live_llm: set LIVE_LLM_TESTS=1 to call the provider")
+    for item in items:
+        if item.get_closest_marker("live_llm") is not None:
+            item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_interview_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The interview facade (``src.modules.ai.facade``) must never reach the
+    provider from a test either. On 2026-11-24 ``test_closing_reverse_qna_flow``
+    flipped between runs because its farewell came from the real model through
+    the key in ``.env`` (INTERVIEW_AGENT_TEST_PLAN_V1 §7). Tests that need a
+    model pass ``llm_client``/``ai_generator`` or patch ``generate_text``.
+    Set ``LIVE_LLM_TESTS=1`` to run against the provider on purpose."""
+    import os
+
+    if os.getenv("LIVE_LLM_TESTS") == "1":
+        return
+    from src.modules.ai import facade
+
+    def _blocked():  # noqa: ANN202 - replaces the cached client factory
+        raise RuntimeError("live model call blocked in tests (set LIVE_LLM_TESTS=1 to allow)")
+
+    monkeypatch.setattr(facade, "_client", _blocked)
+
+
 @pytest.fixture(autouse=True)
 def _trace_logs_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
     """Keep test traces out of the developer's trace-logs/.

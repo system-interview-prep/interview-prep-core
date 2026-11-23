@@ -357,6 +357,7 @@ def test_tc_pack_04_hard_ceiling_budget_non_exceedance():
     assert res is None
 
 
+@pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
 @pytest.mark.asyncio
 async def test_tc_pack_05_atomic_preflight_no_partial_queue():
     """TC-PACK-05: 2 targets. Target 1 feasible, Target 2 impossible even after fallback.
@@ -449,6 +450,7 @@ async def test_tc_pack_05_atomic_preflight_no_partial_queue():
     assert result["uncoveredTargets"][0]["reason"] == "no_feasible_qualifying_subset"
 
 
+@pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
 @pytest.mark.asyncio
 async def test_tc_pack_08_legacy_branch_invariance(monkeypatch):
     """TC-PACK-08: Plan with policyVersion = 'interview-planner-v1'.
@@ -571,6 +573,7 @@ async def test_tc_pack_08_legacy_branch_invariance(monkeypatch):
     ]
 
 
+@pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
 @pytest.mark.asyncio
 async def test_legacy_plan_with_enough_candidates_freezes_without_fallback(monkeypatch):
     from src.modules.interviews.planning import question_selector
@@ -638,6 +641,7 @@ async def test_legacy_plan_with_enough_candidates_freezes_without_fallback(monke
         assert snapshot.get("questionSource") != "deterministic_fallback_unreviewed"
 
 
+@pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
 @pytest.mark.asyncio
 async def test_legacy_missing_later_target_is_dropped_and_reported(monkeypatch):
     from src.modules.interviews.planning import question_selector
@@ -778,6 +782,7 @@ async def test_question_selection_api_maps_insufficiency_to_safe_409(monkeypatch
     assert "rubric" not in serialized
 
 
+@pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
 @pytest.mark.asyncio
 async def test_tc_pack_09_cross_target_allocation_correctness():
     """TC-PACK-09: Cross-Target Allocation Correctness.
@@ -1052,6 +1057,7 @@ async def test_tc_pack_10_unsatisfiable_global_assignment():
         assert "UPDATE interview_session_plans" not in called_sql
 
 
+@pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
 @pytest.mark.asyncio
 async def test_tc_pack_11_search_order_independence():
     """TC-PACK-11: Search Order Independence (Pure Solver + End-to-End Integration).
@@ -1352,6 +1358,7 @@ def test_tc_pack_12_three_target_backtracking():
     assert metrics.get("global_search_nodes", 0) >= 3
 
 
+@pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
 @pytest.mark.asyncio
 async def test_turn_count_matches_actual_persisted_turns():
     """Verify turnCount in questionSelection matches actual persisted turns (K + 3)."""
@@ -1697,6 +1704,7 @@ def _legacy_db(targets, candidates_by_concept):
     return db, inserted_turns
 
 
+@pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
 @pytest.mark.asyncio
 async def test_legacy_branch_honours_planner_question_count():
     """P2 must freeze exactly targetQuestionCount per target.
@@ -1751,6 +1759,7 @@ async def test_legacy_branch_honours_planner_question_count():
     assert stages[-1] == "BEHAVIORAL"
 
 
+@pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
 @pytest.mark.asyncio
 async def test_legacy_branch_does_not_force_a_coding_question():
     """P2 must not swap a ranked pick for an arbitrary coding question.
@@ -1794,6 +1803,7 @@ async def test_legacy_branch_does_not_force_a_coding_question():
     assert frozen_version_ids.count("qv-a2") == 1
 
 
+@pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
 @pytest.mark.asyncio
 async def test_one_question_with_two_mappings_yields_one_candidate():
     """A question mapped under several purposes must not be frozen twice."""
@@ -1837,6 +1847,7 @@ async def test_one_question_with_two_mappings_yields_one_candidate():
     assert sorted(frozen_version_ids) == ["qv-dup", "qv-other"]
 
 
+@pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
 @pytest.mark.asyncio
 async def test_dynamic_plan_without_targets_locks_preset_only_queue():
     """B6: P1 emits READY with targets=[] when every requirement is not_applicable.
@@ -1977,6 +1988,7 @@ def _patch_bank(monkeypatch, approved):
     monkeypatch.setattr(question_selector, "add_spoken_versions", no_preflight)
 
 
+@pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
 @pytest.mark.asyncio
 async def test_challenge_tier_never_asks_an_unreviewed_draft(monkeypatch):
     _patch_bank(monkeypatch, approved={"sql"})
@@ -1991,6 +2003,7 @@ async def test_challenge_tier_never_asks_an_unreviewed_draft(monkeypatch):
     assert missing["reason"] == "unreviewed_not_allowed"
 
 
+@pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
 @pytest.mark.asyncio
 async def test_other_tiers_ask_at_most_one_unreviewed_draft(monkeypatch):
     _patch_bank(monkeypatch, approved={"sql"})

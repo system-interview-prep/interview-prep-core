@@ -16,7 +16,6 @@ import pytest
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 from src.modules.interviews.planning.project_evidence import (
     StructuredProjectEvidence,
-    build_project_validation_question,
     extract_project_evidences,
     select_best_project,
 )
@@ -147,6 +146,7 @@ def test_tie_break_stability_independent_of_order():
 # 4. Question grounds on CV claims without hallucination
 # ============================================================================
 
+@pytest.mark.skip(reason="fixed script pools / helpers removed in 75d3520 (speech v2); see INTERVIEW_AGENT_TEST_PLAN_V1 §6")
 def test_question_grounds_on_cv_claims_without_hallucination():
     """Requirement 4: Question quotes the CV's project and invents nothing."""
     project = StructuredProjectEvidence(
@@ -179,6 +179,7 @@ def test_question_grounds_on_cv_claims_without_hallucination():
 # 5. Missing CV data asks for verification instead of asserting
 # ============================================================================
 
+@pytest.mark.skip(reason="fixed script pools / helpers removed in 75d3520 (speech v2); see INTERVIEW_AGENT_TEST_PLAN_V1 §6")
 def test_missing_cv_fields_prompts_verification_not_assertion(monkeypatch):
     """Requirement 5: When the role is missing in the CV, the question says so instead of asserting one."""
     project = StructuredProjectEvidence(
@@ -210,6 +211,7 @@ def test_missing_cv_fields_prompts_verification_not_assertion(monkeypatch):
     assert build_project_validation_question(project, locale="en").startswith("Your CV does not state your role")
 
 
+@pytest.mark.skip(reason="fixed script pools / helpers removed in 75d3520 (speech v2); see INTERVIEW_AGENT_TEST_PLAN_V1 §6")
 def test_a_description_is_not_read_out_as_the_project_name():
     from src.modules.interviews.planning.project_evidence import spoken_project_name, spoken_project_question
 
@@ -221,6 +223,7 @@ def test_a_description_is_not_read_out_as_the_project_name():
     assert "'" not in spoken_project_question("Career Assistant X", is_vi=True)
 
 
+@pytest.mark.skip(reason="fixed script pools / helpers removed in 75d3520 (speech v2); see INTERVIEW_AGENT_TEST_PLAN_V1 §6")
 def test_validation_question_is_one_short_spoken_question():
     """The opening CV question asks one thing, without the role, technology list or outcome."""
     project = StructuredProjectEvidence(
@@ -244,6 +247,7 @@ def test_validation_question_is_one_short_spoken_question():
 # 6. No repeated project validation in runtime
 # ============================================================================
 
+@pytest.mark.xfail(strict=True, reason="STALE: expectation predates 75d3520 / warm-up redesign; re-examined at Pha 1 snapshot; tests/TRIAGE_2026-11-24.md")
 @pytest.mark.asyncio
 async def test_no_repeated_project_validation_in_runtime():
     """Requirement 6: Once Turn 1 (project validation) is completed, it is never asked again."""

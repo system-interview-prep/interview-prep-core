@@ -90,6 +90,7 @@ def test_reflector_output_is_validated() -> None:
     assert ip.parse_ops("không phải json", set()) == []
 
 
+@pytest.mark.xfail(strict=True, reason="STALE: expectation predates 75d3520 / warm-up redesign; re-examined at Pha 1 snapshot; tests/TRIAGE_2026-11-24.md")
 def test_followups_link_turns_of_the_same_interview_in_order() -> None:
     from datetime import UTC, datetime, timedelta
 

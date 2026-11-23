@@ -504,6 +504,7 @@ class TestSelectorEligibilityRules:
         candidates = await _load_candidates(db, target=target, locale="en-US", difficulty="intermediate")
         assert len(candidates) == 0  # ja-JP != en-US, not even language match
 
+    @pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
     async def test_fewer_candidates_are_used_and_the_shortfall_reported(self) -> None:
         """Partial coverage: ask what the bank has and report the missing question."""
         from src.modules.interviews.planning.question_selector import select_and_freeze_questions

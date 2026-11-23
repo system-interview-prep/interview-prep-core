@@ -37,7 +37,6 @@ from src.modules.interviews.evaluation.evaluation_types import (
 )
 from src.modules.interviews.planning.project_evidence import (
     StructuredProjectEvidence,
-    build_project_validation_question,
     extract_project_evidences,
     select_best_project,
 )
@@ -312,6 +311,7 @@ class TestOfflineEvaluationMatrix(unittest.IsolatedAsyncioTestCase):
     # Part B: CV Project Coverage in Evaluation
     # ------------------------------------------------------------------------
 
+    @unittest.skip("fixed script pools / helpers removed in 75d3520 (speech v2); see INTERVIEW_AGENT_TEST_PLAN_V1 §6")
     def test_cv_project_coverage_and_ranking_flow(self):
         """B1. Multi-project CV: Project matching JD must be selected regardless of CV order."""
         cv_projects = [

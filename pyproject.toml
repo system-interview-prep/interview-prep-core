@@ -58,6 +58,9 @@ dev = [
 pythonpath = ["."]
 asyncio_mode = "auto"
 addopts = "--import-mode=importlib --basetemp=.pytest_temp"
+markers = [
+  "live_llm(reason): calls the real model provider; skipped unless LIVE_LLM_TESTS=1",
+]
 
 [tool.ruff]
 line-length = 110

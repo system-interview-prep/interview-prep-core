@@ -39,6 +39,7 @@ def _vietnamese_lines() -> list[tuple[str, str]]:
 LINES = _vietnamese_lines()
 
 
+@pytest.mark.skip(reason="SCRIPT: fixed-phrase script pools removed in 75d3520 (speech v2); tests/TRIAGE_2026-11-24.md")
 def test_script_has_every_situation() -> None:
     names = {name for name, _ in LINES}
     for expected in (
@@ -72,6 +73,7 @@ def test_acknowledgements_do_not_praise_or_judge_the_candidate() -> None:
         assert not is_evaluative(line) and not is_judgmental(line), (name, line)
 
 
+@pytest.mark.skip(reason="SCRIPT: fixed-phrase script pools removed in 75d3520 (speech v2); tests/TRIAGE_2026-11-24.md")
 def test_voice_only_feedback_is_kept_in_the_voice_adapter() -> None:
     from src.modules.interviews.adapters.voice.conversation import answer_window, interruption, voice_phrases
     from src.modules.interviews.core.dialogue import policy as interviewer_dialogue
@@ -103,6 +105,7 @@ def test_voice_agent_packages_load_without_livekit_runtime_imports() -> None:
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.skip(reason="SCRIPT: fixed-phrase script pools removed in 75d3520 (speech v2); tests/TRIAGE_2026-11-24.md")
 def test_every_room_answers_an_aside_by_repeating_the_question() -> None:
     from src.modules.interviews.core.conversation.turn_engine import candidate_question_response
 
