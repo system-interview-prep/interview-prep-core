@@ -39,6 +39,9 @@ def _no_live_question_generation(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(get_settings(), "matching_judge_enabled", False)
     gate_judge.reset_gate_memo()
+    # And the CV text repair (src/modules/user_cvs/parsing/domain/text_repair),
+    # also on by default and also a model call per parsed document.
+    monkeypatch.setattr(get_settings(), "cv_text_repair_enabled", False)
 
 
 @pytest.fixture(autouse=True)

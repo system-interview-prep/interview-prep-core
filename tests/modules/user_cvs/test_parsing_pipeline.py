@@ -187,3 +187,73 @@ async def test_timeout_with_a_retry_left_releases_instead_of_failing() -> None:
         await pipeline.run("cv-1", final_attempt=False)
     assert repository.failure is None
     assert repository.released == "cv-1"
+
+
+class TornExtractor:
+    """A text layer that tore "GPA" apart and glued it to the degree line."""
+
+    async def extract(self, document: bytes, filename: str, document_id: str) -> DocumentArtifacts:
+        torn = "Bachelor of Information Technology (Data Science)GP A: 3.25/4.00"
+        return DocumentArtifacts(
+            markdown=f"Education\n{torn}\nSkills\nPython",
+            content_list=[
+                {"type": "title", "text": "Education", "page_idx": 0, "bbox": [0, 0, 50, 10]},
+                {"type": "text", "text": torn, "page_idx": 0, "bbox": [0, 20, 50, 30]},
+                {"type": "title", "text": "Skills", "page_idx": 0, "bbox": [0, 40, 50, 50]},
+                {"type": "text", "text": "Python", "page_idx": 0, "bbox": [0, 60, 50, 70]},
+            ],
+            extractor_version="pdf_text-test",
+        )
+
+
+class RepairScript:
+    def complete(self, *, instructions: str, input_text: str, output_schema: dict) -> str:
+        blocks = json.loads(input_text)["blocks"]
+        fixed = [b.replace("Science)GP A:", "Science)\nGPA:") for b in blocks]
+        return json.dumps({"blocks": fixed}, ensure_ascii=False)
+
+
+async def test_repair_runs_before_the_source_and_is_recorded_in_parse_source() -> None:
+    from src.modules.user_cvs.parsing.domain.text_repair import TextRepairer
+
+    document = CvDocument(cv_id="cv-1", filename="resume.pdf", storage_key="cvs/u/cv-1.pdf", checksum=SHA256)
+    repository = RecordingRepository(document)
+    storage = MemoryStorage(b"pdf")
+    pipeline = CvParsingPipeline(
+        repository=repository,
+        storage=storage,
+        extractor=TornExtractor(),
+        parser=DeterministicResumeParser(),
+        source_builder=build_source_document,
+        repairer=TextRepairer(RepairScript()),
+    )
+
+    result = await pipeline.run("cv-1")
+
+    assert result.status == "DONE"
+    _, saved = repository.completed
+    # The raw text people see, and every evidence offset, come from the repaired copy.
+    assert "GPA: 3.25/4.00" in saved["raw_text"]
+    assert "GP A" not in saved["raw_text"]
+    assert saved["parse_source"] == "mineru+repair-v1+deterministic-resume-v6"
+    # The stored artifact is still the extractor's own output.
+    artifact = storage.json_objects[f"{document.storage_key}.artifacts/{SHA256}/mineru.json"]
+    assert "GP A" in artifact["contentList"][1]["text"]
+
+
+async def test_without_a_repairer_the_pipeline_is_unchanged() -> None:
+    document = CvDocument(cv_id="cv-1", filename="resume.pdf", storage_key="cvs/u/cv-1.pdf", checksum=SHA256)
+    repository = RecordingRepository(document)
+    pipeline = CvParsingPipeline(
+        repository=repository,
+        storage=MemoryStorage(b"pdf"),
+        extractor=TornExtractor(),
+        parser=DeterministicResumeParser(),
+        source_builder=build_source_document,
+    )
+
+    await pipeline.run("cv-1")
+
+    _, saved = repository.completed
+    assert "GP A: 3.25/4.00" in saved["raw_text"]
+    assert saved["parse_source"] == "mineru+deterministic-resume-v6"

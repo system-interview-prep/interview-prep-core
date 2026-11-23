@@ -65,11 +65,18 @@ def _judge_key_material() -> str:
     """
 
     from src.core.config import get_settings
-    from src.modules.matching.judge.readings import GATE_PROMPT_VERSION, PROMPT_VERSION
+    from src.modules.matching.judge.readings import (
+        GATE_PROMPT_VERSION,
+        NUMERIC_PROMPT_VERSION,
+        PROMPT_VERSION,
+    )
 
     if not get_settings().matching_judge_enabled:
         return ""
-    return f"\x00judge={PROMPT_VERSION}\x00gate={GATE_PROMPT_VERSION}"
+    return (
+        f"\x00judge={PROMPT_VERSION}\x00gate={GATE_PROMPT_VERSION}"
+        f"\x00numeric={NUMERIC_PROMPT_VERSION}"
+    )
 
 
 def match_cache_key(payload: MatchRequest) -> str:

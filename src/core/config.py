@@ -163,6 +163,11 @@ class Settings(BaseSettings):
     # Hybrid CV parsing: let the grounded LLM reading win a clash with the
     # deterministic baseline instead of only filling the baseline's gaps.
     parser_llm_first_merge_enabled: bool = True
+    # Whitespace-only repair of torn extraction text ("GP A: 3.25" -> "GPA:
+    # 3.25") before the source document is built. The model may only add or
+    # remove whitespace; a block that differs in any other character is kept
+    # as extracted. Needs OPENAI_API_KEY; uses MATCHING_JUDGE_MODEL.
+    cv_text_repair_enabled: bool = True
     embedding_provider: str = "openai"
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1024

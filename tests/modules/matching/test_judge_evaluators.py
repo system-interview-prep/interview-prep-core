@@ -164,8 +164,12 @@ def test_a_rule_met_is_not_replaced_by_the_judge() -> None:
     assert result == rule
 
 
-def test_numeric_requirements_are_left_to_the_rules() -> None:
-    """A GPA threshold is a comparison, and the judge is not trusted to compare."""
+def test_an_entailment_reading_cannot_settle_a_numeric_requirement() -> None:
+    """A GPA threshold is a comparison; "satisfies" from the entailment judge is not one.
+
+    Numeric requirements take the numeric path (``test_numeric_judge``), and an
+    entailment reading that reached one by mistake changes nothing.
+    """
 
     requirement = _requirement("GPA >= 3.2/4.0", threshold=3.2, scale=4.0, operator="gte")
     resume = _resume(GPA_LINE)

@@ -13,7 +13,10 @@ every existing test - get the rule verdict unchanged.
 from __future__ import annotations
 
 from src.modules.matching.domain.schemas import RequirementResult, UnresolvedRequirement
-from src.modules.matching.evaluation.judge_evaluators import evaluate_with_readings
+from src.modules.matching.evaluation.judge_evaluators import (
+    evaluate_with_numeric,
+    evaluate_with_readings,
+)
 from src.modules.matching.evaluation.legacy_rules import EvaluatorSelection, select_evaluator
 from src.modules.matching.evaluation.legacy_rules import (
     evaluate_unresolved_requirement as evaluate_by_rules,
@@ -37,4 +40,7 @@ def evaluate_unresolved_requirement(
     result = evaluate_by_rules(requirement, resume)
     if readings is None:
         return result
-    return evaluate_with_readings(requirement, resume, readings, result, select_evaluator(requirement))
+    selection = select_evaluator(requirement)
+    if selection.name in ("gpa", "language_credential"):
+        return evaluate_with_numeric(requirement, resume, readings, result)
+    return evaluate_with_readings(requirement, resume, readings, result, selection)

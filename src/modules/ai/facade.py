@@ -7,6 +7,11 @@ from fastapi.concurrency import run_in_threadpool
 from src.core import llm_tracing
 from src.core.config import get_settings
 from src.core.pipeline_events import ai_call_timer, caller_purpose
+from src.modules.ai.structured import (  # noqa: F401 - re-exported for other modules
+    CachingStructuredClient,
+    OpenAIStructuredClient,
+    StructuredClient,
+)
 
 # Models that answered "temperature is not supported" once. Every later call
 # skips the parameter instead of paying for a rejected request first.

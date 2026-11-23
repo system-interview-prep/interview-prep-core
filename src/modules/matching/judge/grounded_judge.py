@@ -17,12 +17,12 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from src.core.pipeline_events import ai_call_timer
 from src.core.trace_logging import trace_event
+from src.modules.ai.facade import OpenAIStructuredClient, StructuredClient
 from src.modules.matching.judge.readings import (
     PROMPT_VERSION,
     EntailmentReading,
@@ -70,53 +70,25 @@ _OUTPUT_SCHEMA: dict[str, Any] = {
 }
 
 
-class JudgeClient(Protocol):
-    """One completion call.  Returns the model's text; raises on transport failure."""
+# The client lives in src.core so other modules' readers can share it; these
+# names are kept for the judge's callers and tests.
+JudgeClient = StructuredClient
 
-    def complete(self, *, instructions: str, input_text: str, output_schema: dict[str, Any]) -> str: ...
 
-
-class OpenAIJudgeClient:
-    """``JudgeClient`` on the OpenAI Responses API, in the shape the evidence search uses."""
+class OpenAIJudgeClient(OpenAIStructuredClient):
+    """``StructuredClient`` on the OpenAI Responses API, labelled as the judge."""
 
     def __init__(
-        self,
-        *,
-        api_key: str,
-        model: str,
-        max_output_tokens: int = 600,
-        client: object | None = None,
+        self, *, api_key: str, model: str, max_output_tokens: int = 600, client: object | None = None
     ) -> None:
-        if client is None:
-            from openai import OpenAI
-
-            client = OpenAI(api_key=api_key)
-        self._client = client
-        self._model = model
-        self._max_output_tokens = max_output_tokens
-
-    def complete(self, *, instructions: str, input_text: str, output_schema: dict[str, Any]) -> str:
-        with ai_call_timer(
-            "matching.judge.entailment", provider="openai", model=self._model, input_text=input_text
-        ) as call:
-            response = self._client.responses.create(  # type: ignore[attr-defined]
-                model=self._model,
-                instructions=instructions,
-                input=input_text,
-                text={
-                    "format": {
-                        "type": "json_schema",
-                        "name": "requirement_entailment",
-                        "strict": True,
-                        "schema": output_schema,
-                    }
-                },
-                temperature=0.0,
-                max_output_tokens=self._max_output_tokens,
-                store=False,
-            )
-            call.done(response.output_text, getattr(response, "usage", None))
-        return response.output_text
+        super().__init__(
+            api_key=api_key,
+            model=model,
+            purpose="matching.judge.entailment",
+            schema_name="requirement_entailment",
+            max_output_tokens=max_output_tokens,
+            client=client,
+        )
 
 
 class _RawSelected(BaseModel):

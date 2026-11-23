@@ -23,6 +23,7 @@ from src.modules.user_cvs.schemas import CanonicalModel
 
 PROMPT_VERSION = "entailment-v1"
 GATE_PROMPT_VERSION = "gate-v1"
+NUMERIC_PROMPT_VERSION = "numeric-v1"
 
 Relation = Literal["satisfies", "partially", "unrelated", "unsure"]
 # What a posting's line is, as the gate judge reads it.  Mirrors the rule
@@ -58,6 +59,35 @@ class EntailmentReading(CanonicalModel):
     dropped: dict[str, str] = Field(default_factory=dict)
 
 
+# What the numeric judge may extract.  Both are numbers a quote can be checked
+# to contain; a degree level or a claimed number of years is not, and stays
+# with the rules.
+NumericKind = Literal["gpa", "credential_score"]
+Credential = Literal["ielts", "toeic", "toefl", "jlpt", "hsk"]
+
+
+class NumericReading(CanonicalModel):
+    """One number the judge found for a requirement, and the words it found it in.
+
+    The judge does not compare: ``value`` is handed back to the same rule
+    evaluator that reads a CV, restated as "GPA 3.25/4.0" or "IELTS 6.5" in
+    place of the span's own text, so the threshold logic has one copy.
+    """
+
+    requirement_id: str = Field(min_length=1)
+    kind: NumericKind
+    value: float = Field(gt=0)
+    scale: float | None = Field(default=None, gt=0)
+    credential: Credential | None = None
+    evidence_id: str = Field(min_length=1)
+    quote: str = Field(min_length=1, max_length=600)
+
+    def restated(self) -> str:
+        if self.kind == "gpa":
+            return f"GPA {self.value:g}/{self.scale:g}" if self.scale else f"GPA {self.value:g}"
+        return f"{(self.credential or '').upper()} {self.value:g}"
+
+
 class ReadingSet(CanonicalModel):
     """Every reading made for one match, keyed by requirement id.
 
@@ -67,10 +97,14 @@ class ReadingSet(CanonicalModel):
 
     prompt_version: str = PROMPT_VERSION
     entailments: dict[str, EntailmentReading] = Field(default_factory=dict)
+    numerics: dict[str, NumericReading] = Field(default_factory=dict)
     fallbacks: dict[str, FallbackReason] = Field(default_factory=dict)
 
     def reading_for(self, requirement_id: str) -> EntailmentReading | None:
         return self.entailments.get(requirement_id)
+
+    def numeric_for(self, requirement_id: str) -> NumericReading | None:
+        return self.numerics.get(requirement_id)
 
 
 class GateReading(CanonicalModel):
