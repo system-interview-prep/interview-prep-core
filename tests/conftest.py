@@ -42,6 +42,9 @@ def _no_live_question_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     # And the CV text repair (src/modules/user_cvs/parsing/domain/text_repair),
     # also on by default and also a model call per parsed document.
     monkeypatch.setattr(get_settings(), "cv_text_repair_enabled", False)
+    # Cached model answers go to files in a temporary directory, never to the
+    # llm_call_cache table of whatever database the developer is pointed at.
+    monkeypatch.setattr(get_settings(), "llm_cache_backend", "file")
 
 
 @pytest.fixture(autouse=True)

@@ -168,6 +168,11 @@ class Settings(BaseSettings):
     # remove whitespace; a block that differs in any other character is kept
     # as extracted. Needs OPENAI_API_KEY; uses MATCHING_JUDGE_MODEL.
     cv_text_repair_enabled: bool = True
+    # Where the answers of structured model calls (judges, text repair, evidence
+    # search) are kept so one input is asked once: "postgres" = the
+    # llm_call_cache table, shared by every instance and kept across deploys;
+    # "file" = one JSON per answer under models_cache/, for a developer machine.
+    llm_cache_backend: Literal["file", "postgres"] = "postgres"
     embedding_provider: str = "openai"
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1024

@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 
 from src.core.config import Settings, get_settings
-from src.modules.ai.facade import CachingStructuredClient, OpenAIStructuredClient
+from src.modules.ai.facade import CachingStructuredClient, OpenAIStructuredClient, cache_store_for
 from src.modules.user_cvs.parsing.domain.text_repair import REPAIR_VERSION, TextRepairer
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,9 @@ def build_text_repairer(settings: Settings | None = None) -> TextRepairer | None
         logger.warning("CV text repair unavailable: %s", type(exc).__name__)
         return None
     cached = CachingStructuredClient(
-        client, model=model, prompt_version=REPAIR_VERSION, directory=_CACHE_DIR
+        client,
+        model=model,
+        prompt_version=REPAIR_VERSION,
+        store=cache_store_for("text_repair", _CACHE_DIR, settings),
     )
     return TextRepairer(cached)

@@ -16,13 +16,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
-from pathlib import Path
 from typing import Any, Protocol
 
 from src.core.pipeline_events import ai_call_timer
-
-logger = logging.getLogger(__name__)
+from src.modules.ai.cache_store import CacheStore
 
 
 class StructuredClient(Protocol):
@@ -88,21 +85,16 @@ class CachingStructuredClient:
     The model is not deterministic at the margin, and two runs of an unchanged
     input must not disagree because of it.  The key covers the prompt version
     and model as well as the input, so a prompt change never serves an old
-    answer.  Every cache failure degrades to calling the client.
+    answer.  Where the answers are kept is the store's business.
     """
 
     def __init__(
-        self,
-        inner: StructuredClient,
-        *,
-        model: str,
-        prompt_version: str,
-        directory: Path,
+        self, inner: StructuredClient, *, model: str, prompt_version: str, store: CacheStore
     ) -> None:
         self._inner = inner
         self._model = model
         self._prompt_version = prompt_version
-        self._directory = directory
+        self._store = store
 
     def _key(self, instructions: str, input_text: str) -> str:
         material = json.dumps(
@@ -118,18 +110,12 @@ class CachingStructuredClient:
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
     def complete(self, *, instructions: str, input_text: str, output_schema: dict[str, Any]) -> str:
-        path = self._directory / f"{self._key(instructions, input_text)}.json"
-        try:
-            if path.is_file():
-                return path.read_text(encoding="utf-8")
-        except Exception:  # noqa: BLE001
-            logger.warning("structured-call cache unreadable, recomputing: %s", path.name)
-        text = self._inner.complete(
+        key = self._key(instructions, input_text)
+        cached = self._store.get(key)
+        if cached is not None:
+            return cached
+        answer = self._inner.complete(
             instructions=instructions, input_text=input_text, output_schema=output_schema
         )
-        try:
-            self._directory.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding="utf-8")
-        except Exception:  # noqa: BLE001
-            logger.warning("structured-call cache unwritable: %s", path.name)
-        return text
+        self._store.put(key, answer)
+        return answer

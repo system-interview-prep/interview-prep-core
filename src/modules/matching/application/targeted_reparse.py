@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import hashlib
 import json
 import logging
@@ -9,6 +7,7 @@ import re
 import time
 from collections.abc import Iterable
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -16,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from src.core.config import get_settings
 from src.core.pipeline_events import ai_call_timer
 from src.core.trace_logging import trace_event
+from src.modules.ai.facade import cache_store_for
 from src.modules.matching.domain.schemas import (
     CanonicalJob,
     LanguageRequirement,
@@ -218,20 +218,18 @@ def _cached_search(searcher, raw_text: str, requirements: list[dict[str, str]]):
         sort_keys=True,
     )
     key = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    path = _SEARCH_CACHE_DIR / f"{key}.json"
-    try:
-        if path.is_file():
-            return EvidenceSearchResult.model_validate_json(path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        logger.warning("evidence search cache unreadable, recomputing: %s", path.name)
+    # Built per call so a test can redirect ``_SEARCH_CACHE_DIR``.
+    store = cache_store_for("evidence_search", _SEARCH_CACHE_DIR)
+    cached = store.get(key)
+    if cached is not None:
+        try:
+            return EvidenceSearchResult.model_validate_json(cached)
+        except ValueError:
+            logger.warning("evidence search cache entry invalid, recomputing: %s", key[:12])
     result = searcher.search(raw_text, requirements)
     if isinstance(result, dict):
         result = EvidenceSearchResult.model_validate(result)
-    try:
-        _SEARCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_text(result.model_dump_json(), encoding="utf-8")
-    except Exception:  # noqa: BLE001
-        logger.warning("evidence search cache not written: %s", path.name)
+    store.put(key, result.model_dump_json())
     return result
 
 
