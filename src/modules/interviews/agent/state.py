@@ -37,8 +37,13 @@ class TurnGraphState(TypedDict, total=False):
     allowed_actions: list[str]
     menu_reasons: dict[str, str]
     pacing: dict[str, Any]
+    memory_search: Any
     # decide
-    decision: Any
+    decision: Any            # what act executes
+    rule_decision: Any       # the rule ladder's choice (always made)
+    agent_decision: Any      # the model's choice (shadow / live), or None
+    executed: str            # "rule" | "agent"
+    decide_error: str | None
     # act / guards_out
     output: Any
     # record

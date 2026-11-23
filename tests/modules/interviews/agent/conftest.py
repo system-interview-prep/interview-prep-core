@@ -73,6 +73,32 @@ def session_state_factory():
     return make
 
 
+class FakeToolCaller:
+    """Stands in for ``ai.facade.generate_tool_calls``: scripted answers, recorded inputs."""
+
+    def __init__(self, *answers: list[dict] | Exception):
+        self.answers = list(answers)
+        self.inputs: list[dict] = []
+
+    async def __call__(self, **kwargs):
+        self.inputs.append(kwargs)
+        answer = self.answers.pop(0) if self.answers else []
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def tool_call(name: str, call_id: str = "c1", **arguments) -> dict:
+    arguments.setdefault("rationale", "scripted")
+    arguments.setdefault("evidence_refs", ["answer:sent:1"])
+    return {"name": name, "arguments": arguments, "call_id": call_id}
+
+
+@pytest.fixture
+def fake_tool_caller():
+    return FakeToolCaller
+
+
 @pytest.fixture
 def ctx_factory(session_state_factory):
     def make(text: str = "Em dùng Redis làm cache và đặt TTL năm phút cho từng key.", **knobs) -> TurnContext:

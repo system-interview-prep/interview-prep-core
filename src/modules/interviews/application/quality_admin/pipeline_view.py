@@ -265,6 +265,8 @@ def _exchange_view(event: dict[str, Any]) -> dict[str, Any]:
         "transition": p.get("transition"),
         # LLM monitoring: why the engine acted, rule flags, and the Langfuse trace.
         "decisionRule": p.get("decision_rule"),
+        # Agent vs rule (INTERVIEW_AGENT_DECISION_PLAN_V1 §5.2): mode, both choices, agreement, pace.
+        "agentDecision": p.get("agent_decision") if isinstance(p.get("agent_decision"), dict) else None,
         "flags": [str(flag) for flag in p.get("flags") or []],
         "langfuseTraceId": p.get("langfuse_trace_id"),
     }

@@ -41,6 +41,7 @@ from src.modules.interviews.core.dialogue.policy import (
     speech_v2_enabled,
 )
 from src.modules.interviews.core.dialogue.topics import generic_transition
+from src.modules.interviews.agent import record as agent_record
 from src.modules.interviews.agent.turn_graph import run_turn
 from src.modules.interviews.core.conversation.turn_engine import (
     InterviewCoreEngine,
@@ -489,6 +490,8 @@ def _trace_spoken_turn(
         langfuse_trace_id=langfuse_trace_id,
         # Interviewer playbook entries in the prompts of this turn (helpful / harmful counters).
         playbook_ids=playbook_ids or None,
+        # The agent's decision next to the rule's (admin "agent vs rule" column).
+        agent_decision=agent_record.summary(meta["decision"]) if isinstance(meta.get("decision"), dict) else None,
     )
 
 
@@ -1766,7 +1769,11 @@ async def process_candidate_message(
             },
             flags=flags,
             private_input={"question": question_text, "answer": cleaned_content},
-            scores={"guard.rejects": sum(1 for c in checks if c.get("outcome") == "reject")},
+            scores={
+                "guard.rejects": sum(1 for c in checks if c.get("outcome") == "reject"),
+                # agent.* (INTERVIEW_AGENT_DECISION_PLAN_V1 §5.3): agreement, violations, who executed.
+                **agent_record.scores(turn_meta["decision"] if isinstance(turn_meta.get("decision"), dict) else {}),
+            },
         )
     finally:
         lf_stack.close()
