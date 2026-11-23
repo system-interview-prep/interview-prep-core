@@ -18,6 +18,10 @@ from src.modules.interviews.core.dialogue import speech_checks
 from src.modules.interviews.core.session_policy.demo_mode import DEMO_OVERTIME_GRACE_SECONDS
 from src.modules.interviews.core.session_policy.blueprint import blueprint_from_payload
 from src.modules.interviews.core.conversation.response_generation import InterviewResponseMixin
+from src.modules.interviews.core.conversation.prompt import (
+    closing_qna_prompt,
+    closing_qna_speech_prompt,
+)
 from src.modules.interviews.core.conversation.turn_rules import (
     DEEPEN_ASPECT_EN,
     DEEPEN_ASPECT_VI,
@@ -59,7 +63,6 @@ from src.modules.interviews.core.dialogue.policy import (
     new_terms,
     opening_interjection,
     qna_rejection_reason,
-    speech_prompt,
     speech_v2_enabled,
 )
 from src.modules.interviews.core.dialogue.topics import (
@@ -1016,16 +1019,13 @@ class InterviewCoreEngine(InterviewResponseMixin):
             if is_last_question
             else "Sau khi trả lời, hỏi ngắn gọn ứng viên còn câu hỏi nào khác không."
         )
-        system_prompt = (
-            f"Bạn là người phỏng vấn đại diện cho {company}, vị trí {job_title}.\n"
-            f"Đây là phần ứng viên hỏi ngược; buổi phỏng vấn còn khoảng {remaining_minutes} phút.\n"
-            "CHỈ được dùng thông tin trong phần THÔNG TIN TUYỂN DỤNG dưới đây. Nếu câu hỏi nằm ngoài "
-            "các thông tin này (ví dụ OT, quy trình nội bộ, stack chưa nêu, phúc lợi chưa nêu), nói rõ "
-            "rằng mô tả công việc chưa đề cập và bộ phận tuyển dụng sẽ trao đổi thêm. Tuyệt đối không bịa "
-            "thông tin về công ty.\n"
-            f"Trả lời bằng {language}, tối đa 4 câu. {follow_up}\n"
-            "Tuyệt đối không chấm điểm hay nhận xét điểm số.\n\n"
-            f"THÔNG TIN TUYỂN DỤNG:\n{job_context}"
+        system_prompt = closing_qna_prompt(
+            company=company,
+            job_title=job_title,
+            remaining_minutes=remaining_minutes,
+            language=language,
+            follow_up=follow_up,
+            job_context=job_context,
         )
         system_prompt += "\n\n" + candidate_data_rule(is_vi)
         user_content = "Câu hỏi của ứng viên:\n" + candidate_block(candidate_text)
@@ -1155,24 +1155,12 @@ class InterviewCoreEngine(InterviewResponseMixin):
                 is_vi=is_vi,
             )
             return answer_text, "system_probe", "system_probe"
-        language = "tiếng Việt" if is_vi else "English"
-        system_prompt = speech_prompt(
+        system_prompt = closing_qna_speech_prompt(
             is_vi=is_vi,
-            role=(
-                "Bạn là người phỏng vấn của Intervia, đang ở phần ứng viên hỏi ngược "
-                f"về vị trí {job_title} tại {company}. Buổi phỏng vấn còn khoảng {remaining_minutes} phút."
-            ),
-            task=(
-                "Trả lời câu hỏi của ứng viên CHỈ bằng THÔNG TIN TUYỂN DỤNG bên dưới. Nếu câu hỏi nằm ngoài "
-                "các thông tin này (ví dụ OT, quy trình nội bộ, stack chưa nêu, phúc lợi chưa nêu), nói rõ "
-                "rằng mô tả công việc chưa đề cập và bộ phận tuyển dụng sẽ trao đổi thêm."
-            ),
-            rules=(
-                f"Trả lời bằng {language}, một đoạn, tối đa 3 câu.",
-                "Không hỏi lại ứng viên, không khen câu hỏi; hệ thống tự hỏi ứng viên còn câu hỏi nào không.",
-                "Không đưa con số, tên công ty hay công nghệ không có trong thông tin tuyển dụng.",
-            ),
-            output=f"Chỉ câu trả lời.\n\nTHÔNG TIN TUYỂN DỤNG:\n{job_context}",
+            job_title=job_title,
+            company=company,
+            remaining_minutes=remaining_minutes,
+            job_context=job_context,
         )
         system_prompt += "\n\n" + candidate_data_rule(is_vi)
         user_content = "Câu hỏi của ứng viên:\n" + candidate_block(candidate_text)
