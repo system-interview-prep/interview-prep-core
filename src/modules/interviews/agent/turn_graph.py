@@ -66,7 +66,7 @@ async def guards_in(state: TurnGraphState) -> dict:
 
 async def build_menu_node(state: TurnGraphState) -> dict:
     ctx = state["ctx"]
-    menu = build_menu(ctx)
+    menu = build_menu(ctx, memory_enabled=state.get("memory_search") is not None)
     return {"allowed_actions": menu.allowed, "menu_reasons": menu.reasons, "pacing": pacing_block(ctx)}
 
 

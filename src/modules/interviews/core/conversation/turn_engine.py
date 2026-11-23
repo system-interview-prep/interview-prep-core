@@ -64,6 +64,7 @@ from src.modules.interviews.core.contracts.interview import (
 from src.modules.interviews.core.dialogue.policy import (
     canary_leaked,
     canary_scope,
+    memory_rejection_reason,
     candidate_block,
     candidate_data_rule,
     compose_turn,
@@ -156,6 +157,31 @@ class InterviewCoreEngine(InterviewResponseMixin):
             output = await self._handle_turn(turn_input, session_state)
         return await self._guards_out(output, session_state, code)
 
+    async def _guard_memory_recall(
+        self, output: InterviewerTurnOutput, session_state: dict[str, Any]
+    ) -> InterviewerTurnOutput:
+        """A line that recites candidate memory ("lần trước bạn nói…") is replaced."""
+        items = session_state.get("candidate_memory") or []
+        if not items:
+            return output
+        reason = memory_rejection_reason(output.message_text, items)
+        if reason is None:
+            return output
+        speech_checks.record("memory", "reject", reason, output.message_text)
+        trace_event("interviewer", "memory_recall_rejected", session_id=str(output.session_id), reason=reason)
+        is_vi = str(session_state.get("locale", "vi-VN")).lower().startswith("vi")
+        cleaned = await self._generate_interviewer_line(
+            purpose="replace_memory_recall",
+            context=(
+                "Bản nháp vừa rồi nhắc tới điều ứng viên nói ở một buổi trước. Nói lại cùng ý, hỏi cùng câu, "
+                "nhưng không nhắc buổi trước và không trích lời ứng viên."
+            ),
+            is_vi=is_vi,
+        )
+        return output.model_copy(
+            update={"message_text": cleaned, "metadata": {**output.metadata, "memory_recall_rejected": reason}}
+        )
+
     async def _guards_out(
         self, output: InterviewerTurnOutput, session_state: dict[str, Any], canary_code: str | None
     ) -> InterviewerTurnOutput:
@@ -164,6 +190,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
         Shared with the agent's turn graph (``agent/turn_graph.py``) so both
         paths end the same way.
         """
+        output = await self._guard_memory_recall(output, session_state)
         if not canary_code or not canary_leaked(output.message_text, canary_code):
             return output
         is_vi = str(session_state.get("locale", "vi-VN")).lower().startswith("vi")
@@ -272,6 +299,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
             precomputed_evaluation=ctx.turn_input.precomputed_evaluation,
             recent_lines=ctx.recent_lines,
             seed=ctx.seed,
+            memory_hits=ctx.session_state.get("candidate_memory") or (),
         )
         eval_result = ctx.eval_result
         path.append("#7")
@@ -594,6 +622,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
             current_question=ctx.current_question,
             candidate_text=ctx.candidate_text,
             is_vi=ctx.is_vi,
+            memory_hits=ctx.session_state.get("candidate_memory") or (),
         )
         return InterviewerTurnOutput(
             session_id=ctx.session_id,
@@ -717,6 +746,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
                 ),
                 seed=ctx.seed,
                 recent_lines=ctx.recent_lines,
+                memory_hits=ctx.session_state.get("candidate_memory") or (),
             )
         # A real interviewer acknowledges before following up, so the
         # candidate is not hit with a new question the instant they stop.

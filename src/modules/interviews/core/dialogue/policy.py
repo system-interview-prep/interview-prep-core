@@ -1098,3 +1098,37 @@ def new_terms(text_value: str, *sources: str) -> list[str]:
         if term not in found:
             found.append(term)
     return found
+
+
+# --------------------------------------------------------------------------- candidate memory
+# What the interviewer may do with what it remembers about the candidate from
+# earlier sessions (INTERVIEW_AGENT_DECISION_PLAN_V1 §7): choose what to ask,
+# never recite. The memory items only name topics, so the guard looks for the
+# recital itself and for an earlier session's question read back verbatim.
+_MEMORY_RECALL_RE = re.compile(
+    r"(lần trước|hôm trước|buổi trước|phiên trước|kỳ trước)\s+(bạn|em|anh|chị)\s+(có\s+)?(nói|kể|bảo|trả lời|chia sẻ)"
+    r"|\b(last time|earlier|previously|in your last session)\b.{0,20}\byou (said|told|mentioned|answered)\b",
+    re.IGNORECASE,
+)
+_MEMORY_QUESTION_MIN_CHARS = 30
+
+
+def memory_rejection_reason(text_value: str, memory_items: Iterable[dict] = ()) -> str | None:
+    """Why a line that uses candidate memory must not be said, or None.
+
+    ``recalls_quote``: the line claims to remember what the candidate said.
+    ``repeats_memory_question``: it reads back a question from an earlier
+    session word for word (the memory's evidence), instead of asking anew.
+    """
+    line = " ".join(str(text_value or "").split())
+    if not line:
+        return None
+    if _MEMORY_RECALL_RE.search(line):
+        return "recalls_quote"
+    lowered = line.lower()
+    for item in memory_items or ():
+        evidence = item.get("evidence") if isinstance(item, dict) else None
+        question = str((evidence or {}).get("question") or "").strip().lower()
+        if len(question) >= _MEMORY_QUESTION_MIN_CHARS and question in lowered:
+            return "repeats_memory_question"
+    return None

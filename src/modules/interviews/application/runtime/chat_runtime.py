@@ -42,6 +42,7 @@ from src.modules.interviews.core.dialogue.policy import (
 )
 from src.modules.interviews.core.dialogue.topics import generic_transition
 from src.modules.interviews.agent import record as agent_record
+from src.modules.interviews.application.runtime import candidate_memory
 from src.modules.interviews.agent.turn_graph import run_turn
 from src.modules.interviews.core.conversation.turn_engine import (
     InterviewCoreEngine,
@@ -1699,7 +1700,14 @@ async def process_candidate_message(
             # The agent's turn graph: guards_in → menu → decide → act → guards_out → record.
             # Same pipeline as engine.handle_turn, plus the menu, the pacing block and
             # the decision record (INTERVIEW_AGENT_DECISION_PLAN_V1 Pha 1).
-            core_output = await run_turn(engine, turn_input, session_state)
+            memory_search = None
+            if candidate_memory.enabled() != "0":
+                # Candidate memory (plan §7): topics from earlier sessions for the prompts,
+                # and the decider's search tool. Never on the critical path: failures → no memory.
+                memory_user = str(session_row.get("user_id") or "")
+                session_state["candidate_memory"] = await candidate_memory.load(memory_user)
+                memory_search = candidate_memory.search_for(memory_user)
+            core_output = await run_turn(engine, turn_input, session_state, memory_search=memory_search)
         except Exception as exc:
             trace_event(
                 "interviewer",

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.modules.interviews.agent.interview_agent import InterviewAgent
 from src.modules.interviews.agent.ports import InterviewOperations
 from src.modules.interviews.agent.state import InterviewCommand
+from src.modules.interviews.application.runtime import candidate_memory
 from src.modules.interviews.application.runtime.chat_runtime import (
     complete_chat_session,
     process_candidate_message,
@@ -31,7 +32,11 @@ def database_operations(*, db: AsyncSession, user: dict, session_row: dict) -> I
         return await select_and_freeze_questions(db=db, session_row=session_row)
 
     async def open_session(_: dict) -> dict:
-        return await start_chat_session(db=db, session_row=session_row)
+        result = await start_chat_session(db=db, session_row=session_row)
+        if candidate_memory.enabled() != "0":
+            # First session of a user: seed their memory from the progress gap notebook.
+            await candidate_memory.seed_from_gap_notebook(db, str(session_row.get("user_id") or ""))
+        return result
 
     async def respond(payload: dict) -> dict:
         # Only final transcripts are passed here; video observations are not
@@ -58,6 +63,9 @@ def database_operations(*, db: AsyncSession, user: dict, session_row: dict) -> I
         result = await get_session_evaluation(db=db, session_id=session_id)
         if result is None:
             raise RuntimeError("Evaluation completed without a report")
+        if candidate_memory.enabled() == "readwrite":
+            # After grading, from the grader's conclusions; never undoes a finished grade.
+            await candidate_memory.extract_after_session(db, session_id)
         return result
 
     return {

@@ -5,6 +5,7 @@ quyết định hành động của phiên nằm trong ``turn_engine`` và
 ``response_generation``. Tách ra để sửa lời prompt mà không phải đọc logic.
 """
 
+from src.modules.interviews.core.conversation.prompt.candidate_memory import block as candidate_memory_block
 from src.modules.interviews.core.conversation.prompt.clarify import clarify_prompt
 from src.modules.interviews.core.conversation.prompt.closing_qna import (
     closing_qna_prompt,
@@ -27,6 +28,7 @@ from src.modules.interviews.core.conversation.prompt.transition import transitio
 __all__ = [
     "SYSTEM_PROBE_EVAL_RULE_VI",
     "WARM_UP_GUIDE_VI",
+    "candidate_memory_block",
     "clarify_prompt",
     "closing_qna_prompt",
     "closing_qna_speech_prompt",

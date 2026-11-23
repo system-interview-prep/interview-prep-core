@@ -10,6 +10,7 @@ from src.core.trace_logging import trace_event
 from src.modules.interviews.core.dialogue import playbook, speech_checks
 from src.modules.interviews.core.conversation.prompt import (
     WARM_UP_GUIDE_VI,
+    candidate_memory_block,
     clarify_prompt,
     coding_probe_prompt,
     evaluate_answer_prompt,
@@ -127,6 +128,7 @@ class InterviewResponseMixin:
         precomputed_evaluation: Optional[Dict[str, Any]] = None,
         recent_lines: Any = (),
         seed: str = "",
+        memory_hits: Any = (),
     ) -> Dict[str, Any]:
         """Gọi LLM phân tích nhanh câu trả lời để quyết định probe & early-exit.
 
@@ -201,6 +203,7 @@ Giai đoạn: {current_stage.value}{recent_block}
 Câu trả lời của ứng viên:
 {candidate_block(candidate_text)}"""
         system_prompt += playbook.block("evaluate_answer", is_vi, current_question.get("competency"))
+        system_prompt += candidate_memory_block(memory_hits or (), is_vi, current_question.get("competency"))
         system_prompt += "\n\n" + candidate_data_rule(is_vi)
         if current_stage == InterviewStage.WARM_UP:
             system_prompt += WARM_UP_GUIDE_VI
@@ -314,6 +317,7 @@ Câu trả lời của ứng viên:
         missing_aspect: str = "",
         seed: str = "",
         recent_lines: Any = (),
+        memory_hits: Any = (),
     ) -> str:
         """Sinh câu hỏi đào sâu (Probe) duy nhất kèm guardrail chống rò rỉ rubric."""
         is_coding = bool(
@@ -347,6 +351,7 @@ Lời giải thích của ứng viên:
 Hãy đưa ra câu hỏi probe:"""
 
         system_prompt += playbook.block("probe", is_vi, current_question.get("competency"))
+        system_prompt += candidate_memory_block(memory_hits or (), is_vi, current_question.get("competency"))
         system_prompt += "\n\n" + candidate_data_rule(is_vi)
         try:
             if hasattr(self.llm, "generate_text"):
@@ -477,11 +482,13 @@ Hãy đưa ra câu hỏi probe:"""
         current_question: Dict[str, Any],
         candidate_text: str,
         is_vi: bool = True,
+        memory_hits: Any = (),
     ) -> str:
         """Giải thích / làm rõ câu hỏi khi ứng viên thắc mắc hoặc chưa hiểu đề, không lộ đáp án/rubric."""
         question_prompt = current_question.get("follow_up_prompt") or current_question.get("main_prompt", "")
         system_prompt = clarify_prompt(is_vi)
         system_prompt += playbook.block("clarify", is_vi, current_question.get("competency"))
+        system_prompt += candidate_memory_block(memory_hits or (), is_vi, current_question.get("competency"))
         system_prompt += "\n\n" + candidate_data_rule(is_vi)
         user_content = (
             f"Câu hỏi gốc: {question_prompt}\nThắc mắc của ứng viên:\n{candidate_block(candidate_text)}"
