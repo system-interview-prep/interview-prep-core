@@ -18,6 +18,7 @@ from src.modules.interviews.application.progress import (
     trend,
     baseline_label,
     gap_notebook,
+    garden_days,
     round_ladder,
     reask_after_days,
     weekly_streak,
@@ -692,3 +693,23 @@ def test_a_session_that_broke_technically_is_left_out_with_its_reason() -> None:
     assert by_id["ok"]["valid"] is True and by_id["ok"]["invalidReason"] is None
     assert by_id["mic"]["valid"] is False and by_id["mic"]["invalidReason"] == "technical_failure"
     assert by_id["thin"]["invalidReason"] == "too_few_answers"
+
+
+def test_garden_days_counts_distinct_valid_days_and_the_day_streak() -> None:
+    today = date(2026, 11, 23)
+    days = [
+        today - timedelta(days=1), today - timedelta(days=1),  # two sessions, one day
+        today - timedelta(days=2),
+        today - timedelta(days=4),  # a gap before this one
+    ]
+    # Not practised yet today: the day is still open, the streak runs to yesterday.
+    assert garden_days(days, today=today) == {"days": 3, "wateredToday": False, "dayStreak": 2}
+    assert garden_days([*days, today], today=today) == {"days": 4, "wateredToday": True, "dayStreak": 3}
+    assert garden_days([], today=today) == {"days": 0, "wateredToday": False, "dayStreak": 0}
+
+
+def test_build_progress_reports_the_garden() -> None:
+    progress = build_progress([], [], now=NOW, tz_offset_minutes=420, weekly_goal=1,
+                              all_session_starts=[datetime(2026, 10, 18, 18, 0, tzinfo=UTC)])
+    # A session that was started but has no answers does not water the plant.
+    assert progress["garden"] == {"days": 0, "wateredToday": False, "dayStreak": 0}

@@ -368,6 +368,22 @@ def activity_days(
     }
 
 
+def garden_days(valid: list[date], *, today: date) -> dict[str, Any]:
+    """Số ngày đã luyện, cho cây ở trang tiến độ (mỗi ngày có buổi hợp lệ là một lần tưới).
+
+    Chỉ đếm ngày có **buổi hợp lệ**, cùng quy tắc với chuỗi tuần: buổi rỗng không
+    làm cây lớn. ``dayStreak`` là số ngày liên tiếp tính đến hôm nay; hôm nay chưa
+    luyện thì chưa tính là đứt (ngày chưa hết), nên chuỗi tính đến hôm qua.
+    """
+    days = {day for day in valid if day <= today}
+    cursor = today if today in days else today - timedelta(days=1)
+    streak = 0
+    while cursor in days:
+        streak += 1
+        cursor -= timedelta(days=1)
+    return {"days": len(days), "wateredToday": today in days, "dayStreak": streak}
+
+
 # --------------------------------------------------------------------------- #
 # Tiến bộ
 # --------------------------------------------------------------------------- #
@@ -809,6 +825,7 @@ __all__ = [
     "_week_start",
     "weekly_streak",
     "activity_days",
+    "garden_days",
     "skill_key",
     "_core_coverage",
     "RECENT_QUESTIONS",
