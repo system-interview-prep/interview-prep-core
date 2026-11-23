@@ -63,7 +63,10 @@ interviews/
 |       |-- tts/               # providers, cache, pronunciation dictionaries
 |       |-- speech/            # language normalization and speech formatting
 |       `-- config/            # voice tuning
-|-- agent/                     # command runtime: graph.py, checkpoints.py, interview_agent.py
+|-- agent/                     # decides: graph.py (commands), turn_graph.py (one turn: guards_in ->
+|                              #   build_menu -> decide -> act -> guards_out -> record), menu.py,
+|                              #   pacing.py, decide.py (model decider), tools.py, record.py,
+|                              #   checkpoints.py (Postgres checkpointer + candidate-memory store)
 |-- application/
 |   |-- quality_admin/
 |   `-- runtime/               # shared persistence/runtime path
@@ -75,6 +78,16 @@ interviews/
 |-- evaluation/
 `-- planning/
 ```
+
+## Agent modes and flags (INTERVIEW_AGENT_DECISION_PLAN_V1)
+
+| Env | Values | Effect |
+|---|---|---|
+| `INTERVIEW_AGENT_MODE` | `off` (default) / `shadow` / `live` | `off`: the rule ladder decides. `shadow`: the model decider also runs and is only recorded (`agreement`). `live`: the model executes the actions listed below when they are in the menu and carry no violation. |
+| `INTERVIEW_AGENT_LIVE_ACTIONS` | comma list of actions | Which actions the model may execute in `live`. |
+| `INTERVIEW_CANDIDATE_MEMORY` | `0` (default) / `read` / `readwrite` | `read`: seed from the gap notebook at `open`, load topics into the prompts, offer `search_candidate_memory` to the decider. `readwrite`: also extract after `score`. |
+
+Every turn carries `metadata["decision"]` (menu, pacing, rule choice, model choice, agreement) and emits the `agent_decision` pipeline event; `scripts/eval/interviews/agent_shadow_report.py` reads them.
 
 ## Change rule
 
