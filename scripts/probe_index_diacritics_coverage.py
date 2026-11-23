@@ -1,7 +1,9 @@
 """How much of a Vietnamese CV the query half can actually reach.
 
-``probe_index_diacritics`` answers the question for a handful of words. This
-answers it for every marked word in every Vietnamese CV of the corpus, which
+An earlier one-off probe (``probe_index_diacritics``, deleted once the finding
+was recorded in DOC_AND_PLAN/data/eval/matching/runs/phase3_fixes_20261114)
+answered the question for a handful of words. This answers it for every marked
+word in every Vietnamese CV of the corpus, which
 is the number worth quoting: the share of a CV that the sparse half cannot
 retrieve because the two halves disagree on what a token looks like.
 

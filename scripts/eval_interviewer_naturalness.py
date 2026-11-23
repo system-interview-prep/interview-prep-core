@@ -45,8 +45,44 @@ from src.modules.interviews.core.dialogue.policy import (
     is_grader_style,
     is_parroting,
 )
-from src.modules.interviews.core.dialogue.language import response_matches_locale
 from src.modules.interviews.planning.spoken_questions import _rewrite_prompt, validate_spoken_question
+
+# Rào chắn ngôn ngữ của phiên bản CŨ (trước 17/10).
+#
+# Trước đây lấy từ src.modules.interviews.core.dialogue.language, nhưng module đó
+# đã bị xoá khỏi engine ở commit af6da71 vì engine MỚI không còn dùng. Bản so sánh
+# A/B cần đúng hành vi của phiên bản CŨ, nên giữ nguyên bản chép tại đây thay vì
+# bám theo code hiện tại - nếu import lại engine thì cột "CŨ" sẽ trôi theo mỗi
+# lần engine đổi, và phép so sánh mất nghĩa.
+_LOCALE_WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
+_VI_WORDS = {
+    "bạn", "có", "thể", "hãy", "vì", "sao", "như", "thế", "nào", "và",
+    "đã", "một", "trong", "khi", "của", "được", "không", "gì", "mình",
+    "câu", "hỏi", "trả", "lời", "chia", "sẻ", "cảm", "ơn", "hay", "nếu",
+}
+_EN_WORDS = {
+    "you", "your", "why", "what", "how", "when", "where", "which", "and",
+    "the", "is", "are", "do", "did", "would", "could", "please", "tell",
+    "explain", "describe", "question", "answer", "thanks", "thank", "can",
+    "about", "approach", "handle", "give", "example", "difference", "between",
+}
+_ENGLISH_OPENERS = re.compile(
+    r"^(?:how|what|why|when|where|which|can|could|would|please|tell|explain|describe)",
+    re.IGNORECASE,
+)
+
+
+def response_matches_locale(text: str, *, is_vi: bool) -> bool:
+    """Loại câu rõ ràng sai ngôn ngữ, vẫn cho phép xen thuật ngữ kỹ thuật."""
+
+    words = {word.casefold() for word in _LOCALE_WORD.findall(text)}
+    vi_score = len(words & _VI_WORDS)
+    en_score = len(words & _EN_WORDS)
+    if is_vi:
+        clearly_english = en_score >= 2 or bool(_ENGLISH_OPENERS.match(text.strip()))
+        return not (clearly_english and vi_score == 0)
+    return not (vi_score >= 2 and en_score == 0)
+
 
 OLD_SYSTEM_PROMPT = """Bạn là chuyên gia phân tích kỹ thuật thời gian thực của hệ thống phỏng vấn INTERVIA.
 Đọc câu trả lời của ứng viên đối chiếu với Câu hỏi gốc và Barem tiêu chí, trả về đúng 1 JSON duy nhất:
