@@ -40,8 +40,17 @@ def _plain(value: Any) -> Any:
 
 @pytest.fixture(autouse=True)
 def _record_turn_snapshot(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``RECORD_TURN_SNAPSHOT=<file>`` records; ``DUAL_RUN_TURNS=1`` is the T2.1.6 gate.
+
+    With ``DUAL_RUN_TURNS=1`` every ``handle_turn`` also runs the agent's turn
+    graph on a deep copy of the same input and state, with the test's own
+    LLM double, and the two outputs must agree (``decision`` metadata and the
+    volatile fields aside). Opt-in because a recording double (prompt lists,
+    call counters) would see every call twice.
+    """
     path = os.getenv("RECORD_TURN_SNAPSHOT")
-    if not path:
+    dual = os.getenv("DUAL_RUN_TURNS") == "1"
+    if not path and not dual:
         return
     from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 
@@ -49,14 +58,31 @@ def _record_turn_snapshot(request: pytest.FixtureRequest, monkeypatch: pytest.Mo
 
     async def recording(self, turn_input, session_state):  # noqa: ANN001
         before = _plain(copy.deepcopy(session_state))
+        graph_output = None
+        if dual:
+            from src.modules.interviews.agent.turn_graph import run_turn
+
+            # A deep copy of the engine carries a copy of the test's LLM double, so
+            # its prompt lists and call counters only see the engine's own run.
+            graph_output = await run_turn(
+                copy.deepcopy(self), copy.deepcopy(turn_input), copy.deepcopy(session_state)
+            )
         output = await original(self, turn_input, session_state)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({
-                "test": request.node.nodeid,
-                "turn_input": _plain(turn_input),
-                "session_state": before,
-                "output": _plain(output),
-            }, ensure_ascii=False) + "\n")
+        if dual:
+            left = _plain(output)
+            right = _plain(graph_output)
+            for side in (left, right):
+                side.pop("time_remaining_seconds", None)
+                side.get("metadata", {}).pop("decision", None)
+            assert left == right, f"turn graph disagrees with the engine in {request.node.nodeid}"
+        if path:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "test": request.node.nodeid,
+                    "turn_input": _plain(turn_input),
+                    "session_state": before,
+                    "output": _plain(output),
+                }, ensure_ascii=False) + "\n")
         return output
 
     monkeypatch.setattr(InterviewCoreEngine, "handle_turn", recording)

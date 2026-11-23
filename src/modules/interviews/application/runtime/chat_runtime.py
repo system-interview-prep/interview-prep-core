@@ -41,6 +41,7 @@ from src.modules.interviews.core.dialogue.policy import (
     speech_v2_enabled,
 )
 from src.modules.interviews.core.dialogue.topics import generic_transition
+from src.modules.interviews.agent.turn_graph import run_turn
 from src.modules.interviews.core.conversation.turn_engine import (
     InterviewCoreEngine,
     pacing_seconds,
@@ -1692,7 +1693,10 @@ async def process_candidate_message(
         # Every guard decision on the AI's lines in this turn (core/dialogue/speech_checks.py).
         speech_checks.begin()
         try:
-            core_output = await engine.handle_turn(turn_input, session_state)
+            # The agent's turn graph: guards_in → menu → decide → act → guards_out → record.
+            # Same pipeline as engine.handle_turn, plus the menu, the pacing block and
+            # the decision record (INTERVIEW_AGENT_DECISION_PLAN_V1 Pha 1).
+            core_output = await run_turn(engine, turn_input, session_state)
         except Exception as exc:
             trace_event(
                 "interviewer",

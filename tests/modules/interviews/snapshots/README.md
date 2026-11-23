@@ -17,3 +17,20 @@ engine's *current* behaviour, whatever the tests assert. Two uses:
    LLM responses are the test's own mocks, so a static replay is not enough; the fixture is.
 
 Re-record only on purpose: `RECORD_TURN_SNAPSHOT=$PWD/tests/modules/interviews/snapshots/turn_outputs_v0.jsonl uv run ... pytest <the three files>`.
+
+## Commands
+
+```text
+# drift check: record to a scratch file, then diff against the reference
+RECORD_TURN_SNAPSHOT=/tmp/after.jsonl uv run ... pytest <the three files>
+uv run python tests/modules/interviews/snapshots/compare.py \
+    tests/modules/interviews/snapshots/turn_outputs_v0.jsonl /tmp/after.jsonl
+
+# dual-run gate (T2.1.6): every handle_turn also runs the agent's turn graph on a
+# deep copy of the engine and the input; outputs must agree
+DUAL_RUN_TURNS=1 uv run ... pytest tests/modules/interviews tests/modules/voice/test_language.py
+```
+
+`compare.py` ignores `session_id` (tests draw `uuid4()` per run), `time_remaining_seconds`
+and `metadata.decision` (added by the turn graph's `record` node). Verified 2026-11-24
+after Pha 1: 38/38 turns identical.

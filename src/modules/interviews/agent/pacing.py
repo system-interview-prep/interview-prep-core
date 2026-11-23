@@ -1,0 +1,91 @@
+"""The pacing block: where the interview stands against its plan, as numbers.
+
+Time is never handed to the model (INTERVIEW_AGENT_DECISION_PLAN_V1 §4.5): the
+cut-offs and the bans are code. But the decider must *see* the clock and the
+plan — how many questions remain, whether the pace is behind — to trade a probe
+for coverage, or to use spare minutes for evidence. Everything here is computed
+from the session state; nothing is estimated by a model.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict
+
+from src.modules.interviews.core.contracts.interview import InterviewStage
+from src.modules.interviews.core.conversation.turn_context import MAX_PROBES_PER_QUESTION, TurnContext
+from src.modules.interviews.core.conversation.turn_rules import TIME_THRESHOLDS
+
+# `behind` when the remaining plan needs more than this share over the time left;
+# `ahead` when it needs less than one minus this share.
+BEHIND_RATIO = 1.15
+AHEAD_RATIO = 0.75
+# Before any question was answered, assume this many seconds per question.
+DEFAULT_SECONDS_PER_QUESTION = 120
+
+ASSESSED_STAGES = (
+    InterviewStage.VALIDATE,
+    InterviewStage.DEEP_DIVE,
+    InterviewStage.CHALLENGE,
+    InterviewStage.BEHAVIORAL,
+)
+
+
+def questions_remaining_by_stage(session_state: Dict[str, Any]) -> Dict[str, int]:
+    """Frozen questions not yet asked, per stage (warm-up and closing excluded)."""
+    asked = {str(q) for q in session_state.get("asked_question_ids", []) or []}
+    pool = session_state.get("questions_pool", {}) or {}
+    remaining: Dict[str, int] = {}
+    for stage in ASSESSED_STAGES:
+        queue = pool.get(stage.value, []) or []
+        left = sum(
+            1
+            for q in queue
+            if str(q.get("question_id") or q.get("question_version_id") or "") not in asked
+        )
+        if left:
+            remaining[stage.value] = left
+    return remaining
+
+
+def pacing_block(ctx: TurnContext) -> Dict[str, Any]:
+    """The block the decider receives every turn; also stored in the decision record."""
+    state = ctx.session_state
+    pool = state.get("questions_pool", {}) or {}
+    planned = sum(len(pool.get(stage.value, []) or []) for stage in ASSESSED_STAGES)
+    remaining = questions_remaining_by_stage(state)
+    remaining_total = sum(remaining.values())
+    asked = max(0, planned - remaining_total)
+    target = max(1, ctx.target_duration_seconds)
+    elapsed_ratio = round(min(1.0, ctx.elapsed_seconds / target), 3)
+
+    if asked > 0:
+        seconds_per_question = int(ctx.elapsed_seconds / asked)
+    else:
+        seconds_per_question = DEFAULT_SECONDS_PER_QUESTION
+    seconds_needed = remaining_total * seconds_per_question
+
+    if state.get("is_demo") or remaining_total == 0:
+        # A demo is turn-driven; with nothing left there is nothing to pace.
+        pace = "on_track"
+    elif seconds_needed > ctx.time_remaining_seconds * BEHIND_RATIO:
+        pace = "behind"
+    elif seconds_needed < ctx.time_remaining_seconds * AHEAD_RATIO:
+        pace = "ahead"
+    else:
+        pace = "on_track"
+
+    probes_used = int(ctx.current_turn_in_question)
+    return {
+        "elapsed_ratio": elapsed_ratio,
+        "time_remaining_seconds": int(ctx.time_remaining_seconds),
+        "stage": ctx.current_stage.value,
+        "stage_until_ratio": TIME_THRESHOLDS.get(ctx.current_stage, 1.0),
+        "questions_asked": asked,
+        "questions_planned": planned,
+        "questions_remaining_by_stage": remaining,
+        "seconds_per_question_so_far": seconds_per_question,
+        "seconds_needed_for_remaining_plan": seconds_needed,
+        "pace": pace,
+        "probes_used_in_question": probes_used,
+        "probes_left_in_question": max(0, MAX_PROBES_PER_QUESTION - probes_used),
+    }
