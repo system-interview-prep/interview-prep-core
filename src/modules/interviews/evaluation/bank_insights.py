@@ -51,7 +51,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core import llm_tracing
+from src.infrastructure import langfuse
 from src.modules.ai.facade import generate_text
 from src.modules.interviews.planning.question_generation import is_near_duplicate
 
@@ -402,7 +402,7 @@ def copies_candidate(text_value: str, quotes: list[str], words: int = 6) -> bool
 async def propose_for_gap(stats: QuestionStats, suggestion: Suggestion) -> dict[str, Any] | None:
     """LLM proposal (misconception, probe, anchors) for a RUBRIC_GAP; None when unusable."""
     key = suggestion.criterion_key or ""
-    quotes = [llm_tracing.mask(data=q) for q in stats.quotes.get(key, [])]
+    quotes = [langfuse.mask(data=q) for q in stats.quotes.get(key, [])]
     raw = await generate_text(
         instructions=_GAP_INSTRUCTIONS,
         input_text=json.dumps(

@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from src.core import llm_tracing
+from src.infrastructure import langfuse
 from src.core.config import get_settings
 from src.modules.interviews.facade import interview_config_groups, interview_config_item
 
@@ -32,7 +32,7 @@ def config_view() -> dict[str, Any]:
         {
             "key": "monitoring",
             "items": [
-                item("langfuseEnabled", llm_tracing.enabled(), "LANGFUSE_PUBLIC_KEY"),
+                item("langfuseEnabled", langfuse.enabled(), "LANGFUSE_PUBLIC_KEY"),
                 item("langfuseHost", s.langfuse_base_url, "LANGFUSE_BASE_URL"),
                 item("langfuseTextSampleRate", s.langfuse_text_sample_rate, "LANGFUSE_TEXT_SAMPLE_RATE", 0.2),
                 item("langfuseReviewQueue", bool(s.langfuse_review_queue_id), "LANGFUSE_REVIEW_QUEUE_ID"),

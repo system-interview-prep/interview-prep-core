@@ -28,7 +28,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core import llm_tracing
+from src.infrastructure.langfuse import health as lf_health
 from src.core.config import get_settings
 from src.modules.admin.system.repository import database_snapshot, latest_voice_event
 
@@ -164,37 +164,9 @@ def agent_status(
     return voice
 
 
-def _llm_connections() -> list[str] | None:
-    """Providers of the project's LLM connections (what the AI judges call); None when unknown."""
-    lf = llm_tracing.client()
-    if lf is None:
-        return None
-    try:
-        return [str(c.provider) for c in lf.api.llm_connections.list(limit=50).data]
-    except Exception:  # noqa: BLE001 - older Langfuse or key without the scope
-        return None
-
-
-def langfuse_status(url: str | None, providers: list[str] | None) -> tuple[str, str | None]:
-    """ok / down (unreachable).
-
-    The project API lists only project-level LLM connections; an organization
-    connection (Settings → LLM Connections → Organization connections) also
-    serves the judges but is not visible here, so an empty list is not a
-    problem to report. The page shows what the project list contains.
-    """
-    if not url:
-        return "down", "unreachable"
-    return "ok", None
-
-
 async def langfuse_check() -> dict[str, Any]:
-    if not llm_tracing.enabled():
-        return check("langfuse", "off", "not_configured")
-    url = await asyncio.to_thread(llm_tracing.project_url)
-    providers = await asyncio.to_thread(_llm_connections) if url else None
-    status, detail = langfuse_status(url, providers)
-    return check("langfuse", status, detail, projectUrl=url, llmConnections=providers)
+    """Langfuse reachability; the probe itself lives in the langfuse package."""
+    return await lf_health.langfuse_check(check)
 
 
 async def guarded(key: str, probe: Callable[[], Awaitable[dict[str, Any]]]) -> dict[str, Any]:

@@ -15,7 +15,6 @@ only runs the queries.
 
 from __future__ import annotations
 
-import asyncio
 from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
@@ -23,7 +22,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core import llm_tracing
+from src.infrastructure.langfuse.links import session_links as langfuse_links_impl
 from src.modules.interviews.evaluation.question_quality import session_plan_audit
 from src.modules.interviews.planning.entry_gate import entry_policy
 
@@ -844,13 +843,5 @@ async def load_pipeline(db: AsyncSession, session_id: str) -> dict[str, Any] | N
 
 
 async def langfuse_links(session_id: str | None = None) -> dict[str, str] | None:
-    """Links to this session (and its turn traces) in Langfuse; None when Langfuse is off."""
-    if not llm_tracing.enabled():
-        return None
-    project = await asyncio.to_thread(llm_tracing.project_url)
-    if not project:
-        return None
-    links = {"projectUrl": project}
-    if session_id:
-        links["sessionUrl"] = f"{project}/sessions/{session_id}"
-    return links
+    """Links to this session in Langfuse; None when Langfuse is off."""
+    return await langfuse_links_impl(session_id)

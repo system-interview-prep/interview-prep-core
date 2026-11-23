@@ -3,13 +3,6 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-class TraceReviewRequest(BaseModel):
-    name: str = Field(max_length=64)
-    value: bool
-    comment: str | None = Field(default=None, max_length=500)
-    sessionId: str | None = Field(default=None, max_length=36)
-
-
 class PlaybookReflectRequest(BaseModel):
     days: int = Field(default=14, ge=1, le=90)
 
