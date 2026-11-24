@@ -74,13 +74,12 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "clarify_question": _tool("clarify_question", "Ứng viên chưa hiểu đề: nói lại câu hỏi theo cách khác."),
     "continue_warm_up": _tool(
         "continue_warm_up",
-        "Phần làm quen khi giới thiệu còn thiếu: tự viết đầy đủ lời đáp sẽ gửi ứng viên, ghi nhận một chi tiết họ đã nói và hỏi đúng một ý còn thiếu. Xem câu interviewer gần đây để không hỏi lại ý đã hỏi; không lặp câu mở đầu.",
+        "Phần làm quen khi giới thiệu còn thiếu: tự viết lời đáp tự nhiên gửi ứng viên, ghi nhận điều họ đã nói và hỏi các ý còn thiếu phù hợp. Đọc câu interviewer gần đây và câu trả lời tích lũy để không hỏi lại ý đã hỏi hoặc đã được trả lời; không lặp câu mở đầu.",
         {
             "missing_aspect": {"type": "string"},
             "follow_up_text": {
                 "type": "string",
-                "maxLength": 280,
-                "description": "Toàn bộ lời thoại tự nhiên gửi ứng viên, tối đa 70 từ, ba câu và hai câu hỏi liên quan; dưới 280 ký tự. Không phải chỉ dẫn hay đoạn câu rời.",
+                "description": "Toàn bộ lời thoại tự nhiên gửi ứng viên. Có thể ghi nhận và hỏi nhiều ý liên quan nếu cuộc trò chuyện cần; không phải chỉ dẫn hay đoạn câu rời.",
             },
         },
     ),

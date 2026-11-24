@@ -1614,7 +1614,7 @@ async def process_candidate_message(
             FROM interview_chat_messages
             WHERE session_id = :sid AND role = 'assistant' AND message_type IN ('PROBE', 'CLARIFY')
               -- Repeating an unheard question or answering a question about the
-              -- interview is not the question's one clarification.
+              -- interview is not a candidate answer to the active prompt.
               AND metadata->>'repeatRequest' IS NULL
               AND metadata->>'candidateQuestionIntent' IS NULL
             ORDER BY sequence

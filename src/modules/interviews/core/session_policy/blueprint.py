@@ -130,7 +130,8 @@ class InterviewContractPolicy(_Policy):
         "all_frozen_questions", alias="coverageTarget"
     )
     require_behavioral_when_enabled: bool = Field(True, alias="requireBehavioralWhenEnabled")
-    max_probes_per_question: int = Field(2, alias="maxProbesPerQuestion", ge=0, le=3)
+    # Kept only so existing versioned blueprints still load; runtime ignores this legacy value.
+    max_probes_per_question: int | None = Field(None, alias="maxProbesPerQuestion", ge=0, le=3)
 
 
 class InterviewBlueprint(_Policy):

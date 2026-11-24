@@ -18,12 +18,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 
 from src.modules.ai.facade import generate_tool_calls
 from src.modules.interviews.agent.interviewer.tools import SEARCH_MEMORY, tools_for
-from src.modules.interviews.core.guardrails.output import (
-    WARMUP_PROBE_MAX_QUESTIONS,
-    WARMUP_PROBE_MAX_SENTENCES,
-    WARMUP_PROBE_MAX_WORDS,
-    checked_probe,
-)
+from src.modules.interviews.core.guardrails.output import checked_probe
 from src.modules.interviews.core.conversation.prompt.decide import decide_input, decide_prompt
 from src.modules.interviews.core.conversation.turn_context import Decision, TurnContext
 
@@ -109,9 +104,6 @@ async def decide_by_model(
                 str(args.get("follow_up_text") or ""),
                 question=ctx.question_prompt,
                 answer=ctx.candidate_text,
-                max_words=WARMUP_PROBE_MAX_WORDS,
-                max_sentences=WARMUP_PROBE_MAX_SENTENCES,
-                max_questions=WARMUP_PROBE_MAX_QUESTIONS,
             )
             if not follow_up:
                 return _violation("invalid_follow_up", "missing or rejected warm-up utterance", calls)

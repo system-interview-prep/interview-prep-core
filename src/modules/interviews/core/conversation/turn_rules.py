@@ -43,10 +43,7 @@ from src.modules.interviews.core.guardrails.output import (
     probe_is_sayable,
     receipt_rejection_reason,
     validate_probe_text,
-    ACKNOWLEDGEMENT_MAX_CHARS,
     PROHIBITED_LEAK_PATTERNS,
-    RECEIPT_MAX_WORDS,
-    RECEIPT_MIN_WORDS,
 )
 from src.modules.interviews.core.contracts.interview import InterviewStage
 
@@ -90,7 +87,7 @@ EVALUATION_SCHEMA: Dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "acknowledgement": {"type": "string", "maxLength": 160},
+            "acknowledgement": {"type": "string"},
             "intent": {
                 "type": "string",
                 "enum": [
@@ -104,7 +101,7 @@ EVALUATION_SCHEMA: Dict[str, Any] = {
             },
             "sufficiency_status": {"type": "string", "enum": ["SUFFICIENT", "INSUFFICIENT", "AMBIGUOUS"]},
             "missing_aspect": {"type": "string", "maxLength": 400},
-            "probe_question": {"type": "string", "maxLength": 280},
+            "probe_question": {"type": "string"},
             "score": {"type": "number", "minimum": 1, "maximum": 10},
         },
         "required": [
@@ -128,7 +125,7 @@ def evaluation_schema(*, with_topic: bool = False) -> Dict[str, Any]:
         "name": "interviewer_turn_topic",
         "schema": {
             **inner,
-            "properties": {"ack_topic": {"type": "string", "maxLength": 80}, **inner["properties"]},
+            "properties": {"ack_topic": {"type": "string"}, **inner["properties"]},
             "required": ["ack_topic", *inner["required"]],
         },
     }
@@ -200,7 +197,6 @@ __all__ = [
     "validate_probe_text",
     "probe_is_sayable",
     "checked_probe",
-    "ACKNOWLEDGEMENT_MAX_CHARS",
     "EVALUATION_SCHEMA",
     "evaluation_schema",
     "MAX_QNA_QUESTIONS",
@@ -211,8 +207,6 @@ __all__ = [
     "pacing_seconds",
     "normalize_candidate_pronoun",
     "acknowledgement_rejection_reason",
-    "RECEIPT_MIN_WORDS",
-    "RECEIPT_MAX_WORDS",
     "receipt_rejection_reason",
     "DEFINITE_GIVE_UP_KEYWORDS",
     "AMBIGUOUS_KEYWORDS",

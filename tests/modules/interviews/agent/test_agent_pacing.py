@@ -40,5 +40,6 @@ def test_t1_1_24_a_demo_is_always_on_track(ctx_factory) -> None:
 def test_t1_1_25_remaining_counts_only_frozen_unasked_questions_per_stage(ctx_factory) -> None:
     block = pacing_block(ctx_factory(asked=("q-warm", "q-val-1", "q-dd-1", "q-dd-2", "q-bh-1")))
     assert block["questions_remaining_by_stage"] == {"VALIDATE": 1, "DEEP_DIVE": 1, "CHALLENGE": 1, "BEHAVIORAL": 1}
-    assert block["probes_used_in_question"] == 0 and block["probes_left_in_question"] == 2
+    assert block["probes_used_in_question"] == 0
+    assert block["probe_follow_ups"] == "continue while useful and within interview time"
     assert block["stage"] == "DEEP_DIVE" and block["stage_until_ratio"] == 0.75

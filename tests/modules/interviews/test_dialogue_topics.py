@@ -119,9 +119,7 @@ def test_short_content_free_receipt_is_accepted(receipt: str) -> None:
         ("Mình ghi nhận bạn là sinh viên.", "grader_style"),
         # Mở đầu buổi đã chào rồi.
         ("Chào bạn, mình bắt đầu nhé.", "greeting"),
-        ("Ok.", "too_curt"),
         ("Câu trả lời của bạn rất tốt.", "evaluative"),
-        ("Mình hiểu rồi. Giờ mình hỏi tiếp nhé.", "not_a_receipt"),
         ("Bạn thấy sao?", "not_a_receipt"),
         ("Mình sang phần Xác thực CV nhé.", "internal_label"),
     ],

@@ -10,8 +10,6 @@ from src.modules.interviews.agent.interviewer.menu import build_menu
 from src.modules.interviews.core.contracts.interview import InterviewStage
 from src.modules.interviews.core.conversation.turn_context import (
     ACTIONS,
-    MAX_PROBES_PER_QUESTION,
-    MAX_WARMUP_CONTINUATIONS,
 )
 
 
@@ -24,10 +22,9 @@ def test_t1_1_1_deep_dive_with_budget_offers_probe_next_and_conversation(ctx_fac
     assert "close_interview" not in menu.allowed and menu.reasons["close_interview"] == "questions remain"
 
 
-def test_t1_1_2_probe_budget_spent_removes_probe(ctx_factory) -> None:
-    menu = build_menu(ctx_factory(probes_used=MAX_PROBES_PER_QUESTION))
-    assert "acknowledge_and_probe" not in menu.allowed
-    assert "probe_budget" in menu.reasons["acknowledge_and_probe"]
+def test_probe_remains_available_after_multiple_followups(ctx_factory) -> None:
+    menu = build_menu(ctx_factory(probes_used=8))
+    assert "acknowledge_and_probe" in menu.allowed
 
 
 def test_t1_1_3_behind_schedule_leaves_only_moving_on(ctx_factory) -> None:
@@ -46,25 +43,22 @@ def test_t1_1_4_warm_up_offers_continuation_never_probe(ctx_factory) -> None:
     assert "clarify_question" not in menu.allowed
 
 
-def test_warm_up_disallows_another_continuation_at_the_limit(ctx_factory) -> None:
+def test_warm_up_allows_continuation_after_multiple_followups(ctx_factory) -> None:
     menu = build_menu(
         ctx_factory(
             stage=InterviewStage.WARM_UP,
-            clarify_used=MAX_WARMUP_CONTINUATIONS,
+            clarify_used=8,
             elapsed_ratio=0.05,
         )
     )
 
-    assert "continue_warm_up" not in menu.allowed
-    assert menu.reasons["continue_warm_up"] == "warm-up continuation limit reached"
-    assert "move_to_next_question" in menu.allowed
+    assert "continue_warm_up" in menu.allowed
 
 
-def test_t1_1_5_one_clarification_per_question(ctx_factory) -> None:
+def test_clarification_remains_available_after_multiple_requests(ctx_factory) -> None:
     assert "clarify_question" in build_menu(ctx_factory(clarify_used=0)).allowed
     menu = build_menu(ctx_factory(clarify_used=1))
-    assert "clarify_question" not in menu.allowed
-    assert menu.reasons["clarify_question"] == "one clarification per question"
+    assert "clarify_question" in menu.allowed
 
 
 def test_t1_1_6_blueprint_can_turn_probes_off(ctx_factory) -> None:

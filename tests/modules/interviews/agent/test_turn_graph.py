@@ -15,7 +15,6 @@ from src.modules.interviews.core.contracts.interview import (
 )
 from src.modules.interviews.core.conversation.turn_context import (
     ACTIONS,
-    MAX_WARMUP_CONTINUATIONS,
     Decision,
 )
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
@@ -97,7 +96,7 @@ async def test_t2_1_4_every_rule_path_lands_in_the_closed_action_set(session_sta
 
 
 @pytest.mark.asyncio
-async def test_incomplete_warmup_moves_on_after_continuation_limit(session_state_factory) -> None:
+async def test_incomplete_warmup_can_continue_after_prior_followup(session_state_factory) -> None:
     evaluation = {
         "intent": "ANSWER",
         "sufficiency_status": "INSUFFICIENT",
@@ -105,7 +104,7 @@ async def test_incomplete_warmup_moves_on_after_continuation_limit(session_state
     }
     state = session_state_factory(
         stage=InterviewStage.WARM_UP,
-        clarify_used=MAX_WARMUP_CONTINUATIONS,
+        clarify_used=1,
         elapsed_ratio=0.05,
     )
 
@@ -115,9 +114,8 @@ async def test_incomplete_warmup_moves_on_after_continuation_limit(session_state
         state,
     )
 
-    assert output.action == TurnAction.NEXT_QUESTION
-    assert output.metadata["decision"]["rule"]["action"] == "move_to_next_question"
-    assert output.metadata["decision"]["rule"]["args"]["reason"] == "warm_up_followup_limit"
+    assert output.action == TurnAction.CLARIFY
+    assert output.metadata["decision"]["rule"]["action"] == "continue_warm_up"
 
 
 @pytest.mark.asyncio

@@ -2,11 +2,11 @@
 
 Code decides the menu; the decider (rule ladder today, model later) chooses
 from it. An action absent from the menu cannot be chosen — that is how the
-probe budget, the clock and the blueprint stay rules while the choice moves
+clock and the blueprint stay rules while the choice moves
 to the model (INTERVIEW_AGENT_DECISION_PLAN_V1 §4.3).
 
 The gates reuse ``core.conversation.turn_context.probe_window`` so the menu and
-the rule ladder can never disagree about whether a probe is allowed.
+the rule ladder can never disagree about interview-time and stage gates.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from typing import Dict, List
 from src.modules.interviews.core.contracts.interview import InterviewStage
 from src.modules.interviews.core.conversation.turn_context import (
     ACTIONS,
-    MAX_WARMUP_CONTINUATIONS,
     TurnContext,
     probe_window,
 )
@@ -64,18 +63,12 @@ def build_menu(ctx: TurnContext, *, memory_enabled: bool = False) -> Menu:
     deny("closing_qna", "not in closing stage")
 
     if stage == InterviewStage.WARM_UP:
-        if ctx.clarify_count < MAX_WARMUP_CONTINUATIONS:
-            allow("continue_warm_up")
-        else:
-            deny("continue_warm_up", "warm-up continuation limit reached")
+        allow("continue_warm_up")
         deny("acknowledge_and_probe", "warm-up never probes")
         deny("clarify_question", "warm-up uses continue_warm_up")
     else:
         deny("continue_warm_up", "only in warm-up")
-        if ctx.clarify_count >= 1:
-            deny("clarify_question", "one clarification per question")
-        else:
-            allow("clarify_question")
+        allow("clarify_question")
         window = probe_window(ctx)
         if window.open:
             allow("acknowledge_and_probe")

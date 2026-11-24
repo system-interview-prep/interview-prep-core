@@ -25,8 +25,6 @@ from src.modules.interviews.core.conversation.prompt.candidate_tone import (
     candidate_tone_instruction,
 )
 from src.modules.interviews.core.conversation.turn_context import (
-    MAX_WARMUP_CONTINUATIONS,
-    MAX_PROBES_PER_QUESTION,
     Decision,
     TurnContext,
     build_turn_context,
@@ -39,9 +37,6 @@ from src.modules.interviews.core.guardrails.input import (
     system_probe_decision,
 )
 from src.modules.interviews.core.guardrails.output import (
-    WARMUP_PROBE_MAX_QUESTIONS,
-    WARMUP_PROBE_MAX_SENTENCES,
-    WARMUP_PROBE_MAX_WORDS,
     acknowledgement_rejection_reason,
     checked_probe,
     clarify_rejection_reason,
@@ -82,7 +77,6 @@ from src.modules.interviews.core.contracts.interview import (
 
 __all__ = [
     "InterviewCoreEngine",
-    "MAX_PROBES_PER_QUESTION",
     "DEEPEN_ASPECT_EN",
     "DEEPEN_ASPECT_VI",
     "EVALUATION_SCHEMA",
@@ -107,7 +101,7 @@ __all__ = [
 ]
 logger = logging.getLogger("InterviewCoreEngine")
 
-# MAX_PROBES_PER_QUESTION lives in turn_context (shared by the rule ladder and the menu).
+# Probe continuation is controlled by answer sufficiency and interview pacing.
 
 
 class InterviewCoreEngine(InterviewResponseMixin):
@@ -254,8 +248,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
             return Decision("closing_qna", reason="closing stage", path=["#4"])
 
         # The candidate did not hear the question: ask it again word for word.
-        # Not an answer, so it is neither evaluated nor counted against the
-        # one clarification each question allows.
+        # Not an answer, so it is neither evaluated nor added to the answer state.
         if ctx.active_prompt and is_repeat_request(ctx.candidate_text):
             return Decision("repeat_question", reason="repeat phrase", evidence_refs=["answer:text"], path=path + ["#5"])
 
@@ -304,30 +297,18 @@ class InterviewCoreEngine(InterviewResponseMixin):
             InterviewStage.WARM_UP,
             InterviewStage.CLOSING,
         ):
-            if ctx.clarify_count < 1:
-                return Decision("clarify_question", reason="clarify phrase, first time",
-                                evidence_refs=["answer:text"], path=path + ["#9"])
+            return Decision("clarify_question", reason="candidate asked for clarification",
+                            evidence_refs=["answer:text"], path=path + ["#9"])
 
         # Gate 4 Architectural Invariant:
         # Numeric score is telemetry/evaluation-only; it has zero control-flow authority in Gate 4.
         ctx.score_telemetry = float(eval_result.get("score", 6.0))
         # Runtime control flow is driven strictly by semantic signals:
-        # candidate intent, answer sufficiency, missing evidence, probe budget, time budget.
+        # candidate intent, answer sufficiency, missing evidence and time budget.
         sufficiency_status = eval_result.get("sufficiency_status")
         if not sufficiency_status:
             sufficiency_status = "SUFFICIENT" if eval_result.get("is_sufficient", True) else "INSUFFICIENT"
         ctx.is_give_up = ctx.intent == "GIVE_UP"
-        # Adaptive Probing: Nếu ứng viên trả lời quá ngắn (< 15 từ hoặc < 70 ký tự)
-        # trong khi câu hỏi không phải là Yes/No và chưa từng probe ở câu này:
-        words = ctx.candidate_text.split()
-        is_too_brief = (
-            len(words) < 15
-            and len(ctx.candidate_text) < 70
-            and not is_yes_no_question(ctx.question_prompt)
-            and not ctx.is_give_up
-        )
-        if is_too_brief:
-            sufficiency_status = "INSUFFICIENT"
         ctx.sufficiency_status = sufficiency_status
         ctx.is_sufficient = sufficiency_status == "SUFFICIENT"
 
@@ -335,7 +316,6 @@ class InterviewCoreEngine(InterviewResponseMixin):
         if (
             ctx.current_stage == InterviewStage.WARM_UP
             and not ctx.is_sufficient
-            and ctx.clarify_count < MAX_WARMUP_CONTINUATIONS
         ):
             return Decision("continue_warm_up", {"missing_aspect": str(eval_result.get("missing_aspect") or "")},
                             reason="warm-up answer still missing a point",
@@ -403,9 +383,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
                             evidence_refs=["queue:empty"], path=path + ["#13b"])
         if ctx.current_stage == InterviewStage.WARM_UP:
             reason = (
-                "warm_up_followup_limit"
-                if not ctx.is_sufficient and ctx.clarify_count >= MAX_WARMUP_CONTINUATIONS
-                else "warm_up_done"
+                "warm_up_done" if ctx.is_sufficient else "warm_up_incomplete"
             )
         elif ctx.is_sufficient:
             reason = "sufficient"
@@ -635,9 +613,6 @@ class InterviewCoreEngine(InterviewResponseMixin):
                 question=ctx.question_prompt,
                 answer=ctx.candidate_text,
                 rubric="",
-                max_words=WARMUP_PROBE_MAX_WORDS,
-                max_sentences=WARMUP_PROBE_MAX_SENTENCES,
-                max_questions=WARMUP_PROBE_MAX_QUESTIONS,
             )
             if continuation:
                 speech_checks.record("probe", "pass", "warmup_from_evaluation")

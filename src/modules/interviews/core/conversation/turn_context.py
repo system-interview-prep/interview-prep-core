@@ -23,14 +23,6 @@ from src.modules.interviews.core.session_policy.blueprint import InterviewBluepr
 from src.modules.interviews.core.session_policy.demo_mode import DEMO_OVERTIME_GRACE_SECONDS
 from src.modules.interviews.core.conversation.turn_rules import pacing_seconds
 
-# One follow-up can identify which experience the candidate means; a second
-# can clarify their concrete role or evidence before the engine changes topic.
-MAX_PROBES_PER_QUESTION = 2
-
-# One warm-up follow-up can fill a missing introduction point; further attempts
-# tend to repeat the same question and should give way to the interview plan.
-MAX_WARMUP_CONTINUATIONS = 1
-
 # The closed set of actions a decider may choose. Each has one ``act_*`` in
 # ``turn_engine`` and one tool schema in ``agent/tools.py`` (Pha 2).
 ACTIONS: tuple[str, ...] = (
@@ -220,7 +212,7 @@ class ProbeWindow:
 
 
 def probe_window(ctx: TurnContext) -> ProbeWindow:
-    """The probe budget and time gates of the turn — code, shared by the rule ladder and the menu.
+    """The interview-time and stage gates shared by the rule ladder and the menu.
 
     Independent of whether the answer was sufficient: that is the decider's
     business. ``ctx.is_give_up`` is read because a give-up never gets a probe.
@@ -260,7 +252,6 @@ def probe_window(ctx: TurnContext) -> ProbeWindow:
         # A demo asks each frozen question once so every stage fits.
         "demo": bool(state.get("is_demo")),
         "give_up": ctx.is_give_up,
-        "probe_budget": ctx.current_turn_in_question >= blueprint.contract.max_probes_per_question,
         "behind_schedule": is_behind_schedule,
         "hard_answer_timeout": is_hard_answer_timeout,
         "behavioral_reserve": is_near_behavioral_reserve and has_pending_behavioral,

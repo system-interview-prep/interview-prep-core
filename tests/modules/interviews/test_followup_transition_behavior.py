@@ -131,7 +131,7 @@ async def test_insufficient_answer_after_first_probe_gets_one_more_followup() ->
 
 
 @pytest.mark.asyncio
-async def test_after_probe_budget_exhaustion_transition_closes_topic_and_names_answer() -> None:
+async def test_followup_can_continue_after_multiple_probes() -> None:
     engine = TransitionCapturingEngine(llm_client=InsufficientAnswerLLM())
     candidate_answer = "Dự án HamTech ạ."
 
@@ -140,11 +140,9 @@ async def test_after_probe_budget_exhaustion_transition_closes_topic_and_names_a
         _state(probe_count=2),
     )
 
-    assert result.action == TurnAction.NEXT_QUESTION
-    assert "Được rồi, mình ghi nhận HamTech" in result.message_text
-    assert "Bạn thiết kế API" in result.message_text
-    assert engine.transition_call["close_previous_thread"] is True
-    assert engine.transition_call["candidate_answer"] == candidate_answer
+    assert result.action == TurnAction.PROBE
+    assert result.metadata["turn_in_question"] == 3
+    assert "trực tiếp làm phần nào" in result.message_text
 
 
 @pytest.mark.asyncio

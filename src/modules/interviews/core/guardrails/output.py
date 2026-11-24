@@ -18,18 +18,10 @@ PROHIBITED_LEAK_PATTERNS = [
     r"\b\d+\s*điểm\b",
 ]
 
-CLARIFY_MAX_WORDS = 60
-
 _CLARIFY_LECTURING_RE = re.compile(
     r"\b(phải tập trung|hãy tập trung|you need to focus|please focus)\b",
     re.IGNORECASE,
 )
-
-ACKNOWLEDGEMENT_MAX_CHARS = 120
-
-RECEIPT_MIN_WORDS = 2
-
-RECEIPT_MAX_WORDS = 8
 
 ACK_EVALUATIVE_PATTERNS: tuple[str, ...] = (
     r"\b(đúng rồi|đúng vậy|chính xác|rất tốt|tốt lắm|tốt quá|hay lắm|hay quá|tuyệt|xuất sắc|giỏi|chuẩn rồi|"
@@ -45,8 +37,6 @@ ACK_JUDGMENT_PATTERNS: tuple[str, ...] = (
     r"\b(candidate|your answer|your approach|this solution)\b.{0,40}\b(great|excellent|effective|robust|solid|well[- ]designed)\b",
     r"\b(b\u1ea1n|c\u00e1ch l\u00e0m|h\u01b0\u1edbng \u0111i|gi\u1ea3i ph\u00e1p)\b.{0,40}\b(l\u00e0m t\u1ed1t|kh\u00e1 t\u1ed1t|r\u1ea5t t\u1ed1t|hi\u1ec7u qu\u1ea3|t\u1ed1i \u01b0u|thuy\u1ebft ph\u1ee5c)\b",
 )
-ACK_MAX_WORDS = 16
-ACK_MIN_WORDS = 1
 _INTERJECTION_RE = re.compile(r"^\W*(?:à|ừ|ừm|ok|okay|vâng|dạ|ồ|oh|ah|mm|right)\b\W*", re.IGNORECASE)
 _INCOMPLETE_OPENING_RE = re.compile(r"^(?:khi|nếu|vì|do|để|mà|còn|với|hoặc|tuy|when|if|because|while)\b", re.IGNORECASE)
 _GRADER_OPENING_RE = re.compile(
@@ -75,10 +65,6 @@ _STYLE_BANNED_RE = re.compile(
     re.IGNORECASE,
 )
 _SENTENCE_END_RE = re.compile(r"[.!?…]+(?:\s|$)")
-PROBE_MAX_WORDS = 32
-WARMUP_PROBE_MAX_WORDS = 70
-WARMUP_PROBE_MAX_SENTENCES = 3
-WARMUP_PROBE_MAX_QUESTIONS = 2
 _VERDICT_HINT_RE = re.compile(
     r"(?<!\w)(chưa (nói|nhắc|đề cập|nêu)( gì)? (đến|tới|về)|chưa nhắc|chưa đề cập|bạn (đã )?quên|"
     r"bỏ sót|còn thiếu|thiếu ý|thiếu phần|chưa đúng|sai rồi|hiểu sai|nhầm rồi|"
@@ -101,12 +87,6 @@ _LEADING_RE = re.compile(
     r"|^\s*(did|do|have) you (use|try|consider|think about)\b",
     re.IGNORECASE,
 )
-_SECOND_QUESTION_RE = re.compile(
-    r"(không|chưa)\s*,\s*(và|rồi|còn)\s.*(vì sao|tại sao|thế nào|ra sao|bao nhiêu|là gì|nào)",
-    re.IGNORECASE,
-)
-QNA_MAX_WORDS = 70
-QNA_MAX_SENTENCES = 3
 _QNA_BULLET_RE = re.compile(r"(?m)^\s*(?:[-*•]|\d+[.)])\s+")
 _NUMBER_RE = re.compile(r"\d[\d.,]*")
 _QNA_ALLOWED_WORDS = frozenset(
@@ -143,7 +123,6 @@ _CLOSURE_RE = re.compile(
     r"i follow|got it|makes sense|i see what you mean)\b",
     re.IGNORECASE,
 )
-ACK_TOPIC_MAX_WORDS = 7
 ACK_TOPIC_MIN_OVERLAP = 0.6
 _MEMORY_RECALL_RE = re.compile(
     r"(lần trước|hôm trước|buổi trước|phiên trước|kỳ trước)\s+(bạn|em|anh|chị)\s+(có\s+)?(nói|kể|bảo|trả lời|chia sẻ)"
@@ -281,15 +260,11 @@ def probe_rejection_reason(
     question: str = "",
     answer: str = "",
     rubric: str = "",
-    max_words: int = PROBE_MAX_WORDS,
-    max_sentences: int = 2,
-    max_questions: int = 1,
 ) -> str | None:
     """Why a follow-up question cannot be asked as is, or None.
 
-    Until 25/10 a probe was only checked for length (≤ 280 characters) and rubric
-    words, while acknowledgements had fourteen checks. ``rubric_leak`` is the
-    engine's existing leak check (kept there with its patterns).
+    Follow-ups have no fixed word, sentence, question-count or character limit.
+    ``rubric_leak`` is the engine's existing leak check (kept there with its patterns).
     """
     value = str(text_value or "").strip()
     if not value:
@@ -300,10 +275,6 @@ def probe_rejection_reason(
         return "rubric_leak"
     if "\n" in value:
         return "multi_line"
-    if len(value.split()) > max_words or sentence_count(value) > max_sentences:
-        return "too_long"
-    if value.count("?") > max_questions or (max_questions <= 1 and _SECOND_QUESTION_RE.search(value)):
-        return "two_questions"
     # "Bạn nên thêm khoá phân tán." is advice, not a follow-up question.
     if not value.rstrip(" \"'”").endswith("?"):
         return "not_question"
@@ -334,8 +305,6 @@ def qna_rejection_reason(
         return leak
     if _QNA_BULLET_RE.search(value) or "\n\n" in value:
         return "layout"
-    if len(value.split()) > QNA_MAX_WORDS or sentence_count(value) > QNA_MAX_SENTENCES:
-        return "too_long"
     if "?" in value:
         return "asks_back"
     praise = re.search(r"câu hỏi (?:rất |khá )?hay|great question|good question", value, re.IGNORECASE)
@@ -392,8 +361,8 @@ def topic_rejection_reason(topic: str, answer: str) -> str | None:
     if not value:
         return "empty"
     words = _content_words(value)
-    if not words or len(value.split()) > ACK_TOPIC_MAX_WORDS:
-        return "too_long"
+    if not words:
+        return "empty"
     if "?" in value or "\n" in value:
         return "not_a_phrase"
     if is_evaluative(value) or is_judgmental(value) or breaks_house_style(value):
@@ -465,8 +434,6 @@ def clarify_rejection_reason(
         return "empty"
     if "\n" in value:
         return "multi_line"
-    if len(value.split()) > CLARIFY_MAX_WORDS or len(re.findall(r"[.!?…]+(?:\s|$)", value)) > 2:
-        return "too_long"
     if _CLARIFY_LECTURING_RE.search(value) or breaks_house_style(value):
         return "lecturing"
     if is_evaluative(value) or is_judgmental(value) or judges_difficulty(value):
@@ -481,7 +448,7 @@ def clarify_rejection_reason(
 def validate_probe_text(probe_text: str) -> bool:
     """Kiểm tra câu hỏi probe có hợp lệ và không rò rỉ barem/rubric hay không."""
     cleaned = probe_text.strip()
-    if not cleaned or len(cleaned) > 280:
+    if not cleaned:
         return False
     for pattern in PROHIBITED_LEAK_PATTERNS:
         if re.search(pattern, cleaned, re.IGNORECASE):
@@ -499,9 +466,6 @@ def checked_probe(
     question: str = "",
     answer: str = "",
     rubric: str = "",
-    max_words: int = PROBE_MAX_WORDS,
-    max_sentences: int = 2,
-    max_questions: int = 1,
 ) -> str | None:
     """Return the model's follow-up unchanged when it passes guards; otherwise None."""
     raw = str(raw_probe or "").strip()
@@ -514,9 +478,6 @@ def checked_probe(
         question=question,
         answer=answer,
         rubric=rubric,
-        max_words=max_words,
-        max_sentences=max_sentences,
-        max_questions=max_questions,
     )
     if reason:
         trace_event("interviewer", "probe_rejected", reason=reason, probe=probe[:200])
@@ -541,8 +502,8 @@ def acknowledgement_rejection_reason(
     text_value = str(raw or "").strip()
     if not text_value:
         return "empty"
-    if len(text_value) > ACKNOWLEDGEMENT_MAX_CHARS or "\n" in text_value:
-        return "too_long"
+    if "\n" in text_value:
+        return "multi_line"
     if "?" in text_value:
         return "is_question"
     if any(re.search(pattern, text_value, re.IGNORECASE) for pattern in PROHIBITED_LEAK_PATTERNS):
@@ -551,10 +512,6 @@ def acknowledgement_rejection_reason(
         return leak
     if is_evaluative(text_value):
         return "evaluative"
-    if len(text_value.split()) > ACK_MAX_WORDS:
-        return "too_many_words"
-    if len(text_value.split()) < ACK_MIN_WORDS:
-        return "too_curt"
     if is_grader_style(text_value):
         return "grader_style"
     if is_parroting(text_value, answer):
@@ -588,12 +545,9 @@ def receipt_rejection_reason(
     text_value = str(raw or "").strip()
     if not text_value:
         return "empty"
-    words = text_value.split()
-    if len(words) < RECEIPT_MIN_WORDS:
-        return "too_curt"
-    if len(words) > RECEIPT_MAX_WORDS or "\n" in text_value:
-        return "too_long"
-    if "?" in text_value or sentence_count(text_value) > 1:
+    if "\n" in text_value:
+        return "multi_line"
+    if "?" in text_value:
         return "not_a_receipt"
     if is_greeting(text_value):
         return "greeting"
@@ -721,20 +675,10 @@ def system_probe_response(*, is_vi: bool, active_prompt: str) -> str:
 
 
 __all__ = [
-    "ACKNOWLEDGEMENT_MAX_CHARS",
     "ACK_EVALUATIVE_PATTERNS",
     "ACK_JUDGMENT_PATTERNS",
-    "ACK_MAX_WORDS",
-    "ACK_MIN_WORDS",
-    "ACK_TOPIC_MAX_WORDS",
     "ACK_TOPIC_MIN_OVERLAP",
-    "CLARIFY_MAX_WORDS",
-    "PROBE_MAX_WORDS",
     "PROHIBITED_LEAK_PATTERNS",
-    "QNA_MAX_SENTENCES",
-    "QNA_MAX_WORDS",
-    "RECEIPT_MAX_WORDS",
-    "RECEIPT_MIN_WORDS",
     "acknowledgement_rejection_reason",
     "breaks_house_style",
     "checked_probe",

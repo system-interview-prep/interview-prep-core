@@ -10,10 +10,9 @@ from __future__ import annotations
 from typing import Any
 
 from src.core.config import get_settings
-from src.modules.interviews.core.conversation import turn_engine, turn_rules
+from src.modules.interviews.core.conversation import turn_engine
 from src.modules.interviews.core.dialogue import policy as interviewer_dialogue
 from src.modules.interviews.core.guardrails.common import ANSWER_PROMPT_MAX_CHARS
-from src.modules.interviews.core.guardrails.output import ACK_MAX_WORDS, PROBE_MAX_WORDS, QNA_MAX_WORDS
 from src.modules.interviews.application.quality_admin.speech_settings import voice_dialect
 from src.modules.interviews.planning.entry_gate import (
     DEFAULT_CHALLENGE_PERCENT,
@@ -87,10 +86,7 @@ def interview_config_groups() -> list[dict[str, Any]]:
             "key": "speech",
             "items": [
                 item("dialect", voice_dialect(), "INTERVIEWER_VOICE_DIALECT", "bac"),
-                item("ackMaxWords", ACK_MAX_WORDS),
-                item("probeMaxWords", PROBE_MAX_WORDS),
-                item("clarifyMaxWords", turn_rules.CLARIFY_MAX_WORDS),
-                item("qnaMaxWords", QNA_MAX_WORDS),
+                item("utteranceLengthPolicy", "natural, no fixed word or sentence limits"),
                 item("maxNhePerTurn", interviewer_dialogue.MAX_NHE_PER_TURN),
                 item("answerPromptMaxChars", ANSWER_PROMPT_MAX_CHARS),
             ],

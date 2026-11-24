@@ -16,13 +16,7 @@ from src.modules.interviews.core.conversation.turn_engine import (
 )
 from src.modules.interviews.core.guardrails.common import candidate_block
 from src.modules.interviews.core.guardrails.input import looks_like_injection
-from src.modules.interviews.core.guardrails.output import (
-    WARMUP_PROBE_MAX_QUESTIONS,
-    WARMUP_PROBE_MAX_SENTENCES,
-    WARMUP_PROBE_MAX_WORDS,
-    probe_rejection_reason,
-    qna_rejection_reason,
-)
+from src.modules.interviews.core.guardrails.output import probe_rejection_reason, qna_rejection_reason
 
 ANSWER = "Em dùng Redis làm cache, đặt TTL năm phút và xoá key sau khi ghi database."
 QUESTION = "Khi dữ liệu trong Redis cache bị cũ so với database, bạn xử lý invalidation thế nào?"
@@ -127,15 +121,10 @@ def test_neutral_acknowledgements_still_pass(ack: str) -> None:
         ("Khi hai request cùng ghi, bạn có dùng SELECT FOR UPDATE để khoá dòng không?", "hints_answer"),
         ("Hay đấy, vậy khi Redis sập thì sao?", "evaluative"),
         ("Câu trả lời khá ổn, nhưng khi Redis sập thì sao?", "evaluative"),
-        ("Bạn có biết write-through cache không, và vì sao nó tránh dữ liệu cũ?", "two_questions"),
+        ("Bạn có biết write-through cache không, và vì sao nó tránh dữ liệu cũ?", "hints_answer"),
         ("Bạn chưa nói đến race condition, khi hai request cùng ghi thì sao?", "verdict_hint"),
         ("Bạn có dùng circuit breaker không?", "leading_question"),
         ("Câu này dễ thôi, bạn dùng gì để xoá key?", "evaluative"),
-        (
-            "Vậy khi cache bị stale thì bạn xử lý thế nào, và bạn đo độ trễ ra sao "
-            "với từng cách trong production thật?",
-            "too_long",
-        ),
     ],
 )
 def test_bad_follow_ups_are_rejected(probe: str, reason: str) -> None:
@@ -165,21 +154,13 @@ def test_checked_probe_drops_a_hint_from_the_rubric() -> None:
     assert checked_probe(probe, question=QUESTION, answer=ANSWER) == probe
 
 
-def test_warmup_allows_a_longer_two_question_followup_without_relaxing_regular_probes() -> None:
+def test_long_two_question_followup_is_not_rejected_for_its_length() -> None:
     probe = (
         "Cảm ơn bạn đã giới thiệu về trường học của mình! Ngoài việc học, bạn có thể chia sẻ thêm về lý do "
         "bạn quan tâm đến vị trí này không? Mục tiêu nghề nghiệp của bạn trong tương lai là gì?"
     )
 
-    assert checked_probe(probe, question=QUESTION, answer=ANSWER) is None
-    assert checked_probe(
-        probe,
-        question=QUESTION,
-        answer=ANSWER,
-        max_words=WARMUP_PROBE_MAX_WORDS,
-        max_sentences=WARMUP_PROBE_MAX_SENTENCES,
-        max_questions=WARMUP_PROBE_MAX_QUESTIONS,
-    ) == probe
+    assert checked_probe(probe, question=QUESTION, answer=ANSWER) == probe
 
 
 # --- Câu giải thích lại --------------------------------------------------------------

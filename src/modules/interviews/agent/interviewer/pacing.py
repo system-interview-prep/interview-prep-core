@@ -130,5 +130,5 @@ def pacing_block(ctx: TurnContext) -> Dict[str, Any]:
         "seconds_needed_for_remaining_plan": seconds_needed,
         "pace": pace,
         "probes_used_in_question": probes_used,
-        "probes_left_in_question": max(0, ctx.blueprint.contract.max_probes_per_question - probes_used),
+        "probe_follow_ups": "continue while useful and within interview time",
     }
