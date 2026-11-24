@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from openai import APIError as OpenAIAPIError
 from sqlalchemy import text
 
 from src.core.config import get_settings
@@ -186,6 +187,26 @@ def create_app() -> FastAPI:
                 "detail": exc.detail,
             },
             headers=exc.headers,
+        )
+
+    @app.exception_handler(OpenAIAPIError)
+    async def ai_provider_exception_handler(request: Request, exc: OpenAIAPIError) -> JSONResponse:
+        # The model provider refused or failed (out of credit, rate limit, bad
+        # key, outage). Left unhandled this became a bare 500 from outside the
+        # CORS middleware, which the browser reported as a CORS error. The
+        # provider's own message stays in the log: it can name the account.
+        logger.error(
+            "AI provider call failed on %s %s: %s: %s",
+            request.method, request.url.path, type(exc).__name__, exc,
+        )
+        message = "Dịch vụ AI tạm thời không khả dụng. Vui lòng thử lại sau."
+        return JSONResponse(
+            status_code=503,
+            content={
+                "message": message,
+                "statusCode": 503,
+                "detail": {"errorCode": "ai_service_unavailable", "message": message},
+            },
         )
 
     @app.exception_handler(RequestValidationError)
