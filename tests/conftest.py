@@ -48,6 +48,28 @@ def _no_live_question_generation(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_provider_key(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Run every test as CI does: without an OpenAI key.
+
+    With the developer's real key from `.env`, a code path that no test had
+    stubbed called the provider for real: 36 tests did so on 24/11, paying for
+    each run and passing or failing on the model's answer. Without a key the
+    same path fails at once with "OPENAI_API_KEY is not configured", which
+    names the call the test has to script. A test that needs a key sets one
+    itself or passes its own Settings.
+    """
+    from src.core.config import get_settings
+    from src.modules.ai import facade
+
+    # Hold the real function: a test may replace facade._client with a stub.
+    cached_client = facade._client
+    monkeypatch.setattr(get_settings(), "openai_api_key", None)
+    cached_client.cache_clear()
+    yield
+    cached_client.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _trace_logs_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
     """Keep test traces out of the developer's trace-logs/.
 

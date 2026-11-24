@@ -23,6 +23,40 @@ from src.modules.interviews.core.contracts.interview import (
 )
 
 
+async def scripted_interviewer_model(*, instructions: str = "", input_text: str = "", **_: Any) -> str:
+    """Stand-in for the model in tests that do not script one themselves.
+
+    Since 10/11 a failed model call ends the turn with an error instead of
+    falling back to a canned line, so every turn needs an answer from the
+    model. This one judges like the old fallback did (the answer is not yet
+    sufficient) and speaks one fixed, guard-safe line per kind of call.
+    """
+    if "sufficiency_status" in instructions:
+        return json.dumps(
+            {
+                "intent": "ANSWER",
+                "sufficiency_status": "INSUFFICIENT",
+                "missing_aspect": "",
+                "acknowledgement": "Ừm, mình hình dung được rồi.",
+                "probe_question": "",
+                "score": 5.0,
+            },
+            ensure_ascii=False,
+        )
+    if "câu hỏi probe" in input_text or "follow-up question" in instructions:
+        return "Khi bước đó gặp lỗi, bạn xử lý thế nào?"
+    return "Cảm ơn bạn, mình ghi nhận rồi."
+
+
+@pytest.fixture(autouse=True)
+def _default_scripted_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests that patch `chat_runtime.generate_text` themselves replace this."""
+    monkeypatch.setattr(
+        "src.modules.interviews.application.runtime.chat_runtime.generate_text",
+        scripted_interviewer_model,
+    )
+
+
 class MockResult:
     def __init__(self, rows: list[dict[str, Any]]):
         self._rows = rows
