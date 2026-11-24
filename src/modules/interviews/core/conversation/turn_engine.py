@@ -45,7 +45,6 @@ from src.modules.interviews.core.guardrails.output import (
     enforce_final_output_guards,
     qna_rejection_reason,
     system_probe_response,
-    transition_rejection_reason,
     new_terms,
 )
 from src.modules.interviews.core.guardrails.common import candidate_block, candidate_data_rule, canary_scope
@@ -76,10 +75,6 @@ from src.modules.interviews.core.contracts.interview import (
     QuestionItem,
     SessionExitReason,
     TurnAction,
-)
-from src.modules.interviews.core.dialogue.topics import (
-    generic_transition,
-    spoken_topic,
 )
 
 __all__ = [
@@ -810,71 +805,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
 
         eval_result = ctx.eval_result
         window = ctx.window or probe_window(ctx)
-        # Phần mở đầu nên kết thúc bằng một lời chuyển chủ đề ngắn. Câu hỏi
-        # kế tiếp được gửi sau khi ứng viên xác nhận đã sẵn sàng; như vậy lời
-        # chuyển không bị ghép thành một câu hỏi dài có nhiều ý.
-        if ctx.current_stage == InterviewStage.WARM_UP:
-            # Chủ đề nói ra cho ứng viên, không phải nhãn taxonomy của planner:
-            # ``competency`` ở đây là "Xác thực CV & Dự án" và buổi thật 11/11
-            # đã đọc nguyên nhãn đó lên. Không gọi tên được thì nói chung chung.
-            next_topic = spoken_topic(
-                concept_id=next_question.concept_id,
-                competency=next_question.competency,
-                project_name=next_question.project_name,
-                is_vi=ctx.is_vi,
-            )
-            topic_clause = (
-                (f"The next thing you want to ask about is: {next_topic}. " if next_topic else "")
-                if not ctx.is_vi
-                else (f"Chuyện bạn sắp hỏi tới là: {next_topic}. " if next_topic else "")
-            )
-            transition_line = await self._generate_interviewer_line(
-                purpose="announce_next_topic_wait_for_candidate_ack",
-                context=(
-                    "The candidate has finished the opening. "
-                    + topic_clause
-                    + "Do not summarize or repeat anything the candidate said. Do not ask the actual next question. "
-                    "Say one short, friendly sentence telling them what you are about to ask about, then stop. "
-                    "How the interview is organised is yours alone: never name a part, round, stage or step of it, "
-                    "never mention a plan or process, never say how many questions are left, and never ask the "
-                    "candidate to confirm or approve anything. Do not end with a question."
-                    if not ctx.is_vi
-                    else "Ứng viên vừa hoàn tất phần mở đầu. "
-                    + topic_clause
-                    + "Không tóm tắt hay nhắc lại điều ứng viên vừa nói. Chưa hỏi câu hỏi chuyên môn. "
-                    "Nói đúng một câu ngắn, thân thiện, cho biết bạn sắp hỏi sang chuyện đó rồi dừng lại. "
-                    "Buổi phỏng vấn được sắp xếp thế nào là chuyện của riêng bạn: không gọi tên phần, vòng, "
-                    "giai đoạn hay bước nào, không nói về quy trình hay kế hoạch, không cho biết còn bao nhiêu câu, "
-                    "và không xin ứng viên xác nhận hay đồng ý. Kết thúc bằng 'nhé' là đủ để ứng viên đáp lại. "
-                    "Không kết thúc bằng dấu hỏi."
-                ),
-                is_vi=ctx.is_vi,
-                max_words=22,
-                reject=transition_rejection_reason,
-                fallback=generic_transition(next_topic, ctx.is_vi),
-            )
-            return InterviewerTurnOutput(
-                session_id=ctx.session_id,
-                turn_index=ctx.next_turn_index,
-                message_text=transition_line,
-                action=TurnAction.NEXT_QUESTION,
-                current_stage=next_stage,
-                current_competency=next_question.competency,
-                time_remaining_seconds=ctx.time_remaining_seconds,
-                metadata={
-                    **output_metadata_base(ctx),
-                    "turn_in_question": 0,
-                    "question_id": next_question.question_id,
-                    "pre_score": ctx.score_telemetry,
-                    "sufficiency_status": ctx.sufficiency_status,
-                    "awaiting_candidate_ack": True,
-                    "transition": transition_line,
-                    "transition_topic": next_topic or "",
-                    "speech_plan": [{"act": "TRANSITION", "source": "llm"}],
-                    "intent": eval_result.get("intent"),
-                },
-            )
-
+        # After warm-up, ask the next frozen question without a confirmation beat.
         interviewer_message = next_question.spoken_prompt or next_question.main_prompt
         speech_plan = [{
             "act": "QUESTION",

@@ -1014,7 +1014,7 @@ async def test_transition_ack_releases_frozen_question_without_core_or_answer_sc
 
 
 @pytest.mark.asyncio
-async def test_completed_warmup_persists_only_topic_transition_until_candidate_ack(mock_session_data):
+async def test_completed_warmup_immediately_persists_next_stage_question(mock_session_data):
     session_row, turns = mock_session_data
     turns[0]["question_snapshot"].update({"stage": "WARM_UP", "questionText": "Giới thiệu bản thân?"})
     turns[1]["question_snapshot"].update(
@@ -1037,8 +1037,6 @@ async def test_completed_warmup_persists_only_topic_transition_until_candidate_a
                 current_stage=InterviewStage.VALIDATE,
                 metadata={
                     "question_id": "qver-2",
-                    "awaiting_candidate_ack": True,
-                    "transition_topic": "Xác thực CV & Dự án",
                 },
             )
 
@@ -1053,9 +1051,9 @@ async def test_completed_warmup_persists_only_topic_transition_until_candidate_a
         core_engine=WarmupCompleteEngine(),
     )
 
-    assert result["assistantResponse"]["messageType"] == "ACKNOWLEDGMENT"
-    assert result["message"] == "Ok, mình hiểu rồi. Tiếp theo mình hỏi bạn về dự án HamTech nhé."
-    assert "trực tiếp phụ trách phần nào" not in result["message"]
+    assert result["currentStage"] == "VALIDATE"
+    assert result["assistantResponse"]["messageType"] == "MAIN_QUESTION"
+    assert result["message"] == turns[1]["question_snapshot"]["spokenText"]
     assert db.turns["turn-2"]["status"] == "ASKED"
 
 
