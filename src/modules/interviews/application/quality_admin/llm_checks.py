@@ -13,7 +13,7 @@ import re
 import unicodedata
 from typing import Any
 
-from src.modules.interviews.core.dialogue.policy import looks_like_injection
+from src.modules.interviews.core.guardrails.input import looks_like_injection
 
 # S5 of the design: the interviewer talks about itself as a system.
 # ("mình là người phỏng vấn AI của Intervia" in the opening is allowed.)

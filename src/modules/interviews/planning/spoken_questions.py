@@ -33,6 +33,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.trace_logging import trace_event
+from src.modules.interviews.core.guardrails.output import is_evaluative
 
 logger = logging.getLogger(__name__)
 
@@ -100,8 +101,6 @@ def validate_spoken_question(
     """True khi ``spoken`` là bản nói an toàn của ``original``."""
     # Imported here: the core package imports planning modules at load time.
     from src.modules.interviews.core.conversation.turn_engine import PROHIBITED_LEAK_PATTERNS
-    from src.modules.interviews.core.dialogue.policy import is_evaluative
-
     original = str(original or "").strip()
     spoken = str(spoken or "").strip()
     if not original or not spoken or spoken == original:

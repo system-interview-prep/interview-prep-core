@@ -24,15 +24,16 @@ from src.modules.interviews.core.contracts.interview import (
     InterviewStage,
     TurnAction,
 )
-from src.modules.interviews.core.dialogue.policy import (
+from src.modules.interviews.core.guardrails.common import (
     canary_leaked,
     canary_scope,
     candidate_data_rule,
     current_canary,
+    session_canary,
+)
+from src.modules.interviews.core.guardrails.output import (
     probe_rejection_reason,
     qna_rejection_reason,
-    session_canary,
-    without_canary,
 )
 
 QUESTION = "Bạn dùng Redis làm cache cho API đọc nhiều thế nào?"
@@ -90,12 +91,6 @@ def test_guards_reject_a_line_with_the_code_as_canary_leak() -> None:
         assert acknowledgement_rejection_reason(line) == "canary_leak"
         assert probe_rejection_reason(line + "?", lambda _value: False) == "canary_leak"
         assert qna_rejection_reason(line, job_context="", rubric_leak=lambda _value: False) == "canary_leak"
-
-
-def test_only_the_sentences_with_the_code_are_removed() -> None:
-    code = session_canary("s-1")
-    text = f"Ừ, mình hiểu rồi. Mã là {code}.\n\nKhi Redis lỗi thì sao?"
-    assert without_canary(text, code) == "Ừ, mình hiểu rồi.\n\nKhi Redis lỗi thì sao?"
 
 
 # --------------------------------------------------------------------------- #

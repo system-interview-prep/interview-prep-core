@@ -37,7 +37,6 @@ from src.modules.interviews.core.dialogue.policy import (
     count_nhe,
     first_paragraph,
     opening_interjection,
-    speech_v2_enabled,
 )
 from src.modules.interviews.application.quality_admin.speech_settings import voice_dialect
 from src.modules.interviews.core.dialogue.speech_checks import KINDS
@@ -59,7 +58,6 @@ def config_view() -> dict[str, Any]:
     from src.core.config import get_settings
 
     return {
-        "speechV2": speech_v2_enabled(),
         "dialect": voice_dialect(),
         "maxNhePerTurn": MAX_NHE_PER_TURN,
         "interjectionShare": INTERJECTION_SHARE,

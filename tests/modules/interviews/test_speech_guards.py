@@ -14,9 +14,9 @@ from src.modules.interviews.core.conversation.turn_engine import (
     clarify_rejection_reason,
     validate_probe_text,
 )
-from src.modules.interviews.core.dialogue.policy import (
-    candidate_block,
-    looks_like_injection,
+from src.modules.interviews.core.guardrails.common import candidate_block
+from src.modules.interviews.core.guardrails.input import looks_like_injection
+from src.modules.interviews.core.guardrails.output import (
     probe_rejection_reason,
     qna_rejection_reason,
 )

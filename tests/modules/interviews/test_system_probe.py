@@ -10,10 +10,9 @@ import pytest
 
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 from src.modules.interviews.core.conversation.turn_rules import acknowledgement_rejection_reason, classify_candidate_question
-from src.modules.interviews.core.dialogue.policy import (
+from src.modules.interviews.core.guardrails.input import looks_like_injection, looks_like_system_probe
+from src.modules.interviews.core.guardrails.output import (
     leaks_system,
-    looks_like_injection,
-    looks_like_system_probe,
     probe_rejection_reason,
     qna_rejection_reason,
 )

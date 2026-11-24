@@ -214,8 +214,8 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
         output = await engine.handle_turn(turn_input, session_state)
 
         self.assertEqual(output.action, TurnAction.PROBE)
-        # The acknowledgement now precedes the follow-up; the probe is the last paragraph.
-        self.assertEqual(output.message_text.split("\n\n")[-1], "Khi Redis lỗi, hệ thống của bạn xử lý thế nào?")
+        # The probe is emitted as its own complete line; no acknowledgement is appended.
+        self.assertEqual(output.message_text, "Khi Redis lỗi, hệ thống của bạn xử lý thế nào?")
         self.assertTrue(output.metadata["probe_generated_in_evaluation"])
         self.assertEqual(output.metadata["generated_by"], "llm")
         self.assertEqual(llm.evaluation_calls, 1)
@@ -327,8 +327,7 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(output.action, TurnAction.CLARIFY)
-        self.assertTrue(output.message_text.endswith(f" {probe}"))
-        self.assertTrue(any(output.message_text.startswith(p) for p in REPEAT_PREFIX_VI))
+        self.assertEqual(output.message_text, probe)
 
     async def test_no_probe_when_two_followups_have_already_been_used(self):
         """Sau hai lượt hỏi phụ, câu trả lời thiếu vẫn phải khép câu và chuyển tiếp."""
@@ -1036,16 +1035,16 @@ def test_acknowledgement_from_llm_is_sanitised():
 
 
 @pytest.mark.skip(reason="fixed script pools / helpers removed in 75d3520 (speech v2); see INTERVIEW_AGENT_TEST_PLAN_V1 §6")
-def test_llm_lines_address_the_candidate_as_ban():
-    """The room swaps "bạn" for the candidate's name, so "em"/"anh"/"chị" must not reach it."""
+def test_llm_lines_keep_their_contextual_candidate_pronoun():
+    """Pronoun choice stays with the prompt instead of being mechanically rewritten."""
     from src.modules.interviews.core.conversation.turn_engine import (
         normalize_candidate_pronoun,
         safe_acknowledgement,
     )
 
-    assert safe_acknowledgement("Ok, mình hiểu phần em phụ trách.", True) == "Ok, mình hiểu phần bạn phụ trách."
-    assert normalize_candidate_pronoun("Em hãy nêu ví dụ cụ thể.") == "Bạn hãy nêu ví dụ cụ thể."
-    assert normalize_candidate_pronoun("Anh/chị dùng index nào?") == "Bạn dùng index nào?"
+    assert safe_acknowledgement("Ok, mình hiểu phần em phụ trách.", True) == "Ok, mình hiểu phần em phụ trách."
+    assert normalize_candidate_pronoun("Em hãy nêu ví dụ cụ thể.") == "Em hãy nêu ví dụ cụ thể."
+    assert normalize_candidate_pronoun("Anh/chị dùng index nào?") == "Anh/chị dùng index nào?"
     # A title before a name and words merely containing the letters are kept.
     assert normalize_candidate_pronoun("Chị Hiền đã nêu rõ.") == "Chị Hiền đã nêu rõ."
     assert normalize_candidate_pronoun("Kênh member team.") == "Kênh member team."
