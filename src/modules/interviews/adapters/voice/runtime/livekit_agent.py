@@ -986,6 +986,17 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
         opening_text = opening.get("content") if isinstance(opening, dict) else None
         session_id = str(start_payload.get("sessionId") or "")
         locale = str(start_payload.get("locale") or "vi-VN")
+        candidate_settings = start_payload.get("candidateSettings") or {}
+        if not isinstance(candidate_settings, dict):
+            candidate_settings = {}
+        candidate_voice = str(candidate_settings.get("aiVoice") or "").strip()
+        try:
+            candidate_speech_rate = min(1.2, max(0.8, float(candidate_settings.get("speechRate", 1.0))))
+        except (TypeError, ValueError):
+            candidate_speech_rate = 1.0
+        if candidate_voice:
+            # The Settings voice picker is populated from VieNeu's catalogue.
+            tts_provider = "vieneu"
         if not opening_text or not session_id:
             raise RuntimeError("Interview Core returned no opening question")
     except Exception:
@@ -1088,8 +1099,9 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
         primary_tts = VieNeuTTS(
             base_url=os.getenv("VIENEU_TTS_BASE_URL", "http://host.docker.internal:8000"),
             api_key=vieneu_api_key,
-            voice=os.getenv("VIENEU_TTS_VOICE", ""),
+            voice=candidate_voice or os.getenv("VIENEU_TTS_VOICE", ""),
             model=os.getenv("VIENEU_TTS_MODEL", ""),
+            speed=candidate_speech_rate,
             timeout_seconds=vieneu_timeout,
             sample_rate=_int_env("VIENEU_TTS_SAMPLE_RATE", 16000),
         )
@@ -1124,7 +1136,8 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
         f"elevenlabs|{voice_id}|{json.dumps(tts_config.telemetry(), sort_keys=True)}|{locale}"
         if use_elevenlabs
         else (
-            f"{tts_provider}|{primary_tts.model}|{os.getenv('VIENEU_TTS_VOICE', '')}|{locale}"
+            f"{tts_provider}|{primary_tts.model}|{candidate_voice or os.getenv('VIENEU_TTS_VOICE', '')}|"
+            f"{candidate_speech_rate}|{locale}"
             if use_vieneu
             else f"inference|{fallback_model}|{fallback_voice}|{fallback_language}|{locale}"
         )

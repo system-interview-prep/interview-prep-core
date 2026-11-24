@@ -65,6 +65,7 @@ class InterviewResponseMixin:
         system_prompt = interviewer_line_prompt(
             is_vi=is_vi, purpose=purpose, max_words=max_words
         )
+        system_prompt += self._candidate_tone_instruction(is_vi=is_vi)
         try:
             if hasattr(self.llm, "generate_text"):
                 raw = await self.llm.generate_text(
@@ -350,6 +351,7 @@ Các lượt phỏng vấn gần đây để tránh lặp:
 Hãy tạo một câu hỏi tiếp nối câu hỏi gốc, bám vào câu trả lời và khía cạnh còn thiếu."""
 
         system_prompt += playbook.block("probe", is_vi, current_question.get("competency"))
+        system_prompt += self._candidate_tone_instruction(is_vi=is_vi)
         system_prompt += candidate_memory_block(memory_hits or (), is_vi, current_question.get("competency"))
         system_prompt += "\n\n" + candidate_data_rule(is_vi)
         try:
@@ -421,6 +423,7 @@ Hãy tạo một câu hỏi tiếp nối câu hỏi gốc, bám vào câu trả 
             or current_question.get("main_prompt", "")
         )
         system_prompt = clarify_prompt(is_vi)
+        system_prompt += self._candidate_tone_instruction(is_vi=is_vi)
         system_prompt += playbook.block("clarify", is_vi, current_question.get("competency"))
         system_prompt += candidate_memory_block(memory_hits or (), is_vi, current_question.get("competency"))
         system_prompt += "\n\n" + candidate_data_rule(is_vi)

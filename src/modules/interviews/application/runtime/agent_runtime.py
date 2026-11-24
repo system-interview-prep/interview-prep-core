@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.modules.interviews.agent.planner import PlannerAgent
@@ -27,6 +28,34 @@ def database_operations(*, db: AsyncSession, user: dict, session_row: dict) -> I
     session_id = str(session_row["id"])
     planner = PlannerAgent()
 
+    async def load_candidate_settings() -> None:
+        user_id = str(session_row.get("user_id") or user.get("sub") or "")
+        if not user_id:
+            return
+        result = await db.execute(
+            text(
+                "SELECT ai_voice, speech_rate, auto_camera_webrtc, ai_tone "
+                "FROM candidate_settings WHERE user_id = :user_id"
+            ),
+            {"user_id": user_id},
+        )
+        row = result.mappings().one_or_none()
+        session_row["candidate_settings"] = (
+            {
+                "aiVoice": row["ai_voice"],
+                "speechRate": float(row["speech_rate"]),
+                "autoCameraWebRTC": row["auto_camera_webrtc"],
+                "aiTone": row["ai_tone"],
+            }
+            if row is not None
+            else {
+                "aiVoice": "vi-north-male",
+                "speechRate": 1.0,
+                "autoCameraWebRTC": True,
+                "aiTone": "standard",
+            }
+        )
+
     async def prepare(_: dict) -> dict:
         return await planner.prepare(db=db, user=user, session_row=session_row)
 
@@ -40,6 +69,7 @@ def database_operations(*, db: AsyncSession, user: dict, session_row: dict) -> I
         return result
 
     async def open_session(_: dict) -> dict:
+        await load_candidate_settings()
         result = await start_chat_session(db=db, session_row=session_row)
         if candidate_memory.enabled() != "0":
             # First session of a user: seed their memory from the progress gap notebook.
@@ -47,6 +77,7 @@ def database_operations(*, db: AsyncSession, user: dict, session_row: dict) -> I
         return result
 
     async def respond(payload: dict) -> dict:
+        await load_candidate_settings()
         # Only final transcripts are passed here; video observations are not
         # included in the competency-scoring telemetry.
         return await process_candidate_message(

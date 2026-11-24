@@ -21,6 +21,9 @@ from src.modules.interviews.core.conversation.response_generation import Intervi
 from src.modules.interviews.core.conversation.prompt import (
     closing_qna_speech_prompt,
 )
+from src.modules.interviews.core.conversation.prompt.candidate_tone import (
+    candidate_tone_instruction,
+)
 from src.modules.interviews.core.conversation.turn_context import (
     MAX_PROBES_PER_QUESTION,
     Decision,
@@ -132,7 +135,12 @@ class InterviewCoreEngine(InterviewResponseMixin):
             options["json_schema"] = schema
         return options
 
-    def __init__(self, llm_client=None, ai_generator=None):
+    def __init__(
+        self,
+        llm_client=None,
+        ai_generator=None,
+        candidate_tone: str = "standard",
+    ):
         """
         llm_client: Client gọi LLM hoặc wrapper hỗ trợ generate_json / generate_text.
         ai_generator: Hàm generate async có chữ ký (instructions, input_text, ...).
@@ -140,6 +148,10 @@ class InterviewCoreEngine(InterviewResponseMixin):
         """
         self.llm = llm_client
         self._generate_fn = ai_generator or generate_text
+        self.candidate_tone = candidate_tone
+
+    def _candidate_tone_instruction(self, *, is_vi: bool) -> str:
+        return candidate_tone_instruction(self.candidate_tone, is_vi=is_vi)
 
     async def handle_turn(
         self,
@@ -1010,6 +1022,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
             job_context=job_context,
             is_last_question=is_last_question,
         )
+        system_prompt += self._candidate_tone_instruction(is_vi=is_vi)
         system_prompt += "\n\n" + candidate_data_rule(is_vi)
         user_content = "Câu hỏi của ứng viên:\n" + candidate_block(candidate_text)
         reason: Optional[str] = None

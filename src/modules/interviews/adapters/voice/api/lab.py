@@ -314,6 +314,7 @@ async def start_livekit_runtime(
         "sessionStatus": runtime["sessionStatus"],
         "locale": session.get("locale") or "vi-VN",
         "jobTitle": session.get("job_title") or "",
+        "candidateSettings": session.get("candidate_settings") or {},
     }
 
 

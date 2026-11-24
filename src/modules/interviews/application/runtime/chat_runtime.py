@@ -1122,6 +1122,7 @@ def build_session_state_from_db(
         "elapsed_time": elapsed_sec,
         "remaining_time": remaining_sec,
         "locale": session_row.get("locale") or "vi-VN",
+        "candidate_settings": session_row.get("candidate_settings") or {},
         "allow_early_exit": metadata_json.get("allow_early_exit", True),
         "asked_question_ids": asked_question_ids,
         "answered_question_ids": answered_question_ids,
@@ -1632,7 +1633,6 @@ async def process_candidate_message(
     # belong to this interview in the admin pipeline view.
     current_session_id.set(str(session_id))
     # Call Modality-Agnostic Core Engine
-    engine = core_engine or InterviewCoreEngine(ai_generator=generate_text)
     session_state = build_session_state_from_db(
         session_row,
         turns,
@@ -1642,6 +1642,13 @@ async def process_candidate_message(
         cv_followup_used=cv_followup_used,
         clarify_count=curr_turn_clarifies,
         elapsed_override_seconds=elapsed_override_seconds,
+    )
+    candidate_tone = str(
+        (session_state.get("candidate_settings") or {}).get("aiTone") or "standard"
+    )
+    engine = core_engine or InterviewCoreEngine(
+        ai_generator=generate_text,
+        candidate_tone=candidate_tone,
     )
     locked_plan_result = await db.execute(
         text("SELECT plan_payload FROM interview_session_plans WHERE session_id = :sid"),

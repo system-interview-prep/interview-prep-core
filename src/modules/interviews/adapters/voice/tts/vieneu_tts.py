@@ -35,6 +35,7 @@ class VieNeuTTS(tts.TTS):
         api_key: str | None = None,
         voice: str | None = None,
         model: str | None = None,
+        speed: float = 1.0,
         timeout_seconds: float = 180.0,
         sample_rate: int = 16000,
     ) -> None:
@@ -51,6 +52,7 @@ class VieNeuTTS(tts.TTS):
         self._api_key = api_key.strip() if api_key else ""
         self._voice = voice.strip() if voice else ""
         self._model = model.strip() if model else ""
+        self._speed = min(1.2, max(0.8, float(speed)))
         self._timeout_seconds = max(5.0, timeout_seconds)
         headers = {"Accept": "text/event-stream"}
         if self._api_key:
@@ -89,11 +91,12 @@ class _VieNeuChunkedStream(tts.ChunkedStream):
         self._tts: VieNeuTTS = tts
 
     async def _run(self, output_emitter: tts.AudioEmitter) -> None:
-        payload: dict[str, str] = {
+        payload: dict[str, str | float] = {
             "input": self._input_text,
             "response_format": "pcm",
             "stream_format": "sse",
             "sample_rate": str(self._tts.sample_rate),
+            "speed": self._tts._speed,
         }
         if self._tts._voice:
             payload["voice"] = self._tts._voice
