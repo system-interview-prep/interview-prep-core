@@ -1,26 +1,30 @@
 import logging
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import current_user
 from src.infrastructure.database import get_db
 from src.modules.matching.application import run_tracking
+from src.modules.matching.application.fit_history import (
+    get_fit_attempt,
+    list_candidate_fit_attempts,
+    list_fit_attempts,
+    list_latest_fits,
+    persist_candidate_fit,
+)
 from src.modules.matching.application.input_resolver import resolve_job as _resolve_job
 from src.modules.matching.application.input_resolver import resolve_resume as _resolve_resume
 from src.modules.matching.application.input_resolver import resume_owner_scope
 from src.modules.matching.application.service import run_match
 from src.modules.matching.domain.schemas import (
     CandidatePreferences,
-    CompatibilityResult,
-    FactorResult,
     MatchAccepted,
     MatchingPolicy,
     MatchRequest,
     MatchResult,
-    RequirementResult,
 )
 from src.workers.tasks.matching import match_cv_to_jd
 
@@ -37,6 +41,7 @@ class MatchIdsRequest(BaseModel):
         default_factory=CandidatePreferences, alias="candidatePreferences"
     )
     async_processing: bool = Field(default=False, alias="asyncProcessing")
+    record_fit_history: bool = Field(default=True, alias="recordFitHistory")
 
     @property
     def resolved_cv_id(self) -> str:
@@ -49,79 +54,6 @@ class MatchIdsRequest(BaseModel):
 
 
 
-
-
-def _sample_match_result(cv_id: str, job_id: str) -> MatchResult:
-    return MatchResult(
-        schema_version="2.1",
-        pipeline_version="one-to-one-evidence-fusion-v1",
-        resume_id=cv_id,
-        job_id=job_id,
-        policy_version="balanced-v1",
-        eligibility="eligible",
-        compatibility_status="compatible",
-        suitability_score=0.78,
-        fit_band="strong_fit",
-        decision="assessed",
-        requirement_results=[
-            RequirementResult(
-                requirement_id="req-sql-advanced",
-                status="met",
-                score=0.92,
-                confidence=0.95,
-                evidence_refs=["sample-ev-1"],
-                reason_code="skill_claim_verified",
-            ),
-            RequirementResult(
-                requirement_id="req-core-domain",
-                status="met",
-                score=0.84,
-                confidence=0.90,
-                evidence_refs=["sample-ev-2"],
-                reason_code="skill_claim_verified",
-            ),
-        ],
-        compatibility_results=[
-            CompatibilityResult(
-                criterion="work_mode",
-                status="compatible",
-                confidence=0.95,
-                reason_code="candidate_accepts_hybrid",
-            ),
-        ],
-        factor_results=[
-            FactorResult(
-                factor="skill",
-                status="scored",
-                raw_score=0.88,
-                reliability=0.95,
-                policy_weight=0.3,
-                effective_weight=0.3,
-                evidence_refs=["sample-ev-1"],
-            ),
-            FactorResult(
-                factor="experience",
-                status="scored",
-                raw_score=0.82,
-                reliability=0.90,
-                policy_weight=0.3,
-                effective_weight=0.3,
-                evidence_refs=["sample-ev-2"],
-            ),
-            FactorResult(
-                factor="semantic",
-                status="scored",
-                raw_score=0.76,
-                reliability=0.92,
-                policy_weight=0.4,
-                effective_weight=0.4,
-                dense_score=0.79,
-                sparse_score=0.72,
-                evidence_refs=["sample-ev-1", "sample-ev-2"],
-            ),
-        ],
-        warnings=[],
-    )
 
 
 # Every matching call spends embedding/LLM budget and may read a stored CV:
@@ -150,12 +82,16 @@ async def match(
     if resume_owner_scope(user) is not None:
         # The resume here is client-supplied, so its documentId is not proven to
         # be the caller's CV. A stored-CV BM25 lookup by that id would let a user
-        # probe another user's CV text one keyword at a time; score the text
-        # that was sent instead. /match-ids resolves the CV with owner scoping.
+        # probe another user's CV text one keyword at a time, so the index must
+        # not be consulted. Scoring the sent text with the in-memory formula is
+        # no longer an option either: it is a different formula on a different
+        # scale (about 4.7x lower on real pairs), so the same CV and JD would
+        # score differently here than on /match-ids. Semantic therefore comes
+        # from embeddings alone, which need no corpus and no stored document.
         payload = payload.model_copy(
             update={
                 "matching_policy": payload.matching_policy.model_copy(
-                    update={"bm25_provider_mode": "in_memory"}
+                    update={"bm25_provider_mode": "in_memory", "semantic_mode": "dense_only"}
                 )
             }
         )
@@ -210,11 +146,6 @@ async def _handle_match_ids(
     if not cv_id or not job_id:
         raise HTTPException(status_code=422, detail="Cần cung cấp candidateId (hoặc cvId) và jobId")
 
-    # Support sample context for demo / walkthrough
-    if cv_id.startswith("sample-") or job_id.startswith("sample-"):
-        response.status_code = status.HTTP_200_OK
-        return _sample_match_result(cv_id, job_id)
-
     with run_tracking.match_run("match", user_id=user.get("sub"), resume_id=cv_id, job_id=job_id) as run:
         run_tracking.emit(
             "match_requested",
@@ -222,7 +153,61 @@ async def _handle_match_ids(
                 endpoint, payload.matching_policy, is_async=payload.async_processing
             ),
         )
-        return await _match_ids_in_run(payload, response, db, user, run, cv_id, job_id)
+        result = await _match_ids_in_run(payload, response, db, user, run, cv_id, job_id)
+
+    # Candidate summaries belong to the signed-in account. Admin evaluations
+    # of arbitrary CVs must not be written into an admin's candidate history.
+    if isinstance(result, MatchResult) and payload.record_fit_history:
+        result.fit_attempt_id = await persist_candidate_fit(db, user=user, result=result)
+    return result
+
+
+@api_router.get("/fit-history")
+async def get_fit_history(
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(current_user),
+) -> dict[str, list[dict[str, object]]]:
+    """Return only this account's saved latest CV–JD fit per job."""
+    items = await list_latest_fits(db, user_id=str(user["sub"]))
+    return {"items": items}
+
+
+@api_router.get("/fit-history/attempts")
+async def get_candidate_fit_attempts(
+    limit: int = Query(default=100, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(current_user),
+) -> dict[str, list[dict[str, object]]]:
+    """Return this candidate's latest matching attempts across all jobs."""
+    items = await list_candidate_fit_attempts(db, user_id=str(user["sub"]), limit=limit)
+    return {"items": items}
+
+
+@api_router.get("/fit-history/{job_id}")
+async def get_job_fit_history(
+    job_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(current_user),
+) -> dict[str, list[dict[str, object]]]:
+    """Return this candidate's recent CV-to-JD assessment attempts for a job."""
+    items = await list_fit_attempts(
+        db, user_id=str(user["sub"]), job_id=job_id, limit=limit
+    )
+    return {"items": items}
+
+
+@api_router.get("/fit-history/attempts/{attempt_id}")
+async def get_fit_history_attempt(
+    attempt_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(current_user),
+) -> dict[str, object]:
+    """Return one saved assessment only when it belongs to the signed-in user."""
+    item = await get_fit_attempt(db, user_id=str(user["sub"]), attempt_id=attempt_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Assessment history not found")
+    return item
 
 
 async def _match_ids_in_run(

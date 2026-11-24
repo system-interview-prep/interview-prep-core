@@ -17,10 +17,13 @@ from src.modules.interviews.application.progress import (
     skill_levels,
     trend,
     baseline_label,
+    gap_notebook,
+    garden_days,
     round_ladder,
+    reask_after_days,
     weekly_streak,
 )
-from src.modules.interviews.application.progress_calibration import (
+from src.modules.interviews.application.progress.progress_calibration import (
     Calibration,
     SkillSessionPoint,
     between_person_sd,
@@ -324,7 +327,7 @@ def test_calibration_measurements() -> None:
 
 
 def test_skills_use_candidate_names_areas_and_hide_the_greeting() -> None:
-    from src.modules.interviews.application.skill_display import GENERAL_NAME
+    from src.modules.interviews.application.progress.skill_display import GENERAL_NAME
 
     sessions = [_session(1)]
     turns = [
@@ -412,12 +415,40 @@ def test_gap_notebook_follows_a_point_across_sessions() -> None:
     assert next(s for s in progress["skills"] if s["conceptId"] == "skill-xml")["minor"] is True
 
 
+def test_missed_question_is_due_the_next_day_and_leaves_queue_when_covered() -> None:
+    point = [{"importance": "CORE", "status": "MISSING", "description": "Nêu cách đo hiệu quả"}]
+    session = _session(1, days_ago=1)
+    question_id = "question-version-1"
+    missed = TurnRow(
+        "s1", "DEEP_DIVE", "skill-ai", "AI", None, 4.0, "ANSWERED",
+        rubric_points=point, question="Bạn đánh giá mô hình này thế nào?", question_version_id=question_id,
+    )
+    gaps = gap_notebook([session], {"s1": [missed]}, {"skill-ai": "AI"}, limited=False, now=NOW)
+    assert reask_after_days(9) == 1
+    assert gaps["open"][0]["due"] is True
+    assert gaps["open"][0]["lastSeen"]["questionVersionId"] == question_id
+
+    covered = TurnRow(
+        "s2", "DEEP_DIVE", "skill-ai", "AI", None, 8.0, "ANSWERED",
+        rubric_points=[{**point[0], "status": "COVERED"}],
+        question="Bạn đánh giá mô hình này thế nào?", question_version_id=question_id,
+    )
+    later = _session(2, days_ago=0)
+    resolved = gap_notebook(
+        [session, later], {"s1": [missed], "s2": [covered]}, {"skill-ai": "AI"}, limited=False, now=NOW
+    )
+    assert resolved["open"] == []
+    assert resolved["fixed"][0]["status"] == "COVERED"
+
+
 def test_readiness_is_shown_by_interview_round() -> None:
     sessions = [_session(1), _session(2), _session(3)]
     turns = []
     for sid, sql, redis in (("s1", 6.0, 5.0), ("s2", 7.5, 5.5), ("s3", 8.0, 6.0)):
         turns.append(TurnRow(sid, "DEEP_DIVE", "skill-sql", "SQL", None, sql, "ANSWERED"))
         turns.append(TurnRow(sid, "DEEP_DIVE", "skill-redis", "Redis", None, redis, "ANSWERED"))
+        # A third answer: a session counts for the ladder from 3 real answers (valid_session).
+        turns.append(TurnRow(sid, "DEEP_DIVE", "skill-sql", "SQL", None, sql, "ANSWERED", order=5))
     turns.append(TurnRow("s3", "DEEP_DIVE", "skill-docker", "Docker", None, 4.0, "ANSWERED",
                          rubric_points=[{"importance": "CORE", "status": "MISSING", "description": "Multi-stage build"}]))
     turns.append(TurnRow("s3", "DEEP_DIVE", "skill-xml", "XML", None, 0.3, "ANSWERED"))
@@ -488,13 +519,13 @@ def test_wins_and_progress_weeks_come_from_points_fixed_in_a_new_question() -> N
     assert progress["activity"]["days"][-1]["fixed"] >= 1
 
 
-def test_a_missed_point_is_due_for_practice_after_a_week() -> None:
+def test_a_missed_point_is_due_the_next_day() -> None:
     turns = [TurnRow("s1", "DEEP_DIVE", "skill-redis", "Redis", None, 4.0, "ANSWERED", rubric_points=[
         {"importance": "CORE", "status": "MISSING", "description": "TTL"}])]
-    asked = _session(1, days_ago=8)
+    asked = _session(1, days_ago=1)
     gap = build_progress([asked], turns, now=NOW)["gaps"]["open"][0]
     assert gap["due"] is True
-    fresh = build_progress([_session(1, days_ago=2)], turns, now=NOW)["gaps"]["open"][0]
+    fresh = build_progress([_session(1, days_ago=0)], turns, now=NOW)["gaps"]["open"][0]
     assert fresh["due"] is False
 
 
@@ -525,7 +556,8 @@ def test_each_round_shows_where_it_started() -> None:
     sessions = [_session(i) for i in range(1, 5)]
     turns = []
     for i, score in zip(range(1, 5), (4.0, 5.0, 6.5, 7.5), strict=True):
-        turns.append(TurnRow(f"s{i}", "DEEP_DIVE", "skill-redis", "Redis", None, score, "ANSWERED"))
+        # Three answers each: a session counts for the ladder from 3 real answers.
+        turns.extend(TurnRow(f"s{i}", "DEEP_DIVE", "skill-redis", "Redis", None, score, "ANSWERED", order=o) for o in range(3))
     rounds = {r["area"]: r for r in build_progress(sessions, turns, now=NOW)["readiness"][0]["rounds"]}
     assert rounds["data"]["first"] == 4.0
     assert rounds["data"]["trend"]["status"] in {"up", "flat"}
@@ -588,3 +620,96 @@ def test_readiness_timeline_and_week_tell_what_changed() -> None:
     assert progress["week"]["status"] == "improving"
     assert progress["week"]["levelUps"][0]["area"] == "language"
     assert compare_with_previous(progress, "s2")["after"]["levelChanges"][0]["to"] == 2
+
+
+# --- Trang Tiến độ v3 (29/10): phòng Chat/Voice, buổi hợp lệ, so sánh không trùng buổi ---
+
+
+def _answered(session: str, concept: str, score: float, n: int = 3) -> list[TurnRow]:
+    """``n`` answered questions of one skill: enough for a valid session from 3."""
+    return [_turn(session, concept, score, order=2 + i) for i in range(n)]
+
+
+def test_overview_compares_groups_that_never_share_a_session() -> None:
+    from src.modules.interviews.application.progress import score_overview
+
+    def items(scores, valid=None):
+        valid = valid or [True] * len(scores)
+        return [{"overallScore": s, "valid": v} for s, v in zip(scores, valid, strict=True)]
+
+    assert score_overview(items([5.0, 6.0, 7.0]))["window"] == 0  # 3 sessions: no comparison
+    four = score_overview(items([5.6, 6.0, 6.6, 7.1]))
+    assert (four["window"], four["start"], four["recent"]) == (2, 5.8, 6.8)  # 2 first vs 2 latest
+    six = score_overview(items([5.0, 5.0, 5.0, 7.0, 7.0, 7.0]))
+    assert (six["window"], six["change"]) == (3, 2.0)
+    # A failed session (too few answers) is left out of both groups.
+    skipped = score_overview(items([5.6, 6.0, 1.0, 6.6, 7.1], [True, True, False, True, True]))
+    assert (skipped["sessions"], skipped["start"], skipped["latest"]) == (4, 5.8, 7.1)
+
+
+def test_rooms_are_computed_apart_and_camera_is_part_of_voice() -> None:
+    sessions = [
+        SessionRow("c1", "job-be", "Backend Developer", NOW - timedelta(days=9), 7.0, mode="text"),
+        SessionRow("v1", "job-be", "Backend Developer", NOW - timedelta(days=8), 5.0, mode="voice"),
+        SessionRow("v2", "job-be", "Backend Developer", NOW - timedelta(days=7), 6.0, mode="video"),
+    ]
+    turns = _answered("c1", "skill-redis", 7.0) + _answered("v1", "skill-redis", 5.0) + _answered("v2", "skill-redis", 6.0)
+    progress = build_progress(sessions, turns, now=NOW)
+    assert [s["room"] for s in progress["sessions"]] == ["chat", "voice", "voice"]
+    assert [s["camera"] for s in progress["sessions"]] == [False, False, True]
+    voice, chat = progress["rooms"]["voice"], progress["rooms"]["chat"]
+    assert (voice["count"], voice["cameraSessions"], chat["count"]) == (2, 1, 1)
+    redis_voice = next(s for s in voice["skills"] if s["conceptId"] == "skill-redis")
+    assert [p["score"] for p in redis_voice["points"]] == [5.0, 6.0]  # no Chat score mixed in
+    assert "rooms" not in voice  # one level only
+
+
+def test_a_failed_session_neither_moves_nor_resets_the_ladder() -> None:
+    sessions = [
+        SessionRow("s1", "job-be", "Backend Developer", NOW - timedelta(days=9), 7.2, mode="voice"),
+        SessionRow("s2", "job-be", "Backend Developer", NOW - timedelta(days=8), 3.0, mode="voice"),
+        SessionRow("s3", "job-be", "Backend Developer", NOW - timedelta(days=7), 7.4, mode="voice"),
+    ]
+    # s2 has one answer only (the microphone cut out): it does not count.
+    turns = _answered("s1", "skill-redis", 7.2) + [_turn("s2", "skill-redis", 3.0)] + _answered("s3", "skill-redis", 7.4)
+    progress = build_progress(sessions, turns, now=NOW)
+    assert [s["valid"] for s in progress["sessions"]] == [True, False, True]
+    rounds = progress["readiness"][0]["rounds"]
+    tech = next(r for r in rounds if r["series"])
+    assert [p["sessionId"] for p in tech["series"]] == ["s1", "s3"]
+    assert tech["level"] == 2  # two valid sessions in a row at 7: Vững
+
+
+def test_a_session_that_broke_technically_is_left_out_with_its_reason() -> None:
+    monday = datetime(2026, 10, 19, 9, 0, tzinfo=UTC)
+    sessions = [
+        SessionRow("ok", "job-be", "Backend", monday, 6.0, "standard"),
+        SessionRow("mic", "job-be", "Backend", monday + timedelta(hours=1), 2.0, "standard", end_reason="TECHNICAL_FAILURE"),
+        SessionRow("thin", "job-be", "Backend", monday + timedelta(hours=2), 8.0, "standard"),
+    ]
+    turns = _answers("ok", 3) + _answers("mic", 3) + _answers("thin", 2)
+    progress = build_progress(sessions, turns, now=monday + timedelta(hours=5))
+    by_id = {s["sessionId"]: s for s in progress["sessions"]}
+    assert by_id["ok"]["valid"] is True and by_id["ok"]["invalidReason"] is None
+    assert by_id["mic"]["valid"] is False and by_id["mic"]["invalidReason"] == "technical_failure"
+    assert by_id["thin"]["invalidReason"] == "too_few_answers"
+
+
+def test_garden_days_counts_distinct_valid_days_and_the_day_streak() -> None:
+    today = date(2026, 11, 23)
+    days = [
+        today - timedelta(days=1), today - timedelta(days=1),  # two sessions, one day
+        today - timedelta(days=2),
+        today - timedelta(days=4),  # a gap before this one
+    ]
+    # Not practised yet today: the day is still open, the streak runs to yesterday.
+    assert garden_days(days, today=today) == {"days": 3, "wateredToday": False, "dayStreak": 2}
+    assert garden_days([*days, today], today=today) == {"days": 4, "wateredToday": True, "dayStreak": 3}
+    assert garden_days([], today=today) == {"days": 0, "wateredToday": False, "dayStreak": 0}
+
+
+def test_build_progress_reports_the_garden() -> None:
+    progress = build_progress([], [], now=NOW, tz_offset_minutes=420, weekly_goal=1,
+                              all_session_starts=[datetime(2026, 10, 18, 18, 0, tzinfo=UTC)])
+    # A session that was started but has no answers does not water the plant.
+    assert progress["garden"] == {"days": 0, "wateredToday": False, "dayStreak": 0}

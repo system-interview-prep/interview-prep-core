@@ -14,8 +14,8 @@ from src.modules.interviews.agent.contracts import (
 from src.modules.interviews.agent.graph import build_interview_graph
 from src.modules.interviews.agent.ports import InterviewOperations
 from src.modules.interviews.agent.state import InterviewCommand
-from src.modules.interviews.core.interview_engine import InterviewCoreEngine
-from src.modules.interviews.core.interview_types import CandidateTurnInput
+from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.core.contracts.interview import CandidateTurnInput
 
 
 class InterviewAgent:

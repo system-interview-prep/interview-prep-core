@@ -5,6 +5,19 @@ import pytest
 import src.seeds as seeds
 
 
+@pytest.fixture(autouse=True)
+def _job_description_seed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The sample-job seed needs a database; record its calls instead."""
+    calls: list[str] = []
+
+    async def job_descriptions(*_args, **_kwargs) -> dict[str, int]:
+        calls.append("job_descriptions")
+        return {}
+
+    monkeypatch.setattr(seeds, "seed_job_descriptions", job_descriptions)
+    return calls
+
+
 def _settings(app_env: str) -> SimpleNamespace:
     return SimpleNamespace(app_env=app_env)
 
@@ -116,3 +129,32 @@ async def test_question_bank_fixtures_fail_closed_without_settings(
     await seeds.run_all_seeds(lambda: None)
 
     assert "question_bank" not in calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("app_env", "expected"), [("development", True), ("production", False)])
+async def test_sample_jobs_are_seeded_only_with_dev_fixtures(
+    monkeypatch: pytest.MonkeyPatch, _job_description_seed: list[str], app_env: str, expected: bool
+) -> None:
+    async def noop(*_args, **_kwargs) -> dict[str, int]:
+        return {}
+
+    monkeypatch.setattr(seeds, "seed_admin", noop)
+    monkeypatch.setattr(seeds, "seed_taxonomy", noop)
+    monkeypatch.setattr(seeds, "seed_question_bank", noop)
+
+    await seeds.run_all_seeds(lambda: None, _settings(app_env))
+
+    assert (_job_description_seed == ["job_descriptions"]) is expected
+
+
+def test_sample_job_fixtures_are_well_formed() -> None:
+    from src.seeds.job_description_seed import load_job_description_fixtures
+
+    jobs = load_job_description_fixtures()
+
+    assert len(jobs) >= 20
+    assert len({job.external_job_id for job in jobs}) == len(jobs)
+    for job in jobs:
+        assert job.title and job.company_name and job.source_url
+        assert "Yêu cầu ứng viên" in job.raw_html

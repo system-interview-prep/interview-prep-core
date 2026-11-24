@@ -191,6 +191,7 @@ def ai_calls_so_far() -> int | None:
 _PHASE_REASONS = {
     "storage": "storage_read_failed",
     "extract": "extraction_failed",
+    "repair": "text_repair_failed",
     "source": "source_build_failed",
     "parse": "parser_failed",
     "quality": "quality_gate_failed",

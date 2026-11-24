@@ -75,7 +75,7 @@ async def test_owned_session_survives_a_deleted_cv() -> None:
 async def test_session_list_keeps_sessions_whose_cv_was_deleted() -> None:
     db = _CapturingDb(None)
 
-    await interview_router.list_interview_sessions(user={"sub": "user-a"}, db=db)
+    await interview_router.list_interview_sessions(user={"sub": "user-a"}, db=db, limit=100, offset=0)
 
     assert "resume_id IS NOT NULL" not in db.sql[0]
     assert "p.id IS NOT NULL" in db.sql[0]

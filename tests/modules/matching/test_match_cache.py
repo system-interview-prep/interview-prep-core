@@ -106,6 +106,32 @@ async def test_changed_cv_is_matched_again(stored_results):
     assert len(calls) == 2
 
 
+def test_cache_version_change_invalidates_previous_matching_result(monkeypatch):
+    payload = _request("same cv")
+    old_key = match_cache.match_cache_key(payload)
+
+    monkeypatch.setattr(match_cache, "CACHE_VERSION", "next")
+
+    assert match_cache.match_cache_key(payload) != old_key
+
+
+def test_enabling_the_judge_changes_the_cache_key(monkeypatch):
+    """Results with and without the judge must never share an entry."""
+    from src.core import config
+
+    payload = _request("same cv")
+
+    def key_for(enabled: str) -> str:
+        config.get_settings.cache_clear()
+        monkeypatch.setenv("MATCHING_JUDGE_ENABLED", enabled)
+        try:
+            return match_cache.match_cache_key(payload)
+        finally:
+            config.get_settings.cache_clear()
+
+    assert key_for("true") != key_for("false")
+
+
 @pytest.mark.asyncio
 async def test_degraded_match_is_not_cached(stored_results):
     calls = []

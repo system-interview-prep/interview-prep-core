@@ -111,17 +111,15 @@ def test_semantic_score_cannot_compensate_for_failed_must_have() -> None:
     assert result.failed_must_have_requirements == ["req-java"]
 
 
-def test_must_have_the_cv_never_mentions_needs_review_not_rejection() -> None:
-    """A CV that does not mention Java is no evidence the candidate lacks it:
-    the requirement is "not evidenced" and the candidate goes to review. Only a
-    CV that shows the skill below the required level fails (see above)."""
+def test_must_have_the_cv_never_mentions_is_not_met() -> None:
+    """A must-have without supporting CV evidence is not met by this profile."""
     result = MatchingFacade(StubEmbedder()).match(MatchRequest.model_validate(_payload(add_java=False)))
-    assert result.eligibility == "review_required"
-    assert result.failed_must_have_requirements == []
+    assert result.eligibility == "ineligible"
+    assert result.failed_must_have_requirements == ["req-java"]
     requirement = result.requirement_results[0]
-    assert (requirement.status, requirement.reason_code) == ("unknown", "skill_not_evidenced")
+    assert (requirement.status, requirement.reason_code) == ("not_met", "skill_not_evidenced")
     assert requirement.evidence_refs == []
-    assert "chưa nhắc tới Java" in (requirement.evidence_explanation or "")
+    assert "b\u1eb1ng ch\u1ee9ng" in (requirement.evidence_explanation or "").lower()
 
 
 def test_named_skill_context_keeps_unknown_but_exposes_related_evidence() -> None:
@@ -170,7 +168,11 @@ def test_unmentioned_requirement_is_not_met_and_counted_in_coverage() -> None:
 
     coverage = next(item for item in result.factor_results if item.factor == "requirement_coverage")
     assert coverage.raw_score == 0.5
-    assert coverage.reliability == pytest.approx(1.0)
+    # Every applicable requirement was evaluated, so none of the confidence loss
+    # comes from unevaluated requirements.  Reliability is still below 1.0
+    # because two requirements are a narrow basis for judging a whole role:
+    # confidence in requirement coverage scales with breadth.
+    assert coverage.reliability == pytest.approx((2 / 5) ** 0.5)
     assert result.score_provenance.unknown_requirement_count == 0
     assert result.requirement_results[-1].status == "not_met"
 
@@ -229,6 +231,12 @@ def test_title_alone_does_not_make_experience_factor_applicable() -> None:
 
 def test_semantic_factor_prefers_responsibility_project_and_achievement_context() -> None:
     payload = _payload()
+    # This pins the document-level semantic factor, which is no longer the
+    # default: requirement-coverage scores each requirement against each
+    # passage and cites the passages the assignment kept, so it has no single
+    # joined document to prefer one section of.
+    payload["matchingPolicy"] = {**payload.get("matchingPolicy", {}),
+                                 "semanticAggregation": "document"}
     payload["resume"]["employment"] = [
         {
             "employmentId": "employment-1",
@@ -250,10 +258,17 @@ def test_semantic_factor_prefers_responsibility_project_and_achievement_context(
 
     MatchingFacade(embedder).match(MatchRequest.model_validate(payload))
 
-    assert "Designed payment APIs" in embedder.texts[0]
-    assert "Reduced API latency by 35%" in embedder.texts[0]
-    assert "Java" in embedder.texts[1]
-    assert "Build reliable payment APIs" in embedder.texts[1]
+    # What this test is about is which contexts reach the embedder, not how
+    # they are capitalised. The semantic text is folded to lower case first:
+    # an embedding is case sensitive, so the same CV written in capitals used
+    # to score 2.6 to 5.0 points lower (MR6, on every pair tested).
+    assert "designed payment apis" in embedder.texts[0]
+    assert "reduced api latency by 35%" in embedder.texts[0]
+    assert "java" in embedder.texts[1]
+    assert "build reliable payment apis" in embedder.texts[1]
+    # Pin the folding itself, so losing it is a failure rather than a drift.
+    assert embedder.texts[0] == embedder.texts[0].casefold()
+    assert embedder.texts[1] == embedder.texts[1].casefold()
 
 
 def test_matching_facade_builds_the_default_embedder_once_per_batch(monkeypatch) -> None:

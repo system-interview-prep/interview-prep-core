@@ -30,6 +30,22 @@ def _no_live_question_generation(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(targeted_reparse, "_default_evidence_searcher", lambda: None)
 
+    # Same for the matching judges (src/modules/matching/judge), which are on
+    # by default: a test that reached the facade or the adapter would read
+    # every requirement with the real model. Tests of the judges pass a
+    # Settings of their own and a scripted client.
+    from src.core.config import get_settings
+    from src.modules.matching.judge import gate_judge
+
+    monkeypatch.setattr(get_settings(), "matching_judge_enabled", False)
+    gate_judge.reset_gate_memo()
+    # And the CV text repair (src/modules/user_cvs/parsing/domain/text_repair),
+    # also on by default and also a model call per parsed document.
+    monkeypatch.setattr(get_settings(), "cv_text_repair_enabled", False)
+    # Cached model answers go to files in a temporary directory, never to the
+    # llm_call_cache table of whatever database the developer is pointed at.
+    monkeypatch.setattr(get_settings(), "llm_cache_backend", "file")
+
 
 @pytest.fixture(autouse=True)
 def _trace_logs_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
@@ -43,6 +59,28 @@ def _trace_logs_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest
     from src.core.config import get_settings
 
     monkeypatch.setattr(get_settings(), "trace_logs_dir", str(tmp_path_factory.mktemp("trace-logs")))
+
+
+@pytest.fixture(autouse=True)
+def _evidence_search_cache_in_tmp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Keep the fake searchers' answers out of models_cache/.
+
+    The cache is keyed by content and shared with real runs, so a test that
+    answered for a made-up CV left an entry a measured run could read back as
+    if a model had produced it. It also made the suite depend on its own
+    history: `test_targeted_reparse` passed on a cold cache and failed on the
+    second run, because the entry it had just written answered for it and the
+    fake searcher was never called.
+    """
+    from src.modules.matching.application import targeted_reparse
+
+    monkeypatch.setattr(
+        targeted_reparse,
+        "_SEARCH_CACHE_DIR",
+        tmp_path_factory.mktemp("evidence-search-cache"),
+    )
 
 
 @pytest.fixture

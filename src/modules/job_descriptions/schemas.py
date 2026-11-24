@@ -5,11 +5,15 @@ from src.modules.job_descriptions.domain.schemas import (
     GroundedJobText,
     JobRequirement,
 )
-from src.modules.job_descriptions.parsing.deterministic import resolve_known_skill_concepts
+from src.modules.job_descriptions.parsing.deterministic import (
+    requirement_list_is_disjunctive,
+    resolve_known_skill_concepts,
+)
 
 __all__ = [
     "CanonicalJobDescription",
     "GroundedJobText",
     "JobRequirement",
+    "requirement_list_is_disjunctive",
     "resolve_known_skill_concepts",
 ]

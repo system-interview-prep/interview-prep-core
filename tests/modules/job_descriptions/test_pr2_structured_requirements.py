@@ -315,3 +315,30 @@ async def test_negative_10_llm_candidate_without_exact_quote_rejected():
     assert not any("Rust" in r.raw_label for r in merged.requirements)
     # A warning must have been recorded
     assert any(w.code == "llm_claim_rejected" for w in merged.parsing.warnings)
+
+
+def test_an_open_ended_language_list_is_parsed_as_alternatives():
+    """The posting asks for one language and lists five as examples.
+
+    Read as a conjunction - which is what "hoặc|hay|or" alone produced, because
+    the sentence says neither - the line becomes a must-have requiring C, C++,
+    Java, C# and JavaScript together, which no candidate can satisfy. The
+    sentence marks itself open three times over: "ít nhất một", the enclosing
+    parentheses, and the trailing "...".
+    """
+    source = _make_source(
+        "Thực tập sinh IT\n\n"
+        "Yêu cầu công việc:\n"
+        "- Thành thạo ít nhất một ngôn ngữ lập trình (C, C++, Java, C#, JavaScript,...).\n"
+        "- Có kiến thức vững về lập trình hướng đối tượng (OOP), cấu trúc dữ liệu và giải thuật.\n"
+    )
+    canonical = DeterministicJobDescriptionParser().parse(source, extraction_version="test-v1")
+
+    by_label = {req.raw_label: req for req in canonical.requirements}
+    languages = next(req for label, req in by_label.items() if "ngôn ngữ lập trình" in label)
+    assert len(languages.atomic_concepts) > 1
+    assert languages.group_operator == "any_of"
+
+    # The neighbouring line lists things that are all required, and stays so.
+    foundations = next(req for label, req in by_label.items() if "hướng đối tượng" in label)
+    assert foundations.group_operator == "all_of"

@@ -1,8 +1,8 @@
 """Development-only structured traces for parser and matching workflows.
 
-Trace records deliberately omit document text and parsed payloads because they
-can contain candidate PII.  The records are JSON Lines so they can be tailed
-locally or loaded into a log viewer.
+Parser records omit document text and parsed payloads. Explicit admin STT tests
+and interviewer naturalness traces include sample speech text for local review.
+The records are JSON Lines so they can be tailed locally or loaded into a viewer.
 """
 
 from __future__ import annotations
@@ -32,6 +32,8 @@ _WORKFLOW_DIRECTORIES = {
     "naturalness": "naturalness",
     # Voice-room state changes and incidents reported by the LiveKit agent.
     "voice": "voice",
+    # Standalone admin STT tests, unrelated to interview sessions.
+    "test_stt": "test-stt",
 }
 
 

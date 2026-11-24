@@ -11,9 +11,9 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core import llm_tracing
+from src.infrastructure import langfuse
 from src.core.trace_logging import trace_event
-from src.modules.interviews.application import llm_checks
+from src.modules.interviews.application.quality_admin import llm_checks
 from src.modules.interviews.evaluation.answer_outcome import (
     ANSWERED,
     NOT_GRADABLE,
@@ -107,8 +107,8 @@ async def evaluate_closed_session(
     grader call; after it, the checks of ``llm_checks.session_flags`` become
     session scores (a no-op when Langfuse is not configured).
     """
-    with llm_tracing.trace(
-        llm_tracing.GRADING_TRACE, session_id=str(session_id), input={"session_id": str(session_id)}
+    with langfuse.trace(
+        langfuse.GRADING_TRACE, session_id=str(session_id), input={"session_id": str(session_id)}
     ) as lf_run:
         result = await _evaluate_closed_session(db, session_id, engine)
         if lf_run is not None and result is not None:
@@ -154,7 +154,7 @@ async def _report_grading_checks(
         for name, value in checks.items()
         if value and name != "check.graded_questions"
     ]
-    llm_tracing.finish(
+    langfuse.finish(
         lf_run,
         output={
             "overall_score": result.overall_score,
@@ -165,7 +165,7 @@ async def _report_grading_checks(
         scores=checks,
     )
     for name, value in checks.items():
-        llm_tracing.score_session(session_id, name, value)
+        langfuse.score_session(session_id, name, value)
 
 
 async def _evaluate_closed_session(

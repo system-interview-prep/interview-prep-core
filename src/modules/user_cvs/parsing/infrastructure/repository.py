@@ -74,6 +74,10 @@ class SqlAlchemyCvParseRepository:
         await self._session.commit()
 
     async def fail(self, cv_id: str, error: str) -> None:
+        # A failed write leaves the PostgreSQL transaction unusable until it
+        # is rolled back. Clear it before attempting to persist the failure
+        # state so the original parse/persistence exception is not masked.
+        await self._session.rollback()
         await self._session.execute(
             text("UPDATE user_cvs SET status = 'FAILED', error = :error, updated_at = now() WHERE id = :id"),
             {"id": cv_id, "error": error},

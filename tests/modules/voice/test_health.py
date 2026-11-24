@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from src.modules.interviews.adapters.voice.health import provider_error_payload, provider_recovered_payload
+from src.modules.interviews.adapters.voice.conversation.health import provider_error_payload, provider_recovered_payload
 
 
 def test_provider_error_payload_exposes_safe_recovery_state_only():

@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from src.modules.interviews.application.pipeline_view import _exchange_view
-from src.modules.interviews.application.speech_control_view import config_view, summarize_speech
+from src.modules.interviews.application.quality_admin.pipeline_view import _exchange_view
+from src.modules.interviews.application.quality_admin.speech_control_view import config_view, summarize_speech
 
 
 def _row(session: str, payload: dict, turn: int = 1) -> dict:
@@ -81,10 +81,10 @@ def test_reasons_sources_style_and_recent_drafts() -> None:
 
 
 def test_config_reads_the_switches(monkeypatch) -> None:
-    monkeypatch.setenv("INTERVIEWER_ACK_MODE", "topic")
     monkeypatch.setenv("INTERVIEWER_VOICE_DIALECT", "nam")
     config = config_view()
-    assert config["ackMode"] == "topic" and config["dialect"] == "nam"
+    assert "ackMode" not in config
+    assert config["dialect"] == "nam"
     assert config["maxNhePerTurn"] == 1
 
 
@@ -107,7 +107,7 @@ def test_exchange_view_shows_speech_control() -> None:
 
 
 def test_hand_checks_give_the_false_block_rate() -> None:
-    from src.modules.interviews.application.speech_control_view import latest_verdicts
+    from src.modules.interviews.application.quality_admin.speech_control_view import latest_verdicts
 
     rows = [{**row, "id": 10 + i} for i, row in enumerate(ROWS)]
     reviews = [

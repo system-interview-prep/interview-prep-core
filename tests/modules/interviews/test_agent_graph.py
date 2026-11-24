@@ -10,7 +10,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from src.modules.interviews.agent import checkpoints
 from src.modules.interviews.agent.graph import COMMANDS, build_interview_graph
-from src.modules.interviews.application.agent_runtime import run_interview_command
+from src.modules.interviews.application.runtime.agent_runtime import run_interview_command
 
 
 @pytest.mark.asyncio

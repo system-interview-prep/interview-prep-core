@@ -44,12 +44,24 @@ _TECH_TOKEN_RE = re.compile(
 )
 
 
+# NFKD decomposes every Vietnamese vowel into a base letter plus combining
+# marks, so dropping the marks leaves ASCII behind - except for "đ", which is
+# a letter in its own right and survives decomposition whole. The token
+# pattern below accepts ASCII only, so that surviving letter used to end the
+# token it stood in: "đã" tokenized to "a" and "đại học" to "ai hoc". The
+# words most often lost this way are among the most common in a Vietnamese CV
+# ("được", "đã", "đại học", "điện"), and the sparse half could not retrieve
+# any of them. Folding it to "d" matches what the index does to the same
+# letter, so both halves agree on the token.
+_LATIN_D_WITH_STROKE = str.maketrans({"đ": "d", "Đ": "D"})
+
+
 def tokenize_text(text: str | None, remove_stopwords: bool = True) -> list[str]:
     """Tokenize technical text into normalized tokens, preserving technology keywords."""
     if not text:
         return []
 
-    normalized = unicodedata.normalize("NFKD", text)
+    normalized = unicodedata.normalize("NFKD", text.translate(_LATIN_D_WITH_STROKE))
     clean_text = "".join(ch for ch in normalized if not unicodedata.combining(ch)).casefold()
 
     tokens: list[str] = []

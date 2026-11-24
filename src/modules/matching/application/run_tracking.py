@@ -198,6 +198,8 @@ def scoring_fields(result: Any) -> dict[str, Any]:
         "compatibility_status": getattr(result, "compatibility_status", None),
         "suitability_score": _round(getattr(result, "suitability_score", None)),
         "diagnostic_score": _round(getattr(result, "diagnostic_score", None)),
+        "profile_match_score": _round(getattr(result, "profile_match_score", None)),
+        "profile_match_band": getattr(result, "profile_match_band", None),
         "fit_band": getattr(result, "fit_band", None),
         "decision": getattr(result, "decision", None),
         "provenance_mode": getattr(provenance, "mode", None),
@@ -235,6 +237,10 @@ def emit_match_completed(
             "decision": getattr(result, "decision", None),
             "fit_band": getattr(result, "fit_band", None),
             "suitability_score": _round(getattr(result, "suitability_score", None)),
+            # Carried on the cold path too: the admin run list reads only this
+            # event, so omitting it there would show a null beside a real value
+            # on the detail page.
+            "profile_match_score": _round(getattr(result, "profile_match_score", None)),
             "cache_hit": run.cache_hit,
         }
         if run.cache_hit:

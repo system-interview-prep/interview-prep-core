@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -23,16 +24,16 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.core.trace_logging import trace_event
-from src.modules.interviews.core.demo_mode import is_demo_duration
-from src.modules.interviews.core.opening_script import warmup_question
+from src.modules.ai.facade import generate_text
+from src.modules.interviews.core.session_policy.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
+from src.modules.interviews.core.session_policy.blueprint import InterviewBlueprint, blueprint_from_payload
+from src.modules.interviews.core.dialogue.opening import warmup_question
 from src.modules.interviews.planning.spoken_questions import add_spoken_versions
-from src.modules.interviews.core.interviewer_voice import speech_v2_enabled
 from src.modules.interviews.planning.project_evidence import (
-    build_project_validation_question,
     extract_project_evidences,
     select_best_project,
-    spoken_project_question,
 )
 from src.modules.question_bank.facade import GENERATED_QUESTION_AUTHOR
 
@@ -45,6 +46,17 @@ _DIFFICULTY_ORDER = {
     "intermediate": 1,
     "advanced": 2,
 }
+
+_QUESTION_FOCUS_CUES = re.compile(
+    r"\b(?:nào|gì|vì sao|tại sao|như thế nào|thế nào|bao lâu|khi nào|ở đâu|"
+    r"what|why|how|when|where|which|who)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_single_focus_question(question: str) -> bool:
+    """Reject generated questions that combine multiple interview prompts."""
+    return bool(question and "?" in question and len(_QUESTION_FOCUS_CUES.findall(question)) <= 1)
 
 
 class QuestionUnavailableError(ValueError):
@@ -93,6 +105,40 @@ class _Candidate:
     # Set when question_text is an approved localization in the session locale;
     # holds the canonical text's locale (the rubric stays canonical).
     localized_from: str | None = None
+
+
+# AI-generated drafts nobody has reviewed yet (the last rung of the ladder):
+# none in the challenge tier, where the difficulty of each question matters
+# most, and at most settings.interview_max_unreviewed_generated in any other
+# session. A demo session may use one per technical slot (demo_mode).
+GENERATED_SOURCE = "generated_unreviewed"
+
+
+def unreviewed_budget(payload: Any, *, demo: bool = False) -> int:
+    """How many unreviewed generated drafts this session's plan may ask."""
+    settings = get_settings()
+    if demo and settings.demo_allow_unreviewed_generated:
+        return DEMO_TECHNICAL_QUESTIONS
+    tier = payload.get("practiceTier") if isinstance(payload, dict) else None
+    return 0 if tier == "challenge" else settings.interview_max_unreviewed_generated
+
+
+def limit_unreviewed(candidates: list[_Candidate], budget: int) -> tuple[list[_Candidate], int]:
+    """Keep every reviewed candidate and at most ``budget`` generated drafts.
+
+    Order is kept. Returns the kept list and how many drafts were dropped.
+    """
+    kept: list[_Candidate] = []
+    dropped = 0
+    left = max(0, budget)
+    for candidate in candidates:
+        if candidate.source == GENERATED_SOURCE:
+            if left <= 0:
+                dropped += 1
+                continue
+            left -= 1
+        kept.append(candidate)
+    return kept, dropped
 
 
 def _allowed_purposes(target: dict[str, Any]) -> tuple[str, ...]:
@@ -163,6 +209,13 @@ def _candidate_rank(
         candidate.version,
         candidate.question_version_id,
     )
+
+
+def _prioritize_repeat(candidates: list[_Candidate], question_version_id: str | None) -> list[_Candidate]:
+    """Put the due exact question first; otherwise keep the approved pool order."""
+    if not question_version_id:
+        return candidates
+    return sorted(candidates, key=lambda item: item.question_version_id != question_version_id)
 
 
 async def _load_candidates(
@@ -671,21 +724,32 @@ def _snapshot(
     }
 
 
-def _technical_stage(idx: int, *, total: int, is_coding: bool, is_gap: bool, is_demo: bool) -> str:
+def _technical_stage(
+    idx: int,
+    *,
+    total: int,
+    is_coding: bool,
+    is_gap: bool,
+    is_demo: bool,
+    blueprint: InterviewBlueprint | None = None,
+) -> str:
     """Stage of the idx-th frozen technical question.
 
-    Coding questions and CV gaps after the first question are CHALLENGE. A demo
-    shows every stage, so its last technical question is always CHALLENGE (the
-    planner puts the CV gap, if any, in that slot).
+    Coding questions and CV gaps after the first question are CHALLENGE, unless
+    the blueprint turns either rule off. A demo shows every stage, so its last
+    technical question is always CHALLENGE (the planner puts the CV gap, if
+    any, in that slot).
     """
-    if is_coding or (is_gap and idx >= 1):
+    technical = (blueprint or InterviewBlueprint()).technical
+    if (is_coding and technical.challenge_for_coding) or (is_gap and idx >= 1 and technical.challenge_for_cv_gaps):
         return "CHALLENGE"
     if is_demo and idx >= 1 and idx == total - 1:
         return "CHALLENGE"
     return "DEEP_DIVE"
 
 
-def _behavioral_snapshot(locale: str) -> dict[str, Any]:
+def _behavioral_snapshot(locale: str, blueprint: InterviewBlueprint | None = None) -> dict[str, Any]:
+    behavioral = (blueprint or InterviewBlueprint()).behavioral
     is_vi = (locale or "vi").lower().startswith("vi")
     prompts_vi = (
         "Kể một lần bạn gặp sự cố kỹ thuật khó hoặc bất đồng trong team: "
@@ -708,8 +772,8 @@ def _behavioral_snapshot(locale: str) -> dict[str, Any]:
         "canonicalLocale": locale,
         "questionText": prompts_vi if is_vi else prompts_en,
         "objective": "Đánh giá kỹ năng mềm, giải quyết xung đột và làm việc nhóm theo mô hình STAR.",
-        "softAnswerSeconds": 180,
-        "hardAnswerSeconds": 240,
+        "softAnswerSeconds": behavioral.soft_answer_seconds,
+        "hardAnswerSeconds": behavioral.hard_answer_seconds,
         "taxonomyTarget": {
             "taxonomyVersion": "internal-2026.1",
             "conceptId": "soft-skill.star",
@@ -1128,6 +1192,9 @@ async def select_and_freeze_questions(
     # Targets the ladder could not cover at all, and targets served with fewer
     # questions than planned. Both reach the report as uncovered competencies.
     uncovered_targets: list[dict[str, Any]] = []
+    unreviewed_cap = unreviewed_budget(payload, demo=is_demo_duration(session_row.get("duration_minutes")))
+    unreviewed_left = unreviewed_cap
+    plan_tier = payload.get("practiceTier") if isinstance(payload, dict) else None
 
     if is_dynamic:
         # -------------------------------------------------------------------
@@ -1187,6 +1254,11 @@ async def select_and_freeze_questions(
                 t["conceptId"],
             )
         )
+        reask_version_by_concept = {
+            str(item.get("conceptId")): str(item.get("questionVersionId"))
+            for item in ((payload.get("selection") or {}).get("reask") or [])
+            if item.get("conceptId") and item.get("questionVersionId")
+        }
 
         # Layer A: Load candidate pools and generate feasible subsets per target
         target_domains: dict[str, list[tuple[tuple[int, float, float, float, int, str], list[_Candidate]]]] = {}
@@ -1216,6 +1288,20 @@ async def select_and_freeze_questions(
                 )
 
             feasible_subsets = _subsets(candidates)
+            # If yesterday's exact question is still approved and mapped to the
+            # same competency, include it in today's session. If it was retired,
+            # keep the approved fresh-question fallback for that competency.
+            repeat_id = reask_version_by_concept.get(str(target["conceptId"]))
+            candidates = _prioritize_repeat(candidates, repeat_id)
+            if repeat_id and feasible_subsets:
+                repeat_subsets = [
+                    subset
+                    for subset in feasible_subsets
+                    if any(q.question_version_id == repeat_id for q in subset)
+                ]
+                if repeat_subsets:
+                    feasible_subsets = repeat_subsets
+            blocked_drafts = 0
             if not feasible_subsets:
                 seen = {item.question_version_id for item in candidates}
                 extra = await _fallback_candidates(
@@ -1229,7 +1315,13 @@ async def select_and_freeze_questions(
                     exposure=exposure,
                     spoken_only=spoken_only,
                 )
-                feasible_subsets = _subsets(candidates + [c for c in extra if c.question_version_id not in seen])
+                extra, blocked_drafts = limit_unreviewed(
+                    [c for c in extra if c.question_version_id not in seen], unreviewed_left
+                )
+                # Offered drafts count against the budget even if the global
+                # assignment ends up not using them: the cap stays a hard one.
+                unreviewed_left -= sum(c.source == GENERATED_SOURCE for c in extra)
+                feasible_subsets = _subsets(candidates + extra)
             if not feasible_subsets:
                 missing_targets.append(
                     {
@@ -1238,7 +1330,9 @@ async def select_and_freeze_questions(
                         "targetArchetype": target["targetArchetype"],
                         "floorSeconds": target["floorSeconds"],
                         "timeEnvelopeSeconds": target["timeEnvelopeSeconds"],
-                        "reason": "no_feasible_qualifying_subset",
+                        "reason": (
+                            "unreviewed_not_allowed" if blocked_drafts else "no_feasible_qualifying_subset"
+                        ),
                     }
                 )
             else:
@@ -1324,6 +1418,16 @@ async def select_and_freeze_questions(
                 spoken_only=spoken_only,
             )
             available = [item for item in candidates if item.question_version_id not in used_versions]
+            repeat_id = next(
+                (
+                    str(item.get("questionVersionId"))
+                    for item in ((payload.get("selection") or {}).get("reask") or [])
+                    if str(item.get("conceptId")) == str(target["conceptId"])
+                    and item.get("questionVersionId")
+                ),
+                None,
+            )
+            available = _prioritize_repeat(available, repeat_id)
             # Honour the planner's per-target count exactly. P1 already guarantees
             # a floor of one question per competency and caps the sum at
             # questionBudget, so the old `max(count, 2)` floor silently doubled
@@ -1337,6 +1441,7 @@ async def select_and_freeze_questions(
             # a planner/Question-Bank concern, not something P2 may re-decide.
             needed = max(1, int(target["targetQuestionCount"]))
             selected = available[:needed]
+            blocked_drafts = 0
 
             if len(selected) < needed:
                 # Fallback ladder: broader skill -> role question -> generated draft.
@@ -1352,7 +1457,14 @@ async def select_and_freeze_questions(
                     exposure=exposure,
                     spoken_only=spoken_only,
                 )
-                selected += [c for c in extra if c.question_version_id not in taken][: needed - len(selected)]
+                room = needed - len(selected)
+                fresh = [c for c in extra if c.question_version_id not in taken]
+                usable, blocked_drafts = limit_unreviewed(fresh, unreviewed_left)
+                picked = usable[:room]
+                # A draft dropped by the cap only matters if it would have been asked.
+                blocked_drafts = min(blocked_drafts, max(0, room - len(picked)))
+                unreviewed_left -= sum(c.source == GENERATED_SOURCE for c in picked)
+                selected += picked
 
             if len(selected) < needed:
                 # Covered partially or not at all: interview what we can and
@@ -1364,7 +1476,9 @@ async def select_and_freeze_questions(
                         "label": target["label"],
                         "needed": needed,
                         "available": len(selected),
-                        "reason": "no_question_after_fallback",
+                        "reason": (
+                            "unreviewed_not_allowed" if blocked_drafts else "no_question_after_fallback"
+                        ),
                     }
                 )
 
@@ -1478,14 +1592,25 @@ async def select_and_freeze_questions(
                         key_technologies.append(s.strip())
 
     # The question only: the greeting, agenda and how-to are the opening's
-    # (core/opening_script.py), spoken once before it.
+    # (core/dialogue/opening.py), spoken once before it.
     warmup_text = warmup_question(is_vi=is_vi, is_demo=is_demo_duration(session_row.get("duration_minutes")))
+    # The stage policy the planner froze (core.session_policy.blueprint); older plans have none.
+    blueprint_record = payload.get("blueprint") if isinstance(payload, dict) else None
+    blueprint = blueprint_from_payload((blueprint_record or {}).get("policy"))
+    validate_enabled = blueprint.validate_cv.enabled
 
+    project_context: dict[str, Any] = {"job_title": job_title}
     if selected_project:
-        validate_text = build_project_validation_question(
-            project=selected_project,
-            job_title=job_title,
-            locale=locale,
+        project_context.update(
+            {
+                "project_name": selected_project.name,
+                "role": selected_project.role,
+                "role_status": selected_project.role_status,
+                "technologies": selected_project.technologies,
+                "problem_domain": selected_project.problem_domain,
+                "decisions": selected_project.decisions,
+                "outcomes": selected_project.outcomes,
+            }
         )
         trace_event(
             "interviewer",
@@ -1503,27 +1628,55 @@ async def select_and_freeze_questions(
             selection_reason=selected_project.selection_reason,
         )
     elif project_name:
-        validate_text = (
-            f"Trong '{project_name}', bạn trực tiếp làm phần nào, và bài toán khó nhất bạn giải quyết là gì?"
-            if is_vi
-            else f"In '{project_name}', which parts did you do yourself, and what was the hardest problem you solved?"
-        )
-        if speech_v2_enabled():
-            validate_text = spoken_project_question(project_name, is_vi=is_vi)
+        project_context["project_name"] = project_name
     elif key_technologies:
-        tech_str = ", ".join(key_technologies[:3])
-        validate_text = (
-            f"CV của bạn có {tech_str}. Kể một bài toán gần đây bạn giải quyết bằng các công nghệ này?"
-            if is_vi
-            else f"Your CV lists {tech_str}. What is a recent problem you solved with them?"
-        )
+        project_context["technologies"] = key_technologies[:3]
     else:
-        validate_text = (
-            "Dự án kỹ thuật nổi bật nhất của bạn là gì: bạn làm phần nào, và bài toán khó nhất là gì?"
-            if is_vi
-            else "What is your most notable technical project: which part was yours, and what was the hardest problem?"
-        )
+        project_context["project_evidence"] = "No structured project or technology was found in the CV."
 
+    is_vi = (locale or "vi").lower().startswith("vi")
+    question_language = "Vietnamese" if is_vi else "English"
+    validate_text = ""
+    if validate_enabled:
+        validate_text = str(
+            await generate_text(
+                instructions=(
+                    f"Write exactly one natural spoken interview question in {question_language} about the candidate's project evidence. "
+                    "Use only the supplied CV facts. Choose exactly ONE focus: personal contribution, a technical decision, "
+                    "or a concrete problem solved. Never combine two focuses, never use 'and why/how', and do not ask a second question. "
+                    "If the CV has no project details, ask one open project question without assuming facts. "
+                    "Do not add an introduction, evaluation, answer hint, or rubric. Output only the question."
+                ),
+                input_text=json.dumps(project_context, ensure_ascii=False),
+                max_output_tokens=120,
+            )
+        ).strip()
+        if (
+            not validate_text
+            or len(validate_text.split()) > 40
+            or not _is_single_focus_question(validate_text)
+        ):
+            # Fail closed to a short, single-focus prompt instead of freezing a
+            # compound question into every session using this plan.
+            project_label = str(project_context.get("project_name") or "dự án trong CV").strip()
+            validate_text = (
+                f"Trong dự án {project_label}, bạn trực tiếp phụ trách phần nào?"
+                if is_vi
+                else f"What part of {project_label} did you personally own?"
+            )
+            trace_event(
+                "interviewer",
+                "project_question_replaced_multi_focus",
+                session_id=session_row.get("id"),
+                project_name=project_label,
+            )
+        trace_event(
+            "interviewer",
+            "project_question_generated",
+            session_id=session_row.get("id"),
+            project_name=project_context.get("project_name"),
+            text=validate_text[:500],
+        )
     warmup_snapshot = {
         "schemaVersion": "1.0",
         "selectorPolicyVersion": SELECTOR_POLICY_VERSION,
@@ -1540,8 +1693,8 @@ async def select_and_freeze_questions(
         "canonicalLocale": locale,
         "questionText": warmup_text,
         "objective": "Chào hỏi, tạo không khí thoải mái và giới thiệu bản thân.",
-        "softAnswerSeconds": 120,
-        "hardAnswerSeconds": 180,
+        "softAnswerSeconds": blueprint.warm_up.soft_answer_seconds,
+        "hardAnswerSeconds": blueprint.warm_up.hard_answer_seconds,
         "taxonomyTarget": {
             "taxonomyVersion": "internal-2026.1",
             "conceptId": "warmup",
@@ -1552,6 +1705,15 @@ async def select_and_freeze_questions(
         "selectionRank": 0,
         "expectedPoints": [],
         "rubric": None,
+        # Every turn of the session reads its stage policy from here (chat_runtime).
+        "blueprint": {
+            "blueprintId": (blueprint_record or {}).get("blueprintId"),
+            "blueprintName": (blueprint_record or {}).get("blueprintName"),
+            "versionId": (blueprint_record or {}).get("versionId"),
+            "version": (blueprint_record or {}).get("version"),
+            "name": (blueprint_record or {}).get("name"),
+            "policy": blueprint.to_payload(),
+        },
     }
 
     validate_snapshot = {
@@ -1568,8 +1730,8 @@ async def select_and_freeze_questions(
         "canonicalLocale": locale,
         "questionText": validate_text,
         "objective": "Xác thực kinh nghiệm thực tế và dự án kỹ thuật tiêu biểu trong CV.",
-        "softAnswerSeconds": 180,
-        "hardAnswerSeconds": 240,
+        "softAnswerSeconds": blueprint.validate_cv.soft_answer_seconds,
+        "hardAnswerSeconds": blueprint.validate_cv.hard_answer_seconds,
         "taxonomyTarget": {
             "taxonomyVersion": "internal-2026.1",
             "conceptId": "cv-validation",
@@ -1604,29 +1766,32 @@ async def select_and_freeze_questions(
         },
     )
 
-    # Insert Turn 1 (VALIDATE)
-    await db.execute(
-        text(
-            """
-            INSERT INTO interview_turns
-                (id, session_id, turn_index, status, question_version_id,
-                 rubric_version_id, question_snapshot)
-            VALUES
-                (:id, :session_id, 1, 'PLANNED',
-                 NULL, NULL, CAST(:snapshot AS jsonb))
-            """
-        ),
-        {
-            "id": str(uuid4()),
-            "session_id": session_row["id"],
-            "snapshot": json.dumps(validate_snapshot),
-        },
-    )
+    # Insert Turn 1 (VALIDATE) unless the blueprint turned the stage off.
+    if validate_enabled:
+        await db.execute(
+            text(
+                """
+                INSERT INTO interview_turns
+                    (id, session_id, turn_index, status, question_version_id,
+                     rubric_version_id, question_snapshot)
+                VALUES
+                    (:id, :session_id, 1, 'PLANNED',
+                     NULL, NULL, CAST(:snapshot AS jsonb))
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "session_id": session_row["id"],
+                "snapshot": json.dumps(validate_snapshot),
+            },
+        )
 
-    # Deep-dive and challenge technical questions from Question Bank start at turn_index = 2
+    # Deep-dive and challenge technical questions from Question Bank follow the
+    # presets: turn_index 2, or 1 when the blueprint has no VALIDATE stage.
+    first_technical_index = 2 if validate_enabled else 1
     is_demo = is_demo_duration(session_row.get("duration_minutes"))
     for idx, (candidate, target, _orig_rank, fallback) in enumerate(frozen):
-        turn_index = idx + 2
+        turn_index = idx + first_technical_index
         target_rationale = target.get("rationale") or {}
         match_statuses = target_rationale.get("matchStatuses") or []
         stage = _technical_stage(
@@ -1635,6 +1800,7 @@ async def select_and_freeze_questions(
             is_coding=(candidate.question_type == "coding") if candidate else False,
             is_gap=any(s in ("not_met", "unknown") for s in match_statuses),
             is_demo=is_demo,
+            blueprint=blueprint,
         )
         if candidate is None:
             snapshot = dict(fallback or {})
@@ -1676,35 +1842,37 @@ async def select_and_freeze_questions(
             },
         )
 
-    # Thêm câu hỏi BEHAVIORAL theo chuẩn STAR vào cuối Question Queue
-    behavioral_snap = _behavioral_snapshot(locale=locale)
-    behavioral_turn_index = len(frozen) + 2
+    # Thêm câu hỏi BEHAVIORAL theo chuẩn STAR vào cuối Question Queue (trừ khi blueprint tắt)
+    behavioral_enabled = blueprint.behavioral.enabled
+    behavioral_snap = _behavioral_snapshot(locale=locale, blueprint=blueprint)
+    behavioral_turn_index = len(frozen) + first_technical_index
     behavioral_snap["selectionRank"] = behavioral_turn_index
-    await db.execute(
-        text(
-            """
-            INSERT INTO interview_turns
-                (id, session_id, turn_index, status, question_version_id,
-                 rubric_version_id, question_snapshot)
-            VALUES
-                (:id, :session_id, :turn_index, 'PLANNED',
-                 NULL, NULL, CAST(:snapshot AS jsonb))
-            """
-        ),
-        {
-            "id": str(uuid4()),
-            "session_id": session_row["id"],
-            "turn_index": behavioral_turn_index,
-            "snapshot": json.dumps(behavioral_snap),
-        },
-    )
+    if behavioral_enabled:
+        await db.execute(
+            text(
+                """
+                INSERT INTO interview_turns
+                    (id, session_id, turn_index, status, question_version_id,
+                     rubric_version_id, question_snapshot)
+                VALUES
+                    (:id, :session_id, :turn_index, 'PLANNED',
+                     NULL, NULL, CAST(:snapshot AS jsonb))
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "session_id": session_row["id"],
+                "turn_index": behavioral_turn_index,
+                "snapshot": json.dumps(behavioral_snap),
+            },
+        )
 
     selection_contract = [
         {"turnIndex": 0, "stage": "WARM_UP"},
-        {"turnIndex": 1, "stage": "VALIDATE"},
+        *([{"turnIndex": 1, "stage": "VALIDATE"}] if validate_enabled else []),
     ] + [
         {
-            "turnIndex": idx + 2,
+            "turnIndex": idx + first_technical_index,
             "questionVersionId": candidate.question_version_id if candidate else None,
             "rubricVersionId": candidate.rubric_version_id if candidate else None,
             "questionSource": candidate.source if candidate else "deterministic_fallback_unreviewed",
@@ -1712,13 +1880,17 @@ async def select_and_freeze_questions(
             "target": f"{target['taxonomyVersion']}:{target['conceptId']}",
         }
         for idx, (candidate, target, _, fallback) in enumerate(frozen)
-    ] + [
-        {
-            "turnIndex": behavioral_turn_index,
-            "stage": "BEHAVIORAL",
-            "questionSource": "behavioral_star_preset",
-        }
-    ]
+    ] + (
+        [
+            {
+                "turnIndex": behavioral_turn_index,
+                "stage": "BEHAVIORAL",
+                "questionSource": "behavioral_star_preset",
+            }
+        ]
+        if behavioral_enabled
+        else []
+    )
     source_counts: dict[str, int] = {}
     for candidate, _, _, _ in frozen:
         if candidate is not None:
@@ -1748,6 +1920,8 @@ async def select_and_freeze_questions(
                         "fallbackQuestionCount": sum(candidate is None for candidate, _, _, _ in frozen),
                         "questionSources": source_counts,
                         "generatedQuestionCount": source_counts.get("generated_unreviewed", 0),
+                        "unreviewedBudget": unreviewed_cap,
+                        "practiceTier": plan_tier if isinstance(plan_tier, str) else None,
                         "uncoveredTargets": uncovered_targets,
                     }
                 }

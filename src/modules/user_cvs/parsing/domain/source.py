@@ -7,6 +7,31 @@ from src.modules.user_cvs.domain.schemas import EvidenceSpan
 from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
 
 
+# Measured over the 230-CV corpus: readable documents reach at most 0.30 (a CV
+# whose skills parse cleanly but whose spaced-out heading inflates the count),
+# while genuinely shredded ones start at 0.46. The threshold sits in that gap.
+SHREDDED_TEXT_RATIO = 0.40
+
+
+def character_shredded_ratio(text: str) -> float:
+    """Share of whitespace tokens that are a single alphanumeric character.
+
+    Some PDFs store each glyph with its own positioning, and a text-layer
+    extractor then emits "S o f t w a r e E n g i n e e r". The document looks
+    fine to a reader and carries a normal character count, but no skill, degree
+    or company name survives as a matchable token, so the CV silently parses to
+    almost nothing. Measuring it lets the extractor pick a repair strategy and
+    the pipeline report a damaged read rather than publish an empty profile as
+    if the candidate had listed nothing.
+    """
+    tokens = text.split()
+    if len(tokens) < 40:
+        # Too short to tell a shredded document from ordinary initials.
+        return 0.0
+    singles = sum(1 for token in tokens if len(token) == 1 and token.isalnum())
+    return singles / len(tokens)
+
+
 @dataclass(frozen=True)
 class SourceBlock:
     block_id: str
@@ -218,6 +243,10 @@ def _repair_utf8_mojibake(value: str) -> str:
 
 
 def normalize_text(value: str) -> str:
+    # PostgreSQL text and jsonb values cannot contain the NUL code point. Some
+    # PDF/OCR extractors preserve it as a control character, which would make
+    # both raw_text persistence and evidence JSON fail at save time.
+    value = value.replace("\x00", "")
     value = _repair_utf8_mojibake(value)
     value = unicodedata.normalize("NFC", value.replace("\r\n", "\n").replace("\r", "\n"))
     value = re.sub(r"[\t\f\v ]+", " ", value)
@@ -233,43 +262,7 @@ def _heading_key(value: str) -> str:
     return re.sub(r"[^a-z0-9 ]+", " ", cleaned).strip()
 
 
-_LEGACY_SECTION_HEADINGS = {
-    "profile": {"profile", "summary", "objective", "gioi thieu", "muc tieu nghe nghiep"},
-    "skills": {"skills", "technical skills", "ky nang", "ky nang chuyen mon"},
-    "employment": {
-        "experience",
-        "work experience",
-        "employment",
-        "kinh nghiem",
-        "kinh nghiem lam viec",
-    },
-    "projects": {"projects", "selected projects", "du an", "du an tieu bieu"},
-    "education": {"education", "academic background", "hoc van", "giao duc"},
-    "certifications": {"certifications", "certificates", "chung chi"},
-    "languages": {"languages", "language", "ngoai ngu"},
-}
-
-
-def is_section_regex_v2_enabled() -> bool:
-    try:
-        from src.core.config import get_settings
-
-        return bool(get_settings().parser_section_regex_v2_enabled)
-    except Exception:
-        return True
-
-
 def _section_for_heading(text: str) -> str | None:
-    if not is_section_regex_v2_enabled():
-        legacy_norm = unicodedata.normalize("NFD", text.casefold())
-        legacy_norm = "".join(char for char in legacy_norm if unicodedata.category(char) != "Mn")
-        legacy_key = re.sub(r"[^a-z0-9 ]+", " ", legacy_norm).strip()
-        legacy_key = re.sub(r"\s+", " ", legacy_key)
-        for section, headings in _LEGACY_SECTION_HEADINGS.items():
-            if legacy_key in headings:
-                return section
-        return None
-
     stripped = text.strip()
     if not stripped or len(stripped) > 80 or len(stripped.splitlines()) > 2:
         return None

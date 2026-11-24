@@ -1,7 +1,7 @@
 import json
 
 from src.core import pipeline_events
-from src.modules.interviews.application import pipeline_live
+from src.modules.interviews.application.quality_admin import pipeline_live
 
 
 def test_own_notifications_are_skipped_and_others_relayed():

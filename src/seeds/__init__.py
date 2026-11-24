@@ -7,14 +7,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import Settings
 from src.seeds.admin_seed import seed_admin
+from src.seeds.job_description_seed import seed_job_descriptions
 from src.seeds.question_bank_seed import seed_question_bank
 from src.seeds.taxonomy_seed import seed_taxonomy
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["run_all_seeds", "seed_admin", "seed_taxonomy", "seed_question_bank"]
+__all__ = ["run_all_seeds", "seed_admin", "seed_taxonomy", "seed_question_bank", "seed_job_descriptions"]
 
-# Environments allowed to receive the Question Bank dev fixtures.
+# Environments allowed to receive the dev fixtures (Question Bank, sample jobs).
 _FIXTURE_ENVIRONMENTS = frozenset({"development", "dev", "test", "testing", "local"})
 
 
@@ -50,6 +51,10 @@ async def run_all_seeds(
             logger.info("Question Bank seed created %d new question(s): %s", newly_seeded, summary)
         else:
             logger.debug("Question Bank seed: all fixtures already present.")
+
+        job_metrics = await seed_job_descriptions(session_factory)
+        if job_metrics.get("created_count"):
+            logger.info("Job description seed created %d job(s).", job_metrics["created_count"])
     else:
         logger.warning(
             "Question Bank seed skipped for app_env=%r. Interviews fail closed until the bank "

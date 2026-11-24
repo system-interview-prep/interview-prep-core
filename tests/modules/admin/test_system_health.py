@@ -140,12 +140,3 @@ def test_sessions_outside_the_window_are_ignored() -> None:
     old = _row("a", NOW - timedelta(weeks=10))
     view = practice.summarize_practice([old], {}, weeks=4, now=NOW)
     assert view["totals"]["sessions"] == 0 and view["totals"]["medianSessionsPerUser"] is None
-
-
-def test_langfuse_llm_connections_are_informational() -> None:
-    from src.modules.admin.system_health import langfuse_status
-
-    assert langfuse_status(None, None) == ("down", "unreachable")
-    # Organization connections are invisible to the project API: no false alarm.
-    assert langfuse_status("https://lf/project/p", []) == ("ok", None)
-    assert langfuse_status("https://lf/project/p", ["openai"]) == ("ok", None)

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from src.modules.interviews.adapters.voice.interruption import (
+from src.modules.interviews.adapters.voice.conversation.interruption import (
     InterruptionSnapshot,
     capture_interruption,
     classify_interruption,
@@ -138,6 +138,12 @@ def test_detects_greeting_that_must_not_advance_interview() -> None:
     ],
 )
 def test_detects_vietnamese_repeat_requests(text: str) -> None:
+    assert is_repeat_request(text, locale="vi-VN")
+
+
+def test_detects_long_explicit_not_heard_request() -> None:
+    text = "Dạ em không nghe được gì hết vì bạn nói xong là em chưa nghe thấy câu hỏi"
+    assert len(text.split()) > 14
     assert is_repeat_request(text, locale="vi-VN")
 
 

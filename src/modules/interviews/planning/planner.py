@@ -18,8 +18,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
 from src.core.trace_logging import trace_event
-from src.modules.interviews.core.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
-from src.modules.interviews.core.interview_rounds import FOCUSABLE_AREAS, area_of, is_minor, spread_key
+from src.modules.interviews.core.session_policy.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
+from src.modules.interviews.application.interview_blueprints import DEFAULT_NAME as DEFAULT_BLUEPRINT_NAME
+from src.modules.interviews.application.interview_blueprints import resolve_blueprint
+from src.modules.interviews.core.session_policy.blueprint import InterviewBlueprint, default_blueprint
+from src.modules.taxonomy.interview_groups import (
+    EMPTY_TAXONOMY_SKILL_GROUPS,
+    TaxonomySkillGroups,
+    load_taxonomy_skill_groups,
+)
+from src.modules.interviews.planning.entry_gate import (
+    InterviewEntryBlocked,
+    evaluate_entry,
+    fit_adjusted_difficulty,
+)
 from src.modules.interviews.planning.plan_structure import (
     build_evaluation_targets,
     build_sections,
@@ -30,14 +42,13 @@ from src.modules.interviews.planning.planner_config import (
     PlannerPolicyConfig,
     resolve_strict_hands_on_precedence,
 )
-from src.modules.interviews.planning.entry_gate import (
-    InterviewEntryBlocked,
-    evaluate_entry,
-    fit_adjusted_difficulty,
-)
 from src.modules.interviews.planning.project_evidence import extract_project_evidences
 from src.modules.job_descriptions.schemas import CanonicalJobDescription
-from src.modules.matching.facade import canonical_job_from_description, evaluate_match
+from src.modules.matching.facade import (
+    canonical_job_from_description,
+    evaluate_match,
+    get_candidate_fit_attempt,
+)
 from src.modules.matching.schemas import (
     CanonicalJob,
     LanguageRequirement,
@@ -46,6 +57,7 @@ from src.modules.matching.schemas import (
     SkillRequirement,
     UnresolvedRequirement,
 )
+
 # `TaxonomyRef` is owned by user_cvs; matching only re-exported it.
 from src.modules.user_cvs.schemas import CanonicalResume, TaxonomyRef
 
@@ -100,17 +112,15 @@ class _CandidateTarget:
             self.source_evidence_refs.append(source_evidence_ref)
 
 
-# Expected (soft) seconds of the preset turns P2 always freezes - WARM_UP 120,
-# VALIDATE 180, BEHAVIORAL 180 (see question_selector snapshots) - plus the
-# runtime's 60s closing reserve.
-_PRESET_EXPECTED_SECONDS = 120 + 180 + 180 + 60
-# Expected seconds per technical question: thinking 30 + soft answer 150 + one
-# follow-up probe 60.
-_TECHNICAL_EXPECTED_SECONDS = 30 + 150 + 60
-_MAX_TECHNICAL_QUESTIONS = 8
+# The default blueprint's numbers (core.session_policy.blueprint): preset turns
+# WARM_UP 120 + VALIDATE 180 + BEHAVIORAL 180 + closing reserve 60, and 240s
+# (thinking 30 + soft answer 150 + one probe 60) per technical question.
+_PRESET_EXPECTED_SECONDS = default_blueprint().preset_expected_seconds()
+_TECHNICAL_EXPECTED_SECONDS = default_blueprint().technical.expected_seconds_per_question
+_MAX_TECHNICAL_QUESTIONS = default_blueprint().technical.max_questions
 
 
-def _question_budget(duration_minutes: int) -> int:
+def _question_budget(duration_minutes: int, blueprint: InterviewBlueprint | None = None) -> int:
     """Technical question budget derived from the session's time.
 
     The old fixed matrix (15m -> 2, 25m -> 4, 45m -> 6) ignored timing: a
@@ -122,8 +132,7 @@ def _question_budget(duration_minutes: int) -> int:
     """
     if is_demo_duration(duration_minutes):
         return DEMO_TECHNICAL_QUESTIONS
-    available = duration_minutes * 60 - _PRESET_EXPECTED_SECONDS
-    return max(1, min(_MAX_TECHNICAL_QUESTIONS, available // _TECHNICAL_EXPECTED_SECONDS))
+    return (blueprint or default_blueprint()).technical_question_budget(duration_minutes)
 
 
 def _is_gap_target(item: "_CandidateTarget") -> bool:
@@ -152,18 +161,18 @@ def _rank_index(ranked: list["_CandidateTarget"]) -> dict[int, int]:
     return {id(item): index for index, item in enumerate(ranked)}
 
 
-def _select_across_rounds(
+def _select_across_taxonomy_groups(
     ranked: list["_CandidateTarget"],
     budget: int,
     *,
     focus_area: str | None = None,
     reask: Sequence[str] = (),
+    taxonomy_groups: TaxonomySkillGroups = EMPTY_TAXONOMY_SKILL_GROUPS,
 ) -> list["_CandidateTarget"]:
-    """Pick technical topics like a real interview: different rounds first.
+    """Pick technical topics across taxonomy groups before repeating a group.
 
-    Pass 1 takes the best must-have of each round (databases, infrastructure,
-    language...), pass 2 the best remaining topic of each round not yet
-    covered, pass 3 fills by rank. The result keeps the ranked order, so a
+    Pass 1 takes the best must-have of each taxonomy group, pass 2 the best
+    remaining topic of each group not yet covered, pass 3 fills by rank. The result keeps the ranked order, so a
     must-have still comes before a nice-to-have.
 
     ``focus_area`` ("Luyện vòng này" on the progress page): up to half of the
@@ -173,7 +182,10 @@ def _select_across_rounds(
     re-ask, research 24/10). The first one the job asks about always gets a
     slot; the selector then prefers a question the candidate has not seen.
     """
-    focused = [item for item in ranked if focus_area and area_of(item.concept.concept_id) == focus_area]
+    focused = [
+        item for item in ranked
+        if focus_area and taxonomy_groups.group_for(item.concept.concept_id) == focus_area
+    ]
     again = [item for item in ranked if item.concept.concept_id in set(reask)][:1]
     if budget >= len(ranked) and not focused:
         return list(ranked)
@@ -181,14 +193,14 @@ def _select_across_rounds(
     for item in focused[: max(1, budget // 2)]:
         if item not in chosen and len(chosen) < budget:
             chosen.append(item)
-    seen: set[str] = {spread_key(item.concept.concept_id) for item in chosen}
+    seen: set[str] = {taxonomy_groups.spread_key(item.concept.concept_id) for item in chosen}
     for must_only in (True, False):
         for item in ranked:
             if len(chosen) >= budget:
                 break
             if must_only and "must_have" not in item.priorities:
                 continue
-            key = spread_key(item.concept.concept_id)
+            key = taxonomy_groups.spread_key(item.concept.concept_id)
             if item in chosen or key in seen:
                 continue
             chosen.append(item)
@@ -205,15 +217,8 @@ def _select_across_rounds(
 def _split_minor(
     candidates: list["_CandidateTarget"],
 ) -> tuple[list["_CandidateTarget"], list["_CandidateTarget"]]:
-    """Keep data formats and everyday tools (JSON, XML, Git) out of the plan.
-
-    They stay in the plan only when the job has nothing else to ask about.
-    """
-    major = [item for item in candidates if not is_minor(item.concept.concept_id)]
-    minor = [item for item in candidates if is_minor(item.concept.concept_id)]
-    if not major:
-        return minor, []
-    return major, minor
+    """Keep all concepts: taxonomy has no field that marks a concept contextual-only."""
+    return candidates, []
 
 
 def _requirement_concepts(requirement: Any) -> list[TaxonomyRef]:
@@ -284,13 +289,15 @@ def _derive_competency_plan_legacy(
     listing: Mapping[str, Any] | None = None,
     focus_area: str | None = None,
     reask: Sequence[Mapping[str, Any]] = (),
+    blueprint: InterviewBlueprint | None = None,
+    taxonomy_groups: TaxonomySkillGroups = EMPTY_TAXONOMY_SKILL_GROUPS,
 ) -> dict[str, Any]:
     """Legacy fixed question budget algorithm (interview-planner-v1).
 
     ``reask``: ``{"conceptId", "points"}`` for skills with a missed point due
     for practice again (``_due_reask``).
     """
-    if focus_area not in FOCUSABLE_AREAS:
+    if focus_area not in taxonomy_groups.group_ids:
         focus_area = None
     result_by_id = {item.requirement_id: item for item in match.requirement_results}
     candidates: dict[tuple[str, str], _CandidateTarget] = {}
@@ -349,7 +356,7 @@ def _derive_competency_plan_legacy(
     if not candidates:
         raise ValueError("No applicable taxonomy-backed interview competencies could be derived from the job")
 
-    budget = _question_budget(duration_minutes)
+    budget = _question_budget(duration_minutes, blueprint)
     askable, folded = _split_minor(list(candidates.values()))
     ranked = sorted(
         askable,
@@ -361,7 +368,10 @@ def _derive_competency_plan_legacy(
         ),
     )
     reask_ids = [str(item.get("conceptId")) for item in reask if item.get("conceptId")]
-    selected = _select_across_rounds(ranked, budget, focus_area=focus_area, reask=reask_ids)
+    selected = _select_across_taxonomy_groups(
+        ranked, budget, focus_area=focus_area, reask=reask_ids,
+        taxonomy_groups=taxonomy_groups,
+    )
     if is_demo_duration(duration_minutes):
         selected = _demo_targets(ranked, selected)
     raw_weights = [max(item.raw_weight, 0.0001) for item in selected]
@@ -421,12 +431,16 @@ def _derive_competency_plan_legacy(
         # Rounds-aware selection (research 20/10): which job keywords were not
         # asked as their own topic.
         "selection": {
-            "policy": "rounds-v1",
+            "policy": "taxonomy-groups-v1",
             "minorConceptIds": sorted(item.concept.concept_id for item in folded),
             "focusArea": focus_area,
             # Spaced re-ask: the skill asked again and the points due (research 24/10).
             "reask": [
-                {"conceptId": str(item["conceptId"]), "points": list(item.get("points") or [])[:3]}
+                {
+                    "conceptId": str(item["conceptId"]),
+                    "points": list(item.get("points") or [])[:3],
+                    **({"questionVersionId": item["questionVersionId"]} if item.get("questionVersionId") else {}),
+                }
                 for item in reask
                 if item.get("conceptId") in {target.concept.concept_id for target in selected}
             ][:1],
@@ -935,6 +949,8 @@ def derive_competency_plan(
     listing: Mapping[str, Any] | None = None,
     focus_area: str | None = None,
     reask: Sequence[Mapping[str, Any]] = (),
+    blueprint: InterviewBlueprint | None = None,
+    taxonomy_groups: TaxonomySkillGroups = EMPTY_TAXONOMY_SKILL_GROUPS,
 ) -> dict[str, Any]:
     """Build a deterministic competency agenda from canonical requirements.
 
@@ -953,6 +969,8 @@ def derive_competency_plan(
             listing=listing,
             focus_area=focus_area,
             reask=reask,
+            blueprint=blueprint,
+            taxonomy_groups=taxonomy_groups,
         )
     return _derive_competency_plan_dynamic(
         job=job,
@@ -1059,7 +1077,20 @@ async def _load_job_listing_hints(db: AsyncSession, *, job_id: str) -> dict[str,
     return dict(row) if row else {}
 
 
-async def _focus_area(db: AsyncSession, *, plan_id: str) -> str | None:
+async def _requested_blueprint(db: AsyncSession, *, plan_id: str) -> str | None:
+    """The interview type the candidate chose, stored when the session was created."""
+    value = (
+        await db.execute(
+            text("SELECT source_context->>'blueprintId' FROM interview_session_plans WHERE id = :id"),
+            {"id": plan_id},
+        )
+    ).scalar_one_or_none()
+    return str(value) if value else None
+
+
+async def _focus_area(
+    db: AsyncSession, *, plan_id: str, taxonomy_groups: TaxonomySkillGroups
+) -> str | None:
     """The round the candidate chose to practise, stored when the session was created."""
     value = (
         await db.execute(
@@ -1067,7 +1098,7 @@ async def _focus_area(db: AsyncSession, *, plan_id: str) -> str | None:
             {"id": plan_id},
         )
     ).scalar_one_or_none()
-    return value if value in FOCUSABLE_AREAS else None
+    return value if value in taxonomy_groups.group_ids else None
 
 
 async def _requested_reask(db: AsyncSession, *, plan_id: str) -> list[dict[str, Any]]:
@@ -1075,22 +1106,36 @@ async def _requested_reask(db: AsyncSession, *, plan_id: str) -> list[dict[str, 
     try:
         value = (
             await db.execute(
-                text("SELECT source_context->>'reaskConceptId' FROM interview_session_plans WHERE id = :id"),
+                text(
+                    "SELECT source_context->>'reaskConceptId' AS concept_id, "
+                    "source_context->>'reaskQuestionVersionId' AS question_version_id "
+                    "FROM interview_session_plans WHERE id = :id"
+                ),
                 {"id": plan_id},
             )
-        ).scalar_one_or_none()
+        ).mappings().one_or_none()
     except Exception:  # noqa: BLE001 - a hint for the plan, never a blocker
         await db.rollback()
         return []
-    return [{"conceptId": str(value), "points": []}] if value else []
+    if not value:
+        return []
+    concept_id = value.get("concept_id") if hasattr(value, "get") else value
+    question_version_id = value.get("question_version_id") if hasattr(value, "get") else None
+    if not concept_id:
+        return []
+    return [{
+        "conceptId": str(concept_id),
+        "questionVersionId": str(question_version_id) if question_version_id else None,
+        "points": [],
+    }]
 
 
 async def _due_reask(db: AsyncSession, *, user_id: str, job_id: str) -> list[dict[str, Any]]:
     """Skills of this position with a missed point due for practice again.
 
-    From the progress Sổ ôn tập (``progress.gap_notebook``: 7, 14, then 30 days
-    after the point was last asked). Most often missed first. Never blocks a
-    plan: on any error the session is planned without a re-ask.
+    From the progress Sổ ôn tập (``progress.gap_notebook``: due the next day).
+    Most often missed first. Never blocks a plan: on any error the session is
+    planned without a re-ask.
     """
     try:
         from src.modules.interviews.application.progress import load_progress
@@ -1104,11 +1149,26 @@ async def _due_reask(db: AsyncSession, *, user_id: str, job_id: str) -> list[dic
         key = str(gap.get("skillKey") or "")
         if not gap.get("due") or key.startswith("label:") or gap["lastSeen"].get("jobId") != job_id:
             continue
-        entry = by_concept.setdefault(key, {"conceptId": key, "points": [], "missed": 0})
+        entry = by_concept.setdefault(
+            key,
+            {
+                "conceptId": key,
+                "points": [],
+                "missed": 0,
+                "questionVersionId": gap.get("lastSeen", {}).get("questionVersionId"),
+            },
+        )
         entry["points"].append(gap["point"])
         entry["missed"] = max(entry["missed"], int(gap.get("timesMissed") or 0))
     ranked = sorted(by_concept.values(), key=lambda item: -item["missed"])
-    return [{"conceptId": item["conceptId"], "points": item["points"]} for item in ranked]
+    return [
+        {
+            "conceptId": item["conceptId"],
+            "points": item["points"],
+            "questionVersionId": item.get("questionVersionId"),
+        }
+        for item in ranked
+    ]
 
 
 async def evaluate_session_match(
@@ -1149,15 +1209,42 @@ async def build_and_persist_session_plan(
         resume_id=session_row["resume_id"],
     )
     job = await _load_job(db, user=user, job_id=session_row["job_id"])
-
-    match = await evaluate_match(
-        MatchRequest(
-            schemaVersion="2.1",
-            resume=resume,
-            job=job,
-            asyncProcessing=False,
-        )
+    taxonomy_versions = {
+        concept.taxonomy_version
+        for requirement in job.requirements
+        for concept in _requirement_concepts(requirement)
+        if concept.taxonomy_version
+    }
+    taxonomy_versions.update(
+        item.taxonomy_version for item in job.career_classifications if item.taxonomy_version
     )
+    taxonomy_groups = await load_taxonomy_skill_groups(db, versions=sorted(taxonomy_versions))
+
+    source_context = session_row.get("plan_source_context") or {}
+    fit_attempt_id = source_context.get("fitAttemptId")
+    if fit_attempt_id:
+        attempt = await get_candidate_fit_attempt(
+            db,
+            user_id=str(user["sub"]),
+            attempt_id=str(fit_attempt_id),
+        )
+        attempt_matches_session = (
+            attempt is not None
+            and attempt["cvId"] == session_row["resume_id"]
+            and attempt["jobId"] == session_row["job_id"]
+        )
+        if not attempt_matches_session:
+            raise ValueError("The selected CV–JD assessment is no longer available for this session")
+        match = MatchResult.model_validate(attempt["resultSnapshot"])
+    else:
+        match = await evaluate_match(
+            MatchRequest(
+                schemaVersion="2.1",
+                resume=resume,
+                job=job,
+                asyncProcessing=False,
+            )
+        )
     # Checked again here, not only when the session is created: a session made
     # before the threshold existed, or before it was raised, must not open.
     entry = evaluate_entry(match)
@@ -1169,21 +1256,40 @@ async def build_and_persist_session_plan(
             **entry.trace_fields(),
         )
         raise InterviewEntryBlocked(entry)
+    # The expert-configured stage policy in force now, frozen into the plan so a
+    # later activation never changes this session. Demo keeps the built-in one.
+    if is_demo_duration(session_row["duration_minutes"]):
+        blueprint_ref, blueprint = None, default_blueprint()
+    else:
+        # The interview type the candidate chose; the default type when none (or it is gone).
+        blueprint_ref, blueprint = await resolve_blueprint(db, await _requested_blueprint(db, plan_id=str(plan_id)))
     plan = derive_competency_plan(
         job=job,
         match=match,
         duration_minutes=session_row["duration_minutes"],
+        blueprint=blueprint,
         policy_config=configured_planner_policy(),
         listing=await _load_job_listing_hints(db, job_id=session_row["job_id"]),
-        focus_area=await _focus_area(db, plan_id=str(plan_id)),
+        focus_area=await _focus_area(
+            db, plan_id=str(plan_id), taxonomy_groups=taxonomy_groups
+        ),
         reask=await _requested_reask(db, plan_id=str(plan_id))
         + await _due_reask(db, user_id=str(user["sub"]), job_id=str(session_row["job_id"])),
+        taxonomy_groups=taxonomy_groups,
     )
     # Practice tier from the match score (entry_gate): basic is one level
     # easier than the job, challenge one level harder and probes sufficient
     # answers too. Everyone practises; the score decides the level.
     plan["difficulty"] = fit_adjusted_difficulty(plan.get("difficulty") or {}, entry)
     plan["practiceTier"] = entry.tier
+    plan["blueprint"] = {
+        "blueprintId": (blueprint_ref or {}).get("blueprintId"),
+        "blueprintName": (blueprint_ref or {}).get("blueprintName"),
+        "versionId": (blueprint_ref or {}).get("versionId"),
+        "version": (blueprint_ref or {}).get("version"),
+        "name": (blueprint_ref or {}).get("name") or DEFAULT_BLUEPRINT_NAME,
+        "policy": blueprint.to_payload(),
+    }
     plan.pop("fingerprint", None)
     canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     plan["fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -1239,6 +1345,8 @@ async def build_and_persist_session_plan(
         "entryWarnings": list(entry.warnings),
         "practiceTier": entry.tier,
         "plannerPolicyVersion": plan["policyVersion"],
+        "blueprintVersionId": plan["blueprint"]["versionId"],
+        "blueprintId": plan["blueprint"]["blueprintId"],
         "questionBudget": plan.get("questionBudget"),
         "nonCompetencyRequirementIds": plan["nonCompetencyRequirementIds"],
         "projectEvidences": [p.to_dict() for p in extract_project_evidences(
