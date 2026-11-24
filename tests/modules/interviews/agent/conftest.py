@@ -107,3 +107,52 @@ def ctx_factory(session_state_factory):
         return build_turn_context(turn, state)
 
     return make
+
+
+def scripted_chat_model(script: list[list[dict]], *, usage: dict | None = None, raise_with: Exception | None = None):
+    """A LangChain chat model that answers each call with the next list of tool calls.
+
+    What ``langmem``/``trustcall`` send: inserts are calls of the schema
+    (``CandidateMemory``), updates ``PatchDoc(json_doc_id, patches)``, removals
+    ``RemoveDoc(json_doc_id)``. ``json_doc_id`` of an existing row is
+    ``uuid5(NAMESPACE_DNS, str((*namespace, key))).hex`` — see ``doc_id``.
+    The model records every prompt it saw in ``.prompts``.
+    """
+    pytest.importorskip("langmem")
+    from langchain_core.language_models.chat_models import BaseChatModel
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, ChatResult
+
+    class _Scripted(BaseChatModel):
+        model_name: str = "scripted-chat"
+        script: list = []
+        prompts: list = []
+        usage: dict = {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}
+        raise_with: Any = None
+
+        @property
+        def _llm_type(self) -> str:
+            return "scripted"
+
+        def bind_tools(self, tools, **kwargs):  # trustcall needs a RunnableBinding back
+            return self.bind(tools=tools, **kwargs)
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+            self.prompts.append("\n".join(str(m.content) for m in messages))
+            if self.raise_with is not None:
+                raise self.raise_with
+            calls = self.script.pop(0) if self.script else []
+            message = AIMessage(content="", tool_calls=calls, usage_metadata=dict(self.usage))
+            return ChatResult(generations=[ChatGeneration(message=message)])
+
+    model = _Scripted(script=[list(step) for step in script], prompts=[], raise_with=raise_with)
+    if usage is not None:
+        model.usage = usage
+    return model
+
+
+def doc_id(namespace: tuple[str, ...], key: str) -> str:
+    """The id ``langmem`` shows the model for a stored row (what PatchDoc/RemoveDoc must name)."""
+    import uuid
+
+    return uuid.uuid5(uuid.NAMESPACE_DNS, str((*namespace, key))).hex

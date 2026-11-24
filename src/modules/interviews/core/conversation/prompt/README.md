@@ -21,6 +21,9 @@ Mục đích: sửa lời prompt mà không phải đọc logic, và ngược l�
 | `transition.py` | `transition_context(...)` | `_generate_transition_text` (user content, không phải system prompt) |
 | `closing_qna.py` | `closing_qna_prompt(...)` | `turn_engine`, vòng hỏi ngược bản cũ |
 | | `closing_qna_speech_prompt(...)` | `turn_engine._answer_closing_question`, speech v2 |
+| `decide.py` | `decide_prompt(is_vi)`, `decide_input(...)` | `agent/decide.py`, model decider (shadow/live) |
+| `candidate_memory.py` | `block(items, is_vi, competency)` | evaluate/probe/clarify, sau `playbook.block` |
+| | `extract_instructions(is_vi)` | `application/runtime/candidate_memory.py`, chỉ dẫn cho memory manager của `langmem` ở lệnh `score` |
 
 ## Quy ước
 

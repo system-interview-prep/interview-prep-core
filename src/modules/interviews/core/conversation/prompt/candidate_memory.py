@@ -1,17 +1,18 @@
-"""Trí nhớ về ứng viên trong prompt, và prompt trích xuất trí nhớ sau phiên.
+"""Trí nhớ về ứng viên trong prompt, và chỉ dẫn trích xuất trí nhớ sau phiên.
 
 Khối ``block`` chỉ gọi tên chủ đề ("còn hở phần invalidation"), không bao giờ
 trích lời ứng viên; trống thì prompt y như cũ (giống ``playbook.block``).
-``extract_prompt`` + ``MEMORY_OPS_SCHEMA`` dùng cho một lần gọi
-``generate_text(json_schema=...)`` ở lệnh ``score`` — đầu vào là kết luận của
-grader, không phải câu trả lời.
+``extract_instructions`` là phần chỉ dẫn mà memory manager của ``langmem``
+(``application/runtime/candidate_memory.py``) đưa cho model ở lệnh ``score``
+— đầu vào là kết luận của grader, không phải câu trả lời. Thao tác (thêm /
+vá / xoá) và schema do ``langmem`` + ``trustcall`` quy định, không phải ở đây.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, Iterable
 
-__all__ = ["MAX_ITEMS", "MAX_BLOCK_CHARS", "MEMORY_OPS_SCHEMA", "block", "extract_prompt"]
+__all__ = ["MAX_ITEMS", "MAX_BLOCK_CHARS", "block", "extract_instructions"]
 
 MAX_ITEMS = 6
 MAX_BLOCK_CHARS = 700
@@ -51,54 +52,31 @@ def block(items: Iterable[Dict[str, Any]], is_vi: bool = True, competency: str |
     return "\n\n" + head + "\n" + "\n".join(lines)
 
 
-MEMORY_OPS_SCHEMA: Dict[str, Any] = {
-    "name": "candidate_memory_ops",
-    "schema": {
-        "type": "object",
-        "properties": {
-            "ops": {
-                "type": "array",
-                "maxItems": 5,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "op": {"type": "string", "enum": ["ADD", "UPDATE", "RETIRE"]},
-                        "key": {"type": "string"},
-                        "kind": {"type": "string", "enum": ["gap", "strength", "project_fact", "preference"]},
-                        "skill_key": {"type": "string"},
-                        "text": {"type": "string"},
-                        "confidence": {"type": "number"},
-                    },
-                    "required": ["op", "key", "kind", "skill_key", "text", "confidence"],
-                    "additionalProperties": False,
-                },
-            }
-        },
-        "required": ["ops"],
-        "additionalProperties": False,
-    },
-}
-
-
-def extract_prompt(is_vi: bool = True) -> str:
+def extract_instructions(is_vi: bool = True) -> str:
+    """What the memory manager is told; it already lists the existing items with their ids."""
     if is_vi:
         return (
-            "Bạn cập nhật sổ ghi nhớ về một ứng viên sau một buổi phỏng vấn luyện tập, từ KẾT LUẬN của "
+            "Bạn cập nhật sổ ghi nhớ về MỘT ứng viên sau một buổi phỏng vấn luyện tập, từ KẾT LUẬN của "
             "người chấm (không có nguyên văn câu trả lời).\n"
-            "Mỗi mục ghi nhớ là MỘT câu ngắn (≤ 160 ký tự) gọi tên chủ đề: ý còn hở, ý đã nắm, dự án đã kể, "
-            "lưu ý khi hỏi. Không ghi điểm số, không ghi nhận xét tính cách, không ghi thông tin cá nhân "
-            "(tên, email, công ty cũ, lương).\n"
-            "Đề xuất tối đa 5 thao tác: ADD (key để trống), UPDATE (key của mục đang có), RETIRE (key của mục "
-            "không còn đúng). Mục trùng chủ đề với mục đang có thì UPDATE, không ADD.\n"
-            "confidence 0–1 theo mức chắc chắn của người chấm. Trả về đúng JSON theo schema."
+            "Mỗi mục ghi nhớ là một CandidateMemory: MỘT câu ngắn (≤ 160 ký tự) gọi tên chủ đề — ý còn hở "
+            "(gap), ý đã nắm (strength), dự án đã kể (project_fact), lưu ý khi hỏi (preference). Viết bằng "
+            "tiếng Việt. Không ghi điểm số, không nhận xét tính cách, không ghi thông tin cá nhân (tên, email, "
+            "công ty cũ, lương), không trích lời ứng viên.\n"
+            "Mục trùng chủ đề với mục đang có thì VÁ mục đó (đổi kind/text/confidence), không thêm mới. "
+            "Mục không còn đúng thì XOÁ. Chỉ giữ các trường kind, skill_key, text, confidence; các trường "
+            "khác của mục đang có để nguyên.\n"
+            "Tối đa 5 thay đổi cho cả buổi; không có gì mới thì không làm gì. confidence 0–1 theo mức "
+            "chắc chắn của người chấm."
         )
     return (
-        "You update the memory notebook about one candidate after a practice interview, from the GRADER'S "
+        "You update the memory notebook about ONE candidate after a practice interview, from the GRADER'S "
         "conclusions (no verbatim answers).\n"
-        "Each memory is ONE short sentence (≤ 160 chars) naming a topic: a gap, a solid point, a project "
-        "mentioned, a note for asking. No scores, no personality remarks, no personal data (names, email, "
-        "former employers, salary).\n"
-        "Propose at most 5 operations: ADD (empty key), UPDATE (key of an existing item), RETIRE (key of an "
-        "item no longer true). Same topic as an existing item → UPDATE, not ADD.\n"
-        "confidence 0–1 from the grader's certainty. Return exactly the JSON of the schema."
+        "Each memory is a CandidateMemory: ONE short sentence (≤ 160 chars) naming a topic — a gap, a solid "
+        "point (strength), a project mentioned (project_fact), a note for asking (preference). No scores, no "
+        "personality remarks, no personal data (names, email, former employers, salary), never quote the "
+        "candidate.\n"
+        "Same topic as an existing item → PATCH that item (kind/text/confidence), do not insert. An item no "
+        "longer true → REMOVE it. Only set kind, skill_key, text, confidence; leave the other fields of an "
+        "existing item as they are.\n"
+        "At most 5 changes per session; nothing new → do nothing. confidence 0–1 from the grader's certainty."
     )

@@ -1,4 +1,4 @@
-"""T1.5.1–3, T2.5.1–3, T2.6.1–4, T3.5.1 — candidate memory (flag off by default)."""
+"""T1.5.1–3, T2.5.1–3, T2.6.1–4 (as M-SWAP-1..6, langmem extractor), T3.5.1 — candidate memory (flag off by default)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from src.modules.interviews.core.contracts.interview import CandidateTurnInput, 
 from src.modules.interviews.core.conversation.prompt.candidate_memory import MAX_BLOCK_CHARS, MAX_ITEMS, block
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 from src.modules.interviews.core.dialogue.policy import memory_rejection_reason
-from tests.modules.interviews.agent.conftest import FakeToolCaller, tool_call
+from tests.modules.interviews.agent.conftest import FakeToolCaller, doc_id, scripted_chat_model, tool_call
 from tests.modules.interviews.agent.test_turn_graph import ScriptedLLM
 
 USER = "user-42"
@@ -124,7 +124,7 @@ async def test_load_filters_by_skill_and_falls_back_to_all(monkeypatch) -> None:
     assert await cm.load("", store=store) == [] and await cm.load(USER, store=None) == []
 
 
-# ----------------------------------------------------------------- T2.6.x extraction
+# ----------------------------------------------------------------- T2.6.x extraction (langmem; M-SWAP-1..6)
 
 EVALUATION = {
     "turn_results": [
@@ -133,17 +133,25 @@ EVALUATION = {
          "weaknesses": ["Chưa nói invalidation"], "evidence_quotes": ["em đặt TTL năm phút cho từng key"], "score": 6.0},
     ]
 }
+NS = cm.namespace(USER)
 
 
-@pytest.mark.asyncio
-async def test_t2_6_1_the_extraction_prompt_never_carries_the_candidates_words(monkeypatch) -> None:
-    store = InMemoryStore()
-    seen = {}
+def _insert(text: str, kind: str = "gap", skill: str = "skill-redis", call_id: str = "c1") -> dict:
+    return {"id": call_id, "name": "CandidateMemory", "args": {"kind": kind, "skill_key": skill, "text": text, "confidence": 0.8}}
 
-    async def fake_generate(**kwargs):
-        seen.update(kwargs)
-        return json.dumps({"ops": [{"op": "ADD", "key": "", "kind": "gap", "skill_key": "skill-redis",
-                                    "text": "Còn hở phần invalidation", "confidence": 0.8}]})
+
+def _record_rows(monkeypatch) -> list:
+    """Capture ``ai_call_logs`` rows instead of buffering them."""
+    import src.core.pipeline_events as events
+
+    rows: list = []
+    monkeypatch.setattr(events, "record_ai_call", lambda **row: rows.append(row))
+    return rows
+
+
+@pytest.fixture
+def extraction(monkeypatch):
+    """``extract_after_session`` with the db replaced: grader conclusions + the user of the session."""
 
     async def fake_eval(db, session_id):
         return EVALUATION
@@ -153,45 +161,136 @@ async def test_t2_6_1_the_extraction_prompt_never_carries_the_candidates_words(m
 
     monkeypatch.setattr(cm, "get_session_evaluation", fake_eval)
     monkeypatch.setattr(cm, "_user_id_of_session", fake_user)
-    counts = await cm.extract_after_session(None, "sess-1", store=store, generate=fake_generate)
-    assert counts["added"] == 1
-    assert "em đặt TTL năm phút" not in seen["input_text"] and "6.0" not in seen["input_text"]
-    assert "Chưa nói invalidation" in seen["input_text"]
-    assert seen["purpose"] == cm.PURPOSE_EXTRACT and seen["json_schema"]["name"] == "candidate_memory_ops"
+
+    async def run(store, model, session_id="sess-1"):
+        return await cm.extract_after_session(None, session_id, store=store, model=model)
+
+    return run
+
+
+@pytest.mark.asyncio
+async def test_t2_6_1_m_swap_1_an_insert_lands_in_the_store_and_the_prompt_carries_no_quotes(extraction) -> None:
+    store = InMemoryStore()
+    model = scripted_chat_model([[_insert("Còn hở phần invalidation")]])
+    counts = await extraction(store, model)
+    assert counts == {"added": 1, "updated": 0, "retired": 0, "rejected": 0, "truncated": 0}
+    prompt = "\n".join(model.prompts)
+    assert "em đặt TTL năm phút" not in prompt and "6.0" not in prompt
+    assert "Chưa nói invalidation" in prompt and "CandidateMemory" in prompt
     items = await cm.load(USER, store=store)
-    assert items[0]["source"] == "extracted" and items[0]["evidence"]["session_id"] == "sess-1"
+    assert [i["text"] for i in items] == ["Còn hở phần invalidation"]
+    assert items[0]["source"] == "extracted" and items[0]["evidence"]["session_id"] == "sess-1" and items[0]["times_seen"] == 1
+    raw = (await store.asearch(NS, limit=5))[0].value
+    assert raw["kind"] == cm.SCHEMA_KIND and raw["content"]["text"] == "Còn hở phần invalidation"
 
 
 @pytest.mark.asyncio
-async def test_t2_6_2_more_than_five_ops_are_truncated_and_bad_ops_rejected() -> None:
+async def test_m_swap_1b_patch_and_remove_name_existing_rows(extraction) -> None:
     store = InMemoryStore()
-    ops = [{"op": "ADD", "key": "", "kind": "gap", "skill_key": "s", "text": f"gap {i}", "confidence": 0.5} for i in range(7)]
-    ops[1]["kind"] = "mood"  # not a kind → rejected
-    counts = await cm.apply_ops(USER, ops, store=store, session_id="s")
-    assert counts["truncated"] == 2 and counts["rejected"] == 1 and counts["added"] == 4
+    seeded = cm._seed_items(GAPS)
+    for item in seeded:
+        await store.aput(NS, item["key"], cm.wrap({k: v for k, v in item.items() if k != "key"}))
+    redis_key = next(i["key"] for i in seeded if i["skill_key"] == "skill-redis")
+    sql_key = next(i["key"] for i in seeded if i["skill_key"] == "skill-sql")
+    model = scripted_chat_model([[
+        {"id": "p1", "name": "PatchDoc", "args": {"json_doc_id": doc_id(NS, redis_key), "planned_edits": "nắm rồi",
+                                                  "patches": [{"op": "replace", "path": "/kind", "value": "strength"},
+                                                              {"op": "replace", "path": "/text", "value": "Đã nắm invalidation"}]}},
+        {"id": "r1", "name": "RemoveDoc", "args": {"json_doc_id": doc_id(NS, sql_key)}},
+    ]])
+    counts = await extraction(store, model, session_id="sess-2")
+    assert counts == {"added": 0, "updated": 1, "retired": 1, "rejected": 0, "truncated": 0}
+    items = {i["key"]: i for i in await cm.load(USER, store=store)}
+    assert sql_key not in items
+    patched = items[redis_key]
+    assert patched["kind"] == "strength" and patched["text"] == "Đã nắm invalidation"
+    assert patched["times_seen"] == 3 and patched["evidence"]["session_id"] == "sess-2"  # seed had 2, +1
+    assert patched["source"] == "seed_gap_notebook" and patched["evidence"]["question"]  # bookkeeping kept through the patch
+    assert "Bạn dùng Redis cache thế nào trong dự án" in model.prompts[0]  # existing rows are shown with their ids
 
 
 @pytest.mark.asyncio
-async def test_update_and_retire_touch_only_existing_keys() -> None:
+async def test_m_swap_2_every_model_call_is_an_ai_call_logs_row_with_tokens(extraction, monkeypatch) -> None:
+    rows = _record_rows(monkeypatch)
     store = InMemoryStore()
-    await cm.apply_ops(USER, [{"op": "ADD", "key": "", "kind": "gap", "skill_key": "skill-redis", "text": "Còn hở invalidation", "confidence": 0.6}], store=store)
-    key = (await cm.load(USER, store=store))[0]["key"]
-    counts = await cm.apply_ops(USER, [
-        {"op": "UPDATE", "key": key, "kind": "strength", "skill_key": "skill-redis", "text": "Đã nắm invalidation", "confidence": 0.9},
-        {"op": "UPDATE", "key": "nope", "kind": "gap", "skill_key": "x", "text": "x", "confidence": 0.5},
-        {"op": "RETIRE", "key": "nope"},
-    ], store=store, session_id="s2")
-    assert counts == {"added": 0, "updated": 1, "retired": 0, "rejected": 2, "truncated": 0}
-    item = (await cm.load(USER, store=store))[0]
-    assert item["kind"] == "strength" and item["times_seen"] == 2 and item["evidence"]["session_id"] == "s2"
-    assert (await cm.apply_ops(USER, [{"op": "RETIRE", "key": key}], store=store))["retired"] == 1
+    model = scripted_chat_model([[_insert("Còn hở phần invalidation")]], usage={"input_tokens": 321, "output_tokens": 45, "total_tokens": 366})
+    await extraction(store, model)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["purpose"] == cm.PURPOSE_EXTRACT and row["provider"] == "openai" and row["model"] == "scripted-chat"
+    assert row["status"] == "ok" and row["input_tokens"] == 321 and row["output_tokens"] == 45
+    assert "CandidateMemory" in row["output_text"] and "Chưa nói invalidation" in row["input_text"]
+
+
+@pytest.mark.asyncio
+async def test_m_swap_3_the_whole_extraction_is_one_langfuse_generation(extraction, monkeypatch) -> None:
+    seen = {}
+
+    class FakeGeneration:
+        def __init__(self, purpose, **kwargs):
+            seen["start"] = {"purpose": purpose, **kwargs}
+
+        def end(self, **kwargs):
+            seen["end"] = kwargs
+
+    monkeypatch.setattr(cm.langfuse, "Generation", FakeGeneration)
+    store = InMemoryStore()
+    await extraction(store, scripted_chat_model([[_insert("Còn hở phần invalidation")]]))
+    assert seen["start"]["purpose"] == cm.PURPOSE_EXTRACT and seen["start"]["model"] == "scripted-chat"
+    assert "em đặt TTL" not in seen["start"]["input_text"]
+    assert seen["end"]["usage"].input_tokens == 100 and seen["end"]["usage"].output_tokens == 20
+    assert json.loads(seen["end"]["output"])["added"] == 1
+
+
+@pytest.mark.asyncio
+async def test_m_swap_4_a_model_error_is_logged_and_returns_nothing(extraction, monkeypatch) -> None:
+    rows = _record_rows(monkeypatch)
+    events = []
+    monkeypatch.setattr(cm, "trace_event", lambda area, name, **kw: events.append(name))
+    store = InMemoryStore()
+    model = scripted_chat_model([], raise_with=RuntimeError("provider down"))
+    assert await extraction(store, model) == {}
     assert await cm.load(USER, store=store) == []
+    assert rows and rows[-1]["status"] == "error" and rows[-1]["error_type"] == "RuntimeError"
+    assert "candidate_memory_extract_error" in events
+
+
+@pytest.mark.asyncio
+async def test_t2_6_2_m_swap_5_more_than_five_changes_are_rolled_back(extraction, monkeypatch) -> None:
+    events = []
+    monkeypatch.setattr(cm, "trace_event", lambda area, name, **kw: events.append((name, kw)))
+    store = InMemoryStore()
+    model = scripted_chat_model([[_insert(f"gap {i}", call_id=f"c{i}") for i in range(8)]])
+    counts = await extraction(store, model)
+    assert counts["truncated"] == 3 and counts["added"] == 5 and counts["rejected"] == 0
+    assert len(await cm.load(USER, store=store, limit=50)) == 5
+    assert ("candidate_memory_ops_capped", {"session_id": "sess-1", "truncated": 3}) in events
+
+
+@pytest.mark.asyncio
+async def test_m_swap_5b_a_row_without_text_or_skill_is_rejected_and_removed(extraction) -> None:
+    store = InMemoryStore()
+    blank = _insert("   ", call_id="c2")
+    no_skill = _insert("Còn hở phần index", skill="  ", call_id="c3")
+    counts = await extraction(store, scripted_chat_model([[_insert("Còn hở phần invalidation"), blank, no_skill]]))
+    assert counts == {"added": 1, "updated": 0, "retired": 0, "rejected": 2, "truncated": 0}
+    assert [i["text"] for i in await cm.load(USER, store=store)] == ["Còn hở phần invalidation"]
+
+
+@pytest.mark.asyncio
+async def test_m_swap_6_no_changes_means_no_writes(extraction) -> None:
+    store = InMemoryStore()
+    await store.aput(NS, "k1", cm.wrap({"kind": "gap", "skill_key": "s", "text": "t", "last_seen": "2026-01-01"}))
+    before = (await store.asearch(NS, limit=5))[0].value
+    counts = await extraction(store, scripted_chat_model([[]]))
+    assert counts == {"added": 0, "updated": 0, "retired": 0, "rejected": 0, "truncated": 0}
+    assert (await store.asearch(NS, limit=5))[0].value == before
 
 
 @pytest.mark.asyncio
 async def test_t2_6_4_deleting_a_user_empties_the_namespace() -> None:
     store = InMemoryStore()
-    await cm.apply_ops(USER, [{"op": "ADD", "key": "", "kind": "gap", "skill_key": "s", "text": "t", "confidence": 0.5}], store=store)
+    await store.aput(NS, "k1", cm.wrap({"kind": "gap", "skill_key": "s", "text": "t"}))
     assert await cm.delete_user(USER, store=store) == 1
     assert await cm.load(USER, store=store) == []
 
@@ -203,6 +302,18 @@ async def test_extraction_failures_never_raise(monkeypatch) -> None:
 
     monkeypatch.setattr(cm, "get_session_evaluation", boom)
     assert await cm.extract_after_session(None, "s", store=InMemoryStore()) == {}
+
+
+@pytest.mark.asyncio
+async def test_the_default_chat_model_is_blocked_in_tests(extraction) -> None:
+    """Without ``model=`` the extractor would build ChatOpenAI: tests/conftest.py blocks it, so {} and no call."""
+    store = InMemoryStore()
+    assert await cm.extract_after_session(None, "s", store=store) == {}
+
+
+def test_a_flat_value_from_before_the_envelope_still_reads() -> None:
+    assert cm.unwrap({"kind": "gap", "skill_key": "s", "text": "t"}) == {"kind": "gap", "skill_key": "s", "text": "t"}
+    assert cm.unwrap(cm.wrap({"kind": "gap", "skill_key": "s", "text": "t"}))["text"] == "t"
 
 
 def test_t2_6_3_the_playbook_reflector_cannot_see_candidate_memory() -> None:

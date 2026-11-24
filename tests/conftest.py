@@ -78,6 +78,13 @@ def _no_live_interview_model(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(facade, "_client", _blocked)
 
+    # The candidate-memory extractor (langmem) calls the provider through
+    # LangChain, not the facade: block its chat model the same way. Tests pass
+    # a scripted ``model=``.
+    from src.modules.interviews.application.runtime import candidate_memory
+
+    monkeypatch.setattr(candidate_memory, "_chat_model", _blocked)
+
 
 @pytest.fixture(autouse=True)
 def _trace_logs_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:

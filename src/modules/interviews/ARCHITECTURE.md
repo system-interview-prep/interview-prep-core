@@ -67,6 +67,8 @@ interviews/
 |                              #   build_menu -> decide -> act -> guards_out -> record), menu.py,
 |                              #   pacing.py, decide.py (model decider), tools.py, record.py,
 |                              #   checkpoints.py (Postgres checkpointer + candidate-memory store)
+|                              #   candidate memory itself: application/runtime/candidate_memory.py
+|                              #   (store rows in langmem's {kind, content} envelope; extractor = langmem)
 |-- application/
 |   |-- quality_admin/
 |   `-- runtime/               # shared persistence/runtime path
@@ -85,7 +87,7 @@ interviews/
 |---|---|---|
 | `INTERVIEW_AGENT_MODE` | `off` (default) / `shadow` / `live` | `off`: the rule ladder decides. `shadow`: the model decider also runs and is only recorded (`agreement`). `live`: the model executes the actions listed below when they are in the menu and carry no violation. |
 | `INTERVIEW_AGENT_LIVE_ACTIONS` | comma list of actions | Which actions the model may execute in `live`. |
-| `INTERVIEW_CANDIDATE_MEMORY` | `0` (default) / `read` / `readwrite` | `read`: seed from the gap notebook at `open`, load topics into the prompts, offer `search_candidate_memory` to the decider. `readwrite`: also extract after `score`. |
+| `INTERVIEW_CANDIDATE_MEMORY` | `0` (default) / `read` / `readwrite` | `read`: seed from the gap notebook at `open`, load topics into the prompts, offer `search_candidate_memory` to the decider. `readwrite`: also extract after `score` with the `langmem` memory manager (extra `memory`); every model call it makes is an `ai_call_logs` row and the run is one Langfuse generation. |
 
 Every turn carries `metadata["decision"]` (menu, pacing, rule choice, model choice, agreement) and emits the `agent_decision` pipeline event; `scripts/eval/interviews/agent_shadow_report.py` reads them.
 
