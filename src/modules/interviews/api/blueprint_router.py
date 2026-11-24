@@ -73,7 +73,10 @@ async def list_interview_types(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """The interview types a signed-in candidate may choose."""
-    return await blueprints.candidate_types(db)
+    try:
+        return await blueprints.candidate_types(db)
+    except blueprints.BlueprintError as exc:
+        raise _http(exc) from exc
 
 
 @router.get("")

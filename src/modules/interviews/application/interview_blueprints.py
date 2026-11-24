@@ -7,12 +7,12 @@ Roles:
 * Admin: activates or rejects a version written by someone else (four-eyes
   rule, one step); lists or hides types, orders them, picks the default.
 * Candidate: chooses a listed type when starting a session (default
-  pre-selected). The session freezes that type's ACTIVE version at planning
-  time, so later versions never change it. Demo sessions use the built-in policy.
+  pre-selected). The session freezes that type's ACTIVE SQL version at planning
+  time, so later versions never change it. Demo sessions use the SQL default.
 
 Each type has at most one ACTIVE version; activating a new one retires the
-previous version of the same type. A type with no ACTIVE version runs the
-built-in default policy. Only a DRAFT can be edited.
+previous version of the same type. A type with no ACTIVE version uses the
+active SQL system-default policy. Only a DRAFT can be edited.
 
 Notifications: admins when a version is submitted; the author when it is
 activated or rejected; candidates only when a new type becomes available
@@ -34,7 +34,6 @@ from src.core.roles import ADMIN, CANDIDATE
 from src.modules.interviews.core.session_policy.blueprint import (
     InterviewBlueprint,
     blueprint_from_payload,
-    default_blueprint,
 )
 from src.modules.notifications.service import notify_role, notify_user
 
@@ -128,11 +127,25 @@ async def _type_row(db: AsyncSession, blueprint_id: str, *, lock: bool = False) 
 async def _policy_of(
     db: AsyncSession, type_row: dict[str, Any]
 ) -> tuple[dict[str, Any] | None, InterviewBlueprint]:
-    """The type's ACTIVE version (row, policy); (None, built-in default) when it has none."""
+    """Resolve an active type version, or the SQL-backed system default."""
     if not type_row.get("active_version_id"):
-        return None, default_blueprint()
+        result = await db.execute(
+            text(
+                "SELECT v.id, v.blueprint_id, v.version, v.name, v.definition "
+                "FROM interview_blueprints b "
+                "JOIN interview_blueprint_versions v ON v.id = b.active_version_id "
+                "WHERE b.is_default AND v.status = 'ACTIVE'"
+            )
+        )
+        fallback = result.mappings().one_or_none()
+        if fallback is None:
+            raise BlueprintError(503, "default_contract_unavailable")
+        version = dict(fallback)
+        return version, _parse(_definition(version))
     version = await _row(db, type_row["active_version_id"])
-    return version, blueprint_from_payload(_definition(version))
+    if version["blueprint_id"] != type_row["id"] or version["status"] != "ACTIVE":
+        raise BlueprintError(503, "active_contract_reference_invalid")
+    return version, _parse(_definition(version))
 
 
 async def resolve_blueprint(
@@ -157,7 +170,7 @@ async def resolve_blueprint(
         result = await db.execute(text(f"SELECT {_TYPE_COLUMNS} FROM interview_blueprints WHERE is_default"))
         row = result.mappings().one_or_none()
     if row is None:
-        return None, default_blueprint()
+        raise BlueprintError(503, "default_contract_unavailable")
     version, policy = await _policy_of(db, dict(row))
     ref = {
         "blueprintId": row["id"],
@@ -165,6 +178,7 @@ async def resolve_blueprint(
         "versionId": version["id"] if version else None,
         "version": version["version"] if version else None,
         "name": version["name"] if version else row["name"],
+        "policyBlueprintId": version["blueprint_id"] if version else row["id"],
     }
     return ref, policy
 
@@ -233,7 +247,7 @@ async def list_types(db: AsyncSession, *, actor_id: str, roles: list[str]) -> di
     for type_row in types:
         own_versions = [v for v in versions if v["blueprint_id"] == type_row["id"]]
         active = next((v for v in own_versions if v["id"] == type_row["active_version_id"]), None)
-        policy = blueprint_from_payload(_definition(active)) if active else default_blueprint()
+        _, policy = await _policy_of(db, type_row)
         items.append(
             {
                 "id": type_row["id"],
@@ -255,7 +269,8 @@ async def list_types(db: AsyncSession, *, actor_id: str, roles: list[str]) -> di
                 },
             }
         )
-    return {"items": items, "systemDefault": {"name": DEFAULT_NAME, "preview": default_blueprint().preview()}}
+    _, system_default = await resolve_blueprint(db)
+    return {"items": items, "systemDefault": {"name": DEFAULT_NAME, "preview": system_default.preview()}}
 
 
 async def candidate_types(db: AsyncSession) -> dict[str, Any]:
