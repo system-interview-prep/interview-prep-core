@@ -65,11 +65,9 @@ def build_opening(
     job_title: str | None,
     call_name: str | None,
     planned_stages: Sequence[str],
-    first_question: str,
 ) -> str:
     """
-    Xây dựng lời mở đầu cho phiên phỏng vấn, dựa trên ngôn ngữ, chế độ demo,
-    thời lượng, vai trò, tên gọi, các giai đoạn dự kiến và câu hỏi đầu tiên.
+    Xây dựng riêng lời mở đầu; câu hỏi đầu tiên được gửi bằng một tin nhắn khác.
     """
     del mode
     is_demo = bool(duration_minutes) and int(duration_minutes) <= 3
@@ -77,8 +75,7 @@ def build_opening(
     greeting = (OPENING_GREETING_VI if is_vi else OPENING_GREETING_EN).format(name=name)
     if is_demo:
         # A three-minute demo cannot spend half a minute on preliminaries.
-        intro = f"{greeting} {OPENING_DEMO_VI if is_vi else OPENING_DEMO_EN}"
-        return f"{intro}\n\n{first_question}"
+        return f"{greeting} {OPENING_DEMO_VI if is_vi else OPENING_DEMO_EN}"
 
     role = (OPENING_ROLE_VI if is_vi else OPENING_ROLE_EN).format(job_title=job_title) if job_title else ""
     length = (
@@ -91,4 +88,4 @@ def build_opening(
     if agenda:
         sentences.append((OPENING_AGENDA_VI if is_vi else OPENING_AGENDA_EN).format(agenda=_join(agenda, is_vi=is_vi)))
     sentences.append(OPENING_START_VI if is_vi else OPENING_START_EN)
-    return f"{' '.join(sentences)}\n\n{first_question}"
+    return " ".join(sentences)

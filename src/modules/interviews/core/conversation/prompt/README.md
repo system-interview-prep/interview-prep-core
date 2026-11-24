@@ -11,16 +11,15 @@ Mục đích: sửa lời prompt mà không phải đọc logic, và ngược l�
 
 | Module | Hàm / hằng | Dùng ở |
 | --- | --- | --- |
-| `evaluation.py` | `evaluate_answer_prompt(is_vi)` | `InterviewResponseMixin.evaluate_candidate_response` |
+| `evaluation.py` | `evaluate_answer_prompt(is_vi)` | legacy evaluator cho `rule`/`shadow`; live agent tự quyết định từ câu trả lời + tiêu chí |
 | | `WARM_UP_GUIDE_VI` | nối thêm khi `current_stage == WARM_UP` |
 | | `SYSTEM_PROBE_EVAL_RULE_VI` | nằm sẵn trong prompt đánh giá |
 | `probe.py` | `probe_prompt(is_vi)` | `_generate_probe_question`, lượt thường |
 | | `coding_probe_prompt(...)` | `_generate_probe_question`, lượt code |
 | `clarify.py` | `clarify_prompt(is_vi)` | `_generate_clarify_text` |
 | `interviewer_line.py` | `interviewer_line_prompt(...)` | `_generate_interviewer_line` |
-| `transition.py` | `transition_context(...)` | `_generate_transition_text` (user content, không phải system prompt) |
-| `closing_qna.py` | `closing_qna_prompt(...)` | `turn_engine`, vòng hỏi ngược bản cũ |
-| | `closing_qna_speech_prompt(...)` | `turn_engine._answer_closing_question`, speech v2 |
+| `transition.py` | `transition_context(...)` | Context builder độc lập; luồng hỏi hiện tại phát nguyên câu hỏi đã đóng băng, không ghép thêm lời chuyển |
+| `closing_qna.py` | `closing_qna_speech_prompt(...)` | `turn_engine._answer_closing_question` |
 | `decide.py` | `decide_prompt(is_vi)`, `decide_input(...)` | `agent/decide.py`, model decider (shadow/live) |
 | `candidate_memory.py` | `block(items, is_vi, competency)` | evaluate/probe/clarify, sau `playbook.block` |
 | | `extract_instructions(is_vi)` | `application/runtime/candidate_memory.py`, chỉ dẫn cho memory manager của `langmem` ở lệnh `score` |
@@ -28,9 +27,8 @@ Mục đích: sửa lời prompt mà không phải đọc logic, và ngược l�
 ## Quy ước
 
 - Mỗi hàm nhận `is_vi` và các biến ngữ cảnh đã tính sẵn, trả về một chuỗi.
-- Nhiều prompt có hai nhánh: bản cũ và bản `speech_prompt(...)` bật theo
-  `speech_v2_enabled()` (`INTERVIEWER_SPEECH_V2=0` để quay về bản cũ). Nhánh
-  nào chạy do chính hàm quyết định, nơi gọi không cần biết.
+- Các prompt dùng thống nhất `speech_prompt(...)`; không còn cờ môi trường để
+  chuyển giữa hai bộ prompt.
 - Những phần nối chung cho mọi prompt — `playbook.block(...)` và
   `candidate_data_rule(is_vi)` — vẫn do nơi gọi nối vào, vì chúng là chính
   sách của phiên chứ không thuộc riêng prompt nào.

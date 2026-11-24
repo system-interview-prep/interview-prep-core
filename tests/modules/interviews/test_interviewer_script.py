@@ -64,7 +64,7 @@ def test_line_follows_the_house_style(name: str, line: str) -> None:
 
 
 def test_acknowledgements_do_not_praise_or_judge_the_candidate() -> None:
-    from src.modules.interviews.core.dialogue.policy import is_evaluative, is_judgmental
+    from src.modules.interviews.core.guardrails.output import is_evaluative, is_judgmental
 
     ack_pools = {"ACK_FALLBACK_VI", "INTRO_ACK_VI", "NON_ANSWER_ACK_VI", "GIVE_UP_ACK_VI", "SKIP_ACK_VI"}
     for name, line in LINES:

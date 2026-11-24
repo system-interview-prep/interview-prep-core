@@ -204,7 +204,6 @@ def test_missing_cv_fields_prompts_verification_not_assertion(monkeypatch):
 
     q_en = build_project_validation_question(project, job_title="Software Engineer", locale="en")
     assert "measured" not in q_en
-    monkeypatch.setenv("INTERVIEWER_SPEECH_V2", "0")
     assert build_project_validation_question(project, locale="vi").startswith(
         "CV chưa ghi rõ vai trò của bạn trong dự án 'Internal Tool'."
     )

@@ -2,7 +2,7 @@
 
 Mỗi dòng là (mẫu regex, cách đọc). Chỉ áp cho văn bản đưa vào TTS
 (``language.speakable_text``), chữ trên màn hình không đổi. Chỉ chạy khi
-``INTERVIEWER_SPEECH_V2`` bật.
+cho cách đọc lời thoại tiếng Việt trong voice.
 
 Danh sách bắt đầu từ những ký hiệu chắc chắn không đọc lên được. Thuật ngữ
 VieNeu đọc sai thật sự (API, SQL, JWT…) chỉ thêm sau khi nghe hoặc chạy

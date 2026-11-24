@@ -29,7 +29,7 @@ from src.modules.interviews.application.runtime.voice_facade import (
 )
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 from src.modules.interviews.core.contracts.interview import InterviewStage
-from src.modules.interviews.core.dialogue.policy import canary_scope
+from src.modules.interviews.core.guardrails.common import canary_scope
 
 router = APIRouter(prefix="/voice-lab", tags=["voice-lab"])
 MAX_AUDIO_BYTES = 10 * 1024 * 1024

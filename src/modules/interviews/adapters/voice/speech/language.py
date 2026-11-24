@@ -158,11 +158,6 @@ _STANDALONE_INT_RE = re.compile(r"(?<![\w.,/:-])(\d{1,9})(?![\w/:]|[.,]\d|-\w)")
 _DECIMAL_VI_RE = re.compile(r"(?<![\w.,])(\d{1,6}),(\d{1,3})(?![\w.,])")
 
 
-def _speech_v2_enabled() -> bool:
-    """Same switch as core.dialogue.policy.speech_v2_enabled (the agent cannot import src)."""
-    return os.getenv("INTERVIEWER_SPEECH_V2", "1").strip().lower() not in {"0", "false", "no", "off"}
-
-
 _PAREN_RE = re.compile(r"\s*\(([^()]{1,60})\)")
 _QUOTED_RE = re.compile(r"(?<!\w)['‘’]([^'‘’\n]{1,80})['‘’](?!\w)")
 _HTTP_CODE_RE = re.compile(r"\b(HTTP|status|mã lỗi|mã)\s+([1-5]\d{2})\b", re.IGNORECASE)
@@ -214,7 +209,7 @@ def _spoken_layout(text_value: str, locale: str) -> str:
     # Tên nút viết trong “ ” ở kịch bản chung; đọc lên thì bỏ ngoặc, " & " đứng riêng thành "và".
     spoken = re.sub(r"[“”\"]", "", spoken)
     spoken = re.sub(r"\s+&\s+", " và " if is_vi else " and ", spoken)
-    if is_vi and _speech_v2_enabled():
+    if is_vi:
         spoken = _spoken_details_vi(spoken)
     if is_vi:
         spoken = re.sub(r"(\d)\s*′", r"\1 phút", spoken)

@@ -7,10 +7,7 @@ quyết định hành động của phiên nằm trong ``turn_engine`` và
 
 from src.modules.interviews.core.conversation.prompt.candidate_memory import block as candidate_memory_block
 from src.modules.interviews.core.conversation.prompt.clarify import clarify_prompt
-from src.modules.interviews.core.conversation.prompt.closing_qna import (
-    closing_qna_prompt,
-    closing_qna_speech_prompt,
-)
+from src.modules.interviews.core.conversation.prompt.closing_qna import closing_qna_speech_prompt
 from src.modules.interviews.core.conversation.prompt.evaluation import (
     SYSTEM_PROBE_EVAL_RULE_VI,
     WARM_UP_GUIDE_VI,
@@ -30,7 +27,6 @@ __all__ = [
     "WARM_UP_GUIDE_VI",
     "candidate_memory_block",
     "clarify_prompt",
-    "closing_qna_prompt",
     "closing_qna_speech_prompt",
     "coding_probe_prompt",
     "evaluate_answer_prompt",

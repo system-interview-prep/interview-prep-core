@@ -26,10 +26,9 @@ from livekit.plugins import elevenlabs
 from src.modules.interviews.adapters.voice.conversation.answer_window import (
     ANSWER_PAUSE_NUDGE_SECONDS, PROCESSING_FILLER_SECONDS, AnswerWindow,
     backchannel_continue_text, core_error_text, localize_particles, not_heard_lines,
-    pick_answer_pause_nudge, pick_processing_filler, processing_filler,
+    pick_answer_pause_nudge, pick_processing_filler,
     processing_filler_enabled, processing_fillers, reprompt_after_seconds,
-    scripted_reply_lines, silence_reprompt, speech_v2_enabled, turn_taking_tip,
-    unclear_transcript_text, without_leading_interjection,
+    silence_reprompt, turn_taking_tip, unclear_transcript_text,
 )
 from src.modules.interviews.adapters.voice.conversation.health import (
     provider_error_payload,
@@ -468,14 +467,11 @@ class VoiceLabAgent(Agent):
                 await asyncio.sleep(PROCESSING_FILLER_SECONDS)
                 self._filler_count = getattr(self, "_filler_count", 0) + 1
                 self.report("voice_processing_filler", after_s=PROCESSING_FILLER_SECONDS)
-                if speech_v2_enabled():
-                    line = pick_processing_filler(
-                        self._locale,
-                        f"{self._session_id}:{self._filler_count}",
-                        getattr(self, "_last_filler", None),
-                    )
-                else:
-                    line = processing_filler(self._locale, self._filler_count - 1)
+                line = pick_processing_filler(
+                    self._locale,
+                    f"{self._session_id}:{self._filler_count}",
+                    getattr(self, "_last_filler", None),
+                )
                 self._last_filler = line
                 filler_spoken = True
                 self.speak(line, allow_interruptions=True, add_to_chat_ctx=False, kind="filler")
@@ -575,8 +571,6 @@ class VoiceLabAgent(Agent):
                 "Mình nghe được phần bạn vừa nói thêm. Câu trả lời trước đã được gửi đi rồi. "
                 f"Bạn có thể nhắc lại ý đó sau câu hỏi này nhé. {content}"
             )
-        if filler_spoken and speech_v2_enabled():
-            content = without_leading_interjection(content)
         # Core asks the candidate to confirm a stop. Chat renders stop/continue
         # buttons in the bubble; the voice room only learns of it from this
         # event, so publish it before speaking and open the dialog right away.
@@ -627,7 +621,6 @@ class VoiceLabAgent(Agent):
                 *self._not_heard_lines(),
                 turn_taking_tip(self._locale),
                 *(processing_fillers(self._locale) if processing_filler_enabled() else ()),
-                *(scripted_reply_lines(self._locale) if speech_v2_enabled() else ()),
             }
         )
 
@@ -642,11 +635,9 @@ class VoiceLabAgent(Agent):
         """
         full_text = "".join([chunk async for chunk in text])
         paragraphs = [part.strip() for part in full_text.split("\n\n") if part.strip()]
-        if speech_v2_enabled() and len(paragraphs) > 1:
-            # Paragraph by paragraph (speech v2): the scripted acknowledgement that
-            # opens most turns plays from the disk cache at once, and the question
-            # paragraph is cached for a replay. One speech handle, so interruptions
-            # behave as before.
+        if len(paragraphs) > 1:
+            # Keep paragraph caching and replay behavior without changing the
+            # model's wording. One speech handle preserves interruption behavior.
             for paragraph in paragraphs:
                 async for frame in self._synthesize_or_replay(paragraph, model_settings):
                     yield frame

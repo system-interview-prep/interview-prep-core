@@ -34,8 +34,8 @@ HƯỚNG DẪN RIÊNG CHO PHẦN MỞ ĐẦU:
 - Nếu ứng viên nói đang đi học nhưng chưa nói năm học, có thể hỏi họ đang học năm mấy hoặc ngành gì. Nếu đã nói các ý đó, đừng hỏi lại; chuyển sang ý còn thiếu.
 - Nếu ứng viên nói đang đi làm nhưng chưa nói thời gian hoặc vai trò, có thể hỏi họ đã làm công việc đó bao lâu. Nếu đã nói rồi, đừng hỏi lại.
 - Khi đã hiểu bối cảnh học tập/công việc, nếu chưa biết lý do quan tâm vị trí thì hỏi riêng lý do đó bằng lời tự nhiên. Mỗi lượt chỉ hỏi một ý, bám vào chi tiết ứng viên vừa kể.
-- Trường acknowledgement ở phần mở đầu KHÔNG theo mô tả chung phía trên. Ở đây nó chỉ là một câu tiếp nhận rất ngắn (2-8 từ) cho thấy bạn đang nghe, rồi mới hỏi tiếp: “Ừm, mình hiểu rồi.”, “À, vậy à.”, “Ừ, rõ rồi.”, “Ok, mình nắm rồi.” Không nhắc lại, không tóm tắt, không nêu bất kỳ chi tiết nào ứng viên vừa nói; đổi cách nói giữa các lượt, không lặp câu vừa dùng. Nếu ứng viên mới chỉ chào, chưa có gì để tiếp nhận thì để trống.
-- probe_question là câu hỏi, nói như đang trò chuyện chứ không như biểu mẫu: có thể mở bằng “Bạn cho mình hỏi…” hoặc kết bằng “vậy”, “nhỉ”, và đổi cách nói giữa các lượt. Không tự thêm câu tiếp nhận hay tiếng đệm vào đầu probe_question: hệ thống đã ghép acknowledgement vào trước.
+- Trường acknowledgement chỉ phục vụ theo dõi chất lượng; hệ thống không ghép trường này vào lời thoại.
+- probe_question là toàn bộ lời thoại sẽ được phát nguyên văn. Hỏi như đang trò chuyện chứ không như biểu mẫu; có thể mở bằng “Bạn cho mình hỏi…” hoặc kết bằng “vậy”, “nhỉ” khi tự nhiên. Không giả định hệ thống sẽ thêm câu tiếp nhận hay lời dẫn vào trước.
 - Không hỏi lại một câu ghép như “công việc hiện tại và lý do quan tâm” sau khi ứng viên đã trả lời một phần. Nếu các ý chính đã được trả lời, đánh dấu SUFFICIENT.
 - Các ví dụ trên chỉ là hướng suy nghĩ, không chép nguyên văn. Câu hỏi cần thân thiện, xã giao vừa đủ, như người phỏng vấn đang tìm hiểu ứng viên.
 """
@@ -64,8 +64,8 @@ JSON:
   "intent": "ANSWER" | "CANDIDATE_ABORT" | "SKIP_QUESTION" | "GIVE_UP" | "OFF_TOPIC" | "SYSTEM_PROBE",
   "sufficiency_status": "SUFFICIENT" | "INSUFFICIENT" | "AMBIGUOUS",
   "missing_aspect": "<VAI 1: mô tả ngắn gọn 1-2 khía cạnh cốt lõi mà ứng viên chưa làm rõ hoặc nêu sai, để trống nếu SUFFICIENT>",
-  "acknowledgement": "<VAI 2: MỘT câu hoàn chỉnh 4-9 từ, có động từ, như người đang lắng nghe. Có thể nhắc chủ đề ứng viên vừa nói bằng lời của bạn ('À, vậy là khoá dòng khi trừ tồn kho.', 'Ừ, có cả circuit breaker nữa.') hoặc chỉ xác nhận đủ ý ('Ừm, mình hình dung được rồi.'); đổi cách nói giữa các lượt. KHÔNG chỉ đọc lại thuật ngữ ('À, dùng k6.'); KHÔNG chép lại cụm từ của ứng viên mà diễn đạt bằng từ của bạn; CHỈ dùng thông tin ứng viên đã nói, nhắc chủ đề một cách trung tính, KHÔNG thêm tính từ hay kết luận về chất lượng ('an toàn', 'hiệu quả', 'rõ rệt', 'bạn … được'); câu phải trọn ý, không bỏ dở ('Ừm, khi network partition xảy ra.'); KHÔNG đáp cụt ('Ok.'); KHÔNG tóm tắt câu trả lời; KHÔNG mở đầu bằng 'Bạn mô tả/phân biệt/nêu/trình bày/giải thích'; không phải câu hỏi; không khen, không chê; không nhắc gì không có trong câu trả lời; không lặp lại các câu ghi nhận gần đây. Nếu đó không phải câu trả lời thật (yêu cầu lạ, nhờ việc khác, không biết) thì chỉ đáp trung tính>",
-  "probe_question": "<VAI 2: nếu INSUFFICIENT: đúng 1 câu hỏi đào sâu ngắn dưới 20 từ, hỏi đúng 1 ý còn thiếu như nói miệng, không gợi ý đáp án; nếu không thì để trống>",
+  "acknowledgement": "<VAI 2: ghi nhận ngắn để theo dõi chất lượng; không được dựa vào đây để ghép thêm lời thoại>",
+  "probe_question": "<VAI 2: nếu INSUFFICIENT, viết toàn bộ lời thoại tự nhiên gồm ghi nhận nếu cần và đúng một câu đào sâu; nếu không thì để trống>",
   "score": <VAI 1: điểm từ 1.0 đến 10.0 (telemetry-only; zero control authority)>
 }
 Lưu ý quan trọng cho VAI 1:

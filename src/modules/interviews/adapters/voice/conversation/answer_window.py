@@ -154,9 +154,6 @@ def _load_script(module_name: str, path: Path) -> ModuleType:
     return module
 
 
-SCRIPT = _load_script(
-    "interview_dialogue_phrases", Path(__file__).resolve().parents[3] / "core" / "dialogue" / "phrases.py"
-)
 VOICE_SCRIPT = _load_script("interview_voice_phrases", Path(__file__).resolve().parents[0] / "voice_phrases.py")
 
 ANSWER_PAUSE_NUDGES_VI: tuple[str, ...] = VOICE_SCRIPT.ANSWER_PAUSE_NUDGES_VI
@@ -187,11 +184,6 @@ def processing_filler_enabled() -> bool:
     }
 
 
-def processing_filler(locale: str, index: int = 0) -> str:
-    pool = processing_fillers(locale)
-    return pool[index % len(pool)]
-
-
 def pick_processing_filler(locale: str, seed: str, avoid: str | None = None) -> str:
     """Choose a stable filler for this turn, avoiding the previous line when possible."""
     import hashlib
@@ -203,12 +195,6 @@ def pick_processing_filler(locale: str, seed: str, avoid: str | None = None) -> 
         if line != avoid:
             return line
     return pool[start]
-
-
-def without_leading_interjection(text: str) -> str:
-    """Avoid repeating a filler at the start of Core's response after speaking one."""
-    value = str(text or "")
-    return re.sub(r"^\s*(?:Ừm|Um|Okay|Ok|À)\s*[,—-]\s*", "", value, count=1, flags=re.IGNORECASE)
 
 
 def pick_answer_pause_nudge(locale: str, seed: str, avoid: str | None = None) -> str:
@@ -224,11 +210,6 @@ def pick_answer_pause_nudge(locale: str, seed: str, avoid: str | None = None) ->
     return pool[start]
 
 
-def speech_v2_enabled() -> bool:
-    """Read the shared dialogue switch in the standalone LiveKit process."""
-    return os.getenv("INTERVIEWER_SPEECH_V2", "1").strip().lower() not in {"0", "false", "no", "off"}
-
-
 def voice_dialect() -> str:
     """Voice-only spoken dialect (INTERVIEWER_VOICE_DIALECT=bac|nam)."""
     value = os.getenv("INTERVIEWER_VOICE_DIALECT", "bac").strip().casefold()
@@ -238,30 +219,10 @@ def voice_dialect() -> str:
 def localize_particles(text: str) -> str:
     """Southern voice: "nhé" → "nha", "nhỉ" → "hen" for the lines only the room says."""
     value = str(text or "")
-    if not speech_v2_enabled() or voice_dialect() != "nam":
+    if voice_dialect() != "nam":
         return value
     value = re.sub(r"(?<!\w)nhé(?!\w)", "nha", value)
     return re.sub(r"(?<!\w)nhỉ(?!\w)", "hen", value)
-
-
-_SCRIPTED_REPLY_POOLS = (
-    "ACK_FALLBACK", "INTRO_ACK", "NON_ANSWER_ACK", "GIVE_UP_ACK", "SKIP_ACK", "SKIP_ACK_SHORT",
-    "PROBE_ACK", "WARMUP_SHORT_ACK",
-)
-
-
-def scripted_reply_lines(locale: str) -> tuple[str, ...]:
-    """Scripted acknowledgements Core may send as the first paragraph of a turn.
-
-    Since 25/10 the room synthesizes a turn paragraph by paragraph, so these
-    lines are cached on disk like the other fixed lines: same audio every session, no
-    synthesis wait for the first words of a reply.
-    """
-    suffix = "_VI" if _is_vi(locale) else "_EN"
-    lines: list[str] = []
-    for name in _SCRIPTED_REPLY_POOLS:
-        lines += [localize_particles(line) for line in getattr(SCRIPT, name + suffix, ())]
-    return tuple(lines)
 
 
 def silence_reprompt(locale: str) -> str:

@@ -234,7 +234,6 @@ def test_notation_heard_in_the_20_10_sessions_is_read_as_words(monkeypatch) -> N
     assert speakable_text("Bạn nói don't repeat yourself.", locale="vi-VN") == (
         "Bạn nói don't repeat yourself."
     )
-    monkeypatch.setenv("INTERVIEWER_SPEECH_V2", "0")
     assert "(Not Found)" in speakable_text("HTTP 404 (Not Found).", locale="vi-VN")
 
 
