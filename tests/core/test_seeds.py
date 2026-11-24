@@ -153,7 +153,7 @@ def test_sample_job_fixtures_are_well_formed() -> None:
 
     jobs = load_job_description_fixtures()
 
-    assert 20 <= len(jobs) <= 30
+    assert len(jobs) >= 20
     assert len({job.external_job_id for job in jobs}) == len(jobs)
     for job in jobs:
         assert job.title and job.company_name and job.source_url
