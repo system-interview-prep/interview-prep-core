@@ -26,14 +26,14 @@ def upgrade() -> None:
     )
     op.execute(
         """
-        CREATE INDEX job_profiles_bm25_idx
-        ON job_profiles
-        USING bm25 (id, (raw_jd_text::pdb.simple), (description::pdb.simple))
+        CREATE INDEX job_descriptions_bm25_idx
+        ON job_descriptions
+        USING bm25 (id, (raw_text::pdb.simple), (description::pdb.simple))
         WITH (key_field = 'id')
         """
     )
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX IF EXISTS job_profiles_bm25_idx")
+    op.execute("DROP INDEX IF EXISTS job_descriptions_bm25_idx")
     op.execute("DROP INDEX IF EXISTS user_cvs_bm25_idx")

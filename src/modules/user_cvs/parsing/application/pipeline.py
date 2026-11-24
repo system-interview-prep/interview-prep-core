@@ -1,0 +1,425 @@
+import inspect
+import time
+from collections.abc import Awaitable
+from dataclasses import dataclass
+from typing import Protocol
+
+from src.core.trace_logging import trace_event
+from src.modules.user_cvs.application import run_tracking
+from src.modules.user_cvs.domain.schemas import ParsedResume
+from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
+from src.modules.user_cvs.parsing.domain.source import (
+    SHREDDED_TEXT_RATIO,
+    SourceDocument,
+    character_shredded_ratio,
+)
+from src.modules.user_cvs.parsing.domain.text_repair import (
+    REPAIR_VERSION,
+    TextRepairer,
+    repair_artifacts,
+)
+
+# The measure and threshold live in the domain so the PDF extractor can pick a
+# repair strategy from the same definition the pipeline reports coverage with.
+_character_shredded_ratio = character_shredded_ratio
+_SHREDDED_TEXT_RATIO = SHREDDED_TEXT_RATIO
+
+
+def _coverage_snapshot(parsed: ParsedResume, source: SourceDocument) -> dict:
+    """Compute independent source, canonical-section and evidence-index coverage.
+
+    Empty employment is not a parser failure when the source is complete: it is
+    represented as ``complete_empty`` so matching can safely distinguish an
+    explicit absence from an unreadable section.
+    """
+    resume = parsed.resume
+    metadata = resume.parsing
+    warnings = metadata.warnings if metadata else []
+    raw_coverage = "complete" if source.text.strip() else "unavailable"
+    if any(item.severity == "error" for item in warnings):
+        raw_coverage = "partial" if source.text.strip() else "unavailable"
+    # Character-shredded text is present but unreadable: counting it as a
+    # complete read is what lets a damaged CV reach matching as a candidate
+    # with no skills, instead of as a document that needs re-extraction.
+    text_shredded = _character_shredded_ratio(source.text) >= _SHREDDED_TEXT_RATIO
+    if text_shredded and raw_coverage == "complete":
+        raw_coverage = "partial"
+
+    section_values = {
+        "profile": bool(resume.profile.headline or resume.profile.summary),
+        "skills": bool(resume.skills),
+        "employment": bool(resume.employment),
+        "education": bool(resume.education),
+        "projects": bool(resume.projects),
+        "certifications": bool(resume.certifications),
+        "languages": bool(resume.languages),
+        "career_classifications": bool(resume.career_classifications),
+    }
+    section_coverage = {
+        name: (
+            "complete"
+            if present
+            else (
+                "partial"
+                if raw_coverage != "complete"
+                or any(block.section == name for block in source.blocks)
+                else "complete_empty"
+            )
+        )
+        for name, present in section_values.items()
+    }
+    evidence_valid = bool(resume.evidence) and all(
+        item.document_id == resume.document_id
+        and item.document_sha256 == resume.document_sha256
+        and 0 <= item.char_start < item.char_end <= len(source.text)
+        and source.text[item.char_start : item.char_end] == item.text
+        for item in resume.evidence
+    )
+    evidence_coverage = "complete" if evidence_valid else "partial" if resume.evidence else "unavailable"
+    reasons: list[str] = []
+    if text_shredded:
+        # Named separately from the generic code so the fix is actionable:
+        # this document needs a different extractor, not a better parser.
+        reasons.append("raw_text_character_shredded")
+    if raw_coverage != "complete":
+        reasons.append("raw_text_incomplete")
+    if any(value == "partial" for value in section_coverage.values()):
+        reasons.append("canonical_sections_incomplete")
+    if evidence_coverage != "complete":
+        reasons.append("evidence_index_incomplete")
+    return {
+        "raw_text_coverage": raw_coverage,
+        "canonical_section_coverage": section_coverage,
+        "evidence_index_coverage": evidence_coverage,
+        "coverage_reason_codes": reasons,
+        "section_counts": {
+            "skills": len(resume.skills),
+            "employment": len(resume.employment),
+            "education": len(resume.education),
+            "projects": len(resume.projects),
+            "certifications": len(resume.certifications),
+            "languages": len(resume.languages),
+            "evidence": len(resume.evidence),
+        },
+    }
+
+
+@dataclass(frozen=True)
+class CvDocument:
+    cv_id: str
+    filename: str
+    storage_key: str
+    checksum: str
+    user_id: str | None = None
+
+
+class EmptyExtractionError(ValueError):
+    """The document extractor returned neither markdown nor content blocks."""
+
+
+def _emit(event: str, **fields) -> None:
+    """One ``cv_parser`` trace event (dev JSONL + admin CV view); never interrupts parsing."""
+    try:
+        trace_event("cv_parser", event, **fields)
+    except Exception:  # noqa: BLE001 - tracking must never break CV parsing
+        pass
+
+
+@dataclass(frozen=True)
+class PipelineResult:
+    status: str
+    cv_id: str
+    canonical_status: str | None = None
+
+
+class CvParseRepository(Protocol):
+    async def claim(self, cv_id: str) -> CvDocument | None: ...
+
+    async def complete(
+        self,
+        document: CvDocument,
+        *,
+        raw_text: str,
+        parsed: ParsedResume,
+        parse_source: str,
+    ) -> None: ...
+
+    async def fail(self, cv_id: str, error: str) -> None: ...
+
+    async def release(self, cv_id: str) -> None: ...
+
+
+class ObjectStorage(Protocol):
+    def read(self, key: str) -> bytes: ...
+
+    def write_json(self, key: str, payload: dict) -> None: ...
+
+
+class DocumentExtractor(Protocol):
+    async def extract(self, document: bytes, filename: str, document_id: str) -> DocumentArtifacts: ...
+
+    @property
+    def provider_name(self) -> str: ...
+
+
+class ResumeParser(Protocol):
+    def parse(
+        self,
+        source: SourceDocument,
+        *,
+        extraction_version: str,
+        source_artifact_key: str | None = None,
+    ) -> ParsedResume | Awaitable[ParsedResume]: ...
+
+
+class SourceBuilder(Protocol):
+    def __call__(
+        self,
+        artifacts: DocumentArtifacts,
+        *,
+        document_id: str,
+        document_sha256: str,
+    ) -> SourceDocument: ...
+
+
+class CvParsingPipeline:
+    """Application service coordinating ports; infrastructure stays outside."""
+
+    def __init__(
+        self,
+        *,
+        repository: CvParseRepository,
+        storage: ObjectStorage,
+        extractor: DocumentExtractor,
+        parser: ResumeParser,
+        source_builder: SourceBuilder,
+        repairer: TextRepairer | None = None,
+    ) -> None:
+        self._repository = repository
+        self._storage = storage
+        self._extractor = extractor
+        self._parser = parser
+        self._source_builder = source_builder
+        # Whitespace-only repair of torn extraction text; None skips the phase.
+        self._repairer = repairer
+
+    async def run(self, cv_id: str, *, final_attempt: bool = True) -> PipelineResult:
+        started_at = time.monotonic()
+        if not cv_id:
+            _emit("ignored")
+            return PipelineResult(status="ignored", cv_id=cv_id)
+        # One parse attempt: events and model calls are stored for the admin
+        # CV-parsing view (the Celery task may already have opened it).
+        with run_tracking.cv_run(cv_id, reuse_active=True):
+            return await self._run(cv_id, started_at=started_at, final_attempt=final_attempt)
+
+    def _repair(self, cv_id: str, artifacts: DocumentArtifacts) -> tuple[DocumentArtifacts, str]:
+        """The artifacts with torn text repaired, and the provenance tag to record it.
+
+        The stored artifact is the extractor's own output; what the source
+        builder sees is the repaired copy, so evidence offsets, the parser and
+        the raw text shown to people all agree.  A failure here keeps the
+        original: a torn read is still a read.
+        """
+        if self._repairer is None:
+            return artifacts, ""
+        step_started = time.monotonic()
+        try:
+            repaired, outcome = repair_artifacts(artifacts, self._repairer)
+        except Exception as exc:  # noqa: BLE001
+            _emit("text_repair_failed", cv_id=cv_id, error_type=type(exc).__name__)
+            return artifacts, ""
+        _emit(
+            "text_repaired",
+            cv_id=cv_id,
+            skipped=outcome is None,
+            blocks_changed=outcome.changed if outcome else 0,
+            blocks_rejected=outcome.rejected if outcome else 0,
+            calls=outcome.calls if outcome else 0,
+            signals=outcome.signals if outcome else None,
+            duration_ms=run_tracking.monotonic_ms(step_started),
+        )
+        return repaired, (f"+{REPAIR_VERSION}" if outcome and outcome.changed else "")
+
+    async def _run(self, cv_id: str, *, started_at: float, final_attempt: bool) -> PipelineResult:
+        document = await self._repository.claim(cv_id)
+        if document is None:
+            _emit("not_claimed", cv_id=cv_id)
+            return PipelineResult(status="not_claimed", cv_id=cv_id)
+        tracked = run_tracking.active_run()
+        if tracked is not None and document.user_id and not tracked.user_id:
+            tracked.user_id = str(document.user_id)[:36]
+        _emit(
+            "cv_parse_claimed",
+            cv_id=document.cv_id,
+            attempt=tracked.attempt if tracked else None,
+            parser_mode=tracked.parser_mode if tracked else None,
+            final_attempt=final_attempt,
+        )
+        # The step a failure belongs to (admin view): extract, source, parse, quality, save.
+        phase = "extract"
+        try:
+            content = self._storage.read(document.storage_key)
+            _emit("extraction_started", cv_id=document.cv_id, bytes=len(content))
+            step_started = time.monotonic()
+            artifacts = await self._extractor.extract(content, document.filename, document.cv_id)
+            if not artifacts.markdown.strip() and not artifacts.content_list:
+                raise EmptyExtractionError("document extractor returned no content")
+
+            provider_name = str(getattr(self._extractor, "provider_name", "mineru"))
+            _emit(
+                "extraction_completed",
+                cv_id=document.cv_id,
+                provider=provider_name,
+                extractor_version=artifacts.extractor_version,
+                markdown_characters=len(artifacts.markdown or ""),
+                content_blocks=len(artifacts.content_list or []),
+                duration_ms=run_tracking.monotonic_ms(step_started),
+            )
+            artifact_key = f"{document.storage_key}.artifacts/{document.checksum}/{provider_name}.json"
+            self._storage.write_json(artifact_key, artifacts.as_dict())
+            phase = "repair"
+            artifacts, repair_tag = self._repair(document.cv_id, artifacts)
+            phase = "source"
+            step_started = time.monotonic()
+            source = self._source_builder(
+                artifacts,
+                document_id=document.cv_id,
+                document_sha256=document.checksum,
+            )
+            source_section_block_counts = {
+                section: sum(block.section == section for block in source.blocks)
+                for section in sorted({block.section for block in source.blocks})
+            }
+            _emit(
+                "source_built",
+                cv_id=document.cv_id,
+                source_characters=len(source.text),
+                block_count=len(source.blocks),
+                source_section_block_counts=source_section_block_counts,
+                duration_ms=run_tracking.monotonic_ms(step_started),
+            )
+            phase = "parse"
+            _emit(
+                "parser_started",
+                cv_id=document.cv_id,
+                extractor_version=artifacts.extractor_version,
+                source_characters=len(source.text),
+                source_section_block_counts=source_section_block_counts,
+            )
+            step_started = time.monotonic()
+            calls_before = run_tracking.ai_calls_so_far()
+            parsed_or_awaitable = self._parser.parse(
+                source,
+                extraction_version=artifacts.extractor_version or f"{provider_name}-unknown",
+                source_artifact_key=artifact_key,
+            )
+            parsed = (
+                await parsed_or_awaitable if inspect.isawaitable(parsed_or_awaitable) else parsed_or_awaitable
+            )
+            _emit(
+                "parser_completed",
+                cv_id=document.cv_id,
+                **run_tracking.parser_completed_fields(
+                    parsed,
+                    duration_ms=run_tracking.monotonic_ms(step_started),
+                    llm_calls_before=calls_before,
+                ),
+            )
+            phase = "quality"
+            coverage = _coverage_snapshot(parsed, source)
+            if parsed.resume.parsing:
+                parsing = parsed.resume.parsing.model_copy(
+                    update={
+                        key: coverage[key]
+                        for key in (
+                            "raw_text_coverage",
+                            "canonical_section_coverage",
+                            "evidence_index_coverage",
+                            "coverage_reason_codes",
+                        )
+                    }
+                )
+                parsed = parsed.model_copy(
+                    update={"resume": parsed.resume.model_copy(update={"parsing": parsing})}
+                )
+            parser_version = parsed.resume.parsing.parser_version if parsed.resume.parsing else "unknown"
+            _emit(
+                "quality_gate",
+                cv_id=document.cv_id,
+                status=parsed.resume.parsing.status if parsed.resume.parsing else "review_required",
+                parser_version=parser_version,
+                extraction_version=artifacts.extractor_version or "unknown",
+                source_characters=len(source.text),
+                section_counts=coverage["section_counts"],
+                warnings_count=len(parsed.resume.parsing.warnings) if parsed.resume.parsing else 0,
+                # Codes only: a warning's message may quote the CV.
+                warnings=run_tracking.warning_items(
+                    parsed.resume.parsing.warnings if parsed.resume.parsing else []
+                ),
+                checks={
+                    "source_text_present": bool(source.text.strip()),
+                    "parsing_metadata_present": parsed.resume.parsing is not None,
+                    "evidence_present": bool(parsed.resume.evidence),
+                    "parser_warnings_empty": (
+                        not parsed.resume.parsing.warnings if parsed.resume.parsing else False
+                    ),
+                    "document_checksum_matches": source.document_sha256 == document.checksum,
+                    "artifact_persisted": True,
+                },
+                coverage=(
+                    "partial"
+                    if parsed.resume.parsing and parsed.resume.parsing.status == "review_required"
+                    else "complete"
+                ),
+                raw_text_coverage=coverage["raw_text_coverage"],
+                canonical_section_coverage=coverage["canonical_section_coverage"],
+                evidence_index_coverage=coverage["evidence_index_coverage"],
+                coverage_reason_codes=coverage["coverage_reason_codes"],
+            )
+            phase = "save"
+            step_started = time.monotonic()
+            await self._repository.complete(
+                document,
+                raw_text=source.text,
+                parsed=parsed,
+                parse_source=f"{provider_name}{repair_tag}+{parser_version}",
+            )
+            _emit("cv_saved", cv_id=document.cv_id, duration_ms=run_tracking.monotonic_ms(step_started))
+            canonical_status = parsed.resume.parsing.status if parsed.resume.parsing else None
+            _emit(
+                "completed",
+                cv_id=document.cv_id,
+                canonical_status=canonical_status,
+                parser_version=parser_version,
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+            )
+            return PipelineResult(
+                status="DONE",
+                cv_id=document.cv_id,
+                canonical_status=canonical_status,
+            )
+        except Exception as exc:
+            reason = run_tracking.failure_reason(exc, phase)
+            if isinstance(exc, TimeoutError) and not final_attempt:
+                await self._repository.release(document.cv_id)
+                _emit(
+                    "retry_scheduled",
+                    cv_id=document.cv_id,
+                    error=str(exc)[:300],
+                    error_type=type(exc).__name__,
+                    failed_stage=phase,
+                    reason=reason,
+                    duration_ms=round((time.monotonic() - started_at) * 1000),
+                )
+                raise
+            await self._repository.fail(document.cv_id, str(exc)[:1000])
+            _emit(
+                "failed",
+                cv_id=document.cv_id,
+                error_type=type(exc).__name__,
+                failed_stage=phase,
+                reason=reason,
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+            )
+            raise

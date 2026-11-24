@@ -1,54 +1,66 @@
-import asyncio
-from pathlib import Path
+from contextlib import nullcontext
 
-from sqlalchemy import text
-
+from src.core.config import get_settings
 from src.infrastructure.database import SessionFactory
+from src.modules.taxonomy.service import load_active_skill_taxonomy
+from src.modules.user_cvs.application import run_tracking
+from src.modules.user_cvs.parsing.application.pipeline import CvParsingPipeline
+from src.modules.user_cvs.parsing.domain.deterministic import DeterministicResumeParser
+from src.modules.user_cvs.parsing.domain.hybrid import HybridResumeParser
+from src.modules.user_cvs.parsing.domain.source import build_source_document
+from src.modules.user_cvs.parsing.infrastructure.extractor_factory import build_document_extractor
+from src.modules.user_cvs.parsing.infrastructure.repair_client import build_text_repairer
+from src.modules.user_cvs.parsing.infrastructure.repository import SqlAlchemyCvParseRepository
+from src.modules.user_cvs.parsing.infrastructure.storage import R2ObjectStorage
+from src.workers.async_runner import worker_async_runner
 from src.workers.celery_app import celery_app
-from src.workers.mineru import extract_markdown
 
 
-@celery_app.task(name="cv.parse", bind=True)
+@celery_app.task(
+    name="cv.parse",
+    bind=True,
+    autoretry_for=(TimeoutError,),
+    retry_backoff=True,
+    retry_jitter=True,
+    max_retries=3,
+)
 def parse_cv(self, payload: dict) -> dict:
-    return asyncio.run(_parse_cv(str(payload.get("cv_id") or "")))
+    # Only the last attempt may mark the CV FAILED; earlier timeouts are retried.
+    final_attempt = self.request.retries >= self.max_retries
+    attempt = int(self.request.retries or 0) + 1
+    return worker_async_runner.run(
+        _parse_cv(str(payload.get("cv_id") or ""), final_attempt=final_attempt, attempt=attempt)
+    )
 
 
-async def _parse_cv(cv_id: str) -> dict:
-    if not cv_id:
-        return {"status": "ignored"}
-    async with SessionFactory() as db:
-        await db.execute(
-            text("UPDATE user_cvs SET status = 'PARSING', error = NULL, updated_at = now() WHERE id = :id"),
-            {"id": cv_id},
+async def _parse_cv(cv_id: str, *, final_attempt: bool = True, attempt: int | None = None) -> dict:
+    mode = get_settings().cv_parser_mode.casefold().strip()
+    # One parse attempt of the admin CV-parsing view; the pipeline reuses it.
+    tracking = run_tracking.cv_run(cv_id, attempt=attempt, parser_mode=mode) if cv_id else nullcontext()
+    with tracking:
+        return await _parse_cv_in_run(cv_id, mode=mode, final_attempt=final_attempt)
+
+
+async def _parse_cv_in_run(cv_id: str, *, mode: str, final_attempt: bool) -> dict:
+    async with SessionFactory() as session:
+        taxonomy = await load_active_skill_taxonomy(session)
+        if mode == "hybrid":
+            parser = HybridResumeParser(taxonomy=taxonomy.skills, taxonomy_version=taxonomy.version)
+        elif mode == "deterministic":
+            parser = DeterministicResumeParser(taxonomy=taxonomy.skills, taxonomy_version=taxonomy.version)
+        else:
+            raise ValueError("CV_PARSER_MODE must be 'deterministic' or 'hybrid'")
+        pipeline = CvParsingPipeline(
+            repository=SqlAlchemyCvParseRepository(session),
+            storage=R2ObjectStorage(),
+            extractor=build_document_extractor(),
+            parser=parser,
+            source_builder=build_source_document,
+            repairer=build_text_repairer(),
         )
-        await db.commit()
-        row = (
-            await db.execute(
-                text("SELECT filename, content_type FROM user_cvs WHERE id = :id"), {"id": cv_id}
-            )
-        ).mappings().one_or_none()
-        if not row:
-            return {"status": "missing"}
-        path = Path("/app/data/cvs") / f"{cv_id}{Path(row['filename']).suffix.lower()}"
-        try:
-            if not path.is_file():
-                raise FileNotFoundError("Uploaded file is unavailable to the worker")
-            raw_text = await extract_markdown(path, row["filename"], cv_id)
-            if not raw_text.strip():
-                raise ValueError("MinerU returned no extractable text")
-            await db.execute(
-                text(
-                    "UPDATE user_cvs SET status = 'DONE', raw_text = :raw_text, "
-                    "parse_source = 'mineru', updated_at = now() WHERE id = :id"
-                ),
-                {"id": cv_id, "raw_text": raw_text},
-            )
-            await db.commit()
-            return {"status": "DONE", "cv_id": cv_id}
-        except Exception as exc:
-            await db.execute(
-                text("UPDATE user_cvs SET status = 'FAILED', error = :error, updated_at = now() WHERE id = :id"),
-                {"id": cv_id, "error": str(exc)[:1000]},
-            )
-            await db.commit()
-            return {"status": "FAILED", "cv_id": cv_id}
+        result = await pipeline.run(cv_id, final_attempt=final_attempt)
+        return {
+            "status": result.status,
+            "cv_id": result.cv_id,
+            "canonical_status": result.canonical_status,
+        }

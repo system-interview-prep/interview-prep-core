@@ -1,0 +1,150 @@
+name: Interview Text Runtime P3 CI
+
+on:
+  push:
+    branches:
+      - feat/interview-text-runtime
+  pull_request:
+    branches:
+      - develop
+    paths:
+      - "src/modules/interviews/**"
+      - "src/modules/matching/**"
+      - "src/modules/question_bank/**"
+      - "migrations/**"
+      - "tests/modules/interviews/**"
+      - "tests/app/test_app_contract.py"
+      - ".github/workflows/interview-runtime-p0-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-text-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: paradedb/paradedb:0.25.3-pg16
+        env:
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: matching_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U user -d matching_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql://user:password@localhost:5432/matching_db
+      JWT_SECRET: ci-only-secret-that-is-long-enough-for-tests
+      RUN_LIVE_JEV_TESTS: "0"
+      RUN_DB_INTEGRATION_TESTS: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,matching]"
+
+      - name: Lint P3 change surface
+        run: |
+          ruff check \
+            src/modules/interviews/planner.py \
+            src/modules/interviews/plan_structure.py \
+            src/modules/interviews/router.py \
+            src/modules/interviews/question_selector.py \
+            src/modules/interviews/text_runtime.py \
+            migrations/versions/20260925_0014_interview_planner_payload.py \
+            src/modules/matching/facade.py \
+            tests/modules/interviews/test_planner.py \
+            tests/modules/interviews/test_plan_structure.py \
+            tests/modules/interviews/test_question_selector.py \
+            tests/modules/interviews/test_text_runtime.py \
+            tests/modules/interviews/test_planner_db_integration.py \
+            tests/app/test_app_contract.py
+
+      - name: Upgrade database
+        run: python -m alembic upgrade head
+
+      - name: Verify P1 migration roundtrip
+        run: |
+          python -m alembic downgrade 20260925_0013
+          python -m alembic upgrade head
+
+      - name: Verify populated P1 downgrade is refused
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          conn = psycopg2.connect(os.environ["DATABASE_URL"])
+          conn.autocommit = True
+          with conn.cursor() as cur:
+              cur.execute(
+                  "INSERT INTO users (id, email, name, provider) "
+                  "VALUES ('p1-downgrade-user', 'p1-downgrade@example.test', "
+                  "'P1 Downgrade Guard', 'local')"
+              )
+              cur.execute(
+                  "INSERT INTO interview_sessions "
+                  "(id, user_id, type, language, status) "
+                  "VALUES ('p1-downgrade-session', 'p1-downgrade-user', "
+                  "'Chat', 'English', 'OPEN')"
+              )
+              cur.execute(
+                  "INSERT INTO interview_session_plans "
+                  "(id, session_id, schema_version, status, source_context, plan_payload) "
+                  "VALUES ('p1-downgrade-plan', 'p1-downgrade-session', "
+                  "'1.0', 'READY', '{}'::jsonb, "
+                  "'{\"policyVersion\":\"interview-planner-v1\"}'::jsonb)"
+              )
+          conn.close()
+          PY
+
+          if python -m alembic downgrade 20260925_0013; then
+            echo "Expected P1 downgrade to fail while plan payload data exists."
+            exit 1
+          fi
+
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          conn = psycopg2.connect(os.environ["DATABASE_URL"])
+          conn.autocommit = True
+          with conn.cursor() as cur:
+              cur.execute(
+                  "DELETE FROM interview_sessions WHERE id = 'p1-downgrade-session'"
+              )
+              cur.execute("DELETE FROM users WHERE id = 'p1-downgrade-user'")
+          conn.close()
+          PY
+
+      - name: Run P3 focused tests
+        run: |
+          pytest -q \
+            tests/modules/interviews/test_planner.py \
+            tests/modules/interviews/test_plan_structure.py \
+            tests/modules/interviews/test_question_selector.py \
+            tests/modules/interviews/test_planner_db_integration.py \
+            tests/modules/interviews/test_runtime_foundation.py \
+            tests/app/test_app_contract.py \
+            tests/app/test_architecture.py
+
+      - name: Run full test suite
+        run: pytest -q

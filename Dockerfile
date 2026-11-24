@@ -2,15 +2,21 @@ FROM python:3.11-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DEFAULT_TIMEOUT=1000 \
+    PIP_RETRIES=10
 
 WORKDIR /app
 
 COPY pyproject.toml README.md ./
-RUN pip install --upgrade pip && pip install ".[embeddings]"
+RUN pip install --upgrade pip && \
+    pip install --default-timeout=1000 --retries 10 ".[embeddings,voice-realtime]"
 
 COPY src ./src
 COPY tests ./tests
+# Production runs "alembic upgrade head" from the image (no bind mounts there).
+COPY alembic.ini ./
+COPY migrations ./migrations
 
 FROM base AS api
 
@@ -23,5 +29,5 @@ CMD ["celery", "-A", "src.workers.celery_app:celery_app", "worker", "--loglevel=
 
 FROM base AS test
 
-RUN pip install ".[dev]"
+RUN pip install ".[dev,matching]"
 CMD ["pytest", "-q"]

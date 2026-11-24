@@ -1,0 +1,345 @@
+{
+  "evaluation": "matching-golden-integrity-v1",
+  "generated_at": "2026-09-17T09:19:03.990220+00:00",
+  "dataset": {
+    "path": "D:\\NCKH\\DOC_AND_PLAN\\data\\eval\\matching\\pair_core_v1\\legacy\\golden_matching_1to1_v1.json",
+    "version": "golden-matching-1to1-v1.2-it-bilingual",
+    "sha256": "59a17b425bbc14bc1bb684845ebe5f871665357445e1ed74212999b4886e678c"
+  },
+  "metric_contract": {
+    "scope": "golden integrity, evidence grounding, label-policy consistency and privacy smoke check",
+    "production_benchmark": false,
+    "limitation": "This mode validates fixtures and does not invoke MatchingFacade."
+  },
+  "summary": {
+    "total": 50,
+    "passed": 50,
+    "failed": 0,
+    "case_valid_rate": 1.0,
+    "evidence_valid_rate": 1.0,
+    "language_distribution": {
+      "en": 25,
+      "vi": 25
+    },
+    "eligibility_distribution": {
+      "eligible": 20,
+      "ineligible": 10,
+      "review_required": 20
+    },
+    "requirement_status_distribution": {
+      "met": 67,
+      "not_met": 10,
+      "unknown": 73
+    }
+  },
+  "quality_gate": {
+    "passed": true,
+    "checks": {
+      "all_cases_valid": true,
+      "manifest_distributions_match": true,
+      "no_obvious_contact_pii": true
+    }
+  },
+  "cases": [
+    {
+      "case_id": "matching-1to1-it-001",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-002",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-003",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-004",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-005",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-006",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-007",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-008",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-009",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-010",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-011",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-012",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-013",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-014",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-015",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-016",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-017",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-018",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-019",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-020",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-021",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-022",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-023",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-024",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-025",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-026",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-027",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-028",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-029",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-030",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-031",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-032",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-033",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-034",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-035",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-036",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-037",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-038",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-039",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-040",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-041",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-042",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-043",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-044",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-045",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-046",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-047",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-048",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-049",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    },
+    {
+      "case_id": "matching-1to1-it-050",
+      "passed": true,
+      "evidence_valid": true,
+      "errors": []
+    }
+  ]
+}

@@ -1,28 +1,26 @@
-from typing import Any
+"""Public matching contracts for other feature modules.
 
-from pydantic import BaseModel, ConfigDict, Field
+Sibling modules must not reach into ``matching.domain`` directly; the module
+boundary contract in ``tests/app/test_architecture.py`` allows only ``schemas``,
+``facade`` and ``events`` at the module root. Everything re-exported here is a
+deliberate cross-module contract, not an accident of what happens to be
+importable.
+"""
 
+from src.modules.matching.domain.schemas import (
+    CanonicalJob,
+    LanguageRequirement,
+    MatchRequest,
+    MatchResult,
+    SkillRequirement,
+    UnresolvedRequirement,
+)
 
-class MatchRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    resume_text: str = Field(min_length=1)
-    job_description: str = Field(min_length=1)
-    cv_id: str | None = None
-    job_id: str | None = None
-    position: str | None = None
-    algorithms: list[str] = Field(
-        default_factory=lambda: ["embedding_cosine"],
-        description="Deprecated compatibility field; matching always uses embedding cosine.",
-    )
-    async_processing: bool = True
-
-
-class MatchAccepted(BaseModel):
-    task_id: str
-    status: str = "PENDING"
-
-
-class MatchResult(BaseModel):
-    pipeline_version: str = "external-embedding-cosine-v1"
-    result: dict[str, Any]
+__all__ = [
+    "CanonicalJob",
+    "LanguageRequirement",
+    "MatchRequest",
+    "MatchResult",
+    "SkillRequirement",
+    "UnresolvedRequirement",
+]

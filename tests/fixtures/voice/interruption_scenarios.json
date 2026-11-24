@@ -1,0 +1,13 @@
+[
+  {"id":"fan-no-transcript","transcript":"...","delivered":"Bạn hãy giới thiệu","action":"resume","reason":"empty_or_non_lexical_noise"},
+  {"id":"cough-no-transcript","transcript":"[noise]","delivered":"Bạn hãy giới thiệu","action":"resume","reason":"empty_or_non_lexical_noise"},
+  {"id":"tts-echo","transcript":"hãy giới thiệu ngắn về bản thân","delivered":"Bạn hãy giới thiệu ngắn","action":"resume","reason":"tts_playout_echo"},
+  {"id":"short-shared-word-not-echo","transcript":"kinh nghiệm","delivered":"Bạn hãy giới thiệu ngắn","action":"forward","reason":"substantive_barge_in"},
+  {"id":"vietnamese-backchannel","transcript":"Dạ.","delivered":"Bạn hãy giới thiệu ngắn","action":"resume","reason":"listener_backchannel"},
+  {"id":"english-backchannel-in-vi","transcript":"Okay.","delivered":"Bạn hãy giới thiệu ngắn","action":"resume","reason":"listener_backchannel"},
+  {"id":"hold","transcript":"Khoan đã.","delivered":"Bạn hãy giới thiệu ngắn","action":"hold","reason":"candidate_hold"},
+  {"id":"correction","transcript":"Không, ý của tôi là dùng Redis.","delivered":"Bạn hãy giới thiệu ngắn","action":"forward","reason":"substantive_barge_in"},
+  {"id":"short-real-answer","transcript":"Có.","delivered":"Bạn đã từng dùng Redis chưa","action":"forward","reason":"substantive_barge_in"},
+  {"id":"candidate-question","transcript":"Rubric điểm của hệ thống là gì?","delivered":"Bạn hãy giới thiệu ngắn","action":"forward","reason":"substantive_barge_in"},
+  {"id":"code-switch-answer","transcript":"Em dùng Redis cache-aside.","delivered":"Bạn hãy giới thiệu ngắn","action":"forward","reason":"substantive_barge_in"}
+]

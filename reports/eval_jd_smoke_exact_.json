@@ -1,0 +1,3807 @@
+{
+  "evaluation": "jd-parser-manifest",
+  "generated_at": "2026-09-16T10:33:55.264541+00:00",
+  "dataset_dir": "D:\\NCKH\\DOC_AND_PLAN\\data\\eval\\jd",
+  "summary": {
+    "total": 44,
+    "passed": 5,
+    "failed": 39
+  },
+  "cases": [
+    {
+      "case_id": "core-en-backend-001",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "careerClassifications": {
+          "missing": [
+            [
+              "technology.software-engineering.backend",
+              "Backend Engineering",
+              "specialization",
+              "internal-career-2026.1",
+              true,
+              0.7,
+              "inferred"
+            ]
+          ],
+          "unexpected": [
+            [
+              "technology.software-engineering.backend",
+              "Backend Engineering",
+              "specialization",
+              "internal-career-2026.1",
+              true,
+              0.8999999999999999,
+              "inferred"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "core-en-platform-002",
+      "passed": true,
+      "evidence_valid": true,
+      "mismatches": {}
+    },
+    {
+      "case_id": "core-vi-game-003",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "careerClassifications": {
+          "missing": [
+            [
+              "technology.game-development",
+              "Game Development",
+              "specialization",
+              "internal-career-2026.1",
+              true,
+              0.7,
+              "inferred"
+            ]
+          ],
+          "unexpected": [
+            [
+              "technology.game-development",
+              "Game Development",
+              "specialization",
+              "internal-career-2026.1",
+              true,
+              0.6,
+              "inferred"
+            ]
+          ]
+        },
+        "requirements": {
+          "missing": [
+            [
+              "skill",
+              "preferred",
+              "Android/iOS plugin development for Unity",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": [
+            [
+              "skill",
+              "preferred",
+              "Unity",
+              "skill-unity",
+              "Unity",
+              null
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "core-en-frontend-004",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "careerClassifications": {
+          "missing": [
+            [
+              "technology.software-engineering.frontend",
+              "Frontend Engineering",
+              "specialization",
+              "internal-career-2026.1",
+              true,
+              0.7,
+              "inferred"
+            ]
+          ],
+          "unexpected": [
+            [
+              "technology.software-engineering.frontend",
+              "Frontend Engineering",
+              "specialization",
+              "internal-career-2026.1",
+              true,
+              0.75,
+              "inferred"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "edge-empty-requirements-001",
+      "passed": true,
+      "evidence_valid": true,
+      "mismatches": {}
+    },
+    {
+      "case_id": "edge-preferred-boundary-002",
+      "passed": true,
+      "evidence_valid": true,
+      "mismatches": {}
+    },
+    {
+      "case_id": "edge-location-workmode-003",
+      "passed": true,
+      "evidence_valid": true,
+      "mismatches": {}
+    },
+    {
+      "case_id": "edge-part-time-contract-004",
+      "passed": true,
+      "evidence_valid": true,
+      "mismatches": {}
+    },
+    {
+      "case_id": "jd-edge-pre-gold-001",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-002",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "workMode": {
+          "expected": null,
+          "actual": "remote"
+        },
+        "responsibilities": {
+          "expected": [],
+          "actual": [
+            "Build data pipelines."
+          ]
+        },
+        "benefits": {
+          "expected": [],
+          "actual": [
+            "Remote allowance."
+          ]
+        },
+        "careerClassifications": {
+          "missing": [],
+          "unexpected": [
+            [
+              "technology.cloud-devops",
+              "Cloud & DevOps",
+              "specialization",
+              "internal-career-2026.1",
+              true,
+              0.75,
+              "inferred"
+            ]
+          ]
+        },
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": [
+            [
+              "other",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "Candidate constraints",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "AWS",
+              "skill-aws",
+              "AWS",
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              "skill-docker",
+              "Docker",
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              "skill-python",
+              "Python",
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              "skill-sql",
+              "SQL",
+              null
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-003",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "careerClassifications": {
+          "missing": [],
+          "unexpected": [
+            [
+              "technology.cloud-devops",
+              "Cloud & DevOps",
+              "specialization",
+              "internal-career-2026.1",
+              true,
+              0.75,
+              "inferred"
+            ]
+          ]
+        },
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": [
+            [
+              "other",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "Candidate constraints",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "Technical constraints follow.",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "AWS",
+              "skill-aws",
+              "AWS",
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              "skill-docker",
+              "Docker",
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              "skill-python",
+              "Python",
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              "skill-sql",
+              "SQL",
+              null
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-004",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-005",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "jobTitle": {
+          "expected": "Frontend Developer",
+          "actual": "<h1>Frontend Developer</h1><p>Requirements:</p><li>Readable content was flattened from HTML.</li>"
+        },
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-006",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-007",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-008",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-009",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-010",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "preferred",
+              "Java",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-011",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-012",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-013",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "seniority": {
+          "expected": null,
+          "actual": "manager"
+        },
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-014",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "benefits": {
+          "expected": [],
+          "actual": [
+            "Candidate constraints",
+            "Python",
+            "SQL",
+            "3 years of relevant experience",
+            "Bachelor's degree in Computer Science",
+            "English at B2 level",
+            "AWS Certified Cloud Practitioner",
+            "authorization to work in Vietnam",
+            "fintech domain knowledge",
+            "clear written communication",
+            "Docker"
+          ]
+        },
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-015",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-016",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "seniority": {
+          "expected": null,
+          "actual": "senior"
+        },
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-017",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-018",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-019",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "workMode": {
+          "expected": null,
+          "actual": "remote"
+        },
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-020",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-021",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-022",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "workMode": {
+          "expected": null,
+          "actual": "remote"
+        },
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-023",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-024",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-025",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-026",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "jobTitle": {
+          "expected": null,
+          "actual": "The title is absent; do not infer it only from listed tools."
+        },
+        "location": {
+          "expected": null,
+          "actual": "Remote"
+        },
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-027",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "benefits": {
+          "expected": [],
+          "actual": [
+            "Learning allowance.",
+            "Candidate constraints",
+            "Python",
+            "SQL",
+            "3 years of relevant experience",
+            "Bachelor's degree in Computer Science",
+            "English at B2 level",
+            "AWS Certified Cloud Practitioner",
+            "authorization to work in Vietnam",
+            "fintech domain knowledge",
+            "clear written communication",
+            "Docker"
+          ]
+        },
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-028",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "responsibilities": {
+          "expected": [],
+          "actual": [
+            "Xây dựng dịch vụ cho khách hàng Việt Nam.",
+            "Ràng buộc ứng viên",
+            "Python",
+            "SQL",
+            "ít nhất 3 năm kinh nghiệm liên quan",
+            "bằng cử nhân Công nghệ Thông tin",
+            "tiếng Anh trình độ B2",
+            "chứng chỉ AWS Cloud Practitioner",
+            "được phép làm việc tại Việt Nam",
+            "kiến thức lĩnh vực tài chính",
+            "kỹ năng giao tiếp bằng văn bản rõ ràng",
+            "Docker"
+          ]
+        },
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "bằng cử nhân Công nghệ Thông tin",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "ít nhất 3 năm kinh nghiệm liên quan",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "tiếng Anh trình độ B2",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "chứng chỉ AWS Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "kiến thức lĩnh vực tài chính",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "kỹ năng giao tiếp bằng văn bản rõ ràng",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "được phép làm việc tại Việt Nam",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-029",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "careerClassifications": {
+          "missing": [],
+          "unexpected": [
+            [
+              "technology.cloud-devops",
+              "Cloud & DevOps",
+              "specialization",
+              "internal-career-2026.1",
+              true,
+              0.75,
+              "inferred"
+            ]
+          ]
+        },
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "bằng cử nhân Công nghệ Thông tin",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "ít nhất 3 năm kinh nghiệm liên quan",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "tiếng Anh trình độ B2",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "chứng chỉ AWS Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": [
+            [
+              "other",
+              "must_have",
+              "Ràng buộc ứng viên",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "bằng cử nhân Công nghệ Thông tin",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "tiếng Anh trình độ B2",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "ít nhất 3 năm kinh nghiệm liên quan",
+              null,
+              null,
+              36
+            ],
+            [
+              "skill",
+              "must_have",
+              "AWS",
+              "skill-aws",
+              "AWS",
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              "skill-docker",
+              "Docker",
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              "skill-python",
+              "Python",
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              "skill-sql",
+              "SQL",
+              null
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-030",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "careerClassifications": {
+          "missing": [],
+          "unexpected": [
+            [
+              "technology.cloud-devops",
+              "Cloud & DevOps",
+              "specialization",
+              "internal-career-2026.1",
+              true,
+              0.75,
+              "inferred"
+            ]
+          ]
+        },
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "bằng cử nhân Công nghệ Thông tin",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "ít nhất 3 năm kinh nghiệm liên quan",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "tiếng Anh trình độ B2",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "chứng chỉ AWS Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": [
+            [
+              "other",
+              "must_have",
+              "Ràng buộc ứng viên",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "bằng cử nhân Công nghệ Thông tin",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "tiếng Anh trình độ B2",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "ít nhất 3 năm kinh nghiệm liên quan",
+              null,
+              null,
+              36
+            ],
+            [
+              "skill",
+              "must_have",
+              "AWS",
+              "skill-aws",
+              "AWS",
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              "skill-docker",
+              "Docker",
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              "skill-python",
+              "Python",
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              "skill-sql",
+              "SQL",
+              null
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-031",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "jobTitle": {
+          "expected": "Lập trình viên Java",
+          "actual": "Lập trình viên Java - Hà Nội"
+        },
+        "workMode": {
+          "expected": null,
+          "actual": "remote"
+        },
+        "location": {
+          "expected": "Hà Nội",
+          "actual": "Ràng buộc ứng viên"
+        },
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "bằng cử nhân Công nghệ Thông tin",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "ít nhất 3 năm kinh nghiệm liên quan",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "tiếng Anh trình độ B2",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "chứng chỉ AWS Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "kiến thức lĩnh vực tài chính",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "kỹ năng giao tiếp bằng văn bản rõ ràng",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "được phép làm việc tại Việt Nam",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-032",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "bằng cử nhân Công nghệ Thông tin",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "ít nhất 3 năm kinh nghiệm liên quan",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "tiếng Anh trình độ B2",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "chứng chỉ AWS Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "kiến thức lĩnh vực tài chính",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "kỹ năng giao tiếp bằng văn bản rõ ràng",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "được phép làm việc tại Việt Nam",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-033",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "bằng cử nhân Công nghệ Thông tin",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "ít nhất 3 năm kinh nghiệm liên quan",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "tiếng Anh trình độ B2",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "chứng chỉ AWS Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "kiến thức lĩnh vực tài chính",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "kỹ năng giao tiếp bằng văn bản rõ ràng",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "được phép làm việc tại Việt Nam",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-034",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-035",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    },
+    {
+      "case_id": "jd-edge-pre-gold-036",
+      "passed": false,
+      "evidence_valid": true,
+      "mismatches": {
+        "seniority": {
+          "expected": null,
+          "actual": "lead"
+        },
+        "requirements": {
+          "missing": [
+            [
+              "education",
+              "must_have",
+              "Bachelor's degree in Computer Science",
+              null,
+              null,
+              null
+            ],
+            [
+              "experience",
+              "must_have",
+              "3 years of relevant experience",
+              null,
+              null,
+              36
+            ],
+            [
+              "language",
+              "must_have",
+              "English at B2 level",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "AWS Certified Cloud Practitioner",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "authorization to work in Vietnam",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "clear written communication",
+              null,
+              null,
+              null
+            ],
+            [
+              "other",
+              "must_have",
+              "fintech domain knowledge",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Docker",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "Python",
+              null,
+              null,
+              null
+            ],
+            [
+              "skill",
+              "must_have",
+              "SQL",
+              null,
+              null,
+              null
+            ]
+          ],
+          "unexpected": []
+        }
+      }
+    }
+  ]
+}

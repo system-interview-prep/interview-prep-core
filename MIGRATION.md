@@ -16,12 +16,8 @@
 | users | profile, avatar metadata | authentication |
 | user_cvs | upload metadata, S3 key, parse status | matching algorithms |
 | job_profiles | JD metadata, parse status | CV ranking |
-| matching | vectorize, score, evidence, RAG | user/session authorization |
-| sessions | interview lifecycle | model implementation |
-| interview_questions | question plan and active question | transport/WebSocket |
-| chat | message history and orchestration | voice encoding |
-| voice | STT/TTS adapters | interview state |
-| signaling | Socket.IO/WebRTC signaling | video media |
+| matching | semantic matching and evidence scoring | user/session authorization |
+| interviews | session lifecycle, modality adapters, runtime state | question-bank authoring |
 
 ## Route compatibility checklist
 
@@ -31,7 +27,7 @@
 - `/admin/job-categories/*`
 - `/admin/job-profiles/*`
 - `/ai/session`, `/ai/sessions`, `/ai/chat`, `/ai/history`
-- `/ai/score-cv-jp`, `/ai/session/{id}/questions/generate`
+- `/ai/score-cv-jp`
 - `/interview/video-calls/*`
 - Socket.IO namespaces `/cv`, `/jp`, `/chat`, `/signaling`
 
@@ -41,9 +37,8 @@
 2. `user_cvs` và `job_profiles`, giữ queue contracts cũ.
 3. Worker parse CV/JD.
 4. Matching facade + scoring endpoint.
-5. Sessions/questions/chat.
-6. Socket.IO signaling/status.
-7. Voice/video-call.
+5. Interviews: sessions, chat, voice, video-call and runtime.
+6. Socket.IO signaling/status as the interview video adapter.
 
 ## Definition of done cho mỗi module
 

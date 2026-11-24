@@ -1,0 +1,2537 @@
+{
+  "evaluation": "matching-production-golden-v1",
+  "generated_at": "2026-09-17T09:19:25.280370+00:00",
+  "dataset": {
+    "version": "golden-matching-1to1-v1.2-it-bilingual",
+    "case_count": 50
+  },
+  "configuration": {
+    "pipeline": "one-to-one-evidence-fusion-v1",
+    "policy": "balanced-v1",
+    "semantic_mode": "disabled",
+    "input_contract": "oracle canonical matching inputs, independent from expected decisions"
+  },
+  "metric_contract": {
+    "scope": "production MatchingFacade requirement, eligibility, evidence and abstention outputs",
+    "production_benchmark": true,
+    "interpretation": "Controlled component-conformance benchmark, not a generalization estimate.",
+    "limitation": "Synthetic JDs and machine-generated labels require human adjudication."
+  },
+  "summary": {
+    "total_cases": 50,
+    "total_requirements": 150,
+    "requirement": {
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "per_class": {
+        "met": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 67
+        },
+        "not_met": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 10
+        },
+        "unknown": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 73
+        }
+      },
+      "confusion_matrix": {
+        "met": {
+          "met": 67,
+          "not_met": 0,
+          "unknown": 0
+        },
+        "not_met": {
+          "met": 0,
+          "not_met": 10,
+          "unknown": 0
+        },
+        "unknown": {
+          "met": 0,
+          "not_met": 0,
+          "unknown": 73
+        }
+      }
+    },
+    "eligibility": {
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "per_class": {
+        "eligible": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 20
+        },
+        "ineligible": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 10
+        },
+        "review_required": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 20
+        }
+      },
+      "confusion_matrix": {
+        "eligible": {
+          "eligible": 20,
+          "ineligible": 0,
+          "review_required": 0
+        },
+        "ineligible": {
+          "eligible": 0,
+          "ineligible": 10,
+          "review_required": 0
+        },
+        "review_required": {
+          "eligible": 0,
+          "ineligible": 0,
+          "review_required": 20
+        }
+      }
+    },
+    "evidence": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "abstention_rate": 0.68,
+    "unexpected_abstentions": 14,
+    "actionable_coverage": 0.5333,
+    "mean_latency_ms": 0.045,
+    "total_latency_ms": 8.991,
+    "language_slices": {
+      "en": {
+        "requirement_accuracy": 1.0,
+        "eligibility_accuracy": 1.0
+      },
+      "vi": {
+        "requirement_accuracy": 1.0,
+        "eligibility_accuracy": 1.0
+      }
+    }
+  },
+  "quality_gate": {
+    "passed": false,
+    "checks": {
+      "requirement_macro_f1": true,
+      "eligibility_accuracy": true,
+      "evidence_f1": true,
+      "actionable_coverage": false
+    },
+    "thresholds": {
+      "min_requirement_macro_f1": 0.9,
+      "min_eligibility_accuracy": 0.9,
+      "min_evidence_f1": 0.9,
+      "min_actionable_coverage": 0.8
+    }
+  },
+  "cases": [
+    {
+      "case_id": "matching-1to1-it-001",
+      "language": "en",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "assessed",
+      "fit_band": "strong_fit",
+      "suitability_score": 1.0,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.119,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-008"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-008"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-003"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-003"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-007"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-007"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-002",
+      "language": "vi",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "assessed",
+      "fit_band": "strong_fit",
+      "suitability_score": 1.0,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.064,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-008"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-008"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-003"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-003"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-007"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-007"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-003",
+      "language": "en",
+      "eligibility": {
+        "expected": "ineligible",
+        "predicted": "ineligible"
+      },
+      "decision": "assessed",
+      "fit_band": "not_eligible",
+      "suitability_score": 1.0,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.06,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "not_met",
+          "predicted_status": "not_met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-006"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-006"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-005"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-005"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-004",
+      "language": "vi",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": 1.0,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.052,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-004"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-004"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-002"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-002"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-005",
+      "language": "en",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": 1.0,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.047,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-003"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-003"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-002"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-002"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-006",
+      "language": "vi",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "assessed",
+      "fit_band": "strong_fit",
+      "suitability_score": 1.0,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.048,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-002"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-002"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-004"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-004"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-003"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-003"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-007",
+      "language": "en",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "assessed",
+      "fit_band": "strong_fit",
+      "suitability_score": 1.0,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.046,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-003"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-003"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-007"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-007"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-004"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-004"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-008",
+      "language": "vi",
+      "eligibility": {
+        "expected": "ineligible",
+        "predicted": "ineligible"
+      },
+      "decision": "assessed",
+      "fit_band": "not_eligible",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.051,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "not_met",
+          "predicted_status": "not_met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-004"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-004"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-009",
+      "language": "en",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.045,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-003"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-003"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-006"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-006"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-004"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-004"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-010",
+      "language": "vi",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.043,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-003"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-003"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-009"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-009"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-011",
+      "language": "en",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "abstained",
+      "fit_band": "insufficient_evidence",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.043,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-004"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-004"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-007"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-007"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-012",
+      "language": "vi",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "abstained",
+      "fit_band": "insufficient_evidence",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.042,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-003"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-003"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-006"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-006"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-013",
+      "language": "en",
+      "eligibility": {
+        "expected": "ineligible",
+        "predicted": "ineligible"
+      },
+      "decision": "assessed",
+      "fit_band": "not_eligible",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.041,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "not_met",
+          "predicted_status": "not_met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-003"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-003"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-014",
+      "language": "vi",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.04,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-004"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-004"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-015",
+      "language": "en",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.044,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-008"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-008"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-016",
+      "language": "vi",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "abstained",
+      "fit_band": "insufficient_evidence",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.049,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-001"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-001"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-006"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-006"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-017",
+      "language": "en",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "abstained",
+      "fit_band": "insufficient_evidence",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.04,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-001"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-001"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-004"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-004"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-018",
+      "language": "vi",
+      "eligibility": {
+        "expected": "ineligible",
+        "predicted": "ineligible"
+      },
+      "decision": "assessed",
+      "fit_band": "not_eligible",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.04,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "not_met",
+          "predicted_status": "not_met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-001"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-001"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-019",
+      "language": "en",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.04,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-020",
+      "language": "vi",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.04,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-021",
+      "language": "en",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "abstained",
+      "fit_band": "insufficient_evidence",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.041,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-004"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-004"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-003"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-003"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-022",
+      "language": "vi",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "abstained",
+      "fit_band": "insufficient_evidence",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.041,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-007"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-007"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-006"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-006"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-023",
+      "language": "en",
+      "eligibility": {
+        "expected": "ineligible",
+        "predicted": "ineligible"
+      },
+      "decision": "assessed",
+      "fit_band": "not_eligible",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.04,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-006"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-006"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "not_met",
+          "predicted_status": "not_met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-005"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-005"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-024",
+      "language": "vi",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.041,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-005"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-005"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-025",
+      "language": "en",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.039,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-004"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-004"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-026",
+      "language": "vi",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "assessed",
+      "fit_band": "strong_fit",
+      "suitability_score": 1.0,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.046,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-008"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-008"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-011"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-011"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-009"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-009"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-027",
+      "language": "en",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "assessed",
+      "fit_band": "strong_fit",
+      "suitability_score": 1.0,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.044,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-008"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-008"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-011"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-011"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-009"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-009"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-028",
+      "language": "vi",
+      "eligibility": {
+        "expected": "ineligible",
+        "predicted": "ineligible"
+      },
+      "decision": "assessed",
+      "fit_band": "not_eligible",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.04,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "not_met",
+          "predicted_status": "not_met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-006"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-006"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-008"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-008"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-029",
+      "language": "en",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.04,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-004"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-004"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-008"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-008"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-006"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-006"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-030",
+      "language": "vi",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.04,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-004"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-004"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-008"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-008"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-006"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-006"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-031",
+      "language": "en",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "abstained",
+      "fit_band": "insufficient_evidence",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.041,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-007"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-007"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-005"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-005"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-032",
+      "language": "vi",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "abstained",
+      "fit_band": "insufficient_evidence",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.042,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-011"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-011"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-009"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-009"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-033",
+      "language": "en",
+      "eligibility": {
+        "expected": "ineligible",
+        "predicted": "ineligible"
+      },
+      "decision": "assessed",
+      "fit_band": "not_eligible",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.04,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-007"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-007"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "not_met",
+          "predicted_status": "not_met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-006"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-006"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-034",
+      "language": "vi",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.04,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-035",
+      "language": "en",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.04,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-036",
+      "language": "vi",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "abstained",
+      "fit_band": "insufficient_evidence",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.044,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-008"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-008"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-003"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-003"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-037",
+      "language": "en",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "abstained",
+      "fit_band": "insufficient_evidence",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.046,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-006"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-006"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-002"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-002"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-038",
+      "language": "vi",
+      "eligibility": {
+        "expected": "ineligible",
+        "predicted": "ineligible"
+      },
+      "decision": "assessed",
+      "fit_band": "not_eligible",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.046,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "not_met",
+          "predicted_status": "not_met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-003"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-003"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-039",
+      "language": "en",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.043,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-040",
+      "language": "vi",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.039,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-041",
+      "language": "en",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "abstained",
+      "fit_band": "insufficient_evidence",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.041,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-008"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-008"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-006"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-006"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-042",
+      "language": "vi",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "abstained",
+      "fit_band": "insufficient_evidence",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.042,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-008"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-008"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-006"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-006"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-043",
+      "language": "en",
+      "eligibility": {
+        "expected": "ineligible",
+        "predicted": "ineligible"
+      },
+      "decision": "assessed",
+      "fit_band": "not_eligible",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.041,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-009"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-009"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "not_met",
+          "predicted_status": "not_met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-006"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-006"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-044",
+      "language": "vi",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.039,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-005"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-005"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-045",
+      "language": "en",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.044,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-003"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-003"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-046",
+      "language": "vi",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "abstained",
+      "fit_band": "insufficient_evidence",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.042,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-004"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-004"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-007"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-007"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-047",
+      "language": "en",
+      "eligibility": {
+        "expected": "eligible",
+        "predicted": "eligible"
+      },
+      "decision": "abstained",
+      "fit_band": "insufficient_evidence",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.041,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-004"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-004"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-008"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-008"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-048",
+      "language": "vi",
+      "eligibility": {
+        "expected": "ineligible",
+        "predicted": "ineligible"
+      },
+      "decision": "assessed",
+      "fit_band": "not_eligible",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.039,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "not_met",
+          "predicted_status": "not_met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-004"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-004"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-007"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-007"
+          ]
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-049",
+      "language": "en",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": 1.0,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.043,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-004"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-004"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-006"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-006"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "matching-1to1-it-050",
+      "language": "vi",
+      "eligibility": {
+        "expected": "review_required",
+        "predicted": "review_required"
+      },
+      "decision": "abstained",
+      "fit_band": "review_required",
+      "suitability_score": null,
+      "warnings": [
+        "semantic_scorer_unavailable"
+      ],
+      "latency_ms": 0.039,
+      "requirements": [
+        {
+          "requirement_id": "req-001",
+          "expected_status": "met",
+          "predicted_status": "met",
+          "status_correct": true,
+          "expected_evidence_refs": [
+            "cv-ev-006"
+          ],
+          "predicted_evidence_refs": [
+            "cv-ev-006"
+          ]
+        },
+        {
+          "requirement_id": "req-002",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        },
+        {
+          "requirement_id": "req-003",
+          "expected_status": "unknown",
+          "predicted_status": "unknown",
+          "status_correct": true,
+          "expected_evidence_refs": [],
+          "predicted_evidence_refs": []
+        }
+      ]
+    }
+  ]
+}

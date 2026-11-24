@@ -1,0 +1,2815 @@
+import json
+from datetime import UTC, datetime, timedelta
+from typing import Any
+from unittest.mock import AsyncMock, patch
+import pytest
+
+from src.modules.interviews.application.runtime.chat_runtime import (
+    ChatRuntimeError,
+    _candidate_name_parts,
+    _is_simple_transition_ack,
+    _personalize_candidate_address,
+    _validate_probe_text,
+    complete_chat_session,
+    get_chat_runtime,
+    process_candidate_message,
+    start_chat_session,
+)
+from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.core.contracts.interview import (
+    InterviewStage,
+    InterviewerTurnOutput,
+    TurnAction,
+)
+
+
+async def scripted_interviewer_model(*, instructions: str = "", input_text: str = "", **_: Any) -> str:
+    """Stand-in for the model in tests that do not script one themselves.
+
+    Since 10/11 a failed model call ends the turn with an error instead of
+    falling back to a canned line, so every turn needs an answer from the
+    model. This one judges like the old fallback did (the answer is not yet
+    sufficient) and speaks one fixed, guard-safe line per kind of call.
+    """
+    if "sufficiency_status" in instructions:
+        return json.dumps(
+            {
+                "intent": "ANSWER",
+                "sufficiency_status": "INSUFFICIENT",
+                "missing_aspect": "",
+                "acknowledgement": "Ừm, mình hình dung được rồi.",
+                "probe_question": "",
+                "score": 5.0,
+            },
+            ensure_ascii=False,
+        )
+    if "câu hỏi probe" in input_text or "follow-up question" in instructions:
+        return "Khi bước đó gặp lỗi, bạn xử lý thế nào?"
+    return "Cảm ơn bạn, mình ghi nhận rồi."
+
+
+@pytest.fixture(autouse=True)
+def _default_scripted_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests that patch `chat_runtime.generate_text` themselves replace this."""
+    monkeypatch.setattr(
+        "src.modules.interviews.application.runtime.chat_runtime.generate_text",
+        scripted_interviewer_model,
+    )
+
+
+class MockResult:
+    def __init__(self, rows: list[dict[str, Any]]):
+        self._rows = rows
+
+    def mappings(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+    def one_or_none(self):
+        return self._rows[0] if self._rows else None
+
+
+class MockChatSession:
+    def __init__(self, session_row: dict[str, Any], turns: list[dict[str, Any]], messages: list[dict[str, Any]] | None = None):
+        self.session_row = dict(session_row)
+        self.turns = {t["id"]: dict(t) for t in turns}
+        self.messages = [dict(m) for m in (messages or [])]
+        self.job_title = "AI Engineer"
+        self.candidate_name: str | None = None
+        self.cv_text: str | None = None
+
+    async def scalar(self, statement: Any, params: dict[str, Any] | None = None):
+        sql = str(statement).strip()
+        params = params or {}
+        if "turn_id = :turn_id AND role = 'user'" in sql:
+            return len([
+                m for m in self.messages
+                if m["session_id"] == params.get("sid")
+                and m.get("turn_id") == params.get("turn_id")
+                and m.get("role") == "user"
+            ])
+        if "SELECT COUNT(*) FROM interview_chat_messages WHERE session_id = :sid" in sql:
+            return len([m for m in self.messages if m["session_id"] == params.get("sid")])
+        if "SELECT title FROM job_descriptions" in sql:
+            return self.job_title
+        if "JOIN user_cvs c ON c.id = s.resume_id" in sql:
+            return self.cv_text
+        if "JOIN users u ON u.id = s.user_id" in sql:
+            return self.candidate_name
+        if "SELECT status FROM interview_sessions" in sql:
+            return self.session_row.get("status")
+        if "SELECT COALESCE(MAX(sequence), 0)" in sql:
+            seqs = [m.get("sequence", 0) for m in self.messages if m["session_id"] == params.get("sid")]
+            return max(seqs) if seqs else 0
+        if "SELECT COUNT(*) FROM interview_chat_messages" in sql and "message_type IN ('PROBE', 'CLARIFY')" in sql:
+            matching = [
+                m for m in self.messages
+                if m["session_id"] == params.get("sid")
+                and m.get("turn_id") == params.get("turn_id")
+                and m.get("role") == "assistant"
+                and m.get("message_type") in ("PROBE", "CLARIFY")
+            ]
+            return len(matching)
+        return None
+
+    async def execute(self, statement: Any, params: dict[str, Any] | None = None):
+        sql = str(statement).strip()
+        params = params or {}
+
+        if "FROM interview_chat_messages" in sql:
+            if "WHERE session_id = :sid AND client_message_id = :cid" in sql:
+                matching = [
+                    m for m in self.messages
+                    if m["session_id"] == params.get("sid")
+                    and m.get("client_message_id") == params.get("cid")
+                ]
+                return MockResult(matching)
+            if "WHERE session_id = :sid AND sequence = :seq" in sql:
+                matching = [
+                    m for m in self.messages
+                    if m["session_id"] == params.get("sid")
+                    and m.get("sequence") == params.get("seq")
+                ]
+                return MockResult(matching)
+            if "message_type IN ('PROBE', 'CLARIFY')" in sql:
+                matching = [
+                    m for m in self.messages
+                    if m["session_id"] == params.get("sid")
+                    and m.get("role") == "assistant"
+                    and m.get("message_type") in ("PROBE", "CLARIFY")
+                ]
+                return MockResult(matching)
+            if "ORDER BY sequence DESC LIMIT 1" in sql:
+                sid = params.get("sid") or params.get("session_id")
+                matching = [m for m in self.messages if m["session_id"] == sid]
+                if "role = 'assistant'" in sql:
+                    matching = [m for m in matching if m.get("role") == "assistant"]
+                matching.sort(key=lambda x: x.get("sequence", 0), reverse=True)
+                if matching and "age_seconds" in sql:
+                    sent_at = matching[0].get("created_at") or datetime.now(UTC)
+                    age = (datetime.now(UTC) - sent_at).total_seconds()
+                    return MockResult([{**matching[0], "age_seconds": age}])
+                return MockResult([matching[0]] if matching else [])
+            sid = params.get("session_id") or params.get("sid")
+            matching = [m for m in self.messages if m["session_id"] == sid]
+            matching.sort(key=lambda x: (x.get("sequence", 0), x.get("created_at") or datetime.min))
+            return MockResult(matching)
+
+        if "SELECT id, turn_index, status" in sql and "FROM interview_turns" in sql:
+            matching = [t for t in self.turns.values() if t["session_id"] == params.get("session_id")]
+            matching.sort(key=lambda x: x["turn_index"])
+            return MockResult(matching)
+
+        if "UPDATE interview_turns" in sql:
+            turn_id = params.get("turn_id")
+            if turn_id in self.turns:
+                if "SET status = 'ASKED'" in sql:
+                    self.turns[turn_id]["status"] = "ASKED"
+                if "SET status = 'ANSWERED'" in sql:
+                    self.turns[turn_id]["status"] = "ANSWERED"
+                if "SET status = 'SKIPPED'" in sql and self.turns[turn_id]["status"] == "PLANNED":
+                    self.turns[turn_id]["status"] = "SKIPPED"
+                if ":ans" in sql:
+                    self.turns[turn_id]["answer_text"] = params.get("ans")
+                if ":previous_answer" in sql:
+                    self.turns[turn_id]["answer_text"] = params.get("previous_answer")
+            return MockResult([])
+
+        if "INSERT INTO interview_turns" in sql:
+            new_turn = {
+                "id": params["id"],
+                "session_id": params["sid"],
+                "turn_index": params["tidx"],
+                "status": "ASKED",
+                "question_snapshot": json.loads(params["snap"]) if isinstance(params.get("snap"), str) else params.get("snap", {}),
+                "answer_text": None,
+                "question_version_id": None,
+            }
+            self.turns[params["id"]] = new_turn
+            return MockResult([])
+
+        if "FROM interview_sessions" in sql:
+            return MockResult([{"status": self.session_row.get("status"), "end_reason": self.session_row.get("end_reason")}])
+
+        if "UPDATE interview_chat_messages" in sql:
+            for message in self.messages:
+                if message.get("id") == params.get("message_id"):
+                    message["message_type"] = params.get("message_type")
+                    extra = params.get("extra_metadata")
+                    message.setdefault("metadata", {}).update(
+                        json.loads(extra) if isinstance(extra, str) else (extra or {})
+                    )
+            return MockResult([])
+
+        if "INSERT INTO interview_chat_messages" in sql:
+            cid = params.get("cid")
+            if cid and any(m.get("client_message_id") == cid for m in self.messages):
+                from sqlalchemy.exc import IntegrityError
+                raise IntegrityError(
+                    "duplicate key value violates unique constraint 'uq_interview_chat_messages_client_message_id'",
+                    params,
+                    None,
+                )
+            new_msg = {
+                "id": params["id"],
+                "session_id": params["sid"],
+                "role": "assistant" if "assistant" in sql else "user",
+                "content": params["content"],
+                "metadata": (
+                    json.loads(params["metadata"])
+                    if isinstance(params.get("metadata"), str)
+                    else params.get("metadata", {})
+                ),
+                "turn_id": params.get("turn_id"),
+                "message_type": params.get("msg_type") or ("GREETING" if "GREETING" in sql else "MAIN_QUESTION" if "MAIN_QUESTION" in sql else "WRAP_UP" if "WRAP_UP" in sql else "CANDIDATE_ANSWER"),
+                "sequence": params["seq"] if "seq" in params else (1 if "'MAIN_QUESTION', 1" in sql or "GREETING" in sql else 2),
+                "client_message_id": params.get("cid"),
+                "created_at": datetime.now(UTC),
+            }
+            self.messages.append(new_msg)
+            return MockResult([])
+
+        if "UPDATE interview_sessions" in sql:
+            if "metadata" in sql and params.get("meta"):
+                self.session_row["metadata"] = params.get("meta")
+            if "SET status = 'CLOSED'" in sql:
+                self.session_row["status"] = "CLOSED"
+                if params.get("reason"):
+                    self.session_row["end_reason"] = params.get("reason")
+                elif "USER_ENDED" in sql:
+                    self.session_row["end_reason"] = "USER_ENDED"
+                elif "COMPLETED" in sql:
+                    self.session_row["end_reason"] = "COMPLETED"
+            return MockResult([])
+
+        return MockResult([])
+
+    async def commit(self):
+        pass
+
+    async def rollback(self):
+        pass
+
+
+@pytest.fixture
+def mock_session_data():
+    session_row = {
+        "id": "sess-123",
+        "user_id": "usr-1",
+        "job_id": "job-1",
+        "resume_id": "cv-1",
+        "mode": "text",
+        "experience_type": "interview_chat",
+        "end_reason": None,
+        "locale": "vi-VN",
+        "status": "OPEN",
+        "plan_status": "LOCKED",
+    }
+    turns = [
+        {
+            "id": "turn-1",
+            "session_id": "sess-123",
+            "turn_index": 0,
+            "status": "PLANNED",
+            "question_version_id": "qver-1",
+            "question_snapshot": {
+                "questionText": "Trình bày về RAG architecture?",
+                "target": {"conceptId": "skill-ai"},
+            },
+            "answer_text": None,
+        },
+        {
+            "id": "turn-2",
+            "session_id": "sess-123",
+            "turn_index": 1,
+            "status": "PLANNED",
+            "question_version_id": "qver-2",
+            "question_snapshot": {
+                "questionText": "Trình bày về Docker containerization?",
+                "target": {"conceptId": "skill-devops"},
+            },
+            "answer_text": None,
+        },
+    ]
+    return session_row, turns
+
+
+# INV-4: Fail-fast Gate
+@pytest.mark.asyncio
+async def test_inv4_start_chat_session_not_locked():
+    session_row = {"id": "sess-0", "status": "OPEN", "plan_status": "DRAFT"}
+    db = MockChatSession(session_row, [])
+    with pytest.raises(ChatRuntimeError, match="LOCKED"):
+        await start_chat_session(db, session_row)
+
+
+# INV-1: Sequence Monotonicity & INV-5: Turn-to-Question Provenance
+@pytest.mark.asyncio
+async def test_inv1_and_inv5_start_chat_session_success(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+
+    runtime = await start_chat_session(db, session_row)
+    assert runtime["sessionId"] == "sess-123"
+    assert runtime["sessionStatus"] == "OPEN"
+    assert len(runtime["messages"]) == 1
+
+    # Check Sequence Monotonicity
+    assert runtime["messages"][0]["sequence"] == 1
+    assert runtime["messages"][0]["messageType"] == "MAIN_QUESTION"
+
+    # Check Provenance
+    assert runtime["messages"][0]["turnId"] == "turn-1"
+    assert "RAG architecture" in runtime["messages"][0]["content"]
+    assert db.turns["turn-1"]["status"] == "ASKED"
+
+
+@pytest.mark.asyncio
+async def test_opening_greets_by_call_name_and_keeps_it(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    db.candidate_name = "Nguyễn Văn Nam"
+
+    runtime = await start_chat_session(db, session_row)
+
+    opening = runtime["messages"][0]["content"]
+    # "Chào Nguyễn Văn Nam" read like a roll call; Vietnamese greets the call name.
+    assert opening.startswith("Chào Nam, mình là người phỏng vấn AI của Intervia.")
+    assert "Nguyễn Văn Nam" not in opening
+    assert "bạn" not in opening.casefold()
+
+
+@pytest.mark.asyncio
+async def test_opening_uses_the_name_on_the_cv_not_the_account(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    db.candidate_name = "Nguyễn Thị Thanh Hiền"  # account owner running a demo CV
+    db.cv_text = "NGUYỄN MINH KHOA\nBackend Developer (Node.js / TypeScript)\nEmail: khoa@example.com"
+
+    runtime = await start_chat_session(db, session_row)
+
+    opening = runtime["messages"][0]["content"]
+    assert opening.startswith("Chào Khoa")
+    assert "Hiền" not in opening
+
+
+@pytest.mark.asyncio
+async def test_account_name_is_the_fallback_when_the_cv_has_no_name(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    db.candidate_name = "Nguyễn Văn Nam"
+    db.cv_text = "Backend Developer\nKinh nghiệm 3 năm Node.js"
+
+    runtime = await start_chat_session(db, session_row)
+
+    assert runtime["messages"][0]["content"].startswith("Chào Nam")
+
+
+@pytest.mark.parametrize(
+    ("cv_text", "expected"),
+    [
+        ("NGUYỄN MINH KHOA\nBackend Developer", "NGUYỄN MINH KHOA"),
+        ("Họ và tên: Trần Thị Lan\nSĐT: 0901", "Trần Thị Lan"),
+        ("Nguyen Thi Thanh Hien\nSoftware Engineer", "Nguyen Thi Thanh Hien"),
+        ("Backend Developer\nKinh nghiệm 3 năm", None),
+        ("", None),
+    ],
+)
+def test_candidate_name_from_cv_text(cv_text, expected) -> None:
+    from src.modules.user_cvs.facade import candidate_name_from_text
+
+    assert candidate_name_from_text(cv_text) == expected
+
+
+def test_subsequent_messages_use_only_the_last_name_word(monkeypatch) -> None:
+    assert _candidate_name_parts("  Nguyễn   Minh Anh  ") == ("Nguyễn Minh Anh", "Anh")
+    assert _candidate_name_parts("Google User") == (None, None)
+    # Speech v2 keeps "bạn": the name only in the greeting and some transitions.
+    assert _personalize_candidate_address("Cảm ơn bạn. Bạn trình bày rõ hơn nhé.", "Anh") == (
+        "Cảm ơn bạn. Bạn trình bày rõ hơn nhé."
+    )
+    monkeypatch.setenv("INTERVIEWER_SPEECH_V2", "0")
+    assert _personalize_candidate_address(
+        "Cảm ơn bạn. Bạn hãy trình bày rõ hơn nhé.", "Anh"
+    ) == "Cảm ơn Anh. Anh hãy trình bày rõ hơn nhé."
+
+
+# INV-2: Idempotency Guarantee
+@pytest.mark.asyncio
+async def test_inv2_idempotency_duplicate_client_message(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    with patch("src.modules.interviews.application.runtime.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = '{"decision": "PROBE", "reply_text": "Bạn tối ưu latency như thế nào?"}'
+
+        res1 = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="msg-client-duplicate",
+            content="Tôi dùng FAISS index và rerank bằng cross-encoder.",
+        )
+        assert res1["userMessage"]["sequence"] == 2
+        assert res1["assistantResponse"]["sequence"] == 3
+
+        # Duplicate call with exact same client_message_id
+        res2 = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="msg-client-duplicate",
+            content="Tôi dùng FAISS index và rerank bằng cross-encoder.",
+        )
+        # Should return existing messages, no new messages created
+        assert res2["userMessage"]["sequence"] == 2
+        assert res2["assistantResponse"]["sequence"] == 3
+        assert len(db.messages) == 3
+
+
+@pytest.mark.asyncio
+async def test_voice_interruption_telemetry_is_persisted(mock_session_data):
+    session_row, turns = mock_session_data
+    session_row["mode"] = "voice"
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    interruption = {
+        "occurred": True,
+        "speech_id": "speech-1",
+        "expected_text": "Câu hỏi đầy đủ",
+        "delivered_text": "Câu hỏi",
+    }
+
+    with patch(
+        "src.modules.interviews.application.runtime.chat_runtime.generate_text",
+        new_callable=AsyncMock,
+    ) as mock_llm:
+        mock_llm.return_value = (
+            '{"decision": "NEXT", "reply_text": "", '
+            '"acknowledgement": "Mình hiểu rồi."}'
+        )
+        await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="voice-interruption-1",
+            content="Tôi muốn sửa lại câu trả lời.",
+            modality="VOICE",
+            telemetry={"interruption": interruption},
+        )
+
+    user_message = next(
+        message for message in db.messages if message.get("client_message_id") == "voice-interruption-1"
+    )
+    assert user_message["metadata"]["telemetry"]["interruption"] == interruption
+
+
+# INV-3: Probe Budget Cap (Never exceed 1 probe per turn)
+@pytest.mark.asyncio
+async def test_inv3_probe_budget_cap(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # 1. Answer 1 -> PROBE
+    with patch("src.modules.interviews.application.runtime.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = '{"decision": "PROBE", "reply_text": "Follow-up question 1"}'
+        await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="msg-client-1",
+            content="Answer 1",
+        )
+
+    # 2. Answer 2 (Probe answer) -> Budget reached -> Must advance to NEXT_TOPIC
+    res2 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="msg-client-2",
+        content="Answer 2: chi tiết thêm",
+    )
+
+    assert res2["assistantResponse"]["messageType"] == "MAIN_QUESTION"
+    assert "Docker containerization" in res2["assistantResponse"]["content"]
+    assert res2["turnStatus"]["isFollowUp"] is False
+    assert db.turns["turn-1"]["status"] == "ANSWERED"
+    assert db.turns["turn-2"]["status"] == "ASKED"
+
+
+# Deterministic Post-Validator for Probe
+def test_probe_post_validator():
+    # Valid probe
+    assert _validate_probe_text("Bạn có thể giải thích rõ hơn về cách chia chunk không?") is True
+    # Too long
+    assert _validate_probe_text("A" * 300) is False
+    # Score / rubric leak prohibited
+    assert _validate_probe_text("Câu này bạn đạt 8/10 điểm, tiêu chí tiếp theo là gì?") is False
+    assert _validate_probe_text("Theo rubric đánh giá của chúng tôi...") is False
+
+
+@pytest.mark.asyncio
+async def test_probe_post_validator_safe_fallback(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # LLM returns a response that leaks score
+    with patch("src.modules.interviews.application.runtime.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = '{"decision": "PROBE", "reply_text": "Bạn được 7/10 điểm câu này, bạn muốn nói gì thêm không?"}'
+
+        res = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="msg-client-leak",
+            content="Tôi đã làm dự án này trong 2 năm.",
+        )
+
+        # Validator triggers safe fallback template
+        assert "?" in res["assistantResponse"]["content"]
+        assert "7/10" not in res["assistantResponse"]["content"]
+
+
+# INV-6: Privacy & Rubric Containment
+@pytest.mark.asyncio
+async def test_inv6_privacy_and_rubric_containment(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    runtime = await start_chat_session(db, session_row)
+
+    # Inspect payload: must not contain rubricVersionId, criteria, or rawText
+    runtime_str = str(runtime)
+    assert "rubricVersionId" not in runtime_str
+    assert "criteria" not in runtime_str
+    assert "scoreMax" not in runtime_str
+
+
+@pytest.mark.asyncio
+async def test_early_exit_sets_user_ended(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # 1. Ứng viên gửi tin nhắn muốn dừng -> Backend kích hoạt CONFIRM_ABORT để mở Modal
+    res = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="msg-client-quit",
+        content="Tôi muốn dừng phỏng vấn tại đây.",
+    )
+    assert res["action"] == "CONFIRM_ABORT"
+    assert res["assistantResponse"]["messageType"] == "CONFIRM_ABORT"
+    assert "Kết thúc & xem báo cáo" in res["assistantResponse"]["content"]
+    assert res["sessionStatus"] == "OPEN"
+
+    # 2. Ứng viên xác nhận dừng trên Modal -> Đóng session với USER_ENDED
+    close_res = await complete_chat_session(db, session_row, reason="USER_ENDED")
+    assert close_res["sessionStatus"] == "CLOSED"
+    assert close_res["endReason"] == "USER_ENDED"
+    assert db.session_row["end_reason"] == "USER_ENDED"
+
+
+@pytest.mark.asyncio
+async def test_complete_chat_session_with_reason(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    res = await complete_chat_session(db, session_row, reason="USER_ENDED")
+    assert res["sessionStatus"] == "CLOSED"
+    assert res["endReason"] == "USER_ENDED"
+    assert "Phiên phỏng vấn đã kết thúc" in res["summary"]
+    assert db.session_row["status"] == "CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_two_consecutive_give_up_messages_trigger_early_exit(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # First explicit Give Up increments the canonical counter and advances.
+    res1 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="giveup-1",
+        content="ừm",
+    )
+    assert res1["sessionStatus"] == "OPEN"
+    assert res1["assistantResponse"]["messageType"] == "MAIN_QUESTION"
+
+    first_meta = db.session_row["metadata"]
+    if isinstance(first_meta, str):
+        first_meta = json.loads(first_meta)
+    assert first_meta["consecutive_uncooperative"] == 1
+    assert first_meta["consecutive_fails"] == 1
+
+    # Second explicit Give Up in Technical triggers FAST_FAIL_TECH internally.
+    res2 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="giveup-2",
+        content="không biết",
+    )
+    assert res2["sessionStatus"] == "CLOSED"
+    assert res2["assistantResponse"]["messageType"] == "WRAP_UP"
+    assert res2["endReason"] == "FAST_FAIL_TECH"
+    assert "kết thúc" in res2["assistantResponse"]["content"].lower()
+    assert db.session_row["status"] == "CLOSED"
+    assert db.session_row["end_reason"] == "FAST_FAIL_TECH"
+
+    # Reload via get_chat_runtime returns persisted FAST_FAIL_TECH
+    runtime_state = await get_chat_runtime(db, db.session_row)
+    assert runtime_state["sessionStatus"] == "CLOSED"
+    assert runtime_state["endReason"] == "FAST_FAIL_TECH"
+
+    # Subsequent complete_chat_session call preserves FAST_FAIL_TECH (first-write-wins)
+    complete_res = await complete_chat_session(db, db.session_row, reason="USER_ENDED")
+    assert complete_res["sessionStatus"] == "CLOSED"
+    assert complete_res["endReason"] == "FAST_FAIL_TECH"
+    assert db.session_row["end_reason"] == "FAST_FAIL_TECH"
+
+    second_meta = db.session_row["metadata"]
+    if isinstance(second_meta, str):
+        second_meta = json.loads(second_meta)
+    assert second_meta["consecutive_uncooperative"] == 2
+    assert second_meta["consecutive_fails"] == 2
+
+
+@pytest.mark.asyncio
+async def test_turn_transition_does_not_repeat_question(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # Candidate provides a comprehensive answer to Turn 0 (RAG architecture)
+    good_answer = (
+        "Hệ thống RAG của mình gồm Embedding Model, Vector DB (Milvus) để truy xuất top-k chunk "
+        "kết hợp Hybrid Search (BM25 + Dense Vector), sau đó dùng Cross-Encoder Reranker để rerank. "
+        "Prompt cuối cùng đưa vào LLM kèm context giúp giảm thiểu hallucination xuống dưới 2%."
+    )
+    res = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="msg-ans-1",
+        content=good_answer,
+    )
+    assert res["sessionStatus"] == "OPEN"
+
+    # If probed, answer the probe to advance turn
+    if res["turnStatus"].get("isFollowUp"):
+        res = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="msg-ans-probe",
+            content="Mình dùng Async Task Queue với RabbitMQ để retry khi Milvus chậm.",
+        )
+        assert res["sessionStatus"] == "OPEN"
+
+    assert res["turnStatus"]["turnIndex"] == 1
+    # Ensure next question is Turn 1 (Docker) and NOT repeating Turn 0 (RAG)
+    assert "Docker" in res["assistantResponse"]["content"]
+    assert "Trình bày về RAG architecture?" not in res["assistantResponse"]["content"]
+    assert db.turns["turn-1"]["status"] == "ANSWERED"
+    assert db.turns["turn-2"]["status"] == "ASKED"
+
+
+@pytest.mark.asyncio
+async def test_closing_reverse_qna_flow(mock_session_data):
+    session_row, turns = mock_session_data
+    turns[0]["question_snapshot"]["stage"] = "DEEP_DIVE"
+    turns[1]["question_snapshot"] = {
+        "stage": "BEHAVIORAL",
+        "questionText": "Hãy kể về một lần bạn xử lý xung đột kỹ thuật với đồng nghiệp.",
+        "target": {"conceptId": "behavioral-collaboration"},
+    }
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # 1. Candidate answers the only technical question well
+    good_answer = (
+        "Hệ thống RAG của mình gồm Embedding Model, Vector DB (Milvus) để truy xuất top-k chunk "
+        "kết hợp Hybrid Search (BM25 + Dense Vector), sau đó dùng Cross-Encoder Reranker để rerank. "
+        "Prompt cuối cùng đưa vào LLM kèm context giúp giảm thiểu hallucination xuống dưới 2%."
+    )
+    res1 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="msg-tech-done-1",
+        content=good_answer,
+    )
+    assert res1["sessionStatus"] == "OPEN"
+
+    # If probed, candidate answers the probe; the next frozen turn must be Behavioral.
+    if res1["turnStatus"].get("isFollowUp"):
+        res_after_technical = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="msg-tech-done-2",
+            content="Nếu Milvus timeout quá 500ms, hệ thống sẽ tự động fallback sang BM25 trên Elasticsearch và giảm số chunk rerank.",
+        )
+        assert res_after_technical["sessionStatus"] == "OPEN"
+    else:
+        res_after_technical = res1
+    assert "xung đột kỹ thuật" in res_after_technical["assistantResponse"]["content"]
+
+    # Behavioral must complete before Closing becomes available.
+    res_behavioral = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="msg-behavioral-done",
+        content=(
+            "Tôi chủ động trao đổi riêng với đồng nghiệp, cùng kiểm tra số liệu và thống nhất thử nghiệm hai phương án. "
+            "Sau đó nhóm chọn giải pháp có latency tốt hơn và ghi lại quyết định để tránh lặp lại xung đột."
+        ),
+    )
+    assert res_behavioral["sessionStatus"] == "OPEN"
+    assert res_behavioral["currentStage"] == "CLOSING"
+    assert res_behavioral["action"] == "ASK_MAIN"
+
+    # 2. Candidate asks a question about INTERVIA tech stack
+    res2 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="msg-qna-1",
+        content="Cho mình hỏi dự án sắp tới của team AI sẽ sử dụng những công nghệ và framework nào vậy?",
+    )
+    assert res2["sessionStatus"] == "OPEN"
+    assert res2["turnStatus"]["isFollowUp"] is True
+
+    # 3. Candidate wraps up
+    res3 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="msg-qna-done",
+        content="Dạ mình nắm rõ rồi, mình không còn câu hỏi nào nữa. Cảm ơn bạn rất nhiều!",
+    )
+    assert res3["sessionStatus"] == "CLOSED"
+    assert "cảm ơn" in res3["assistantResponse"]["content"].lower()
+    assert db.session_row["status"] == "CLOSED"
+
+
+# =============================================================================
+# MANDATORY GATE 4 TEST MATRIX (RT-01 .. RT-14)
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_rt01_happy_path(mock_session_data):
+    """RT-01: Main question -> sufficient answer -> next frozen main question."""
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    good_answer = (
+        "Hệ thống RAG của mình gồm Embedding Model, Vector DB (Milvus) để truy xuất top-k chunk "
+        "kết hợp Hybrid Search (BM25 + Dense Vector), sau đó dùng Cross-Encoder Reranker để rerank. "
+        "Prompt cuối cùng đưa vào LLM kèm context giúp giảm thiểu hallucination xuống dưới 2%."
+    )
+    res = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt01-msg-1",
+        content=good_answer,
+    )
+    if res.get("action") == "PROBE" or res.get("turnStatus", {}).get("isFollowUp"):
+        res = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="rt01-msg-probe",
+            content="Mình dùng Async Task Queue với RabbitMQ để retry khi Milvus chậm.",
+        )
+
+    assert res["sessionStatus"] == "OPEN"
+    assert res["turnStatus"]["turnIndex"] == 1
+    assert "Docker" in res["assistantResponse"]["content"]
+    assert db.turns["turn-1"]["status"] == "ANSWERED"
+    assert db.turns["turn-2"]["status"] == "ASKED"
+
+
+@pytest.mark.asyncio
+async def test_rt02_weak_answer_triggers_probe(mock_session_data):
+    """RT-02: Insufficient evidence -> probe."""
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    weak_answer = "Em chỉ dùng thư viện có sẵn thôi, không nhớ rõ cấu trúc bên trong."
+    res = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt02-msg-weak",
+        content=weak_answer,
+    )
+
+    assert res["sessionStatus"] == "OPEN"
+    assert res["action"] == "PROBE"
+    assert res["turnStatus"]["isFollowUp"] is True
+    assert res["probeCount"] == 1
+    assert res["completed"] is False
+
+
+@pytest.mark.asyncio
+async def test_rt03_probe_answer_sufficient(mock_session_data):
+    """RT-03: Probe answer fills missing evidence -> advance."""
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # 1. Weak answer triggers probe
+    res1 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt03-msg-1",
+        content="Em dùng RAG.",
+    )
+    assert res1["action"] == "PROBE"
+
+    # 2. Detailed follow-up fulfills missing evidence
+    res2 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt03-msg-2",
+        content=(
+            "Chi tiết hơn, mình triển khai Semantic Chunking với kích thước 512 tokens, "
+            "dùng embedding model text-embedding-3-small, lưu vào Milvus HNSW index. "
+            "Khi truy vấn, kết hợp BM25 sparse vector và dense vector qua Reciprocal Rank Fusion, "
+            "sau đó dùng BGE-Reranker-Large để chọn top 3 context đưa vào LLM."
+        ),
+    )
+
+    assert res2["sessionStatus"] == "OPEN"
+    assert res2["action"] == "ASK_MAIN"
+    assert res2["turnStatus"]["turnIndex"] == 1
+    assert db.turns["turn-1"]["status"] == "ANSWERED"
+    assert db.turns["turn-2"]["status"] == "ASKED"
+
+
+@pytest.mark.asyncio
+async def test_rt04_local_one_probe_per_turn(mock_session_data):
+    """RT-04: local per-turn probe limit advances after one probe; no session cap is used."""
+    session_row, turns = mock_session_data
+    session_row["metadata"] = {"max_runtime_probes": 0, "allow_early_exit": False}
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # First weak answer -> allowed probe
+    res1 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt04-msg-1",
+        content="Em chỉ làm qua thôi.",
+    )
+    assert res1["action"] == "PROBE"
+
+    # The legacy metadata cap is ignored; the second answer advances only because
+    # this same turn already consumed its one local probe.
+    res2 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt04-msg-2",
+        content="Em không nhớ chi tiết thêm được.",
+    )
+    assert res2["action"] in ("ASK_MAIN", "ADVANCE")
+    assert res2["turnStatus"]["turnIndex"] == 1
+    assert db.turns["turn-1"]["status"] == "ANSWERED"
+
+
+@pytest.mark.asyncio
+async def test_rt05_clarification(mock_session_data):
+    """RT-05: Ambiguous / clarification request -> clarify."""
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    res = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt05-msg-clarify",
+        content="Anh có thể giải thích rõ hơn câu hỏi này được không ạ? Em chưa hiểu rõ ý anh.",
+    )
+
+    assert res["action"] == "CLARIFY"
+    assert res["turnStatus"]["isFollowUp"] is True
+    assert res["completed"] is False
+    assert len(res["message"]) > 0
+    assert res["userMessage"]["messageType"] == "CLARIFY"
+    assert db.turns[res["turnStatus"]["turnId"]]["answer_text"] is None
+
+
+@pytest.mark.asyncio
+async def test_warmup_continuations_accumulate_and_send_full_intro_to_core(mock_session_data):
+    session_row, turns = mock_session_data
+    turns[0]["question_snapshot"]["stage"] = "WARM_UP"
+    db = MockChatSession(session_row, turns)
+
+    class CapturingWarmupEngine:
+        def __init__(self):
+            self.answers = []
+
+        async def handle_turn(self, turn_input, _session_state):
+            self.answers.append(turn_input.text_content)
+            return InterviewerTurnOutput(
+                session_id=turn_input.session_id,
+                turn_index=turn_input.turn_index + 1,
+                message_text="Ừm, bạn cứ nói tiếp nhé.",
+                action=TurnAction.CLARIFY,
+                current_stage=InterviewStage.WARM_UP,
+                metadata={"warmup_continuation": True},
+            )
+
+    engine = CapturingWarmupEngine()
+    await start_chat_session(db, session_row)
+    first = "Dạ em chào anh. Em là Trường, sinh viên năm cuối ngành Công nghệ thông tin."
+    second = "Em đang tìm vị trí Full Stack Developer và gần đây làm dự án HamTech."
+
+    first_result = await process_candidate_message(
+        db, session_row, client_message_id="warmup-first", content=first, core_engine=engine
+    )
+    second_result = await process_candidate_message(
+        db, session_row, client_message_id="warmup-second", content=second, core_engine=engine
+    )
+
+    assert first_result["action"] == second_result["action"] == "CLARIFY"
+    assert engine.answers == [first, f"{first}\n{second}"]
+    assert db.turns["turn-1"]["answer_text"] == f"{first}\n{second}"
+
+
+@pytest.mark.parametrize("ack", ["dạ", "Vâng ạ!", "được, anh hỏi đi", "okay"])
+def test_transition_ack_detector_accepts_short_readiness_only(ack):
+    assert _is_simple_transition_ack(ack)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    ["Dạ, em đang học năm cuối ngành Kỹ thuật phần mềm.", "Dạ em có làm dự án HamTech với Node.js."],
+)
+def test_transition_ack_detector_does_not_swallow_substantive_answers(answer):
+    assert not _is_simple_transition_ack(answer)
+
+
+@pytest.mark.asyncio
+async def test_transition_ack_releases_frozen_question_without_core_or_answer_scoring(mock_session_data):
+    session_row, turns = mock_session_data
+    turns[0]["status"] = "ANSWERED"
+    turns[0]["question_snapshot"]["stage"] = "WARM_UP"
+    turns[1]["status"] = "ASKED"
+    turns[1]["question_snapshot"].update(
+        {"stage": "VALIDATE", "spokenText": "Trong dự án HamTech, bạn trực tiếp phụ trách phần nào?", "projectName": "HamTech"}
+    )
+    messages = [
+        {
+            "id": "transition-message",
+            "session_id": "sess-123",
+            "role": "assistant",
+            "content": "Ok, mình hiểu rồi. Tiếp theo mình hỏi bạn về dự án HamTech nhé.",
+            "metadata": {"awaitingCandidateAck": True, "transitionTopic": "Xác thực CV & Dự án"},
+            "turn_id": "turn-2",
+            "message_type": "ACKNOWLEDGMENT",
+            "sequence": 4,
+        }
+    ]
+    db = MockChatSession(session_row, turns, messages)
+
+    class MustNotRunCore:
+        async def handle_turn(self, *_args, **_kwargs):
+            raise AssertionError("A transition acknowledgment is not an answer turn")
+
+    result = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="transition-ack-1",
+        content="Dạ",
+        core_engine=MustNotRunCore(),
+    )
+
+    assert result["action"] == "ASK_MAIN"
+    assert result["message"] == "Trong dự án HamTech, bạn trực tiếp phụ trách phần nào?"
+    assert result["userMessage"]["messageType"] == "ACKNOWLEDGMENT"
+    assert db.turns["turn-2"]["answer_text"] is None
+    assert db.turns["turn-2"]["status"] == "ASKED"
+
+
+@pytest.mark.asyncio
+async def test_completed_warmup_persists_only_topic_transition_until_candidate_ack(mock_session_data):
+    session_row, turns = mock_session_data
+    turns[0]["question_snapshot"].update({"stage": "WARM_UP", "questionText": "Giới thiệu bản thân?"})
+    turns[1]["question_snapshot"].update(
+        {
+            "stage": "VALIDATE",
+            "spokenText": "Trong dự án HamTech, bạn trực tiếp phụ trách phần nào?",
+            "projectName": "HamTech",
+        }
+    )
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    class WarmupCompleteEngine:
+        async def handle_turn(self, turn_input, _session_state):
+            return InterviewerTurnOutput(
+                session_id=turn_input.session_id,
+                turn_index=turn_input.turn_index + 1,
+                message_text="Ok, mình hiểu rồi. Tiếp theo mình hỏi bạn về dự án HamTech nhé.",
+                action=TurnAction.NEXT_QUESTION,
+                current_stage=InterviewStage.VALIDATE,
+                metadata={
+                    "question_id": "qver-2",
+                    "awaiting_candidate_ack": True,
+                    "transition_topic": "Xác thực CV & Dự án",
+                },
+            )
+
+    result = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="warmup-complete",
+        content=(
+            "Dạ em đang học năm cuối ngành Kỹ thuật phần mềm tại IUH, thích thiết kế giao diện "
+            "và cũng yêu thích xử lý logic backend trong các dự án Full Stack."
+        ),
+        core_engine=WarmupCompleteEngine(),
+    )
+
+    assert result["assistantResponse"]["messageType"] == "ACKNOWLEDGMENT"
+    assert result["message"] == "Ok, mình hiểu rồi. Tiếp theo mình hỏi bạn về dự án HamTech nhé."
+    assert "trực tiếp phụ trách phần nào" not in result["message"]
+    assert db.turns["turn-2"]["status"] == "ASKED"
+
+
+@pytest.mark.asyncio
+async def test_candidate_rubric_question_is_answered_without_advancing_turn(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    current_turn_id = next(turn_id for turn_id, turn in db.turns.items() if turn["status"] == "ASKED")
+
+    res = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="candidate-rubric-question",
+        content=(
+            "Tôi là Nguyễn Thị Thanh Hiền và tôi muốn hỏi rubric điểm "
+            "ở trong hệ thống của mình là gì không?"
+        ),
+    )
+
+    assert res["action"] == "CLARIFY"
+    assert res["userMessage"]["messageType"] == "CANDIDATE_QUESTION"
+    assert "Chi tiết tiêu chí mình không chia sẻ" in res["message"]
+    # Same wording as the voice room: the question is asked again after the aside.
+    assert "\n\nMình hỏi lại nhé: " in res["message"]
+    assert db.turns[current_turn_id]["status"] == "ASKED"
+    assert db.turns[current_turn_id]["answer_text"] is None
+
+
+@pytest.mark.asyncio
+async def test_rt06_cv_followup_quota(mock_session_data):
+    """RT-06: First CV follow-up allowed, second blocked."""
+    session_row, turns = mock_session_data
+    # Configure turn 0 as VALIDATE stage
+    turns[0]["question_snapshot"]["stage"] = "VALIDATE"
+    session_row["metadata"] = {"allow_early_exit": False}
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # 1st weak answer in VALIDATE -> first follow-up allowed
+    res1 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt06-msg-1",
+        content="Em có làm dự án đó trong CV.",
+    )
+    assert res1["action"] == "PROBE"
+
+    # 2nd weak answer in VALIDATE -> N_cv_followup_max=1 exceeded -> advance
+    res2 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt06-msg-2",
+        content="Em chỉ tham gia một phần nhỏ thôi.",
+    )
+    assert res2["action"] in ("ASK_MAIN", "ADVANCE")
+    assert res2["turnStatus"]["turnIndex"] == 1
+
+
+@pytest.mark.asyncio
+async def test_rt07_time_guardrail_behavioral_reserve(mock_session_data):
+    """RT-07: Without Behavioral in queue, pacing continues assessment and never opens Closing."""
+    session_row, turns = mock_session_data
+    # Session 25 mins = 1500s. closing_reserve = 60s, behavioral_reserve = 180s. Total reserve = 240s.
+    # If the session has 1300s elapsed -> remaining_time = 200s (< 240s).
+    session_row["metadata"] = {
+        "closing_reserve_seconds": 60,
+        "behavioral_reserve_seconds": 180,
+    }
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    res = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt07-msg-reserve",
+        content="Em chỉ làm cơ bản thôi ạ.",
+        elapsed_override_seconds=1300.0,
+    )
+    # Behind-schedule pacing blocks the probe, but absence of Behavioral must not
+    # create a Behavioral or Closing turn.
+    assert res["action"] in ("ASK_MAIN", "ADVANCE", "COMPLETE")
+    assert res["action"] != "PROBE"
+    assert res["action"] != "ASK_CLOSING"
+
+
+@pytest.mark.asyncio
+async def test_rt08_time_guardrail_closing_reserve(mock_session_data):
+    """RT-08: The 90-second cutoff closes safely; it never opens Closing from Technical."""
+    session_row, turns = mock_session_data
+    # 1460s elapsed -> remaining_time = 40s (<= 60s closing reserve)
+    session_row["metadata"] = {
+        "closing_reserve_seconds": 60,
+    }
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    res = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt08-msg-closing",
+        content="Em có nắm được một chút.",
+        elapsed_override_seconds=1460.0,
+    )
+    assert res["action"] == "COMPLETE"
+    assert res["sessionStatus"] == "CLOSED"
+    assert res["assistantResponse"]["messageType"] == "WRAP_UP"
+
+
+@pytest.mark.asyncio
+async def test_rt09_reverse_qna(mock_session_data):
+    """RT-09: Behavioral completes before Closing reverse Q&A starts."""
+    session_row, turns = mock_session_data
+    turns[0]["question_snapshot"]["stage"] = "DEEP_DIVE"
+    turns[1]["question_snapshot"] = {
+        "stage": "BEHAVIORAL",
+        "questionText": "Hãy kể về một lần bạn xử lý xung đột kỹ thuật với đồng nghiệp.",
+        "target": {"conceptId": "behavioral-collaboration"},
+    }
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # 1. Candidate answers the only technical question well
+    good_answer = (
+        "Hệ thống RAG của mình gồm Embedding Model, Vector DB (Milvus) để truy xuất top-k chunk "
+        "kết hợp Hybrid Search (BM25 + Dense Vector), sau đó dùng Cross-Encoder Reranker để rerank. "
+        "Prompt cuối cùng đưa vào LLM kèm context giúp giảm thiểu hallucination xuống dưới 2%."
+    )
+    res1 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt09-msg-1",
+        content=good_answer,
+    )
+    if res1["turnStatus"].get("isFollowUp"):
+        res_after_technical = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="rt09-msg-probe",
+            content="Nếu Milvus timeout quá 500ms, hệ thống sẽ tự động fallback sang BM25 trên Elasticsearch và giảm số chunk rerank.",
+        )
+    else:
+        res_after_technical = res1
+    assert "xung đột kỹ thuật" in res_after_technical["assistantResponse"]["content"]
+
+    res_behavioral = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt09-behavioral",
+        content=(
+            "Tôi trao đổi riêng với đồng nghiệp, cùng kiểm tra số liệu và thử nghiệm hai phương án. "
+            "Nhóm chọn giải pháp có latency tốt hơn và ghi lại quyết định kỹ thuật."
+        ),
+    )
+    assert res_behavioral["currentStage"] == "CLOSING"
+
+    # Candidate asks reverse question only after Behavioral has completed.
+    res_qna = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt09-qna",
+        content="Cho em hỏi team mình đang ứng dụng AI vào những bài toán thực tế nào?",
+    )
+    assert res_qna["sessionStatus"] == "OPEN"
+
+    # 3. Candidate wraps up
+    res_end = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt09-done",
+        content="Dạ em cảm ơn anh, em đã nắm rõ thông tin rồi ạ.",
+    )
+    assert res_end["sessionStatus"] == "CLOSED"
+    assert res_end["completed"] is True
+
+
+@pytest.mark.asyncio
+async def test_rt10_duplicate_client_message_id(mock_session_data):
+    """RT-10: Same client_message_id twice -> exactly-once semantic effect."""
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    with patch("src.modules.interviews.application.runtime.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = '{"decision": "PROBE", "reply_text": "Bạn tối ưu latency như thế nào?"}'
+
+        res1 = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="rt10-idemp-1",
+            content="Đây là câu trả lời kiểm tra tính bất biến.",
+        )
+
+        count_after_first = len(db.messages)
+
+        res2 = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="rt10-idemp-1",
+            content="Đây là câu trả lời kiểm tra tính bất biến gửi lại.",
+        )
+
+        # No duplicate messages inserted
+        assert len(db.messages) == count_after_first
+        assert res1["userMessage"]["messageId"] == res2["userMessage"]["messageId"]
+        if res1.get("assistantResponse") and res2.get("assistantResponse"):
+            assert res1["assistantResponse"]["messageId"] == res2["assistantResponse"]["messageId"]
+
+
+@pytest.mark.asyncio
+async def test_rt11_no_repeated_main_question(mock_session_data):
+    """RT-11: Completed frozen turn -> never selected again."""
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    good_answer = (
+        "Hệ thống RAG của mình gồm Embedding Model, Vector DB (Milvus) để truy xuất top-k chunk "
+        "kết hợp Hybrid Search (BM25 + Dense Vector), sau đó dùng Cross-Encoder Reranker để rerank. "
+        "Prompt cuối cùng đưa vào LLM kèm context giúp giảm thiểu hallucination xuống dưới 2%."
+    )
+    res = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt11-msg-1",
+        content=good_answer,
+    )
+    if res.get("action") == "PROBE" or res.get("turnStatus", {}).get("isFollowUp"):
+        res = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="rt11-msg-probe",
+            content="Mình dùng Async Task Queue với RabbitMQ để retry khi Milvus chậm và Elasticsearch làm BM25 fallback.",
+        )
+
+    # Next question is Turn 1 (Docker), Turn 0 (RAG) is NEVER repeated
+    assert res["turnStatus"]["turnIndex"] == 1
+    assert "Docker" in res["assistantResponse"]["content"]
+    assert "Trình bày về RAG architecture?" not in res["assistantResponse"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_rt12_illegal_lifecycle_fail_fast():
+    """RT-12: Session invalid/not ready/completed -> fail-fast."""
+    # 1. P2 plan not locked
+    session_not_locked = {"id": "s-draft", "status": "OPEN", "plan_status": "DRAFT"}
+    db1 = MockChatSession(session_not_locked, [])
+    with pytest.raises(ChatRuntimeError, match="P2_NOT_LOCKED"):
+        await start_chat_session(db1, session_not_locked)
+
+    with pytest.raises(ChatRuntimeError, match="P2_NOT_LOCKED"):
+        await process_candidate_message(db1, session_not_locked, client_message_id="m1", content="Hi")
+
+    # 2. Session already closed
+    session_closed = {"id": "s-closed", "status": "CLOSED", "plan_status": "LOCKED"}
+    db2 = MockChatSession(session_closed, [])
+    with pytest.raises(ChatRuntimeError, match="ILLEGAL_SESSION_STATE"):
+        await process_candidate_message(db2, session_closed, client_message_id="m2", content="Hi")
+
+    # 3. No turns found
+    session_no_turns = {"id": "s-no-turns", "status": "OPEN", "plan_status": "LOCKED"}
+    db3 = MockChatSession(session_no_turns, [])
+    with pytest.raises(ChatRuntimeError, match="QUESTION_SNAPSHOT_MISSING"):
+        await start_chat_session(db3, session_no_turns)
+
+
+@pytest.mark.asyncio
+async def test_rt13_reload_resume(mock_session_data):
+    """RT-13: Restart runtime -> restores same current turn and working memory state."""
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # Turn 0 probed
+    res1 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt13-msg-1",
+        content="Em chỉ biết sơ qua về RAG.",
+    )
+    assert res1["action"] == "PROBE"
+
+    # Simulate reload by querying get_chat_runtime
+    runtime_state = await get_chat_runtime(db, session_row)
+
+    assert runtime_state["currentTurnIndex"] == 0
+    assert runtime_state["currentTurn"]["turnIndex"] == 0
+    assert runtime_state["currentTurn"]["isFollowUp"] is True
+    assert runtime_state["currentTurn"]["probeCount"] == 1
+    assert "workingMemory" in runtime_state
+    wm = runtime_state["workingMemory"]
+    assert wm["probe_count"] == 1
+    assert "candidate_context" in wm
+    assert "current_stage" in wm
+
+
+@pytest.mark.asyncio
+async def test_rt14_completion_idempotency(mock_session_data):
+    """RT-14: Complete twice -> no duplicate side effects."""
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    res1 = await complete_chat_session(db, session_row, reason="USER_ENDED")
+    assert res1["sessionStatus"] == "CLOSED"
+    msg_count_1 = len(db.messages)
+
+    # Second completion call
+    res2 = await complete_chat_session(db, session_row, reason="USER_ENDED")
+    assert res2["sessionStatus"] == "CLOSED"
+    assert len(db.messages) == msg_count_1  # No duplicate WRAP_UP message inserted
+
+
+@pytest.mark.asyncio
+async def test_rt15_candidate_message_when_p2_ready(mock_session_data):
+    """RT-15: Candidate message when P2 READY -> P2_NOT_LOCKED, no writes."""
+    session_row, turns = mock_session_data
+    session_row["plan_status"] = "READY"
+    db = MockChatSession(session_row, turns)
+
+    initial_msg_count = len(db.messages)
+    current_turn_id = turns[0]["id"]
+    initial_answer_text = db.turns[current_turn_id].get("answer_text")
+
+    # plan_status = READY -> ChatRuntimeError(P2_NOT_LOCKED)
+    with pytest.raises(ChatRuntimeError, match="P2_NOT_LOCKED"):
+        await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="rt15-msg-1",
+            content="Xin chào tôi muốn trả lời câu hỏi.",
+        )
+
+    # Invariants:
+    # 1. No candidate message inserted
+    assert len(db.messages) == initial_msg_count
+    # 2. No answer_text update
+    assert db.turns[current_turn_id].get("answer_text") == initial_answer_text
+    # 3. Session status unchanged
+    assert db.session_row.get("status") == "OPEN"
+
+    # Also verify DRAFT, None, and invalid statuses fail-fast with P2_NOT_LOCKED
+    for invalid_status in ("DRAFT", None, "INVALID_STATUS"):
+        session_row["plan_status"] = invalid_status
+        with pytest.raises(ChatRuntimeError, match="P2_NOT_LOCKED"):
+            await process_candidate_message(
+                db,
+                session_row,
+                client_message_id=f"rt15-msg-{invalid_status}",
+                content="Câu trả lời thử nghiệm",
+            )
+
+
+@pytest.mark.asyncio
+async def test_rt16_score_cannot_terminate_session(mock_session_data):
+    """RT-16: Score has zero control-flow authority; decisions rely strictly on sufficiency semantics."""
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # 1. Low numeric score (score=1.0) but semantically SUFFICIENT
+    low_score_sufficient_eval = {
+        "score": 1.0,
+        "is_sufficient": True,
+        "sufficiency_status": "SUFFICIENT",
+        "intent": "ANSWER",
+        "acknowledgement": "Ghi nhận giải pháp của bạn.",
+    }
+
+    with patch.object(InterviewCoreEngine, "_evaluate_candidate_response", new_callable=AsyncMock) as mock_eval:
+        mock_eval.return_value = low_score_sufficient_eval
+
+        res1 = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="rt16-low-score-1",
+            content="Đây là câu trả lời kiến trúc hoàn chỉnh đáp ứng đầy đủ yêu cầu.",
+        )
+
+        # Expected: Runtime follows sufficiency semantics, NOT numeric score.
+        # Must NOT terminate session just because score is 1.0.
+        assert res1["sessionStatus"] == "OPEN"
+        assert res1["completed"] is False
+        assert res1["action"] == "ASK_MAIN"
+        assert res1["turnStatus"]["turnIndex"] == 1
+
+    # 2. Reverse test: High numeric score (score=10.0) but semantically INSUFFICIENT
+    high_score_insufficient_eval = {
+        "score": 10.0,
+        "is_sufficient": False,
+        "sufficiency_status": "INSUFFICIENT",
+        "intent": "ANSWER",
+        "missing_aspect": "Thiếu phân tích throughput và latency",
+        "acknowledgement": "Cảm ơn câu trả lời của bạn.",
+    }
+
+    with patch.object(InterviewCoreEngine, "_evaluate_candidate_response", new_callable=AsyncMock) as mock_eval:
+        mock_eval.return_value = high_score_insufficient_eval
+
+        res2 = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="rt16-high-score-probe",
+            content="Tôi dùng Docker container để đóng gói ứng dụng.",
+        )
+
+        # Expected: Probe triggered according to sufficiency + quota.
+        # High numeric score cannot override insufficiency semantics.
+        assert res2["sessionStatus"] == "OPEN"
+        assert res2["completed"] is False
+        assert res2["action"] == "PROBE"
+        assert res2["turnStatus"]["isFollowUp"] is True
+
+
+@pytest.mark.asyncio
+async def test_rt17_hard_timeout_persistence(mock_session_data):
+    """RT-17: Hard timeout preserves HARD_TIMEOUT endReason across session and reloads."""
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # Simulate a session whose elapsed time has reached the hard timeout (time_remaining <= 30s)
+    target_duration = int(session_row.get("duration_minutes", 25)) * 60
+    near_expiry_elapsed = target_duration - 15  # remaining 15 seconds <= 30s hard timeout
+
+    res = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="rt17-timeout-msg",
+        content="Câu trả lời cuối cùng trước khi hết giờ.",
+        elapsed_override_seconds=near_expiry_elapsed,
+    )
+
+    # 1. Session is CLOSED with HARD_TIMEOUT
+    assert res["sessionStatus"] == "CLOSED"
+    assert res["completed"] is True
+    assert res["endReason"] == "HARD_TIMEOUT"
+    assert res["action"] == "COMPLETE"
+    assert db.session_row["status"] == "CLOSED"
+    assert db.session_row["end_reason"] == "HARD_TIMEOUT"
+
+    # Exactly one WRAP_UP message inserted
+    wrap_ups = [m for m in db.messages if m.get("message_type") == "WRAP_UP"]
+    assert len(wrap_ups) == 1
+
+    # 2. Reload via get_chat_runtime returns persisted HARD_TIMEOUT
+    runtime_state = await get_chat_runtime(db, db.session_row)
+    assert runtime_state["sessionStatus"] == "CLOSED"
+    assert runtime_state["endReason"] == "HARD_TIMEOUT"
+
+    # 3. Subsequent complete_chat_session call preserves HARD_TIMEOUT (first-write-wins)
+    complete_res = await complete_chat_session(db, db.session_row, reason="USER_ENDED")
+    assert complete_res["sessionStatus"] == "CLOSED"
+    assert complete_res["endReason"] == "HARD_TIMEOUT"
+    assert db.session_row["end_reason"] == "HARD_TIMEOUT"
+
+
+@pytest.mark.asyncio
+async def test_rt18_reserve_precedence_over_elapsed_ratio_heuristic():
+    """RT-18: cutoff and valid Behavioral reserve precedence follow the Gate 4 contract."""
+    from src.modules.interviews.core.contracts.interview import InterviewStage
+
+    engine = InterviewCoreEngine()
+
+    deep_dive_q = {
+        "question_id": "q-dd-1",
+        "question_version_id": "qv-dd-1",
+        "stage": InterviewStage.DEEP_DIVE,
+        "competency": "Kỹ thuật chuyên sâu",
+        "main_prompt": "Thiết kế kiến trúc sharding cho PostgreSQL",
+    }
+    beh_q = {
+        "question_id": "q-beh-1",
+        "question_version_id": "qv-beh-1",
+        "stage": InterviewStage.BEHAVIORAL,
+        "competency": "Hành vi ứng xử",
+        "main_prompt": "Kể lại một lần bạn xung đột kỹ thuật với đồng nghiệp",
+    }
+
+    # Case 1: DEEP_DIVE stage with elapsed ratio 0.60 (< 0.75 ratio threshold).
+    # Remaining time = 45s <= the 90-second cutoff. No Closing may open.
+    session_state_closing = {
+        "current_stage": InterviewStage.DEEP_DIVE.value,
+        "target_duration_minutes": 25,
+        "elapsed_time": 900,  # 900 / 1500 = 0.60 < 0.75
+        "remaining_time": 45,  # <= 60s closing reserve
+        "closing_reserve_seconds": 60,
+        "behavioral_reserve_seconds": 180,
+        "questions_pool": {
+            InterviewStage.DEEP_DIVE.value: [deep_dive_q],
+            InterviewStage.BEHAVIORAL.value: [beh_q],
+        },
+        "asked_question_ids": [],
+    }
+
+    # Inside the cutoff but above the 30s hard timeout, the required Behavioral
+    # question is still asked; no Closing Q&A may open.
+    stage, q = engine._get_next_stage_and_question(session_state_closing)
+    assert stage == InterviewStage.BEHAVIORAL
+    assert q is not None and q.question_id == "q-beh-1"
+
+    # At or below the hard timeout nothing new is asked.
+    stage, q = engine._get_next_stage_and_question({**session_state_closing, "remaining_time": 20})
+    assert stage == InterviewStage.CLOSED
+    assert q is None
+
+    # Case 2: DEEP_DIVE stage with elapsed ratio 0.60 (< 0.75).
+    # Remaining time = 200s <= (closing_reserve 60s + behavioral_reserve 180s = 240s).
+    # Behavioral Reserve MUST WIN over 75% heuristic!
+    session_state_behavioral = {
+        "current_stage": InterviewStage.DEEP_DIVE.value,
+        "target_duration_minutes": 25,
+        "elapsed_time": 900,
+        "remaining_time": 200,  # <= 240s
+        "closing_reserve_seconds": 60,
+        "behavioral_reserve_seconds": 180,
+        "questions_pool": {
+            InterviewStage.DEEP_DIVE.value: [deep_dive_q],
+            InterviewStage.BEHAVIORAL.value: [beh_q],
+        },
+        "asked_question_ids": [],
+    }
+
+    stage_beh, q_beh = engine._get_next_stage_and_question(session_state_behavioral)
+    assert stage_beh == InterviewStage.BEHAVIORAL
+    assert q_beh is not None
+    assert q_beh.question_id == "q-beh-1"
+
+    # Case 3: the same reserve without a Behavioral turn keeps the assessment queue.
+    session_state_no_behavioral = {
+        **session_state_behavioral,
+        "questions_pool": {InterviewStage.DEEP_DIVE.value: [deep_dive_q]},
+    }
+    stage_no_beh, q_no_beh = engine._get_next_stage_and_question(session_state_no_behavioral)
+    assert stage_no_beh == InterviewStage.DEEP_DIVE
+    assert q_no_beh is not None
+    assert q_no_beh.question_id == "q-dd-1"
+
+
+@pytest.mark.asyncio
+async def test_rt19_concurrent_duplicate_client_message(mock_session_data):
+    """RT-19: Concurrent requests with same client_message_id -> safe duplicate-race recovery, exactly-once semantics."""
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    cid = "concurrent-idemp-uuid-1"
+    content = "Câu trả lời gửi đồng thời từ client."
+
+    # First request proceeds normally and commits user message + assistant reply
+    res1 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id=cid,
+        content=content,
+    )
+
+    count_after_first = len(db.messages)
+    user_msg_id = res1["userMessage"]["messageId"]
+    asst_msg_id = res1["assistantResponse"]["messageId"]
+
+    # Second concurrent request arrives with same client_message_id.
+    # In MockChatSession, inserting a message with an already-existing client_message_id
+    # simulates the PostgreSQL unique constraint collision and raises IntegrityError.
+    # Runtime catches IntegrityError, performs rollback, fetches existing response, and returns it.
+    res2 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id=cid,
+        content=content,
+    )
+
+    # Invariants:
+    # 1. Exactly one candidate message with this client_message_id
+    cid_messages = [m for m in db.messages if m.get("client_message_id") == cid]
+    assert len(cid_messages) == 1
+
+    # 2. Total messages in DB unchanged (no duplicate insertion)
+    assert len(db.messages) == count_after_first
+
+    # 3. Identical response messages returned to both callers
+    assert res2["userMessage"]["messageId"] == user_msg_id
+    assert res2["assistantResponse"]["messageId"] == asst_msg_id
+
+    # 4. Exactly one turn transition
+    assert res1["currentTurnIndex"] == res2["currentTurnIndex"]
+    assert res1["completed"] == res2["completed"]
+
+
+@pytest.mark.asyncio
+async def test_fast_fail_tech_end_reason_contract(mock_session_data):
+    """Confirm FAST_FAIL_TECH is emitted upon 2 explicit Give Ups in Technical stage,
+    persisted as FAST_FAIL_TECH (not COMPLETED), retained on reload, and preserved
+    against subsequent complete calls."""
+    from src.modules.interviews.api.router import CompleteChatSession
+
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    # 1. First Give Up in Technical stage
+    res1 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="giveup-tech-1",
+        content="em không biết",
+    )
+    assert res1["sessionStatus"] == "OPEN"
+    assert res1["assistantResponse"]["messageType"] == "MAIN_QUESTION"
+
+    # 2. Second Give Up in Technical stage triggers FAST_FAIL_TECH
+    res2 = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="giveup-tech-2",
+        content="em chịu",
+    )
+    assert res2["sessionStatus"] == "CLOSED"
+    assert res2["completed"] is True
+    assert res2["endReason"] == "FAST_FAIL_TECH"
+    assert res2["action"] == "COMPLETE"
+    assert db.session_row["status"] == "CLOSED"
+    assert db.session_row["end_reason"] == "FAST_FAIL_TECH"
+
+    # 3. Reload via get_chat_runtime returns FAST_FAIL_TECH
+    reloaded = await get_chat_runtime(db, db.session_row)
+    assert reloaded["sessionStatus"] == "CLOSED"
+    assert reloaded["endReason"] == "FAST_FAIL_TECH"
+
+    # 4. Subsequent complete_chat_session preserves existing FAST_FAIL_TECH
+    comp_res = await complete_chat_session(db, db.session_row, reason="USER_ENDED")
+    assert comp_res["sessionStatus"] == "CLOSED"
+    assert comp_res["endReason"] == "FAST_FAIL_TECH"
+    assert db.session_row["end_reason"] == "FAST_FAIL_TECH"
+
+    # 5. Client completion request model: allows user-driven reasons, defaults to USER_ENDED
+    assert CompleteChatSession().reason == "USER_ENDED"
+    for client_reason in ["COMPLETED", "USER_ENDED", "TECHNICAL_FAILURE"]:
+        m = CompleteChatSession(reason=client_reason)
+        assert m.reason == client_reason
+
+    # 6. Client completion request model: REJECTS system/runtime-determined reasons
+    import pydantic
+    with pytest.raises(pydantic.ValidationError):
+        CompleteChatSession(reason="FAST_FAIL_TECH")
+
+    with pytest.raises(pydantic.ValidationError):
+        CompleteChatSession(reason="HARD_TIMEOUT")
+
+
+def test_migration_0020_downgrade_remap_lossy_contract():
+    """Verify migration 20261002_0020 explicitly documents lossy downgrade
+    remap and satisfies the legacy constraint without claiming semantic preservation."""
+    import importlib.util
+    from pathlib import Path
+
+    # Resolved from this file, not from an absolute host path: the suite also
+    # runs inside the backend container, where the repo lives at /app.
+    migration_path = (
+        Path(__file__).resolve().parents[3]
+        / "migrations"
+        / "versions"
+        / "20261002_0020_allow_fast_fail_tech_end_reason.py"
+    )
+    spec = importlib.util.spec_from_file_location("migration_0020", migration_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    assert mod.revision == "20261002_0020"
+    assert mod.down_revision == "20260930_0019"
+    # Inspect docstring acknowledging lossy fallback
+    assert "KHÔNG THỂ giữ nguyên mã 'FAST_FAIL_TECH'" in mod.__doc__
+    assert "TUYỆT ĐỐI KHÔNG BẢO TOÀN NGỮ NGHĨA" in mod.__doc__
+
+
+# =============================================================================
+# GATE 4 FSM DEFECT REGRESSION TESTS
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_regression_multi_target_queue_drains_deep_dive_after_challenge():
+    """Requirement 1: Multi-target queue must complete all pending DEEP_DIVE
+    and CHALLENGE turns across all competencies before transitioning to BEHAVIORAL."""
+    session_row = {
+        "id": "sess-multi-target",
+        "user_id": "usr-1",
+        "job_id": "job-1",
+        "status": "OPEN",
+        "plan_status": "LOCKED",
+        "duration_minutes": 25,
+        "started_at": datetime.now(UTC),
+    }
+    turns = [
+        {
+            "id": "t0",
+            "session_id": "sess-multi-target",
+            "turn_index": 0,
+            "status": "PLANNED",
+            "question_version_id": "qv0",
+            "question_snapshot": {"stage": "WARM_UP", "questionText": "Warmup prompt", "target": {"conceptId": "intro"}},
+        },
+        {
+            "id": "t1",
+            "session_id": "sess-multi-target",
+            "turn_index": 1,
+            "status": "PLANNED",
+            "question_version_id": "qv1",
+            "question_snapshot": {"stage": "VALIDATE", "questionText": "Validate prompt", "target": {"conceptId": "val"}},
+        },
+        {
+            "id": "t2",
+            "session_id": "sess-multi-target",
+            "turn_index": 2,
+            "status": "PLANNED",
+            "question_version_id": "qv2",
+            "question_snapshot": {"stage": "DEEP_DIVE", "questionText": "Deep Dive AI", "taxonomyTarget": {"label": "AI"}},
+        },
+        {
+            "id": "t3",
+            "session_id": "sess-multi-target",
+            "turn_index": 3,
+            "status": "PLANNED",
+            "question_version_id": "qv3",
+            "question_snapshot": {"stage": "CHALLENGE", "questionText": "Challenge AI", "taxonomyTarget": {"label": "AI"}},
+        },
+        {
+            "id": "t4",
+            "session_id": "sess-multi-target",
+            "turn_index": 4,
+            "status": "PLANNED",
+            "question_version_id": "qv4",
+            "question_snapshot": {"stage": "DEEP_DIVE", "questionText": "Deep Dive GenAI 1", "taxonomyTarget": {"label": "GenAI"}},
+        },
+        {
+            "id": "t5",
+            "session_id": "sess-multi-target",
+            "turn_index": 5,
+            "status": "PLANNED",
+            "question_version_id": "qv5",
+            "question_snapshot": {"stage": "DEEP_DIVE", "questionText": "Deep Dive GenAI 2", "taxonomyTarget": {"label": "GenAI"}},
+        },
+        {
+            "id": "t6",
+            "session_id": "sess-multi-target",
+            "turn_index": 6,
+            "status": "PLANNED",
+            "question_version_id": "qv6",
+            "question_snapshot": {"stage": "BEHAVIORAL", "questionText": "Behavioral Teamwork", "taxonomyTarget": {"label": "Behavioral"}},
+        },
+    ]
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    assert db.turns["t0"]["status"] == "ASKED"
+
+    with patch("src.modules.interviews.application.runtime.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = '{"intent": "ANSWER", "sufficiency_status": "SUFFICIENT", "acknowledgement": "OK"}'
+
+        # Answer T0 -> advances to T1 (VALIDATE)
+        r0 = await process_candidate_message(db, session_row, client_message_id="m0", content="Hi, my name is Candidate, and I am happy to be here for this technical interview session today.")
+        assert r0["currentTurnIndex"] == 1
+        assert db.turns["t0"]["status"] == "ANSWERED"
+        assert db.turns["t1"]["status"] == "ASKED"
+
+        # Answer T1 -> advances to T2 (DEEP_DIVE AI) - first item in DEEP_DIVE pool
+        r1 = await process_candidate_message(db, session_row, client_message_id="m1", content="I have three years of hands-on experience in machine learning, working on NLP and recommendation systems using PyTorch and Scikit-learn.")
+        assert r1["currentTurnIndex"] == 2
+        assert db.turns["t1"]["status"] == "ANSWERED"
+        assert db.turns["t2"]["status"] == "ASKED"
+        assert db.turns["t6"]["status"] == "PLANNED", "BEHAVIORAL must not be activated while DEEP_DIVE/CHALLENGE pending"
+
+        # Answer T2 -> engine drains DEEP_DIVE pool next (T4 GenAI), NOT CHALLENGE yet
+        # Engine priority: DEEP_DIVE pool fully drained before CHALLENGE pool
+        r2 = await process_candidate_message(db, session_row, client_message_id="m2", content="In my RAG pipeline I used FAISS as the vector store combined with hybrid BM25 search and a cross-encoder for reranking retrieved passages before generation.")
+        next_idx_after_t2 = r2["currentTurnIndex"]
+        assert db.turns["t2"]["status"] == "ANSWERED"
+        assert db.turns["t6"]["status"] == "PLANNED", "BEHAVIORAL must not be activated while DEEP_DIVE/CHALLENGE pending"
+        # Engine should advance to another DEEP_DIVE or CHALLENGE turn (T3/T4/T5), never to T6
+        assert next_idx_after_t2 in (3, 4, 5), f"Expected technical turn (3,4,5) after T2 but got {next_idx_after_t2}"
+
+        # Simulate answering all remaining technical turns until T6 is reached
+        # Track which turns are still PLANNED and simulate answering them in order
+        technical_turn_ids = ["t3", "t4", "t5"]
+        msg_id = 3
+        last_r = r2
+        answered_technical = []
+        for _ in range(len(technical_turn_ids)):
+            current_idx = last_r["currentTurnIndex"]
+            current_turn_id = next((tid for tid, t in db.turns.items() if t["turn_index"] == current_idx), None)
+            if current_turn_id is None or db.turns.get(current_turn_id, {}).get("status") != "ASKED":
+                break
+            current_stage = last_r.get("currentStage", "")
+            # Behavioral must not be reached while technical turns remain PLANNED
+            assert current_stage != "BEHAVIORAL" or not any(
+                db.turns[tid]["status"] == "PLANNED" for tid in technical_turn_ids
+            ), f"BEHAVIORAL started at turn {current_idx} while technical turns still PLANNED"
+            r = await process_candidate_message(
+                db, session_row, client_message_id=f"m{msg_id}",
+                content="Our solution achieved this by combining async IO patterns with batched vector retrieval and a lightweight reranker to minimize end-to-end latency under high concurrency workloads."
+            )
+            answered_technical.append(current_turn_id)
+            last_r = r
+            msg_id += 1
+
+        # Final assertion: T6 BEHAVIORAL is now ASKED
+        assert db.turns["t6"]["status"] == "ASKED", f"T6 BEHAVIORAL should be ASKED after all technical turns complete. Turns: {[(tid, db.turns[tid]['status']) for tid in ['t2','t3','t4','t5','t6']]}"
+        assert last_r["currentStage"] == "BEHAVIORAL"
+        # All technical turns should be ANSWERED
+        for tid in technical_turn_ids:
+            assert db.turns[tid]["status"] == "ANSWERED", f"{tid} should be ANSWERED but is {db.turns[tid]['status']}"
+
+
+@pytest.mark.asyncio
+async def test_regression_candidate_reply_binds_to_active_asked_turn_not_planned():
+    """Requirement 2: Candidate reply binds to active ASKED turn, never to a lower PLANNED turn."""
+    session_row = {
+        "id": "sess-anom",
+        "user_id": "usr-1",
+        "job_id": "job-1",
+        "status": "OPEN",
+        "plan_status": "LOCKED",
+    }
+    turns = [
+        {
+            "id": "t-asked",
+            "session_id": "sess-anom",
+            "turn_index": 2,
+            "status": "ASKED",
+            "question_snapshot": {"stage": "DEEP_DIVE", "questionText": "Active question"},
+        },
+        {
+            "id": "t-planned",
+            "session_id": "sess-anom",
+            "turn_index": 1,
+            "status": "PLANNED",
+            "question_snapshot": {"stage": "VALIDATE", "questionText": "Older planned question"},
+        },
+    ]
+    db = MockChatSession(session_row, turns)
+    db.messages.append({
+        "id": "asst-msg-1",
+        "session_id": "sess-anom",
+        "role": "assistant",
+        "content": "Active question",
+        "turn_id": "t-asked",
+        "message_type": "MAIN_QUESTION",
+        "sequence": 1,
+        "created_at": datetime.now(UTC),
+    })
+
+    with patch("src.modules.interviews.application.runtime.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = '{"intent": "ANSWER", "sufficiency_status": "SUFFICIENT"}'
+        res = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="msg-1",
+            content="This is my detailed answer to the active question. I used a distributed caching layer with Redis and Kafka to decouple the read and write paths, reducing p99 latency significantly.",
+        )
+        assert res["userMessage"]["turnId"] == "t-asked"
+        assert res["turnStatus"]["turnId"] == "t-asked"
+        assert db.turns["t-asked"]["status"] == "ANSWERED"
+        assert db.turns["t-planned"]["status"] == "PLANNED"
+
+
+@pytest.mark.asyncio
+async def test_regression_exactly_one_asked_turn_invariant():
+    """Requirement 3: Exactly one ASKED turn allowed. Fails safely on multiple or zero ASKED."""
+    session_row = {"id": "sess-inv", "status": "OPEN", "plan_status": "LOCKED"}
+
+    # Case A: Multiple ASKED turns
+    turns_multi = [
+        {"id": "t1", "session_id": "sess-inv", "turn_index": 0, "status": "ASKED", "question_snapshot": {"stage": "WARM_UP"}},
+        {"id": "t2", "session_id": "sess-inv", "turn_index": 1, "status": "ASKED", "question_snapshot": {"stage": "VALIDATE"}},
+    ]
+    db_multi = MockChatSession(session_row, turns_multi)
+    with pytest.raises(ChatRuntimeError, match="đồng thời"):
+        await process_candidate_message(db_multi, session_row, client_message_id="m1", content="Hi")
+
+    # Case B: Zero ASKED turns with PLANNED turns remaining
+    turns_zero = [
+        {"id": "t1", "session_id": "sess-inv", "turn_index": 0, "status": "PLANNED", "question_snapshot": {"stage": "WARM_UP"}},
+    ]
+    db_zero = MockChatSession(session_row, turns_zero)
+    with pytest.raises(ChatRuntimeError, match="Không có lượt câu hỏi nào đang ở trạng thái ASKED"):
+        await process_candidate_message(db_zero, session_row, client_message_id="m1", content="Hi")
+
+    # Case C: Behavioral ASKED while technical is still PLANNED
+    turns_corrupted = [
+        {"id": "t-tech", "session_id": "sess-inv", "turn_index": 0, "status": "PLANNED", "question_snapshot": {"stage": "DEEP_DIVE"}},
+        {"id": "t-beh", "session_id": "sess-inv", "turn_index": 1, "status": "ASKED", "question_snapshot": {"stage": "BEHAVIORAL"}},
+    ]
+    db_corrupted = MockChatSession(session_row, turns_corrupted)
+    db_corrupted.messages.append({
+        "id": "asst-msg",
+        "session_id": "sess-inv",
+        "role": "assistant",
+        "content": "Tell me about conflict",
+        "turn_id": "t-beh",
+        "sequence": 1,
+        "message_type": "MAIN_QUESTION",
+        "created_at": datetime.now(UTC),
+    })
+    with pytest.raises(ChatRuntimeError, match="khi còn câu hỏi kỹ thuật chưa hoàn thành"):
+        await process_candidate_message(db_corrupted, session_row, client_message_id="m1", content="Hi")
+
+
+@pytest.mark.asyncio
+async def test_regression_cannot_complete_session_if_behavioral_unanswered():
+    """Requirement 4: Behavioral not ANSWERED cannot complete session with COMPLETED."""
+    session_row = {"id": "sess-beh-unanswered", "status": "OPEN", "plan_status": "LOCKED"}
+    turns = [
+        {
+            "id": "t-tech",
+            "session_id": "sess-beh-unanswered",
+            "turn_index": 0,
+            "status": "ANSWERED",
+            "question_snapshot": {"stage": "DEEP_DIVE"},
+        },
+        {
+            "id": "t-beh",
+            "session_id": "sess-beh-unanswered",
+            "turn_index": 1,
+            "status": "PLANNED",
+            "question_snapshot": {"stage": "BEHAVIORAL"},
+        },
+    ]
+    db = MockChatSession(session_row, turns)
+    with pytest.raises(ChatRuntimeError, match="INVALID_SESSION_COMPLETION.*BEHAVIORAL"):
+        await complete_chat_session(db, session_row, reason="COMPLETED")
+
+    # But USER_ENDED is allowed (candidate voluntary abort)
+    res_abort = await complete_chat_session(db, session_row, reason="USER_ENDED")
+    assert res_abort["sessionStatus"] == "CLOSED"
+    assert res_abort["endReason"] == "USER_ENDED"
+
+
+@pytest.mark.asyncio
+async def test_regression_behavioral_answered_transitions_to_closing():
+    """Requirement 5: Behavioral answered transitions to CLOSING Q&A invitation,
+    and then wraps up cleanly when candidate has no further questions."""
+    session_row = {
+        "id": "sess-closing-flow",
+        "user_id": "usr-1",
+        "job_id": "job-1",
+        "status": "OPEN",
+        "plan_status": "LOCKED",
+        "duration_minutes": 25,
+        "started_at": datetime.now(UTC),
+    }
+    turns = [
+        {
+            "id": "t-beh",
+            "session_id": "sess-closing-flow",
+            "turn_index": 0,
+            "status": "PLANNED",
+            "question_snapshot": {"stage": "BEHAVIORAL", "questionText": "Tell me about a conflict."},
+        },
+    ]
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    assert db.turns["t-beh"]["status"] == "ASKED"
+
+    with patch("src.modules.interviews.application.runtime.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = '{"intent": "ANSWER", "sufficiency_status": "SUFFICIENT"}'
+        # Answer Behavioral -> transitions to CLOSING
+        res_beh = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="msg-beh",
+            content="I resolved the conflict by aligning on data metrics.",
+            elapsed_override_seconds=300,  # 25m - 5m = 20m remaining >= 180s
+        )
+        assert res_beh["currentStage"] == "CLOSING"
+        assert res_beh["action"] == "ASK_MAIN"
+        assert db.turns["t-beh"]["status"] == "ANSWERED"
+
+        # In CLOSING: candidate asks questions
+        mock_llm.return_value = "Tại INTERVIA chúng tôi áp dụng CI/CD hiện đại."
+        res_qna = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="msg-qna-1",
+            content="Công ty áp dụng quy trình CI/CD như thế nào?",
+            elapsed_override_seconds=360,
+        )
+        assert res_qna["currentStage"] == "CLOSING"
+        assert res_qna["sessionStatus"] == "OPEN"
+
+        # In CLOSING: candidate has no further questions -> wraps up session
+        res_wrap = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="msg-qna-2",
+            content="Mình nắm rõ rồi, mình không còn câu hỏi nào nữa. Cảm ơn bạn!",
+            elapsed_override_seconds=420,
+        )
+        assert res_wrap["sessionStatus"] == "CLOSED"
+        assert res_wrap["completed"] is True
+        assert res_wrap["endReason"] == "COMPLETED"
+        assert db.session_row["status"] == "CLOSED"
+        assert db.session_row["end_reason"] == "COMPLETED"
+
+
+# ---------------------------------------------------------------------------
+# Blocker regressions: pacing cutoff must close the room, not dead-end it
+# ---------------------------------------------------------------------------
+
+
+def _pacing_cutoff_fixture() -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """A technical turn in flight with a Behavioral turn still PLANNED."""
+    session_row = {
+        "id": "sess-pacing-cutoff",
+        "user_id": "usr-1",
+        "job_id": "job-1",
+        "resume_id": "cv-1",
+        "mode": "text",
+        "experience_type": "interview_chat",
+        "end_reason": None,
+        "locale": "vi-VN",
+        "status": "OPEN",
+        "plan_status": "LOCKED",
+        "duration_minutes": 25,
+        "metadata": {"closing_reserve_seconds": 60, "behavioral_reserve_seconds": 180},
+    }
+    turns = [
+        {
+            "id": "t-deep",
+            "session_id": "sess-pacing-cutoff",
+            "turn_index": 0,
+            "status": "PLANNED",
+            "question_version_id": "qver-deep",
+            "question_snapshot": {
+                "stage": "DEEP_DIVE",
+                "questionText": "Trình bày cách bạn tối ưu một truy vấn chậm?",
+                "taxonomyTarget": {"label": "SQL"},
+            },
+            "answer_text": None,
+        },
+        {
+            "id": "t-beh",
+            "session_id": "sess-pacing-cutoff",
+            "turn_index": 1,
+            "status": "PLANNED",
+            "question_version_id": None,
+            "question_snapshot": {
+                "stage": "BEHAVIORAL",
+                "questionText": "Kể về một lần bạn xử lý bất đồng trong nhóm.",
+                "taxonomyTarget": {"label": "Kỹ năng mềm"},
+            },
+            "answer_text": None,
+        },
+    ]
+    return session_row, turns
+
+
+@pytest.mark.asyncio
+async def test_pacing_cutoff_closes_session_instead_of_dead_ending():
+    """The <=90s cutoff must close the room, not 409 after phase 1 committed.
+
+    Raising INVALID_SESSION_COMPLETION here left the candidate message persisted,
+    the turn ASKED and every retry failing identically, with no way out of the
+    room except the manual end button.
+    """
+    session_row, turns = _pacing_cutoff_fixture()
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    with patch(
+        "src.modules.interviews.application.runtime.chat_runtime.generate_text",
+        new_callable=AsyncMock,
+    ) as mock_llm:
+        mock_llm.return_value = '{"intent": "ANSWER", "sufficiency_status": "SUFFICIENT"}'
+        res = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="pacing-msg-1",
+            content="Em dùng EXPLAIN ANALYZE rồi thêm index phù hợp cho cột lọc.",
+            # 1500s budget, 1440s elapsed -> 60s left, inside the <=90s cutoff
+            # but above the 30s hard timeout: the Behavioral question is asked.
+            elapsed_override_seconds=1440,
+        )
+        assert res["sessionStatus"] == "OPEN"
+        assert res["currentStage"] == "BEHAVIORAL"
+        assert db.turns["t-beh"]["status"] == "ASKED"
+
+        # The Behavioral answer lands after the hard timeout: the room closes.
+        res = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="pacing-msg-2",
+            content="Em từng bất đồng với đồng nghiệp về thiết kế, em đề xuất đo đạc rồi thống nhất.",
+            elapsed_override_seconds=1490,
+        )
+
+    assert res["sessionStatus"] == "CLOSED"
+    assert res["completed"] is True
+    # Time is what ran out, so the truthful label is HARD_TIMEOUT - never
+    # COMPLETED, because the Behavioral turn was never asked.
+    assert res["endReason"] == "HARD_TIMEOUT"
+    assert db.session_row["end_reason"] == "HARD_TIMEOUT"
+    # The Behavioral answer is kept and will be graded.
+    assert db.turns["t-beh"]["status"] == "ANSWERED"
+    assert db.turns["t-beh"]["answer_text"]
+
+    wrap_ups = [m for m in db.messages if m.get("message_type") == "WRAP_UP"]
+    assert len(wrap_ups) == 1
+    # The transcript must not claim a full agenda was covered.
+    assert "hoàn thành tất cả" not in wrap_ups[0]["content"]
+    assert wrap_ups[0]["content"] in TIMEOUT_VI
+    assert db.turns["t-deep"]["status"] == "ANSWERED"
+
+
+@pytest.mark.asyncio
+async def test_session_clock_ignores_single_answer_duration():
+    """`duration_seconds` is one answer's length, never the session clock.
+
+    Treating it as session elapsed restarted the budget on every turn, so a
+    session that had actually expired kept handing out new questions.
+    """
+    session_row, turns = _pacing_cutoff_fixture()
+    session_row["id"] = "sess-clock"
+    for turn in turns:
+        turn["session_id"] = "sess-clock"
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    # The interview really started 1480s ago: 20s left, past the 30s hard timeout.
+    session_row["started_at"] = datetime.now(UTC) - timedelta(seconds=1480)
+
+    with patch(
+        "src.modules.interviews.application.runtime.chat_runtime.generate_text",
+        new_callable=AsyncMock,
+    ) as mock_llm:
+        mock_llm.return_value = '{"intent": "ANSWER", "sufficiency_status": "SUFFICIENT"}'
+        res = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="clock-msg-1",
+            content="Câu trả lời ngắn.",
+            duration_seconds=5,  # this answer took 5s; the session is still over
+        )
+
+    assert res["sessionStatus"] == "CLOSED"
+    assert res["endReason"] == "HARD_TIMEOUT"
+
+
+@pytest.mark.asyncio
+async def test_early_stop_unrelated_to_time_is_not_labelled_a_timeout():
+    """Stopping early for a non-time reason must not be reported as HARD_TIMEOUT.
+
+    A malformed frozen turn (here: a Behavioral turn with no question text) makes
+    the engine run out of askable questions while most of the budget is still
+    unspent. Calling that a timeout would hide a real defect behind a pacing
+    explanation, and the wrap-up must not blame the clock either.
+    """
+    session_row, turns = _pacing_cutoff_fixture()
+    session_row["id"] = "sess-early-stop"
+    for turn in turns:
+        turn["session_id"] = "sess-early-stop"
+    # Unusable Behavioral turn: the engine can never pop it.
+    turns[1]["question_snapshot"]["questionText"] = ""
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    with patch(
+        "src.modules.interviews.application.runtime.chat_runtime.generate_text",
+        new_callable=AsyncMock,
+    ) as mock_llm:
+        mock_llm.return_value = '{"intent": "ANSWER", "sufficiency_status": "SUFFICIENT"}'
+        res = await process_candidate_message(
+            db,
+            session_row,
+            client_message_id="early-stop-1",
+            # Long enough that the engine treats it as a sufficient answer and
+            # advances instead of probing.
+            content=(
+                "Em bắt đầu bằng EXPLAIN ANALYZE để xem kế hoạch thực thi thật, xác định bước nào "
+                "đang quét toàn bảng, sau đó thêm index phù hợp cho các cột lọc và cột sắp xếp, "
+                "rồi đo lại thời gian truy vấn trước và sau khi thay đổi để xác nhận cải thiện."
+            ),
+            # 1500s budget, 120s elapsed -> 1380s left, far above the 240s reserve.
+            elapsed_override_seconds=120,
+        )
+
+    assert res["sessionStatus"] == "CLOSED"
+    assert res["endReason"] == "TECHNICAL_FAILURE"
+
+    wrap_ups = [m for m in db.messages if m.get("message_type") == "WRAP_UP"]
+    assert len(wrap_ups) == 1
+    assert "Thời lượng của phiên đã hết" not in wrap_ups[0]["content"]
+    assert "kết thúc sớm" in wrap_ups[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_regression_behavioral_reserve_jump_skips_pending_technical_turns():
+    """B1: the behavioral reserve jump must not deadlock the session.
+
+    When the engine jumps to BEHAVIORAL with technical turns still PLANNED,
+    those turns are settled as SKIPPED so the candidate's behavioral answer is
+    accepted and the session can still close normally.
+    """
+    session_row = {
+        "id": "sess-reserve-jump",
+        "status": "OPEN",
+        "plan_status": "LOCKED",
+        "locale": "en-US",
+        "duration_minutes": 25,
+        "started_at": datetime.now(UTC),
+        "metadata": {},
+    }
+
+    def _turn(index: int, stage: str) -> dict[str, Any]:
+        return {
+            "id": f"t{index}",
+            "session_id": "sess-reserve-jump",
+            "turn_index": index,
+            "status": "PLANNED",
+            "question_version_id": f"qv{index}",
+            "question_snapshot": {"stage": stage, "questionText": f"Question {stage} {index}?"},
+            "answer_text": None,
+        }
+
+    turns = [
+        _turn(0, "WARM_UP"),
+        _turn(1, "VALIDATE"),
+        _turn(2, "DEEP_DIVE"),
+        _turn(3, "DEEP_DIVE"),
+        _turn(4, "BEHAVIORAL"),
+    ]
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    async def _generator(**_kwargs):
+        return '{"intent":"ANSWER","sufficiency_status":"SUFFICIENT","acknowledgement":"Thanks.","score":7}'
+
+    engine = InterviewCoreEngine(ai_generator=_generator)
+    answer = (
+        "This is a long and detailed answer that covers the architecture, "
+        "the trade offs and the failure handling in depth."
+    )
+
+    await process_candidate_message(
+        db, session_row, client_message_id="c1", content=answer,
+        core_engine=engine, elapsed_override_seconds=100,
+    )
+    # VALIDATE answered with 200s left: inside the 240s behavioral reserve.
+    res = await process_candidate_message(
+        db, session_row, client_message_id="c2", content=answer,
+        core_engine=engine, elapsed_override_seconds=1300,
+    )
+    assert res["currentStage"] == "BEHAVIORAL"
+    assert db.turns["t4"]["status"] == "ASKED"
+    assert db.turns["t2"]["status"] == "SKIPPED"
+    assert db.turns["t3"]["status"] == "SKIPPED"
+
+    # Previously raised INVALID_TURN_STATE and every later message returned 409.
+    res_beh = await process_candidate_message(
+        db, session_row, client_message_id="c3", content=answer,
+        core_engine=engine, elapsed_override_seconds=1330,
+    )
+    assert db.turns["t4"]["status"] == "ANSWERED"
+    assert res_beh["sessionStatus"] in {"OPEN", "CLOSED"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "farewell",
+    [
+        "Dạ em hết câu hỏi rồi, mình kết thúc tại đây nhé",
+        "No more questions, we can end the interview here",
+    ],
+)
+async def test_regression_closing_farewell_completes_instead_of_abort(farewell):
+    """H1: wrapping up in CLOSING is a normal ending, not a request to abort."""
+    session_row = {
+        "id": "sess-closing-farewell",
+        "status": "OPEN",
+        "plan_status": "LOCKED",
+        "duration_minutes": 25,
+        "started_at": datetime.now(UTC),
+    }
+    turns = [
+        {
+            "id": "t-beh",
+            "session_id": "sess-closing-farewell",
+            "turn_index": 0,
+            "status": "PLANNED",
+            "question_snapshot": {"stage": "BEHAVIORAL", "questionText": "Tell me about a conflict."},
+        },
+    ]
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    with patch("src.modules.interviews.application.runtime.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = '{"intent": "ANSWER", "sufficiency_status": "SUFFICIENT"}'
+        res_beh = await process_candidate_message(
+            db, session_row, client_message_id="msg-beh",
+            content="I resolved the conflict by aligning on data metrics.",
+            elapsed_override_seconds=300,
+        )
+        assert res_beh["currentStage"] == "CLOSING"
+
+        res = await process_candidate_message(
+            db, session_row, client_message_id="msg-bye", content=farewell,
+            elapsed_override_seconds=360,
+        )
+    assert res["action"] != "CONFIRM_ABORT"
+    assert res["endReason"] == "COMPLETED"
+    assert db.session_row["end_reason"] == "COMPLETED"
+
+
+def test_abort_detection_ignores_technical_answers():
+    """H1: technical vocabulary like "phải dừng lại" or "end the session" is not an abort."""
+    from src.modules.interviews.core.conversation.turn_engine import is_abort_request
+
+    for answer in [
+        "Khi lỗi xảy ra thì service phải dừng lại và rollback toàn bộ transaction.",
+        "Em hủy request cũ rồi mình kết thúc kết nối để giải phóng pool.",
+        "We end the session when the token expires.",
+        "We need to stop the consumer before redeploying the schema.",
+    ]:
+        assert not is_abort_request(answer), answer
+    for request in ["em xin phép dừng ạ", "Tôi muốn dừng phỏng vấn tại đây.", "I need to stop here."]:
+        assert is_abort_request(request), request
+
+
+def _in_flight_fixture(sent_seconds_ago: float) -> tuple[MockChatSession, dict[str, Any]]:
+    session_row = {
+        "id": "sess-in-flight",
+        "status": "OPEN",
+        "plan_status": "LOCKED",
+        "duration_minutes": 25,
+        "started_at": datetime.now(UTC),
+    }
+    turns = [
+        {
+            "id": "t-1",
+            "session_id": "sess-in-flight",
+            "turn_index": 0,
+            "status": "ASKED",
+            "question_snapshot": {"stage": "DEEP_DIVE", "questionText": "Q1?"},
+        },
+    ]
+    messages = [
+        {
+            "id": "m-asst", "session_id": "sess-in-flight", "role": "assistant", "content": "Q1?",
+            "turn_id": "t-1", "message_type": "MAIN_QUESTION", "sequence": 1,
+            "client_message_id": None, "created_at": datetime.now(UTC) - timedelta(seconds=600),
+        },
+        {
+            "id": "m-user", "session_id": "sess-in-flight", "role": "user", "content": "first answer",
+            "turn_id": "t-1", "message_type": "CANDIDATE_ANSWER", "sequence": 2,
+            "client_message_id": "c-first",
+            "created_at": datetime.now(UTC) - timedelta(seconds=sent_seconds_ago),
+        },
+    ]
+    return MockChatSession(session_row, turns, messages), session_row
+
+
+@pytest.mark.asyncio
+async def test_regression_message_while_reply_in_flight_is_rejected():
+    """H2: a second message must not take the sequence reserved for the pending reply."""
+    db, session_row = _in_flight_fixture(sent_seconds_ago=5)
+    with pytest.raises(ChatRuntimeError, match="IN_PROGRESS"):
+        await process_candidate_message(db, session_row, client_message_id="c-second", content="second")
+    assert [m["sequence"] for m in db.messages] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_regression_retry_without_reply_resumes_same_event():
+    """H4: a stale Phase-1 write resumes without inserting the answer twice."""
+    db, session_row = _in_flight_fixture(sent_seconds_ago=5)
+    with pytest.raises(ChatRuntimeError, match="IN_PROGRESS"):
+        await process_candidate_message(db, session_row, client_message_id="c-first", content="first answer")
+
+    stale_db, stale_row = _in_flight_fixture(sent_seconds_ago=3600)
+    async def _generator(**_kwargs):
+        return '{"intent":"ANSWER","sufficiency_status":"INSUFFICIENT","acknowledgement":"Ok.","probe_question":"Chi tiết hơn?","score":5}'
+
+    result = await process_candidate_message(
+        stale_db,
+        stale_row,
+        client_message_id="c-first",
+        content="first answer",
+        core_engine=InterviewCoreEngine(ai_generator=_generator),
+    )
+    assert result["assistantResponse"] is not None
+    assert len([m for m in stale_db.messages if m["role"] == "user"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_regression_reply_is_not_written_after_session_closed_mid_llm():
+    """H2: ending the session while the reply is generated must not reopen or overwrite it."""
+    db, session_row = _in_flight_fixture(sent_seconds_ago=3600)
+
+    async def _closing_generator(**_kwargs):
+        db.session_row["status"] = "CLOSED"
+        db.session_row["end_reason"] = "USER_ENDED"
+        return '{"intent":"ANSWER","sufficiency_status":"SUFFICIENT","acknowledgement":"Ok.","score":7}'
+
+    with pytest.raises(ChatRuntimeError, match="SESSION_CLOSED"):
+        await process_candidate_message(
+            db, session_row, client_message_id="c-first",
+            content="first answer",
+            core_engine=InterviewCoreEngine(ai_generator=_closing_generator),
+        )
+    assert db.session_row["end_reason"] == "USER_ENDED"
+    assert not any(m["role"] == "assistant" and m["sequence"] > 2 for m in db.messages)
+
+
+@pytest.mark.asyncio
+async def test_session_clock_starts_when_the_interview_starts():
+    """M1: time spent creating, planning and freezing is not interview time."""
+    session_row, turns = _pacing_cutoff_fixture()
+    session_row["id"] = "sess-clock-start"
+    for turn in turns:
+        turn["session_id"] = "sess-clock-start"
+    for turn in turns:
+        turn["status"] = "PLANNED"
+    # Row created 10 minutes ago; planning took that long.
+    session_row["started_at"] = datetime.now(UTC) - timedelta(minutes=10)
+    db = MockChatSession(session_row, turns, [])
+    await start_chat_session(db, session_row)
+    assert (datetime.now(UTC) - session_row["started_at"]).total_seconds() < 5
+
+
+@pytest.mark.asyncio
+async def test_abandoned_session_is_closed_when_the_candidate_returns():
+    """M1: an OPEN session long past its budget is closed as HARD_TIMEOUT on resume."""
+    session_row, turns = _pacing_cutoff_fixture()
+    session_row["id"] = "sess-abandoned"
+    for turn in turns:
+        turn["session_id"] = "sess-abandoned"
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    # Candidate left; comes back an hour after a 25-minute session started.
+    session_row["started_at"] = datetime.now(UTC) - timedelta(minutes=85)
+    await start_chat_session(db, session_row)
+    assert db.session_row["status"] == "CLOSED"
+    assert db.session_row["end_reason"] == "HARD_TIMEOUT"
+
+
+@pytest.mark.asyncio
+async def test_runtime_read_closes_a_five_minute_chat_without_another_answer():
+    session_row, turns = _pacing_cutoff_fixture()
+    session_row["duration_minutes"] = 5
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    session_row["started_at"] = datetime.now(UTC) - timedelta(minutes=5, milliseconds=1)
+    result = await get_chat_runtime(db, session_row)
+    assert result["sessionStatus"] == "CLOSED"
+    assert result["endReason"] == "HARD_TIMEOUT"
+    assert result["workingMemory"]["remaining_time"] == 0
+    wraps = [m for m in db.messages if m["message_type"] == "WRAP_UP"]
+    assert len(wraps) == 1
+    assert "Thời gian phỏng vấn đã hết" in wraps[0]["content"]
+    assert not any(m["role"] == "user" for m in db.messages)
+    again = await get_chat_runtime(db, session_row)
+    assert again["endReason"] == "HARD_TIMEOUT"
+    assert len([m for m in db.messages if m["message_type"] == "WRAP_UP"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_does_not_close_before_the_selected_deadline():
+    session_row, turns = _pacing_cutoff_fixture()
+    session_row["duration_minutes"] = 5
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    session_row["started_at"] = datetime.now(UTC) - timedelta(minutes=4, seconds=59)
+    result = await get_chat_runtime(db, session_row)
+    assert result["sessionStatus"] == "OPEN"
+    assert datetime.fromisoformat(result["expiresAt"]) > datetime.fromisoformat(result["serverTime"])
+
+
+@pytest.mark.asyncio
+async def test_late_chat_answer_is_not_saved_or_sent_to_the_model():
+    session_row, turns = _pacing_cutoff_fixture()
+    session_row["duration_minutes"] = 5
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    session_row["started_at"] = datetime.now(UTC) - timedelta(minutes=5, seconds=1)
+    generator = AsyncMock()
+    with pytest.raises(ChatRuntimeError, match="SESSION_CLOSED"):
+        await process_candidate_message(
+            db, session_row, client_message_id="late", content="Too late",
+            core_engine=InterviewCoreEngine(ai_generator=generator),
+        )
+    generator.assert_not_called()
+    assert db.session_row["end_reason"] == "HARD_TIMEOUT"
+    assert not any(m.get("client_message_id") == "late" for m in db.messages)
+
+
+@pytest.mark.asyncio
+async def test_model_finishing_after_deadline_cannot_append_a_new_question():
+    session_row, turns = _pacing_cutoff_fixture()
+    session_row["duration_minutes"] = 5
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    session_row["started_at"] = datetime.now(UTC) - timedelta(minutes=1)
+
+    async def slow_generator(**_kwargs):
+        session_row["started_at"] = datetime.now(UTC) - timedelta(minutes=5, seconds=1)
+        return '{"intent":"ANSWER","sufficiency_status":"SUFFICIENT","acknowledgement":"Thanks","score":7}'
+
+    with pytest.raises(ChatRuntimeError, match="SESSION_CLOSED"):
+        await process_candidate_message(
+            db, session_row, client_message_id="in-time", content="Answer submitted in time",
+            core_engine=InterviewCoreEngine(ai_generator=slow_generator),
+        )
+    assert db.session_row["end_reason"] == "HARD_TIMEOUT"
+    assert db.turns["t-deep"]["answer_text"] == "Answer submitted in time"
+    assert db.turns["t-beh"]["status"] == "PLANNED"
+    assert len([m for m in db.messages if m["message_type"] == "MAIN_QUESTION"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_three_minute_demo_session_reaches_the_technical_question():
+    """Demo sessions: pacing reserves scale with duration.
+
+    With the fixed 60s closing + 180s behavioral reserve, a 3-minute session
+    jumped to BEHAVIORAL after about a minute and skipped every technical turn.
+    """
+    session_row = {
+        "id": "sess-demo", "status": "OPEN", "plan_status": "LOCKED", "locale": "en-US",
+        "duration_minutes": 3, "started_at": datetime.now(UTC), "metadata": {},
+    }
+
+    def _turn(index: int, stage: str) -> dict[str, Any]:
+        return {
+            "id": f"d{index}", "session_id": "sess-demo", "turn_index": index, "status": "PLANNED",
+            "question_version_id": f"qv{index}",
+            "question_snapshot": {"stage": stage, "questionText": f"Question {stage} {index}?"},
+            "answer_text": None,
+        }
+
+    turns = [_turn(0, "WARM_UP"), _turn(1, "VALIDATE"), _turn(2, "DEEP_DIVE"), _turn(3, "BEHAVIORAL")]
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    async def _generator(**_kwargs):
+        return '{"intent":"ANSWER","sufficiency_status":"SUFFICIENT","acknowledgement":"Thanks.","score":7}'
+
+    engine = InterviewCoreEngine(ai_generator=_generator)
+    answer = "A detailed answer covering the architecture, the trade offs and failure handling in depth."
+    for client_id, elapsed in (("c1", 20), ("c2", 50), ("c3", 90), ("c4", 130)):
+        res = await process_candidate_message(
+            db, session_row, client_message_id=client_id, content=answer,
+            core_engine=engine, elapsed_override_seconds=elapsed,
+        )
+
+    assert db.turns["d2"]["status"] == "ANSWERED"  # the technical question was asked and answered
+    assert db.turns["d3"]["status"] == "ANSWERED"
+    assert res["currentStage"] == "CLOSING"
+
+    res = await process_candidate_message(
+        db, session_row, client_message_id="c5", content="No more questions, thank you.",
+        core_engine=engine, elapsed_override_seconds=150,
+    )
+    assert res["endReason"] == "COMPLETED"
+
+
+class _JobAwareMockSession(MockChatSession):
+    """MockChatSession that also serves the posting row used by the closing Q&A."""
+
+    job_row = {
+        "title": "Backend Engineer", "company_name": "Acme Fintech", "location": "Hà Nội",
+        "work_mode": "hybrid", "employment_type": "full_time", "seniority": "mid",
+        "salary_min": None, "salary_max": None, "salary_currency": None, "salary_negotiable": True,
+        "description": "Xây dựng API thanh toán.", "requirements": "Python, PostgreSQL.",
+    }
+
+    async def execute(self, statement: Any, params: dict[str, Any] | None = None):
+        if "FROM job_descriptions" in str(statement) and "company_name" in str(statement):
+            return MockResult([self.job_row])
+        return await super().execute(statement, params)
+
+
+async def _reach_closing(db, session_row) -> None:
+    await start_chat_session(db, session_row)
+    res = await process_candidate_message(
+        db, session_row, client_message_id="msg-beh",
+        content="I resolved the conflict by aligning on data metrics.",
+        elapsed_override_seconds=300,
+    )
+    assert res["currentStage"] == "CLOSING"
+
+
+def _closing_fixture(session_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    session_row = {
+        "id": session_id, "job_id": "job-1", "status": "OPEN", "plan_status": "LOCKED",
+        "duration_minutes": 25, "started_at": datetime.now(UTC),
+    }
+    turns = [{
+        "id": "t-beh", "session_id": session_id, "turn_index": 0, "status": "PLANNED",
+        "question_snapshot": {"stage": "BEHAVIORAL", "questionText": "Tell me about a conflict."},
+    }]
+    return session_row, turns
+
+
+@pytest.mark.asyncio
+async def test_closing_qna_is_capped_at_two_questions():
+    """The reverse Q&A used to run until the session's last 90s."""
+    session_row, turns = _closing_fixture("sess-qna-cap")
+    db = _JobAwareMockSession(session_row, turns)
+
+    with patch("src.modules.interviews.application.runtime.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = '{"intent": "ANSWER", "sufficiency_status": "SUFFICIENT"}'
+        await _reach_closing(db, session_row)
+
+        mock_llm.return_value = "Mô tả công việc chưa đề cập; bộ phận tuyển dụng sẽ trao đổi thêm."
+        first = await process_candidate_message(
+            db, session_row, client_message_id="qna-1", content="Công ty có OT không?",
+            elapsed_override_seconds=330,
+        )
+        assert first["sessionStatus"] == "OPEN"
+
+        second = await process_candidate_message(
+            db, session_row, client_message_id="qna-2", content="Team có bao nhiêu người?",
+            elapsed_override_seconds=360,
+        )
+    # The second question is answered, then the interview closes in the same reply.
+    assert second["sessionStatus"] == "CLOSED"
+    assert second["endReason"] == "COMPLETED"
+    assert "trao đổi thêm" in second["assistantResponse"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_closing_qna_stops_when_its_time_budget_is_spent():
+    session_row, turns = _closing_fixture("sess-qna-time")
+    db = _JobAwareMockSession(session_row, turns)
+
+    with patch("src.modules.interviews.application.runtime.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = '{"intent": "ANSWER", "sufficiency_status": "SUFFICIENT"}'
+        await _reach_closing(db, session_row)
+        closing_turn = next(t for t in db.turns.values() if t["question_snapshot"].get("stage") == "CLOSING")
+        closing_turn["started_at"] = datetime.now(UTC) - timedelta(seconds=200)  # budget is 180s
+
+        mock_llm.return_value = "Vị trí làm việc hybrid tại Hà Nội."
+        res = await process_candidate_message(
+            db, session_row, client_message_id="qna-1", content="Làm việc ở đâu ạ?",
+            elapsed_override_seconds=520,
+        )
+    assert res["sessionStatus"] == "CLOSED"
+    assert res["endReason"] == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_closing_qna_answers_only_from_the_job_posting():
+    """Answers used to describe a fictional company ("INTERVIA") with an invented stack."""
+    session_row, turns = _closing_fixture("sess-qna-grounded")
+    db = _JobAwareMockSession(session_row, turns)
+
+    with patch("src.modules.interviews.application.runtime.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = '{"intent": "ANSWER", "sufficiency_status": "SUFFICIENT"}'
+        await _reach_closing(db, session_row)
+        mock_llm.return_value = "Công ty làm việc hybrid tại Hà Nội."
+        await process_candidate_message(
+            db, session_row, client_message_id="qna-1", content="Công ty dùng stack gì?",
+            elapsed_override_seconds=330,
+        )
+
+    instructions = mock_llm.call_args.kwargs["instructions"]
+    assert "Acme Fintech" in instructions
+    assert "Python, PostgreSQL." in instructions
+    assert "không bịa" in instructions.lower()
+    assert "INTERVIA" not in instructions
+
+
+@pytest.mark.asyncio
+async def test_runtime_current_turn_is_the_asked_turn_not_lowest_planned(mock_session_data):
+    """DEEP_DIVE turns are drained before a lower-index CHALLENGE turn, so the
+    turn being answered can sit after a PLANNED one; the runtime must report it."""
+    session_row, _ = mock_session_data
+    turns = [
+        {"id": "t-dd", "session_id": "sess-123", "turn_index": 3, "status": "ANSWERED",
+         "question_version_id": "q3", "question_snapshot": {"stage": "DEEP_DIVE"}, "answer_text": "ok"},
+        {"id": "t-ch", "session_id": "sess-123", "turn_index": 4, "status": "PLANNED",
+         "question_version_id": "q4", "question_snapshot": {"stage": "CHALLENGE"}, "answer_text": None},
+        {"id": "t-json", "session_id": "sess-123", "turn_index": 5, "status": "ASKED",
+         "question_version_id": "q5", "question_snapshot": {"stage": "DEEP_DIVE"}, "answer_text": None},
+    ]
+    db = MockChatSession(session_row, turns)
+
+    runtime = await get_chat_runtime(db, session_row)
+
+    assert runtime["currentTurn"]["turnId"] == "t-json"
+    assert runtime["currentTurn"]["stage"] == "DEEP_DIVE"
+    assert runtime["currentTurnIndex"] == 5
+
+
+@pytest.mark.asyncio
+async def test_pinned_question_uses_the_names_the_interviewer_speaks(monkeypatch):
+    from src.modules.interviews.application.runtime import chat_runtime
+
+    async def names(_db, _session_id):
+        return "Nguyễn Thị Thanh Hiền", "Hiền"
+
+    monkeypatch.setattr(chat_runtime, "_candidate_names", names)
+    monkeypatch.setenv("INTERVIEWER_SPEECH_V2", "0")
+    session = {"id": "s1", "locale": "vi-VN"}
+    warmup = {"question_snapshot": {"stableKey": "warmup-intro", "stage": "WARM_UP",
+                                    "questionText": "Chào bạn, mình là người phỏng vấn. Bạn giới thiệu ngắn nhé?"}}
+    technical = {"question_snapshot": {"stage": "DEEP_DIVE", "questionText": "Ở dự án X, bạn làm phần nào?"}}
+
+    # An older snapshot that still greets.
+    assert await chat_runtime._displayed_question_text(None, session, warmup) == (
+        "Chào Hiền, mình là người phỏng vấn. Hiền giới thiệu ngắn nhé?"
+    )
+    new_warmup = {"question_snapshot": {"stableKey": "warmup-intro", "stage": "WARM_UP",
+                                        "questionText": "Bạn giới thiệu ngắn về mình nhé?"}}
+    assert await chat_runtime._displayed_question_text(None, session, new_warmup) == "Hiền giới thiệu ngắn về mình nhé?"
+    assert await chat_runtime._displayed_question_text(None, session, technical) == "Ở dự án X, Hiền làm phần nào?"
+    english = {"id": "s1", "locale": "en-US"}
+    assert await chat_runtime._displayed_question_text(None, english, technical) == "Ở dự án X, bạn làm phần nào?"
+    # Speech v2: the card shows what was said, the greeting named and the rest "bạn".
+    monkeypatch.setenv("INTERVIEWER_SPEECH_V2", "1")
+    assert await chat_runtime._displayed_question_text(None, session, warmup) == (
+        "Chào Hiền, mình là người phỏng vấn. Bạn giới thiệu ngắn nhé?"
+    )
+    assert await chat_runtime._displayed_question_text(None, session, technical) == "Ở dự án X, bạn làm phần nào?"
+
+
+# --- Gọi tên (25/10): lúc chào và thỉnh thoảng khi chuyển phần -----------------
+
+
+def test_the_name_goes_into_a_stage_transition_only_now_and_then(monkeypatch) -> None:
+    from src.modules.interviews.application.runtime.chat_runtime import _name_in_transition
+
+    transition = "Phần cuối, mình hỏi về cách bạn làm việc nhóm nhé."
+    message = f"Ừm, mình hiểu ý bạn.\n\n{transition} Kể một lần bạn bất đồng với bạn bè trong team?"
+    named = _name_in_transition(message, transition, "Hiền", ["Chào bạn.", "À, vậy là khoá dòng."])
+    assert named == (
+        "Ừm, mình hiểu ý bạn.\n\nPhần cuối, mình hỏi về cách Hiền làm việc nhóm nhé. "
+        "Kể một lần bạn bất đồng với bạn bè trong team?"
+    )
+    # Named in one of the last messages (the greeting): keep "bạn".
+    assert _name_in_transition(message, transition, "Hiền", ["Chào Hiền, mình là…"]) == message
+    assert _name_in_transition(message, "Giờ mình đi vào phần kỹ thuật nhé.", "Hiền", []) == message
+    assert _name_in_transition("Các bạn bè.\n\nx", "Các bạn bè.", "Hiền", []) == "Các bạn bè.\n\nx"
+    monkeypatch.setenv("INTERVIEWER_SPEECH_V2", "0")
+    assert _name_in_transition(message, transition, "Hiền", []) == message
+
+
+def test_a_vietnamese_name_without_diacritics_is_not_used(monkeypatch) -> None:
+    from src.modules.interviews.application.runtime.chat_runtime import _speakable_names
+
+    assert _speakable_names("Hien", "Hien") == (None, None)
+    assert _speakable_names("Nguyen Thi Hien", "Hien") == (None, None)
+    assert _speakable_names("Nguyễn Thị Hiền", "Hiền") == ("Nguyễn Thị Hiền", "Hiền")
+    assert _speakable_names("John Smith", "Smith") == ("John Smith", "Smith")
+    monkeypatch.setenv("INTERVIEWER_SPEECH_V2", "0")
+    assert _speakable_names("Hien", "Hien") == ("Hien", "Hien")
+
+
+class _Rows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def mappings(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _ContentDB:
+    def __init__(self, contents):
+        self.contents = contents
+
+    async def execute(self, *_args, **_kwargs):
+        return _Rows([{"content": c} for c in reversed(self.contents)])
+
+
+@pytest.mark.asyncio
+async def test_a_line_said_with_the_name_still_counts_as_just_said() -> None:
+    """Buổi thật: câu đã lưu có tên, câu dự phòng có "bạn", nên chống lặp trượt."""
+    from src.modules.interviews.application.runtime.chat_runtime import _recent_interviewer_lines
+    from src.modules.interviews.core.dialogue.policy import ACK_FALLBACK_VI, pick_variant
+
+    db = _ContentDB(["Ừm, mình hiểu ý Hiền.\n\nCâu hỏi?"])
+    lines = await _recent_interviewer_lines(db, "s1", call_name="Hiền")
+    assert lines == ["Ừm, mình hiểu ý bạn."]
+    for i in range(50):
+        assert pick_variant(ACK_FALLBACK_VI, f"s:{i}", lines) != "Ừm, mình hiểu ý bạn."

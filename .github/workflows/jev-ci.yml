@@ -1,0 +1,54 @@
+name: Jev Matching CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/jev-ambiguity-analyzer
+    paths:
+      - "src/modules/matching/**"
+      - "tests/modules/matching/**"
+      - "pyproject.toml"
+      - ".github/workflows/jev-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  jev-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,matching]"
+
+      - name: Run Jev clarification unit tests
+        run: |
+          pytest -q tests/modules/matching/test_jev_clarification.py
+
+      - name: Run Jev live smoke test
+        env:
+          RUN_LIVE_JEV_TESTS: "1"
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          TYPESAFE_BASE_URL: https://api.typesafe.ai
+          TYPESAFE_DEFAULT_MODEL: jev-latest
+          JEV_TIMEOUT_SECONDS: "15"
+        run: |
+          python - <<'PY'
+          import os
+          if not os.getenv("TYPESAFE_API_KEY", "").strip():
+              raise SystemExit("TYPESAFE_API_KEY GitHub Actions secret is missing")
+          PY
+          pytest -q tests/modules/matching/test_jev_live.py

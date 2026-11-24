@@ -1,0 +1,2598 @@
+{
+  "evaluation": "jd-parser-semantic-deterministic-manifest_ai_adjudicated_golden_v1",
+  "metric_contract": {
+    "matching": "one-to-one token Dice similarity; unmatched expected/observed facts score zero",
+    "semantic_score": "mean of title similarity and F1 for applicable responsibilities, requirements, benefits",
+    "method_limit": "offline lexical paraphrase proxy, not an embedding or LLM judge",
+    "not_a_pass_fail_gate": true,
+    "gold_evidence_available": true
+  },
+  "generated_at": "2026-09-17T06:54:45.159527+00:00",
+  "dataset_dir": "D:\\NCKH\\DOC_AND_PLAN\\data\\eval\\jd",
+  "manifest": "fulltext_v1/manifests/manifest_ai_adjudicated_golden_v1.json",
+  "parser_mode": "deterministic",
+  "summary": {
+    "total": 50,
+    "macro_semantic_score": 0.2948,
+    "mean_title_similarity": 0.2709,
+    "valid_evidence_cases": 50,
+    "invalid_evidence_cases": 0,
+    "fields": {
+      "responsibilities": {
+        "evaluated_cases": 49,
+        "non_applicable_cases": 1,
+        "precision": 0.336,
+        "recall": 0.4307,
+        "f1": 0.3558
+      },
+      "requirements": {
+        "evaluated_cases": 49,
+        "non_applicable_cases": 1,
+        "precision": 0.32,
+        "recall": 0.3815,
+        "f1": 0.3212
+      },
+      "benefits": {
+        "evaluated_cases": 25,
+        "non_applicable_cases": 25,
+        "precision": 0.2001,
+        "recall": 0.1937,
+        "f1": 0.1849
+      }
+    }
+  },
+  "lowest_scoring_cases": [
+    {
+      "case_id": "jd-fulltext-en-it-001",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 12,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 8,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": "years of professional software engineer experience"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-004",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 7,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 5,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": "be unstoppable with us"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-007",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": "Senior Software Development Engineer",
+      "actual_title": "this role is  remote"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-019",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 3,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": "Manager, Data Analytics",
+      "actual_title": "with more than  subsidiaries and  boutiques montblanc is present all over the world"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-020",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": "Frontend Web Developer",
+      "actual_title": "designups is a nashville based design and interactive agency at designups we have a strong focus on elevating brands with our expertise in design and customer experience"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-023",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 11,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": "Data Analyst/Manager",
+      "actual_title": "manage relationship with hit teams at lead health home hh partners to support clinical and operational staffs usage of hh emrs"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-025",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 5,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": "Software Developer",
+      "actual_title": "tldr"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-027",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 2,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": "Software Engineer in Test (SDET)",
+      "actual_title": null
+    },
+    {
+      "case_id": "jd-fulltext-en-it-030",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 7,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 5,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": "design implement and manage websites using wordpress"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-032",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 2,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": "design develop and test high quality software features by understanding user needs and implementing well designed code"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-046",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 7,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 12,
+          "observed_count": 4,
+          "precision": 0.1891,
+          "recall": 0.063,
+          "f1": 0.0945
+        }
+      },
+      "semantic_score": 0.0236,
+      "evidence_valid": true,
+      "expected_title": "Software Engineer - Mid Level",
+      "actual_title": "purpose of job"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-006",
+      "title_similarity": 0.1818,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 7,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 11,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.0455,
+      "evidence_valid": true,
+      "expected_title": "C++ Embedded Software Engineer",
+      "actual_title": "responsible for the design and development of software products for a variety software application"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-026",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 2,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 23,
+          "precision": 0.1537,
+          "recall": 0.5893,
+          "f1": 0.2438
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.0609,
+      "evidence_valid": true,
+      "expected_title": "Backend and Frontend Developer",
+      "actual_title": "at remoteteamcom we are building an hr tool for companies that have remote employees"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-041",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 5,
+          "observed_count": 20,
+          "precision": 0.25,
+          "recall": 1.0,
+          "f1": 0.4
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 5,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.1,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": "open to developing as a full stack engineer"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-031",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 2,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 33,
+          "precision": 0.268,
+          "recall": 0.8845,
+          "f1": 0.4114
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 8,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.1028,
+      "evidence_valid": true,
+      "expected_title": "Senior/Lead Software Engineer",
+      "actual_title": "kris riegle  executive recruiter  cybercoders"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-024",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 19,
+          "precision": 0.3158,
+          "recall": 1.0,
+          "f1": 0.48
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 11,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 7,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.12,
+      "evidence_valid": true,
+      "expected_title": "Software Developer",
+      "actual_title": "rtp north carolina or remote est only"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-011",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 2,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 15,
+          "observed_count": 35,
+          "precision": 0.3677,
+          "recall": 0.858,
+          "f1": 0.5148
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.1287,
+      "evidence_valid": true,
+      "expected_title": "Staff Software Engineer",
+      "actual_title": "your job"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-045",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 16,
+          "precision": 0.25,
+          "recall": 1.0,
+          "f1": 0.4
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 8,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.1333,
+      "evidence_valid": true,
+      "expected_title": "Software Engineering Leader",
+      "actual_title": "who we are"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-002",
+      "title_similarity": 0.5714,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 3,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.1429,
+      "evidence_valid": true,
+      "expected_title": "Data Analyst Manager",
+      "actual_title": "_data analyst manager must_"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-017",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 3,
+          "precision": 0.4572,
+          "recall": 0.3429,
+          "f1": 0.3919
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 18,
+          "observed_count": 2,
+          "precision": 0.4343,
+          "recall": 0.0483,
+          "f1": 0.0869
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.1596,
+      "evidence_valid": true,
+      "expected_title": "Data Analytics Senior Manager",
+      "actual_title": null
+    },
+    {
+      "case_id": "jd-fulltext-en-it-036",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 3,
+          "observed_count": 5,
+          "precision": 0.6,
+          "recall": 1.0,
+          "f1": 0.75
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 12,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.1875,
+      "evidence_valid": true,
+      "expected_title": "Creative Designer (web agency role)",
+      "actual_title": "candidate will provide daily updates to their seniors project manager"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-040",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 13,
+          "observed_count": 21,
+          "precision": 0.4745,
+          "recall": 0.7666,
+          "f1": 0.5862
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 12,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.1954,
+      "evidence_valid": true,
+      "expected_title": "JavaScript Backend Developer",
+      "actual_title": "our vision"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-037",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 18,
+          "observed_count": 21,
+          "precision": 0.7658,
+          "recall": 0.8934,
+          "f1": 0.8247
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.2749,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": "positions   midsr  lead architect"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-008",
+      "title_similarity": 0.8571,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 12,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 12,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.2857,
+      "evidence_valid": true,
+      "expected_title": "Senior Data Analyst",
+      "actual_title": "senior data analyst  data analytics team"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-049",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 22,
+          "observed_count": 22,
+          "precision": 0.9786,
+          "recall": 0.9786,
+          "f1": 0.9786
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 0.1,
+          "f1": 0.1818
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 3,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.2901,
+      "evidence_valid": true,
+      "expected_title": "Software Developer",
+      "actual_title": "overview"
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "jd-fulltext-en-it-001",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 12,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 8,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": "years of professional software engineer experience"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-002",
+      "title_similarity": 0.5714,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 3,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.1429,
+      "evidence_valid": true,
+      "expected_title": "Data Analyst Manager",
+      "actual_title": "_data analyst manager must_"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-003",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 8,
+          "observed_count": 8,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 8,
+          "observed_count": 8,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 9,
+          "observed_count": 9,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 1.0,
+      "evidence_valid": true,
+      "expected_title": "Project Manager, Municipal Infrastructure Services",
+      "actual_title": "project manager  municipal infrastructure services"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-004",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 7,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 5,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": "be unstoppable with us"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-005",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 22,
+          "observed_count": 26,
+          "precision": 0.8187,
+          "recall": 0.9675,
+          "f1": 0.8869
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.2956,
+      "evidence_valid": true,
+      "expected_title": "Firmware Test Engineer",
+      "actual_title": null
+    },
+    {
+      "case_id": "jd-fulltext-en-it-006",
+      "title_similarity": 0.1818,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 7,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 11,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.0455,
+      "evidence_valid": true,
+      "expected_title": "C++ Embedded Software Engineer",
+      "actual_title": "responsible for the design and development of software products for a variety software application"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-007",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": "Senior Software Development Engineer",
+      "actual_title": "this role is  remote"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-008",
+      "title_similarity": 0.8571,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 12,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 12,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.2857,
+      "evidence_valid": true,
+      "expected_title": "Senior Data Analyst",
+      "actual_title": "senior data analyst  data analytics team"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-009",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 4,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 2,
+          "observed_count": 5,
+          "precision": 0.4,
+          "recall": 1.0,
+          "f1": 0.5714
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.3929,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": "consultant"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-010",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 9,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 21,
+          "observed_count": 22,
+          "precision": 0.8986,
+          "recall": 0.9414,
+          "f1": 0.9195
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.3065,
+      "evidence_valid": true,
+      "expected_title": "Senior Data Security Engineer",
+      "actual_title": "do you want your voice heard and your actions to count"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-011",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 2,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 15,
+          "observed_count": 35,
+          "precision": 0.3677,
+          "recall": 0.858,
+          "f1": 0.5148
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.1287,
+      "evidence_valid": true,
+      "expected_title": "Staff Software Engineer",
+      "actual_title": "your job"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-012",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 6,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 8,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.3333,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": "passionate about precision medicine and advancing the healthcare industry"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-013",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 7,
+          "precision": 0.8571,
+          "recall": 1.0,
+          "f1": 0.9231
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 7,
+          "observed_count": 12,
+          "precision": 0.5,
+          "recall": 0.8571,
+          "f1": 0.6316
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5182,
+      "evidence_valid": true,
+      "expected_title": "Salesforce QA Tester",
+      "actual_title": "overview"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-014",
+      "title_similarity": 0.8571,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 11,
+          "observed_count": 11,
+          "precision": 0.8718,
+          "recall": 0.8718,
+          "f1": 0.8718
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 24,
+          "observed_count": 33,
+          "precision": 0.6021,
+          "recall": 0.8279,
+          "f1": 0.6972
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.8087,
+      "evidence_valid": true,
+      "expected_title": "Senior Frontend Engineer",
+      "actual_title": "senior frontend engineer  technology"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-015",
+      "title_similarity": 0.8,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 12,
+          "precision": 0.7685,
+          "recall": 0.9222,
+          "f1": 0.8384
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5461,
+      "evidence_valid": true,
+      "expected_title": "Analytics Manager",
+      "actual_title": "analytics manager responsibilities"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-016",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 8,
+          "observed_count": 13,
+          "precision": 0.6038,
+          "recall": 0.9812,
+          "f1": 0.7476
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 13,
+          "observed_count": 4,
+          "precision": 0.2792,
+          "recall": 0.0859,
+          "f1": 0.1314
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.293,
+      "evidence_valid": true,
+      "expected_title": "Software Engineer I",
+      "actual_title": null
+    },
+    {
+      "case_id": "jd-fulltext-en-it-017",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 3,
+          "precision": 0.4572,
+          "recall": 0.3429,
+          "f1": 0.3919
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 18,
+          "observed_count": 2,
+          "precision": 0.4343,
+          "recall": 0.0483,
+          "f1": 0.0869
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.1596,
+      "evidence_valid": true,
+      "expected_title": "Data Analytics Senior Manager",
+      "actual_title": null
+    },
+    {
+      "case_id": "jd-fulltext-en-it-018",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 9,
+          "observed_count": 8,
+          "precision": 1.0,
+          "recall": 0.8889,
+          "f1": 0.9412
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 23,
+          "observed_count": 26,
+          "precision": 0.6536,
+          "recall": 0.7389,
+          "f1": 0.6936
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.4087,
+      "evidence_valid": true,
+      "expected_title": "Senior Full-Stack Software Engineer",
+      "actual_title": "they offer a competitive salary equity medical dental and vision benefits and unlimited pto after  days"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-019",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 3,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": "Manager, Data Analytics",
+      "actual_title": "with more than  subsidiaries and  boutiques montblanc is present all over the world"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-020",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": "Frontend Web Developer",
+      "actual_title": "designups is a nashville based design and interactive agency at designups we have a strong focus on elevating brands with our expertise in design and customer experience"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-021",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 15,
+          "precision": 0.6667,
+          "recall": 1.0,
+          "f1": 0.8
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.6,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": null
+    },
+    {
+      "case_id": "jd-fulltext-en-it-022",
+      "title_similarity": 0.8,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 2,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 9,
+          "observed_count": 13,
+          "precision": 0.6923,
+          "recall": 1.0,
+          "f1": 0.8182
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 9,
+          "observed_count": 15,
+          "precision": 0.6,
+          "recall": 1.0,
+          "f1": 0.75
+        }
+      },
+      "semantic_score": 0.592,
+      "evidence_valid": true,
+      "expected_title": "Entry Level Software Engineer",
+      "actual_title": "entry level software engineer training program"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-023",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 11,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": "Data Analyst/Manager",
+      "actual_title": "manage relationship with hit teams at lead health home hh partners to support clinical and operational staffs usage of hh emrs"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-024",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 19,
+          "precision": 0.3158,
+          "recall": 1.0,
+          "f1": 0.48
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 11,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 7,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.12,
+      "evidence_valid": true,
+      "expected_title": "Software Developer",
+      "actual_title": "rtp north carolina or remote est only"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-025",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 5,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": "Software Developer",
+      "actual_title": "tldr"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-026",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 2,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 23,
+          "precision": 0.1537,
+          "recall": 0.5893,
+          "f1": 0.2438
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.0609,
+      "evidence_valid": true,
+      "expected_title": "Backend and Frontend Developer",
+      "actual_title": "at remoteteamcom we are building an hr tool for companies that have remote employees"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-027",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 2,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": "Software Engineer in Test (SDET)",
+      "actual_title": null
+    },
+    {
+      "case_id": "jd-fulltext-en-it-028",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 12,
+          "observed_count": 12,
+          "precision": 0.9583,
+          "recall": 0.9583,
+          "f1": 0.9583
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 18,
+          "observed_count": 23,
+          "precision": 0.7149,
+          "recall": 0.9135,
+          "f1": 0.8021
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5868,
+      "evidence_valid": true,
+      "expected_title": "Software Developer Associate (New Graduate)",
+      "actual_title": "knowledge or reverse engineer system components as necessary"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-029",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 9,
+          "observed_count": 9,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 15,
+          "observed_count": 20,
+          "precision": 0.66,
+          "recall": 0.88,
+          "f1": 0.7543
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 3,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.6886,
+      "evidence_valid": true,
+      "expected_title": "Web Developer",
+      "actual_title": "web developer"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-030",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 7,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 5,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": "design implement and manage websites using wordpress"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-031",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 2,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 33,
+          "precision": 0.268,
+          "recall": 0.8845,
+          "f1": 0.4114
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 8,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.1028,
+      "evidence_valid": true,
+      "expected_title": "Senior/Lead Software Engineer",
+      "actual_title": "kris riegle  executive recruiter  cybercoders"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-032",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 2,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.0,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": "design develop and test high quality software features by understanding user needs and implementing well designed code"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-033",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 5,
+          "precision": 0.8,
+          "recall": 1.0,
+          "f1": 0.8889
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 12,
+          "observed_count": 6,
+          "precision": 0.4651,
+          "recall": 0.2326,
+          "f1": 0.3101
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.733,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": null
+    },
+    {
+      "case_id": "jd-fulltext-en-it-034",
+      "title_similarity": 0.1667,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 11,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 7,
+          "observed_count": 8,
+          "precision": 0.8472,
+          "recall": 0.9683,
+          "f1": 0.9037
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 3,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 0.3333,
+          "f1": 0.5
+        }
+      },
+      "semantic_score": 0.3926,
+      "evidence_valid": true,
+      "expected_title": "Software Developer (Entry Level)",
+      "actual_title": "software development job duties may include but not limited to"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-035",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 9,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 9,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 15,
+          "observed_count": 10,
+          "precision": 0.5899,
+          "recall": 0.3933,
+          "f1": 0.4719
+        }
+      },
+      "semantic_score": 0.368,
+      "evidence_valid": true,
+      "expected_title": "Software Engineer",
+      "actual_title": "software engineer"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-036",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 3,
+          "observed_count": 5,
+          "precision": 0.6,
+          "recall": 1.0,
+          "f1": 0.75
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 12,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.1875,
+      "evidence_valid": true,
+      "expected_title": "Creative Designer (web agency role)",
+      "actual_title": "candidate will provide daily updates to their seniors project manager"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-037",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 1,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 18,
+          "observed_count": 21,
+          "precision": 0.7658,
+          "recall": 0.8934,
+          "f1": 0.8247
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.2749,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": "positions   midsr  lead architect"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-038",
+      "title_similarity": 0.9091,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 5,
+          "observed_count": 31,
+          "precision": 0.1613,
+          "recall": 1.0,
+          "f1": 0.2778
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 7,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.2967,
+      "evidence_valid": true,
+      "expected_title": "Full Stack Senior Software Engineer",
+      "actual_title": "fulltime full stack senior software engineer"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-039",
+      "title_similarity": 0.5,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 7,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 17,
+          "observed_count": 12,
+          "precision": 0.8542,
+          "recall": 0.6029,
+          "f1": 0.7069
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.4023,
+      "evidence_valid": true,
+      "expected_title": "Senior Embedded C++ Developer",
+      "actual_title": "we are looking for senior embedded c developer for our client in clifton nj"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-040",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 13,
+          "observed_count": 21,
+          "precision": 0.4745,
+          "recall": 0.7666,
+          "f1": 0.5862
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 12,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.1954,
+      "evidence_valid": true,
+      "expected_title": "JavaScript Backend Developer",
+      "actual_title": "our vision"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-041",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 5,
+          "observed_count": 20,
+          "precision": 0.25,
+          "recall": 1.0,
+          "f1": 0.4
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 5,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.1,
+      "evidence_valid": true,
+      "expected_title": null,
+      "actual_title": "open to developing as a full stack engineer"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-042",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 7,
+          "observed_count": 28,
+          "precision": 0.2169,
+          "recall": 0.8677,
+          "f1": 0.3471
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 21,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 13,
+          "observed_count": 20,
+          "precision": 0.48,
+          "recall": 0.7385,
+          "f1": 0.5818
+        }
+      },
+      "semantic_score": 0.4822,
+      "evidence_valid": true,
+      "expected_title": "Back End Developer",
+      "actual_title": "back end developer"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-043",
+      "title_similarity": 0.1818,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 2,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 12,
+          "observed_count": 11,
+          "precision": 0.7134,
+          "recall": 0.654,
+          "f1": 0.6824
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 7,
+          "observed_count": 8,
+          "precision": 0.8229,
+          "recall": 0.9405,
+          "f1": 0.8778
+        }
+      },
+      "semantic_score": 0.4355,
+      "evidence_valid": true,
+      "expected_title": "Software Developer",
+      "actual_title": "rockstars zombies or magicians were looking for motivated creative and resourceful developer"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-044",
+      "title_similarity": 0.2353,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 5,
+          "observed_count": 4,
+          "precision": 1.0,
+          "recall": 0.8,
+          "f1": 0.8889
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 6,
+          "observed_count": 6,
+          "precision": 0.6818,
+          "recall": 0.6818,
+          "f1": 0.6818
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.602,
+      "evidence_valid": true,
+      "expected_title": "Software Engineer",
+      "actual_title": "as a software engineer at transcend you will help us build and maintain the core transcend application as well as contribute to new products and initiatives such as"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-045",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 4,
+          "observed_count": 16,
+          "precision": 0.25,
+          "recall": 1.0,
+          "f1": 0.4
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 8,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.1333,
+      "evidence_valid": true,
+      "expected_title": "Software Engineering Leader",
+      "actual_title": "who we are"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-046",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 7,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 12,
+          "observed_count": 4,
+          "precision": 0.1891,
+          "recall": 0.063,
+          "f1": 0.0945
+        }
+      },
+      "semantic_score": 0.0236,
+      "evidence_valid": true,
+      "expected_title": "Software Engineer - Mid Level",
+      "actual_title": "purpose of job"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-047",
+      "title_similarity": 0.2,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 9,
+          "precision": 1.0,
+          "recall": 0.9,
+          "f1": 0.9474
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 8,
+          "observed_count": 15,
+          "precision": 0.3576,
+          "recall": 0.6705,
+          "f1": 0.4664
+        },
+        "benefits": {
+          "applicable": false,
+          "expected_count": 0,
+          "observed_count": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "semantic_score": 0.5379,
+      "evidence_valid": true,
+      "expected_title": "Software Engineer",
+      "actual_title": "this is a fulltime exempt computer employee role that reports to the manager software engineering"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-048",
+      "title_similarity": 1.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 8,
+          "observed_count": 6,
+          "precision": 1.0,
+          "recall": 0.75,
+          "f1": 0.8571
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 15,
+          "observed_count": 39,
+          "precision": 0.2288,
+          "recall": 0.5949,
+          "f1": 0.3305
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 17,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.5469,
+      "evidence_valid": true,
+      "expected_title": "Senior Software Engineer",
+      "actual_title": "you are a senior software engineer"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-049",
+      "title_similarity": 0.0,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 22,
+          "observed_count": 22,
+          "precision": 0.9786,
+          "recall": 0.9786,
+          "f1": 0.9786
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 10,
+          "observed_count": 1,
+          "precision": 1.0,
+          "recall": 0.1,
+          "f1": 0.1818
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 3,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "semantic_score": 0.2901,
+      "evidence_valid": true,
+      "expected_title": "Software Developer",
+      "actual_title": "overview"
+    },
+    {
+      "case_id": "jd-fulltext-en-it-050",
+      "title_similarity": 0.2857,
+      "fields": {
+        "responsibilities": {
+          "applicable": true,
+          "expected_count": 18,
+          "observed_count": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "requirements": {
+          "applicable": true,
+          "expected_count": 27,
+          "observed_count": 38,
+          "precision": 0.5553,
+          "recall": 0.7816,
+          "f1": 0.6493
+        },
+        "benefits": {
+          "applicable": true,
+          "expected_count": 12,
+          "observed_count": 14,
+          "precision": 0.3214,
+          "recall": 0.375,
+          "f1": 0.3462
+        }
+      },
+      "semantic_score": 0.3203,
+      "evidence_valid": true,
+      "expected_title": "Software Engineer",
+      "actual_title": "the director of technology and a growing software devit team"
+    }
+  ]
+}

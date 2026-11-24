@@ -13,9 +13,18 @@ class RabbitMQ:
         self.channel: AbstractRobustChannel | None = None
 
     async def connect(self) -> None:
-        self.connection = await aio_pika.connect_robust(get_settings().rabbitmq_url)
-        self.channel = await self.connection.channel()
-        await self.channel.set_qos(prefetch_count=1)
+        import asyncio
+        import aiormq
+        for attempt in range(1, 11):
+            try:
+                self.connection = await aio_pika.connect_robust(get_settings().rabbitmq_url)
+                self.channel = await self.connection.channel()
+                await self.channel.set_qos(prefetch_count=1)
+                return
+            except aiormq.exceptions.AMQPConnectionError as e:
+                if attempt == 10:
+                    raise e
+                await asyncio.sleep(3)
 
     async def close(self) -> None:
         if self.connection:

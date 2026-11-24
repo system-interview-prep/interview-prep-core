@@ -1,7 +1,12 @@
 .git
+.github/
+.agents/
 .env
+.env.*
 .venv/
 .pytest_cache/
+.pytest_temp/
+.pytest-run/
 .ruff_cache/
 __pycache__/
 *.py[cod]
@@ -9,3 +14,8 @@ __pycache__/
 app.log
 uploads/
 models_cache/
+trace-logs/
+reports/
+tmp/
+infra/
+docker-compose.yml

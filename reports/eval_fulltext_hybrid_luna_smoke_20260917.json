@@ -1,0 +1,113 @@
+{
+  "evaluation": "cv-parser-evidence-grounded-v1",
+  "generated_at": "2026-09-17T08:23:05.878135+00:00",
+  "metric_contract": {
+    "fields": "micro exact-match precision/recall/F1 over normalized canonical entity keys",
+    "evidence": "all offsets round-trip and every evidenceRef resolves",
+    "cost": "explicit character/4 token estimate; not provider billing usage"
+  },
+  "summary": {
+    "total": 1,
+    "macro_f1": 0.6732,
+    "evidence_valid_rate": 1.0,
+    "fallback_rate": 0.0,
+    "review_required_rate": 1.0,
+    "mean_latency_ms": 39640.026,
+    "estimated_cost_usd": 0.0,
+    "estimated_input_tokens": 2164,
+    "estimated_output_tokens": 10840,
+    "fields": {
+      "skills": {
+        "precision": 0.2609,
+        "recall": 0.1395,
+        "f1": 0.1818
+      },
+      "employment": {
+        "precision": 1.0,
+        "recall": 0.75,
+        "f1": 0.8571
+      },
+      "education": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "projects": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "certifications": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "languages": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      }
+    }
+  },
+  "quality_gate": {
+    "passed": false,
+    "checks": {
+      "macro_f1": true,
+      "evidence_valid_rate": true,
+      "fallback_rate": true,
+      "review_required_rate": true,
+      "mean_latency_ms": false,
+      "estimated_cost_usd": true
+    },
+    "thresholds": {
+      "min_macro_f1": 0.5,
+      "min_evidence_valid_rate": 0.8,
+      "max_fallback_rate": 0.2,
+      "max_review_required_rate": 1.0,
+      "max_mean_latency_ms": 10000.0,
+      "max_estimated_cost_usd": 1.0
+    }
+  },
+  "cases": [
+    {
+      "case_id": "cv-fulltext-it-001",
+      "fields": {
+        "skills": {
+          "precision": 0.2609,
+          "recall": 0.1395,
+          "f1": 0.1818
+        },
+        "employment": {
+          "precision": 1.0,
+          "recall": 0.75,
+          "f1": 0.8571
+        },
+        "education": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "projects": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "certifications": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "languages": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "evidence_valid": true,
+      "fallback": false,
+      "review_required": true,
+      "latency_ms": 39640.026,
+      "warnings": []
+    }
+  ]
+}

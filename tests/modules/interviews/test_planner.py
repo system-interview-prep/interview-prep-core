@@ -1,0 +1,505 @@
+import pytest
+
+from src.modules.interviews.planning.planner import (
+    PLANNER_POLICY_VERSION,
+    derive_competency_plan,
+)
+from src.modules.matching.domain.schemas import (
+    CanonicalJob,
+    ConceptResult,
+    MatchResult,
+    RequirementResult,
+    SkillRequirement,
+    UnresolvedRequirement,
+)
+from src.modules.user_cvs.schemas import CareerClassification, EvidenceSpan, TaxonomyRef
+
+
+def _concept(concept_id: str, label: str) -> TaxonomyRef:
+    return TaxonomyRef(
+        conceptId=concept_id,
+        scheme="skill",
+        taxonomyVersion="career-v1",
+        label=label,
+    )
+
+
+def _job(*requirements, classifications=None, seniority=None) -> CanonicalJob:
+    evidence = []
+    for index, requirement in enumerate(requirements, start=1):
+        text_value = f"requirement-{index}"
+        evidence.append(
+            EvidenceSpan(
+                evidenceId=requirement.source_evidence_ref,
+                documentId="jd-doc",
+                documentSha256="a" * 64,
+                section="requirements",
+                text=text_value,
+                charStart=(index - 1) * 20,
+                charEnd=(index - 1) * 20 + len(text_value),
+            )
+        )
+    return CanonicalJob(
+        schemaVersion="2.1",
+        jobId="job-1",
+        documentId="jd-doc",
+        documentSha256="a" * 64,
+        requirements=list(requirements),
+        careerClassifications=classifications or [],
+        seniority=seniority,
+        evidence=evidence,
+    )
+
+
+def _match(results) -> MatchResult:
+    return MatchResult(
+        resumeId="cv-1",
+        jobId="job-1",
+        policyVersion="balanced-v1",
+        eligibility="review_required",
+        suitabilityScore=None,
+        fitBand="review_required",
+        decision="abstained",
+        requirementResults=results,
+        factorResults=[],
+        warnings=[],
+    )
+
+
+def _result(requirement_id: str, status: str) -> RequirementResult:
+    return RequirementResult(
+        requirementId=requirement_id,
+        status=status,
+        score=1.0 if status == "met" else None,
+        confidence=1.0 if status == "met" else 0.0,
+        evidenceRefs=[f"cv-{requirement_id}"] if status in {"met", "unknown"} else [],
+        reasonCode=f"test_{status}",
+    )
+
+
+def test_planner_prioritizes_unresolved_must_have_without_skipping_met_claims() -> None:
+    python = SkillRequirement(
+        requirementId="req-python",
+        priority="must_have",
+        sourceEvidenceRef="jd-ev-python",
+        type="skill",
+        skill=_concept("skill.python", "Python"),
+    )
+    docker = SkillRequirement(
+        requirementId="req-docker",
+        priority="must_have",
+        sourceEvidenceRef="jd-ev-docker",
+        type="skill",
+        skill=_concept("skill.docker", "Docker"),
+    )
+    plan = derive_competency_plan(
+        job=_job(python, docker),
+        match=_match([
+            _result("req-python", "met"),
+            _result("req-docker", "unknown"),
+        ]),
+        duration_minutes=20,
+    )
+
+    assert plan["policyVersion"] == PLANNER_POLICY_VERSION
+    assert plan["targets"][0]["conceptId"] == "skill.docker"
+    assert {item["conceptId"] for item in plan["targets"]} == {
+        "skill.python",
+        "skill.docker",
+    }
+    assert plan["targets"][0]["rationale"]["matchStatuses"] == ["unknown"]
+    assert [item["selectionRank"] for item in plan["targets"]] == [0, 1]
+
+
+def test_planner_preserves_atomic_concepts_and_allocates_bounded_budget() -> None:
+    ai_group = UnresolvedRequirement(
+        requirementId="req-ai",
+        priority="must_have",
+        sourceEvidenceRef="jd-ev-ai",
+        type="unresolved",
+        kind="skill",
+        rawLabel="NLP, GenAI and LLM",
+        atomicConcepts=[
+            _concept("skill.nlp", "NLP"),
+            _concept("skill.genai", "GenAI"),
+            _concept("skill.llm", "LLM"),
+        ],
+        groupOperator="all_of",
+    )
+    atomic_result = RequirementResult(
+        requirementId="req-ai",
+        status="unknown",
+        score=None,
+        confidence=0.4,
+        evidenceRefs=["cv-nlp", "cv-genai", "cv-llm"],
+        reasonCode="atomic_group_incomplete",
+        groupOperator="all_of",
+        conceptResults=[
+            ConceptResult(
+                conceptId="skill.nlp",
+                label="NLP",
+                status="met",
+                confidence=1.0,
+                evidenceRefs=["cv-nlp"],
+                reasonCode="concept_evidenced",
+            ),
+            ConceptResult(
+                conceptId="skill.genai",
+                label="GenAI",
+                status="met",
+                confidence=1.0,
+                evidenceRefs=["cv-genai"],
+                reasonCode="concept_evidenced",
+            ),
+            ConceptResult(
+                conceptId="skill.llm",
+                label="LLM",
+                status="unknown",
+                confidence=0.0,
+                evidenceRefs=["cv-llm"],
+                reasonCode="concept_evidence_missing",
+            ),
+        ],
+    )
+    plan = derive_competency_plan(
+        job=_job(ai_group),
+        match=_match([atomic_result]),
+        duration_minutes=25,
+    )
+
+    assert plan["questionBudget"] == 4
+    assert plan["targetQuestionCount"] == 4
+    assert {item["conceptId"] for item in plan["targets"]} == {
+        "skill.nlp",
+        "skill.genai",
+        "skill.llm",
+    }
+    assert plan["targets"][0]["conceptId"] == "skill.llm"
+    assert plan["targets"][0]["rationale"]["matchStatuses"] == ["unknown"]
+    evaluation = plan["evaluationTargets"][0]
+    assert evaluation["groupOperator"] == "all_of"
+    assert [item["status"] for item in evaluation["conceptResults"]] == [
+        "met",
+        "met",
+        "unknown",
+    ]
+    assert evaluation["conceptResults"][2]["conceptId"] == "skill.llm"
+    assert all(item["targetQuestionCount"] <= 3 for item in plan["targets"])
+
+
+def test_planner_is_deterministic_for_same_job_match_and_duration() -> None:
+    requirement = SkillRequirement(
+        requirementId="req-python",
+        priority="must_have",
+        sourceEvidenceRef="jd-ev-python",
+        type="skill",
+        skill=_concept("skill.python", "Python"),
+    )
+    job = _job(requirement)
+    match = _match([_result("req-python", "met")])
+
+    first = derive_competency_plan(job=job, match=match, duration_minutes=25)
+    second = derive_competency_plan(job=job, match=match, duration_minutes=25)
+
+    assert first == second
+    assert len(first["fingerprint"]) == 64
+
+
+def test_planner_uses_career_classification_only_as_explicit_fallback() -> None:
+    job = _job(
+        classifications=[
+            CareerClassification(
+                code="technology.artificial-intelligence",
+                label="Artificial Intelligence",
+                dimension="specialization",
+                taxonomyVersion="career-v1",
+                isPrimary=True,
+                confidence=0.95,
+                assertionSource="inferred",
+                evidenceRefs=[],
+            )
+        ]
+    )
+    plan = derive_competency_plan(
+        job=job,
+        match=_match([]),
+        duration_minutes=15,
+    )
+
+    assert plan["targets"][0]["conceptId"] == "technology.artificial-intelligence"
+    assert plan["targets"][0]["rationale"]["source"] == "career_classification_fallback"
+
+
+def test_planner_fails_closed_without_taxonomy_backed_targets() -> None:
+    try:
+        derive_competency_plan(
+            job=_job(),
+            match=_match([]),
+            duration_minutes=15,
+        )
+    except ValueError as exc:
+        assert "No applicable taxonomy-backed interview competencies" in str(exc)
+        return
+    raise AssertionError("planner must fail closed when no competency can be derived")
+
+
+def test_planner_preserves_non_skill_requirement_validation_and_structure() -> None:
+    python = SkillRequirement(
+        requirementId="req-python",
+        priority="must_have",
+        sourceEvidenceRef="jd-ev-python",
+        type="skill",
+        skill=_concept("skill.python", "Python"),
+    )
+    english = UnresolvedRequirement(
+        requirementId="req-english",
+        priority="must_have",
+        sourceEvidenceRef="jd-ev-english",
+        type="unresolved",
+        kind="language",
+        rawLabel="IELTS 6.0 or equivalent",
+        credential="IELTS",
+        equivalentAllowed=True,
+    )
+    plan = derive_competency_plan(
+        job=_job(python, english, seniority="senior"),
+        match=_match([
+            _result("req-python", "met"),
+            _result("req-english", "unknown"),
+        ]),
+        duration_minutes=20,
+    )
+
+    by_requirement = {
+        item["requirementId"]: item for item in plan["evaluationTargets"]
+    }
+    assert by_requirement["req-python"]["evaluationMode"] == "competency"
+    assert by_requirement["req-english"]["evaluationMode"] == "requirement_validation"
+    assert by_requirement["req-english"]["attention"] == "validate_gap"
+    assert "req-english" in plan["nonCompetencyRequirementIds"]
+    assert plan["difficulty"] == {
+        "level": "advanced",
+        "source": "job_seniority",
+        "seniority": "senior",
+    }
+    assert sum(item["durationMinutes"] for item in plan["sections"]) == 20
+    assert [item["sectionId"] for item in plan["sections"]] == [
+        "warmup",
+        "core",
+        "gap_validation",
+        "closing",
+    ]
+
+
+def test_planner_never_allocates_question_target_to_not_applicable_concept() -> None:
+    python = SkillRequirement(
+        requirementId="req-python",
+        priority="must_have",
+        sourceEvidenceRef="jd-ev-python",
+        type="skill",
+        skill=_concept("skill.python", "Python"),
+    )
+    try:
+        derive_competency_plan(
+            job=_job(python),
+            match=_match([_result("req-python", "not_applicable")]),
+            duration_minutes=20,
+        )
+    except ValueError as exc:
+        assert "No applicable taxonomy-backed interview competencies" in str(exc)
+        return
+    raise AssertionError("not_applicable-only taxonomy requirements must fail closed")
+
+
+def test_planner_keeps_must_have_concepts_ahead_of_repeated_nice_to_have() -> None:
+    requirements = [
+        SkillRequirement(
+            requirementId="req-core",
+            priority="must_have",
+            sourceEvidenceRef="jd-ev-core",
+            type="skill",
+            skill=_concept("skill.core", "Core Skill"),
+        )
+    ]
+    results = [_result("req-core", "met")]
+
+    for group in range(4):
+        concept_id = f"skill.optional-{group}"
+        for repetition in range(3):
+            requirement_id = f"req-optional-{group}-{repetition}"
+            requirements.append(
+                SkillRequirement(
+                    requirementId=requirement_id,
+                    priority="nice_to_have",
+                    sourceEvidenceRef=f"jd-ev-{requirement_id}",
+                    type="skill",
+                    skill=_concept(concept_id, f"Optional {group}"),
+                )
+            )
+            results.append(_result(requirement_id, "met"))
+
+    plan = derive_competency_plan(
+        job=_job(*requirements),
+        match=_match(results),
+        duration_minutes=12,
+    )
+
+    # 12 minutes leave room for a single technical question after the presets;
+    # it must go to the must-have concept.
+    assert plan["questionBudget"] == 1
+    assert "skill.core" in {item["conceptId"] for item in plan["targets"]}
+    assert plan["targets"][0]["conceptId"] == "skill.core"
+    assert plan["targets"][0]["selectionRank"] == 0
+
+
+def test_question_budget_fits_the_session_time() -> None:
+    """M10: the agenda's expected time (presets + questions with one probe) fits the session."""
+    from src.modules.interviews.planning.planner import (
+        _PRESET_EXPECTED_SECONDS,
+        _TECHNICAL_EXPECTED_SECONDS,
+        _question_budget,
+    )
+
+    assert {d: _question_budget(d) for d in (15, 25, 45)} == {15: 1, 25: 4, 45: 8}
+    for minutes in (20, 25, 30, 45, 60):
+        expected = _PRESET_EXPECTED_SECONDS + _question_budget(minutes) * _TECHNICAL_EXPECTED_SECONDS
+        assert expected <= minutes * 60
+
+
+def _skill(requirement_id: str, concept_id: str, label: str, priority: str = "must_have") -> SkillRequirement:
+    return SkillRequirement(
+        requirementId=requirement_id,
+        priority=priority,
+        sourceEvidenceRef=f"jd-ev-{requirement_id}",
+        type="skill",
+        skill=_concept(concept_id, label),
+    )
+
+
+def test_planner_does_not_ask_json_or_xml_as_their_own_topic() -> None:
+    """Research 20/10: interviewers ask JSON inside API design, not as a topic."""
+    requirements = [
+        _skill("req-json", "skill-json", "JSON"),
+        _skill("req-xml", "skill-xml", "XML"),
+        _skill("req-sql", "skill-sql", "SQL"),
+        _skill("req-python", "skill-python", "Python"),
+    ]
+    plan = derive_competency_plan(
+        job=_job(*requirements),
+        match=_match([_result(r.requirement_id, "unknown") for r in requirements]),
+        duration_minutes=25,
+    )
+    asked = {item["conceptId"] for item in plan["targets"]}
+    assert asked == {"skill-sql", "skill-python"}
+    assert plan["targetQuestionCount"] == plan["questionBudget"]
+    assert plan["selection"]["minorConceptIds"] == ["skill-json", "skill-xml"]
+    # The CV is still checked against every requirement.
+    assert {t["requirementId"] for t in plan["evaluationTargets"]} >= {"req-json", "req-xml"}
+
+
+def test_planner_keeps_a_minor_keyword_when_the_job_has_nothing_else() -> None:
+    requirement = _skill("req-json", "skill-json", "JSON")
+    plan = derive_competency_plan(
+        job=_job(requirement), match=_match([_result("req-json", "unknown")]), duration_minutes=25
+    )
+    assert [item["conceptId"] for item in plan["targets"]] == ["skill-json"]
+
+
+def test_planner_spreads_questions_over_rounds_before_repeating_one() -> None:
+    """Four database skills and one infrastructure skill: infrastructure is asked too."""
+    requirements = [
+        _skill("req-pg", "skill-postgresql", "PostgreSQL"),
+        _skill("req-mysql", "skill-mysql", "MySQL"),
+        _skill("req-redis", "skill-redis", "Redis"),
+        _skill("req-mongo", "skill-mongodb", "MongoDB"),
+        _skill("req-docker", "skill-docker", "Docker", priority="nice_to_have"),
+    ]
+    plan = derive_competency_plan(
+        job=_job(*requirements),
+        match=_match([_result(r.requirement_id, "met") for r in requirements]),
+        duration_minutes=20,
+    )
+    budget = plan["questionBudget"]
+    assert budget < len(requirements)
+    asked = [item["conceptId"] for item in plan["targets"]]
+    assert "skill-docker" in asked
+    # Must-haves still come first.
+    assert asked[-1] == "skill-docker"
+
+
+def test_planner_gives_half_the_questions_to_the_round_the_candidate_chose() -> None:
+    requirements = [
+        _skill("req-python", "skill-python", "Python"),
+        _skill("req-docker", "skill-docker", "Docker"),
+        _skill("req-k8s", "skill-kubernetes", "Kubernetes", priority="nice_to_have"),
+        _skill("req-pg", "skill-postgresql", "PostgreSQL"),
+        _skill("req-redis", "skill-redis", "Redis", priority="nice_to_have"),
+    ]
+    results = _match([_result(r.requirement_id, "met") for r in requirements])
+    plan = derive_competency_plan(job=_job(*requirements), match=results, duration_minutes=25, focus_area="data")
+    asked = [item["conceptId"] for item in plan["targets"]]
+    assert asked[:2] == ["skill-postgresql", "skill-redis"]
+    assert plan["selection"]["focusArea"] == "data"
+    # An unknown or non-technical round is ignored.
+    plain = derive_competency_plan(job=_job(*requirements), match=results, duration_minutes=25, focus_area="teamwork")
+    assert plain["selection"]["focusArea"] is None
+
+
+def test_planner_asks_again_a_skill_and_preserves_the_exact_due_question() -> None:
+    """A due competency gets a slot, preferring yesterday's exact question."""
+    requirements = [
+        _skill("req-python", "skill-python", "Python"),
+        _skill("req-docker", "skill-docker", "Docker"),
+        _skill("req-pg", "skill-postgresql", "PostgreSQL"),
+        _skill("req-redis", "skill-redis", "Redis", priority="nice_to_have"),
+    ]
+    results = _match([_result(r.requirement_id, "met") for r in requirements])
+    plan = derive_competency_plan(
+        job=_job(*requirements),
+        match=results,
+        duration_minutes=20,
+        reask=[{"conceptId": "skill-redis", "points": ["TTL ngẫu nhiên", "Hot key"], "questionVersionId": "qv-redis"}],
+    )
+    asked = [item["conceptId"] for item in plan["targets"]]
+    assert plan["questionBudget"] == 2 and "skill-redis" in asked
+    reask = plan["selection"]["reask"]
+    assert reask == [{"conceptId": "skill-redis", "points": ["TTL ngẫu nhiên", "Hot key"], "questionVersionId": "qv-redis"}]
+    # A due skill the job does not ask about is ignored.
+    other = derive_competency_plan(
+        job=_job(*requirements), match=results, duration_minutes=20, reask=[{"conceptId": "skill-kafka"}]
+    )
+    assert other["selection"]["reask"] == []
+
+
+@pytest.mark.asyncio
+async def test_due_reask_uses_the_first_due_question_for_that_position(monkeypatch) -> None:
+    from src.modules.interviews.application import progress
+    from src.modules.interviews.planning import planner
+
+    async def fake_progress(_db, _user_id):
+        return {
+            "gaps": {
+                "open": [
+                    {
+                        "skillKey": "skill-redis", "point": "Cache stampede", "timesMissed": 2, "due": True,
+                        "lastSeen": {"jobId": "job-1", "questionVersionId": "qv-yesterday"},
+                    },
+                    {
+                        "skillKey": "skill-redis", "point": "TTL", "timesMissed": 1, "due": True,
+                        "lastSeen": {"jobId": "job-1", "questionVersionId": "qv-older"},
+                    },
+                    {
+                        "skillKey": "skill-python", "point": "Types", "timesMissed": 1, "due": True,
+                        "lastSeen": {"jobId": "other-job", "questionVersionId": "qv-other"},
+                    },
+                ]
+            }
+        }
+
+    monkeypatch.setattr(progress, "load_progress", fake_progress)
+    result = await planner._due_reask(object(), user_id="user-1", job_id="job-1")
+    assert result == [{
+        "conceptId": "skill-redis",
+        "points": ["Cache stampede", "TTL"],
+        "questionVersionId": "qv-yesterday",
+    }]

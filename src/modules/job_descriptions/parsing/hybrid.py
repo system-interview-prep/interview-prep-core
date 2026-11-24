@@ -1,0 +1,722 @@
+"""Evidence-first hybrid JD parser with deterministic fallback."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from difflib import SequenceMatcher
+from typing import Any, NamedTuple
+
+from pydantic import ValidationError
+
+from src.core.config import get_settings
+from src.core.trace_logging import trace_event
+from src.modules.ai import GenerationRequest, ModelServiceClient, ModelServiceError, generate_text
+from src.modules.job_descriptions.domain.schemas import (
+    CanonicalJobDescription,
+    GroundedJobText,
+    JobRequirement,
+)
+from src.modules.job_descriptions.parsing.deterministic import (
+    DeterministicJobDescriptionParser,
+    _key,
+    _ranges,
+    is_in_application_section,
+    section_ranges_all,
+    is_probable_requirement_heading_at,
+    is_probable_requirement_heading_value,
+)
+from src.modules.job_descriptions.parsing.llm_candidate import (
+    JD_EXTRACTION_INSTRUCTIONS,
+    JobDescriptionCandidate,
+    TextCandidate,
+)
+from src.modules.taxonomy.facade import alias_pattern
+from src.modules.user_cvs.facade import EvidenceMapper, SourceDocument
+from src.modules.user_cvs.schemas import ParserWarning, TaxonomyRef
+
+# A scraped posting often stores its whole requirements block as one run-on
+# line.  The deterministic parser is line-bounded, so it then yields a single
+# requirement whose evidence span covers the entire block.  A baseline row that
+# contains this many much smaller claims is a container for them, not a peer of
+# any one of them - see ``_merge``.
+_CONTAINER_MIN_MEMBERS = 2
+_CONTAINER_MEMBER_SHARE = 0.5
+
+
+class _RequirementClaim(NamedTuple):
+    """One grounded LLM requirement claim, ready to reconcile with the baseline."""
+
+    index: int
+    item: TextCandidate
+    evidence_id: str
+    char_start: int
+    char_end: int
+    concept: TaxonomyRef | None
+    experience_months: int | None
+    operator: str | None
+
+
+def _carries_structured_detail(requirement: JobRequirement) -> bool:
+    """Numeric or credential detail a sentence-level claim cannot restate.
+
+    A container holding one of these is still the only source of it, so it is
+    kept rather than dropped once its members are promoted.
+    """
+    return any(
+        (
+            requirement.minimum_experience_months is not None,
+            requirement.threshold is not None,
+            requirement.scale is not None,
+            requirement.credential is not None,
+        )
+    )
+
+# v5: a JD with more than one requirements block (a bilingual posting listing
+# the same requirements under an English and a Vietnamese heading) no longer
+# loses every block but the last. Bumped because parses are persisted and read
+# back without re-parsing: without a new version there is no way to tell a
+# stored parse that predates this fix from one that followed it, and therefore
+# no way to target a backfill.
+PARSER_VERSION = "hybrid-jd-v6"
+
+
+def _near_duplicate_claim(left: str, right: str) -> bool:
+    """Recognize lightly reworded copies without merging short, distinct claims."""
+    normalized_left, normalized_right = _key(left), _key(right)
+    left_words, right_words = set(normalized_left.split()), set(normalized_right.split())
+    if min(len(left_words), len(right_words)) < 6:
+        return False
+    overlap = len(left_words & right_words) / min(len(left_words), len(right_words))
+    return overlap >= 0.75 and SequenceMatcher(None, normalized_left, normalized_right).ratio() >= 0.84
+
+
+def _evidence_id(kind: str, start: int, end: int) -> str:
+    digest = hashlib.sha1(f"llm:{start}:{end}".encode(), usedforsecurity=False).hexdigest()[:12]
+    return f"ev-jd-{kind}-{digest}"
+
+
+def _safe_json_parse(raw_output: str) -> dict[str, Any]:
+    text = raw_output.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        first_line = lines[0]
+        if first_line.startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    start_idx = text.find("{")
+    end_idx = text.rfind("}")
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        text = text[start_idx : end_idx + 1]
+    data = json.loads(text)
+    return data if isinstance(data, dict) else {}
+
+
+def _sanitize_candidate_payload(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {}
+    title = data.get("jobTitle") or data.get("job_title")
+    if isinstance(title, dict):
+        val = str(title.get("value") or "").strip()
+        quote = str(title.get("quote") or "").strip()
+        data["jobTitle"] = {"value": val[:200], "quote": quote[:500]} if val and quote else None
+    else:
+        data["jobTitle"] = None
+
+    company = data.get("companyName") or data.get("company_name")
+    if isinstance(company, dict):
+        val = str(company.get("value") or "").strip()
+        quote = str(company.get("quote") or "").strip()
+        data["companyName"] = {"value": val[:200], "quote": quote[:500]} if val and quote else None
+    else:
+        data["companyName"] = None
+
+    for list_field in ("responsibilities", "benefits"):
+        clean_list = []
+        for item in data.get(list_field, []):
+            if not isinstance(item, dict):
+                continue
+            val = str(item.get("value") or "").strip()
+            quote = str(item.get("quote") or "").strip()
+            if val and quote:
+                clean_list.append({"value": val[:2000], "quote": quote[:4000]})
+        data[list_field] = clean_list[:30]
+
+    clean_reqs = []
+    for item in data.get("requirements", []):
+        if not isinstance(item, dict):
+            continue
+        val = str(item.get("value") or "").strip()
+        quote = str(item.get("quote") or "").strip()
+        if not (val and quote):
+            continue
+        kind = str(item.get("kind") or "other").lower().strip()
+        if kind not in {"skill", "experience", "education", "language", "other"}:
+            kind = "other"
+        priority = str(item.get("priority") or "must_have").lower().strip()
+        if priority not in {"must_have", "preferred"}:
+            priority = "must_have"
+        clean_reqs.append(
+            {
+                "value": val[:2000],
+                "quote": quote[:4000],
+                "kind": kind,
+                "priority": priority,
+            }
+        )
+    data["requirements"] = clean_reqs[:40]
+    return data
+
+
+class HybridJobDescriptionParser:
+    """Augment deterministic extraction with OpenAI, retaining injected clients for tests."""
+
+    def __init__(
+        self,
+        taxonomy: dict[str, tuple[str, tuple[str, ...]]] | None = None,
+        taxonomy_version: str = "internal-2026.1",
+        *,
+        client: ModelServiceClient | None = None,
+    ) -> None:
+        self._deterministic = DeterministicJobDescriptionParser(taxonomy, taxonomy_version)
+        self._taxonomy = self._deterministic._taxonomy
+        self._taxonomy_version = taxonomy_version
+        # An explicit client remains supported for tests and temporary adapters.
+        # Normal application/evaluation execution uses the configured OpenAI API.
+        self._client = client
+
+    async def parse(
+        self,
+        source: SourceDocument,
+        *,
+        extraction_version: str,
+        artifact_key: str | None = None,
+    ) -> CanonicalJobDescription:
+        baseline = self._deterministic.parse(
+            source, extraction_version=extraction_version, artifact_key=artifact_key
+        )
+        if self._client is None and not get_settings().openai_api_key:
+            return self._with_warning(
+                baseline, "llm_not_configured", "Hybrid mode requested but OPENAI_API_KEY is not configured."
+            )
+        if self._client is not None and not self._client.enabled:
+            return self._with_warning(
+                baseline, "llm_not_configured", "Hybrid mode requested but its AI client is not configured."
+            )
+        try:
+            if self._client is not None:
+                output = await self._client.generate(
+                    GenerationRequest(
+                        input_text=source.text,
+                        instructions=JD_EXTRACTION_INSTRUCTIONS,
+                        temperature=0.0,
+                    )
+                )
+            else:
+                output = await generate_text(
+                    instructions=JD_EXTRACTION_INSTRUCTIONS,
+                    input_text=source.text,
+                    max_output_tokens=get_settings().jd_parser_max_output_tokens,
+                    temperature=0.0,
+                )
+            parsed_json = _safe_json_parse(output)
+            sanitized = _sanitize_candidate_payload(parsed_json)
+            candidate = JobDescriptionCandidate.model_validate(sanitized)
+        except (
+            ModelServiceError,
+            RuntimeError,
+            json.JSONDecodeError,
+            ValidationError,
+            ValueError,
+            Exception,
+        ) as exc:
+            return self._with_warning(baseline, "llm_fallback", f"LLM candidate rejected: {str(exc)[:300]}")
+        try:
+            return self._merge(baseline, source, candidate)
+        except (ValidationError, ValueError) as exc:
+            return self._with_warning(
+                baseline,
+                "llm_fallback",
+                f"LLM candidate merge rejected: {str(exc)[:300]}",
+            )
+
+    @staticmethod
+    def _with_warning(parsed: CanonicalJobDescription, code: str, message: str) -> CanonicalJobDescription:
+        warning = ParserWarning(code=code, severity="warning", message=message)
+        metadata = parsed.parsing.model_copy(
+            update={"parser_version": PARSER_VERSION, "warnings": [*parsed.parsing.warnings, warning]}
+        )
+        return parsed.model_copy(update={"parsing": metadata})
+
+    @staticmethod
+    def _quote_offset(raw_text: str, quote: str) -> tuple[int, int] | None:
+        if not quote or not quote.strip():
+            return None
+        # 1. Exact match
+        matches = list(re.finditer(re.escape(quote), raw_text))
+        if matches:
+            return (matches[0].start(), matches[0].end()) if len(matches) == 1 else None
+        # 2. Whitespace-tolerant match
+        words = quote.split()
+        if words:
+            pattern = re.compile(r"\s+".join(re.escape(w) for w in words))
+            matches = list(pattern.finditer(raw_text))
+            if matches:
+                return (matches[0].start(), matches[0].end()) if len(matches) == 1 else None
+        return None
+
+    def _merge(
+        self, baseline: CanonicalJobDescription, source: SourceDocument, candidate: JobDescriptionCandidate
+    ) -> CanonicalJobDescription:
+        mapper = EvidenceMapper(source)
+        evidence = {item.evidence_id: item for item in baseline.evidence}
+        warnings: list[ParserWarning] = []
+
+        def ground(kind: str, item: TextCandidate) -> str | None:
+            span = self._quote_offset(source.text, item.quote)
+            if span is None:
+                warnings.append(
+                    ParserWarning(
+                        code="llm_claim_rejected",
+                        severity="warning",
+                        message=f"{kind} quote is missing or ambiguous",
+                    )
+                )
+                return None
+            start, end = span
+            evidence_id = _evidence_id(kind, start, end)
+            evidence.setdefault(
+                evidence_id,
+                mapper.from_offsets(
+                    evidence_id=evidence_id, char_start=start, char_end=end, section="job_description"
+                ),
+            )
+            return evidence_id
+
+        def unique_text(
+            existing: list[GroundedJobText], kind: str, items: list[TextCandidate]
+        ) -> list[GroundedJobText]:
+            result: list[GroundedJobText] = []
+            for entry in existing:
+                duplicate = next(
+                    (idx for idx, prior in enumerate(result) if
+                     entry.text.casefold() == prior.text.casefold()
+                     or _near_duplicate_claim(entry.text, prior.text)),
+                    None,
+                )
+                if duplicate is None:
+                    result.append(entry)
+                else:
+                    prior = result[duplicate]
+                    result[duplicate] = prior.model_copy(
+                        update={
+                            "evidence_refs": list(
+                                dict.fromkeys([*prior.evidence_refs, *entry.evidence_refs])
+                            )
+                        }
+                    )
+            for item in items:
+                evidence_id = ground(kind, item)
+                if not evidence_id:
+                    continue
+                val = item.value.strip()
+                replaced = False
+                for idx, ex in enumerate(result):
+                    exact_or_contained = val.casefold() == ex.text.casefold() or (
+                        len(val) >= 5
+                        and len(ex.text) >= 5
+                        and (val.casefold() in ex.text.casefold() or ex.text.casefold() in val.casefold())
+                    )
+                    if exact_or_contained or _near_duplicate_claim(val, ex.text):
+                        result[idx] = GroundedJobText(
+                            text=val if exact_or_contained else ex.text,
+                            evidenceRefs=list(dict.fromkeys([*ex.evidence_refs, evidence_id])),
+                        )
+                        replaced = True
+                        break
+                if not replaced:
+                    result.append(GroundedJobText(text=val, evidenceRefs=[evidence_id]))
+            return result
+
+        responsibilities = unique_text(
+            baseline.responsibilities, "responsibility", candidate.responsibilities
+        )
+        benefits = unique_text(baseline.benefits, "benefit", candidate.benefits)
+
+        def overlaps(left_id: str, right_id: str) -> bool:
+            left = evidence[left_id]
+            right = evidence[right_id]
+            return left.char_start < right.char_end and right.char_start < left.char_end
+
+        # Reconcile grounded LLM claims with deterministic requirements by source
+        # provenance. This retains stable IDs and structured numeric fields while
+        # preventing the same source requirement from becoming two canonical rows.
+        requirements = list(baseline.requirements)
+        # Accept any requirements block, not just the last one: bilingual
+        # postings list the same requirements twice under two headings, and
+        # recognising only one block silently drops the other block's items.
+        requirement_sections = section_ranges_all(source.text, "requirements")
+
+        # Ground and filter every candidate before reconciling any of them.
+        # Whether a baseline row describes one requirement or a whole block can
+        # only be told by looking at all the claims at once, which the single
+        # pass this replaced could not do.
+        claims: list[_RequirementClaim] = []
+        for index, item in enumerate(candidate.requirements, start=1):
+            evidence_id = ground("requirement", item)
+            if not evidence_id:
+                continue
+            grounded_span = evidence[evidence_id]
+            if is_in_application_section(source.text, grounded_span.char_start):
+                trace_event(
+                    "jd_parser",
+                    "requirement_filtered",
+                    document_id=source.document_id,
+                    raw_label=item.value.strip(),
+                    char_start=grounded_span.char_start,
+                    char_end=grounded_span.char_end,
+                    reason_code="application_instructions",
+                    classifier="application_section_boundary",
+                    source="hybrid_candidate",
+                )
+                continue
+            if requirement_sections and not any(
+                start <= grounded_span.char_start and grounded_span.char_end <= end
+                for start, end in requirement_sections
+            ):
+                trace_event(
+                    "jd_parser",
+                    "requirement_filtered",
+                    document_id=source.document_id,
+                    raw_label=item.value.strip(),
+                    char_start=grounded_span.char_start,
+                    char_end=grounded_span.char_end,
+                    reason_code="outside_requirements_section",
+                    classifier="section_boundary",
+                    source="hybrid_candidate",
+                )
+                continue
+            if is_probable_requirement_heading_at(source.text, grounded_span.char_start):
+                # The candidate quote is a structurally identified section
+                # heading, not a candidate requirement.  This keeps the LLM
+                # augmentation aligned with deterministic source structure.
+                trace_event(
+                    "jd_parser",
+                    "requirement_filtered",
+                    document_id=source.document_id,
+                    raw_label=item.value.strip(),
+                    char_start=grounded_span.char_start,
+                    char_end=grounded_span.char_end,
+                    reason_code="layout_section_heading",
+                    classifier="neighboring_line_structure",
+                    source="hybrid_candidate",
+                )
+                continue
+            exp_months = self._deterministic._experience_months(item.quote)
+            claims.append(
+                _RequirementClaim(
+                    index=index,
+                    item=item,
+                    evidence_id=evidence_id,
+                    char_start=grounded_span.char_start,
+                    char_end=grounded_span.char_end,
+                    concept=self._resolve_concept(item.quote),
+                    experience_months=exp_months,
+                    operator="gte" if exp_months is not None else None,
+                )
+            )
+
+        def evidence_hull(refs: list[str]) -> tuple[int, int] | None:
+            """The outermost offsets this requirement is grounded in."""
+            spans = [evidence[ref] for ref in refs if ref in evidence]
+            if not spans:
+                return None
+            return (
+                min(span.char_start for span in spans),
+                max(span.char_end for span in spans),
+            )
+
+        # Identify the containers.  Reconciling by bare span intersection made
+        # every claim inside such a row merge into it, each merge overwriting
+        # the previous one's label and concept: across ten real postings 116
+        # extracted requirements collapsed into 26 rows, one of them carrying
+        # ten evidence refs, an education id, a CSS concept and the text of the
+        # last claim.  Members are promoted to rows of their own instead.
+        container_members: dict[int, list[int]] = {}
+        for requirement_index, requirement in enumerate(requirements):
+            hull = evidence_hull(requirement.evidence_refs)
+            if hull is None:
+                continue
+            hull_start, hull_end = hull
+            hull_length = hull_end - hull_start
+            if hull_length <= 0:
+                continue
+            members = [
+                position
+                for position, claim in enumerate(claims)
+                if hull_start <= claim.char_start
+                and claim.char_end <= hull_end
+                and (claim.char_end - claim.char_start) < _CONTAINER_MEMBER_SHARE * hull_length
+            ]
+            if len(members) >= _CONTAINER_MIN_MEMBERS:
+                container_members[requirement_index] = members
+        containers = set(container_members)
+
+        for claim in claims:
+            index, item, evidence_id = claim.index, claim.item, claim.evidence_id
+            concept, exp_months, op_val = claim.concept, claim.experience_months, claim.operator
+            matching_indices = [
+                requirement_index
+                for requirement_index, requirement in enumerate(requirements)
+                if requirement_index not in containers
+                and any(overlaps(ref, evidence_id) for ref in requirement.evidence_refs)
+                and (
+                    concept is None
+                    or requirement.concept is None
+                    or requirement.concept.concept_id == concept.concept_id
+                )
+            ]
+            if len(matching_indices) == 1:
+                requirement_index = matching_indices[0]
+                existing = requirements[requirement_index]
+                requirements[requirement_index] = existing.model_copy(
+                    update={
+                        "kind": "skill" if concept else existing.kind,
+                        "priority": (
+                            "preferred" if "preferred" in {existing.priority, item.priority} else "must_have"
+                        ),
+                        "concept": (
+                            existing.concept
+                            if existing.atomic_concepts
+                            else concept or existing.concept
+                        ),
+                        "raw_label": (
+                            existing.raw_label
+                            if existing.atomic_concepts
+                            else item.value.strip()
+                        ),
+                        "minimum_experience_months": (
+                            existing.minimum_experience_months
+                            if existing.minimum_experience_months is not None
+                            else exp_months
+                        ),
+                        "operator": existing.operator or op_val,
+                        "evidence_refs": list(dict.fromkeys([*existing.evidence_refs, evidence_id])),
+                    }
+                )
+                continue
+            if len(matching_indices) > 1:
+                # A single quoted sentence can cover several atomic alternatives
+                # (for example, student OR graduate). They already represent the
+                # claim and must not acquire another combined LLM row.
+                trace_event(
+                    "jd_parser",
+                    "requirement_filtered",
+                    document_id=source.document_id,
+                    raw_label=item.value.strip(),
+                    char_start=claim.char_start,
+                    char_end=claim.char_end,
+                    reason_code="covered_by_multiple_requirements",
+                    classifier="evidence_overlap",
+                    source="hybrid_candidate",
+                )
+                continue
+            requirements.append(
+                JobRequirement(
+                    requirementId=f"req-llm-{index:03d}",
+                    kind="skill" if concept else item.kind,
+                    priority=item.priority,
+                    concept=concept,
+                    rawLabel=item.value.strip(),
+                    minimumExperienceMonths=exp_months,
+                    operator=op_val,
+                    groupOperator="atomic",
+                    evidenceRefs=[evidence_id],
+                )
+            )
+
+        # A container's claim is now carried by the rows promoted out of it.
+        # Keep it only when it holds a structured field none of them could
+        # restate, and demote it so it can no longer disqualify anyone:
+        # ``preferred`` maps to ``nice_to_have`` at the matching boundary
+        # (``matching/domain/adapters.py``), which never gates eligibility.
+        superseded: set[int] = set()
+        for requirement_index, members in container_members.items():
+            requirement = requirements[requirement_index]
+            if _carries_structured_detail(requirement):
+                if requirement.priority == "must_have":
+                    requirements[requirement_index] = requirement.model_copy(
+                        update={"priority": "preferred"}
+                    )
+                trace_event(
+                    "jd_parser",
+                    "requirement_demoted",
+                    document_id=source.document_id,
+                    requirement_id=requirement.requirement_id,
+                    raw_label=requirement.raw_label,
+                    member_count=len(members),
+                    reason_code="container_kept_for_structured_detail",
+                    classifier="evidence_containment",
+                    source="hybrid_post_merge",
+                )
+                continue
+            superseded.add(requirement_index)
+            trace_event(
+                "jd_parser",
+                "requirement_filtered",
+                document_id=source.document_id,
+                requirement_id=requirement.requirement_id,
+                raw_label=requirement.raw_label,
+                member_count=len(members),
+                reason_code="container_superseded_by_members",
+                classifier="evidence_containment",
+                source="hybrid_post_merge",
+            )
+        if superseded:
+            requirements = [
+                requirement
+                for position, requirement in enumerate(requirements)
+                if position not in superseded
+            ]
+
+        # Run the structural guard once more over the merged canonical list.
+        # This is deliberately source-position based: it protects against a
+        # model returning a heading with a quote that does not follow the
+        # deterministic baseline's requirement ordering.
+        filtered_requirements: list[JobRequirement] = []
+        for requirement in requirements:
+            span = next(
+                (evidence[ref] for ref in requirement.evidence_refs if ref in evidence),
+                None,
+            )
+            # The same label can appear once as a real requirement and again
+            # in a footer. Classify the grounded occurrence, not an arbitrary
+            # equal-valued line elsewhere in the document.
+            is_structural = (
+                is_probable_requirement_heading_at(source.text, span.char_start)
+                if span is not None
+                else is_probable_requirement_heading_value(source.text, requirement.raw_label)
+            )
+            if is_structural:
+                trace_event(
+                    "jd_parser",
+                    "requirement_filtered",
+                    document_id=source.document_id,
+                    raw_label=requirement.raw_label,
+                    char_start=span.char_start,
+                    char_end=span.char_end,
+                    reason_code="layout_section_heading",
+                    classifier="neighboring_line_structure",
+                    source="hybrid_post_merge",
+                )
+                continue
+            filtered_requirements.append(requirement)
+        requirements = filtered_requirements
+
+        company_name = baseline.company_name
+        if candidate.company_name:
+            company_evidence = ground("company", candidate.company_name)
+            if company_evidence and not company_name:
+                company_name = candidate.company_name.value.strip()
+
+        title = baseline.job_title
+        if candidate.job_title:
+            title_evidence = ground("title", candidate.job_title)
+            if title_evidence:
+                candidate_title = candidate.job_title.value.strip()
+                weak_titles = {
+                    "description",
+                    "job description",
+                    "summary",
+                    "overview",
+                    "tldr",
+                    "your job",
+                    "who we are",
+                    "our vision",
+                    "purpose of job",
+                }
+                if not title or title.casefold() in weak_titles:
+                    title = candidate_title
+                elif (
+                    candidate_title.casefold() in title.casefold()
+                    or title.casefold() in candidate_title.casefold()
+                ):
+                    title = candidate_title
+                elif not self._has_explicit_title_header(source.text, title):
+                    title = candidate_title
+                else:
+                    warnings.append(
+                        ParserWarning(
+                            code="llm_title_conflict",
+                            severity="warning",
+                            message=(
+                                "LLM title differs from deterministic title; "
+                                "deterministic title retained"
+                            ),
+                        )
+                    )
+
+        trace_event(
+            "jd_parser",
+            "requirements_finalized",
+            document_id=source.document_id,
+            parser_version=PARSER_VERSION,
+            requirement_count=len(requirements),
+            requirement_ids=[item.requirement_id for item in requirements],
+        )
+        classifications = self._deterministic._classifications(requirements)
+        metadata = baseline.parsing.model_copy(
+            update={
+                "parser_version": PARSER_VERSION,
+                "warnings": [*baseline.parsing.warnings, *warnings],
+            }
+        )
+        return CanonicalJobDescription(
+            schemaVersion="1.0",
+            jobTitle=title,
+            companyName=company_name,
+            careerClassifications=classifications,
+            seniority=baseline.seniority,
+            employmentType=baseline.employment_type,
+            workMode=baseline.work_mode,
+            location=baseline.location,
+            experienceMinYears=baseline.experience_min_years,
+            experienceMaxYears=baseline.experience_max_years,
+            experienceRaw=baseline.experience_raw,
+            salaryMin=baseline.salary_min,
+            salaryMax=baseline.salary_max,
+            salaryCurrency=baseline.salary_currency,
+            salaryPeriod=baseline.salary_period,
+            salaryNegotiable=baseline.salary_negotiable,
+            salaryRaw=baseline.salary_raw,
+            responsibilities=responsibilities,
+            requirements=requirements,
+            benefits=benefits,
+            evidence=list(evidence.values()),
+            parsing=metadata,
+        )
+
+    def _resolve_concept(self, text: str) -> TaxonomyRef | None:
+        for concept_id, (label, aliases) in self._taxonomy.items():
+            if any(alias_pattern(alias).search(text) for alias in aliases):
+                return TaxonomyRef(
+                    conceptId=concept_id,
+                    scheme="internal",
+                    taxonomyVersion=self._taxonomy_version,
+                    label=label,
+                )
+        return None
+
+    @staticmethod
+    def _has_explicit_title_header(raw_text: str, title: str) -> bool:
+        from src.modules.job_descriptions.parsing.deterministic import _key
+
+        for line in raw_text.splitlines():
+            label, separator, value = line.partition(":")
+            if separator and _key(label) in {"job title", "position", "vi tri", "chuc danh"}:
+                if value.strip().casefold() == title.casefold():
+                    return True
+        return False

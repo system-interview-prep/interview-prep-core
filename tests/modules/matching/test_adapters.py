@@ -1,0 +1,205 @@
+import pytest
+
+from src.modules.job_descriptions.schemas import CanonicalJobDescription, JobRequirement
+from src.modules.matching.domain.adapters import job_description_to_matching_job
+from src.modules.matching.application.facade import MatchingFacade
+from src.modules.matching.domain.schemas import MatchRequest, SkillRequirement, UnresolvedRequirement
+from tests.modules.matching.test_matching_pipeline import SHA256, StubEmbedder, _evidence, _payload
+
+
+def _parsed_jd() -> CanonicalJobDescription:
+    return CanonicalJobDescription.model_validate(
+        {
+            "schemaVersion": "1.0",
+            "jobTitle": "Backend Developer",
+            "seniority": "senior",
+            "employmentType": "full_time",
+            "workMode": "hybrid",
+            "location": "Hà Nội",
+            "responsibilities": [
+                {"text": "Build reliable APIs", "evidenceRefs": ["jd-ev"]}
+            ],
+            "benefits": [{"text": "Learning budget", "evidenceRefs": ["jd-ev"]}],
+            "requirements": [
+                {
+                    "requirementId": "req-python",
+                    "kind": "skill",
+                    "priority": "must_have",
+                    "concept": {
+                        "conceptId": "skill-python",
+                        "scheme": "internal",
+                        "taxonomyVersion": "2026.1",
+                        "label": "Python",
+                    },
+                    "rawLabel": "3 years of Python",
+                    "minimumExperienceMonths": 36,
+                    "evidenceRefs": ["jd-ev"],
+                },
+                {
+                    "requirementId": "req-degree",
+                    "kind": "education",
+                    "priority": "must_have",
+                    "rawLabel": "Bachelor degree in Computer Science",
+                    "evidenceRefs": ["jd-ev"],
+                },
+            ],
+            "evidence": [_evidence("jd-ev", "jd-doc", "Build reliable APIs")],
+            "parsing": {
+                "parserVersion": "hybrid-jd-v1",
+                "extractionVersion": "test",
+                "parsedAt": "2026-09-12T00:00:00Z",
+                "status": "ready",
+            },
+        }
+    )
+
+
+def test_adapter_preserves_existing_jd_fields_and_all_requirements() -> None:
+    adapted = job_description_to_matching_job(_parsed_jd(), job_id="job-1")
+
+    assert adapted.job_title == "Backend Developer"
+    assert adapted.work_mode == "hybrid"
+    assert adapted.location == "Hà Nội"
+    assert adapted.responsibilities[0].text == "Build reliable APIs"
+    assert adapted.benefits[0].text == "Learning budget"
+    assert isinstance(adapted.requirements[0], SkillRequirement)
+    assert adapted.requirements[0].operator == "gte"
+    assert isinstance(adapted.requirements[1], UnresolvedRequirement)
+
+
+def test_unresolved_must_have_is_not_silently_dropped_or_marked_met() -> None:
+    payload = _payload(add_java=False)
+    payload["resume"]["documentSha256"] = SHA256
+    request = MatchRequest(
+        schemaVersion="2.1",
+        resume=payload["resume"],
+        job=job_description_to_matching_job(_parsed_jd(), job_id="job-1"),
+        asyncProcessing=False,
+    )
+
+    result = MatchingFacade(StubEmbedder()).match(request)
+
+    degree = next(item for item in result.requirement_results if item.requirement_id == "req-degree")
+    # No supporting CV evidence means the must-have is not met.
+    assert degree.status == "not_met"
+    assert degree.reason_code == "requirement_not_evidenced"
+    assert "không tìm thấy bằng chứng" in (degree.evidence_explanation or "").lower()
+    assert result.eligibility == "ineligible"
+
+
+def test_adapter_fails_closed_when_finalized_jd_has_no_evidence() -> None:
+    parsed = _parsed_jd().model_copy(update={"evidence": []})
+
+    with pytest.raises(ValueError, match="document evidence"):
+        job_description_to_matching_job(parsed, job_id="job-1")
+
+
+def test_legacy_hybrid_uses_grounded_baseline_when_llm_copy_lost_taxonomy() -> None:
+    base = _parsed_jd()
+    baseline = base.requirements[0].model_copy(update={"requirement_id": "req-python"})
+    ungrounded_llm = base.requirements[1].model_copy(
+        update={
+            "requirement_id": "req-llm-python",
+            "kind": "skill",
+            "raw_label": "Python programming",
+            "concept": None,
+            "atomic_concepts": [],
+        }
+    )
+    parsed = base.model_copy(
+        update={"requirements": [baseline, ungrounded_llm]}
+    )
+
+    adapted = job_description_to_matching_job(parsed, job_id="job-legacy")
+
+    assert [item.requirement_id for item in adapted.requirements] == ["req-python"]
+    assert isinstance(adapted.requirements[0], SkillRequirement)
+    assert adapted.requirements[0].skill.concept_id == "skill-python"
+
+
+def test_legacy_hybrid_keeps_llm_source_when_it_is_taxonomy_grounded() -> None:
+    base = _parsed_jd()
+    baseline = base.requirements[0].model_copy(update={"requirement_id": "req-python"})
+    grounded_llm = base.requirements[0].model_copy(
+        update={"requirement_id": "req-llm-python"}
+    )
+    parsed = base.model_copy(
+        update={"requirements": [baseline, grounded_llm]}
+    )
+
+    adapted = job_description_to_matching_job(parsed, job_id="job-legacy")
+
+    assert [item.requirement_id for item in adapted.requirements] == ["req-llm-python"]
+    assert isinstance(adapted.requirements[0], SkillRequirement)
+
+
+def test_adapter_recovers_exact_known_skill_from_legacy_ungrounded_requirement() -> None:
+    base = _parsed_jd()
+    legacy = base.requirements[0].model_copy(
+        update={
+            "requirement_id": "req-legacy-ai",
+            "kind": "skill",
+            "raw_label": "Experience building AI systems with Python",
+            "concept": None,
+            "atomic_concepts": [],
+        }
+    )
+    parsed = base.model_copy(update={"requirements": [legacy]})
+
+    adapted = job_description_to_matching_job(parsed, job_id="job-legacy")
+
+    requirement = adapted.requirements[0]
+    assert isinstance(requirement, UnresolvedRequirement)
+    assert [item.concept_id for item in requirement.atomic_concepts] == [
+        "skill-artificial-intelligence",
+        "skill-python",
+    ]
+    assert {item.taxonomy_version for item in requirement.atomic_concepts} == {
+        "internal-career-2026.1"
+    }
+
+
+def test_adapter_does_not_invent_taxonomy_for_unknown_legacy_skill_text() -> None:
+    base = _parsed_jd()
+    legacy = base.requirements[0].model_copy(
+        update={
+            "requirement_id": "req-legacy-unknown",
+            "kind": "skill",
+            "raw_label": "Experience with proprietary platform ZetaQ",
+            "concept": None,
+            "atomic_concepts": [],
+        }
+    )
+    parsed = base.model_copy(update={"requirements": [legacy]})
+
+    adapted = job_description_to_matching_job(parsed, job_id="job-legacy")
+
+    requirement = adapted.requirements[0]
+    assert isinstance(requirement, UnresolvedRequirement)
+    assert requirement.atomic_concepts == []
+
+
+def test_adapter_keeps_baseline_when_current_hybrid_adds_new_llm_claim() -> None:
+    parsed = _parsed_jd().model_copy(
+        update={
+            "requirements": [
+                *_parsed_jd().requirements,
+                JobRequirement(
+                    requirementId="req-llm-015",
+                    kind="education",
+                    priority="must_have",
+                    rawLabel="College degree or higher",
+                    evidenceRefs=["jd-ev"],
+                ),
+            ],
+            "parsing": _parsed_jd().parsing.model_copy(update={"parser_version": "hybrid-jd-v6"}),
+        }
+    )
+
+    adapted = job_description_to_matching_job(parsed, job_id="job-1")
+
+    assert [item.requirement_id for item in adapted.requirements] == [
+        "req-python",
+        "req-degree",
+        "req-llm-015",
+    ]

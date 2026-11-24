@@ -1,0 +1,960 @@
+"""Deterministic, evidence-grounded extractors for structured CV sections."""
+
+import re
+import unicodedata
+from collections.abc import Iterable
+from dataclasses import replace
+from hashlib import sha1
+from typing import NamedTuple
+
+from src.modules.user_cvs.domain.schemas import (
+    CertificationEntry,
+    EducationEntry,
+    EmploymentEntry,
+    PartialDate,
+    ProjectEntry,
+)
+from src.modules.user_cvs.parsing.domain.source import (
+    EvidenceMapper,
+    SourceBlock,
+    SourceDocument,
+    _section_for_heading,
+)
+
+_YEAR = r"(?:19|20)\d{2}"
+# A bare four-digit year, used where a block carries no full date range.
+_STANDALONE_YEAR_RE = re.compile(rf"\b({_YEAR})\b")
+_MONTH_EN = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+)
+_MONTH_VI = r"(?:thg\s*\d{1,2}|tháng\s*\d{1,2})"
+_MONTH = rf"(?:{_MONTH_EN}|{_MONTH_VI})"
+# Numeric month, the usual Vietnamese CV format: "03/2023", "3/2023", "03.2023".
+_NUMERIC_MONTH = r"(?:0?[1-9]|1[0-2])\s*[/.]\s*"
+_DATE = rf"(?:(?:{_MONTH})\.?\s+|{_NUMERIC_MONTH})?{_YEAR}"
+_DATE_RANGE_RE = re.compile(
+    rf"(?P<start>{_DATE})\s*(?:-|\u2013|\u2014|to|\u0111\u1ebfn)\s*"
+    rf"(?:(?:expected|anticipated|est\.?|d\u1ef1\s*ki\u1ebfn)\s*)?"
+    rf"(?P<end>{_DATE}|present|current|now|hi\u1ec7n\s*t\u1ea1i|hi\u1ec7n\s*nay|nay)",
+    re.IGNORECASE,
+)
+_PROJECT_DATE_SUFFIX_RE = re.compile(
+    rf"(?:"
+    # Month/day ranges are common in student CVs and often OCR-extracted as
+    # part of the project title, e.g. "April 28 - June 22, 2026".
+    rf"\s+{_MONTH_EN}\.?\s+\d{{1,2}}\s*(?:-|\u2013|\u2014|to)\s*"
+    rf"{_MONTH_EN}\.?\s+\d{{1,2}},?\s*{_YEAR}"
+    rf"|\s*(?:{_MONTH_EN})?\.?\s*{_YEAR}\s*(?:-|\u2013|\u2014|to)\s*"
+    rf"(?:(?:{_MONTH_EN})?\.?\s*)?{_YEAR}"
+    rf")$",
+    re.IGNORECASE,
+)
+_COMPANY_RE = re.compile(
+    r"\b(organization|t\u1ed5 ch\u1ee9c|company|c\u00f4ng ty|t\u1eadp \u0111o\u00e0n|"
+    r"corporation|corp|inc|ltd|llc|tnhh|jsc)\b",
+    re.IGNORECASE,
+)
+_MONTH_NUMBER = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+_INSTITUTION_RE = re.compile(
+    r"\b("
+    r"institution|university|college|school|academy|institute|"
+    r"cơ sở giáo dục|trường|đại học|học viện|cao đẳng|"
+    r"iuh|hcmus|hust|uit|vnu|bk|bkhn|hcmut|uet|dut|ptit|neu|ftu"
+    r")\b",
+    re.I,
+)
+_DEGREE_RE = re.compile(
+    r"\b("
+    r"bachelors?|masters?|ph\.?d|doctor|b\.?sc|m\.?sc|b\.?eng|m\.?eng|b\.?e|m\.?e|"
+    r"b\.?s|m\.?s|mba|associate|adp|f\.?sc|intermediate|a[ -]?levels|o[ -]?levels|"
+    r"pre-?engineering|computer sciences?|diploma|hsc|ssc|high[ -]?school|"
+    r"secondary school|higher secondary|trung hoc|bba|dba|mcs|bscs|bsit|"
+    r"b\.?com|m\.?com|b\.?tech|m\.?tech|b\.?a|m\.?a|f\.?a|llb|degree|graduation|"
+    r"cử nhân|thạc sĩ|tiến sĩ|kỹ sư|cao đẳng|đại học|trung học|phổ thông|bằng cấp|"
+    r"student|undergraduate|sinh viên|năm cuối|final-year"
+    r")\b",
+    re.I,
+)
+_ACADEMIC_RE = re.compile(
+    r"\b(gpa|cpa|major|minor|chuyên ngành|ngành|khoa|khoá|niên khoá|luận văn|thesis)\b",
+    re.IGNORECASE,
+)
+_SECTION_TITLES = {
+    "education",
+    "academic background",
+    "hoc van",
+    "giao duc",
+    "học vấn",
+    "giáo dục",
+    "projects",
+    "selected projects",
+    "du an",
+    "du an tieu bieu",
+    "dự án",
+    "dự án tiêu biểu",
+    "research",
+    "scientific research",
+    "nghien cuu",
+    "nghiên cứu",
+    "competitions",
+    "awards",
+    "cuoc thi",
+    "cuộc thi",
+    "giai thuong",
+    "giải thưởng",
+    "publications",
+    "bai bao",
+    "bài báo",
+    "certifications",
+    "certificates",
+    "chung chi",
+    "chứng chỉ",
+}
+
+
+def _stable_id(kind: str, block: SourceBlock) -> str:
+    digest = sha1(f"{kind}:{block.char_start}:{block.char_end}".encode(), usedforsecurity=False)
+    return f"{kind}-{digest.hexdigest()[:12]}"
+
+
+_CURRENT_WORDS = {"present", "current", "now", "hiện tại", "hien tai", "hiện nay", "hien nay", "nay"}
+
+
+def _partial_date(value: str) -> PartialDate | None:
+    value = value.strip().rstrip(".")
+    if value.casefold() in _CURRENT_WORDS:
+        return None
+    year_match = re.search(_YEAR, value)
+    if not year_match:
+        return None
+    numeric_month = re.match(r"(0?[1-9]|1[0-2])\s*[/.]\s*(?:19|20)\d{2}", value)
+    if numeric_month:
+        month = int(numeric_month.group(1))
+        return PartialDate(value=f"{year_match.group()}-{month:02d}", precision="month")
+    month_match = re.search(r"(?:thg\s*|tháng\s*)(\d{1,2})", value, re.I)
+    if month_match:
+        month = int(month_match.group(1))
+        if 1 <= month <= 12:
+            return PartialDate(value=f"{year_match.group()}-{month:02d}", precision="month")
+    month_match = re.match(r"[A-Za-z]+", value)
+    if month_match:
+        month = _MONTH_NUMBER.get(month_match.group().casefold()[:3])
+        if month:
+            return PartialDate(value=f"{year_match.group()}-{month:02d}", precision="month")
+    return PartialDate(value=year_match.group(), precision="year")
+
+
+def _block_evidence(mapper: EvidenceMapper, block: SourceBlock, kind: str) -> str:
+    evidence_id = _stable_id(f"{kind}-evidence", block)
+    return evidence_id
+
+
+def _add_block_evidence(draft, mapper: EvidenceMapper, block: SourceBlock, kind: str) -> str:
+    evidence_id = _block_evidence(mapper, block, kind)
+    draft.evidence.setdefault(
+        evidence_id,
+        mapper.from_offsets(
+            evidence_id=evidence_id,
+            char_start=block.char_start,
+            char_end=block.char_end,
+            # A merged item spans several blocks, so the mapper cannot find a
+            # containing one and would label the span "other".
+            section=block.section,
+        ),
+    )
+    return evidence_id
+
+
+def _section_blocks(source: SourceDocument, section: str) -> list[SourceBlock]:
+    return [block for block in source.blocks if block.section == section]
+
+
+_CLOSERS = {")": "(", "]": "[", "}": "{"}
+# A comma between digits groups one number, it never separates two fields.
+_GROUPED_NUMBER_RE = re.compile(r"\d[.,]\d")
+
+
+def _mask_protected_spans(value: str) -> str:
+    """Blank out spans where a separator character does not separate fields.
+
+    Two such spans exist. Inside brackets, a dash or comma qualifies the field
+    that holds it ("Scientific Affairs Lead, Specialty (I&I - Rare)"); the
+    split there invented an organization called "Rare)". Inside a number, a
+    comma groups digits ("Salary: $138,491 per annum"); the split there made a
+    job title of "Salary: $138" and an employer of "491 per annum".
+
+    Offsets are preserved, so the caller slices the original string and keeps
+    the protected text intact.
+    """
+    out = list(value)
+    depth = 0
+    for index, char in enumerate(value):
+        if char in "([{":
+            depth += 1
+        elif char in _CLOSERS:
+            depth = max(0, depth - 1)
+        elif depth:
+            out[index] = " "
+    for match in _GROUPED_NUMBER_RE.finditer(value):
+        # Mask the separator itself; the digits around it stay addressable.
+        out[match.start() + 1] = " "
+    return "".join(out)
+
+
+def _split_header(value: str, *, dash_separated: bool = False) -> list[str]:
+    # Commas are common inside job titles (for example, a department suffix).
+    # Prefer explicit separators; only use commas when no stronger delimiter is
+    # present in the CV header.
+    # A spaced dash ("Backend Developer — Công ty ShopNow") is the usual
+    # Vietnamese title/organization separator.
+    masked = _mask_protected_spans(value)
+    if re.search(r"\||@|\bat\b", masked, re.I):
+        separator = r"\s*(?:\||@|\bat\b)\s*"
+    elif dash_separated and re.search(r"\s[-–—]\s", masked):
+        separator = r"\s+[-–—]\s+"
+    else:
+        separator = r"\s*,\s*"
+    parts: list[str] = []
+    cursor = 0
+    for match in re.finditer(separator, masked):
+        parts.append(value[cursor : match.start()])
+        cursor = match.end()
+    parts.append(value[cursor:])
+    return [part.strip(" -–—|,") for part in parts if part.strip(" -–—|,")]
+
+
+def _is_section_title(value: str) -> bool:
+    stripped = value.strip()
+    if not stripped:
+        return False
+    cleaned = unicodedata.normalize("NFD", stripped.casefold())
+    without_marks = "".join(c for c in cleaned if unicodedata.category(c) != "Mn")
+    raw = stripped.casefold()
+    if raw in _SECTION_TITLES or without_marks in _SECTION_TITLES:
+        return True
+    # source._section_for_heading strips punctuation before it matches, so a
+    # line like "projects." or "Projects:" opens the projects section there.
+    # Matching exactly here let that same line through as a project, and the
+    # group loop below names a project after it ("projects.").
+    unpunctuated = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", without_marks)).strip()
+    if unpunctuated and unpunctuated in _SECTION_TITLES:
+        return True
+    # The broad source heading classifier is useful for headings such as
+    # "RESEARCH & AI PROJECTS", but must not swallow project names that merely
+    # mention research (e.g. "... (Scientific Research)").
+    return (
+        _section_for_heading(stripped) is not None
+        and stripped.upper() == stripped
+        and any(char.isalpha() for char in stripped)
+        and len(stripped.split()) <= 7
+    )
+
+
+def _skill_ids_for_blocks(draft, blocks: Iterable[SourceBlock]) -> list[str]:
+    intervals = [(block.char_start, block.char_end) for block in blocks]
+    matching_evidence = {
+        evidence_id
+        for evidence_id, evidence in draft.evidence.items()
+        if any(start <= evidence.char_start and evidence.char_end <= end for start, end in intervals)
+    }
+    return [skill.claim_id for skill in draft.skills if matching_evidence.intersection(skill.evidence_refs)]
+
+
+# Symbol and Wingdings bullets survive PDF extraction as private-use code
+# points, so a bullet list can arrive without one recognisable marker.
+_BULLET_RE = re.compile(r"^\s*[-*•–—+●▪◦]\s*")
+# "Employer:", "Grade/Series:", "Supervisor:" head a field in a labelled resume
+# layout. They open an item; they are never the tail of one.
+_LABELLED_FIELD_RE = re.compile(r"^\s*[A-Z][A-Za-z/ ]{0,24}:")
+# A colon ends a heading or a field label ("EDUCATION:"); what follows is
+# new content, never the tail of a wrapped line.
+_SENTENCE_END_RE = re.compile(r"[.;:!?]\s*$")
+# A wrapped line runs close to the column width. A short line that ends
+# without punctuation is a list entry of its own, not the head of a wrap.
+_WRAP_WIDTH = 60
+
+
+class _Line(NamedTuple):
+    block: SourceBlock
+    start: int
+    end: int
+    text: str
+
+
+def _opens_item(text: str) -> bool:
+    if _BULLET_RE.match(text) is not None or _LABELLED_FIELD_RE.match(text) is not None:
+        return True
+    # "EDUCATION:" is caught by the colon rule, bare "EDUCATION" is not, and a
+    # heading joined onto the bullet above it stops being recognised as one.
+    return _is_section_title(text)
+
+
+def _continues_item(previous: str, text: str) -> bool:
+    """Report whether `text` is the wrapped tail of `previous`."""
+    if _SENTENCE_END_RE.search(previous) or _is_section_title(previous):
+        return False
+    head = text.lstrip()[:1]
+    # A tail starts mid-sentence: lower case, or punctuation such as "(CISA)".
+    return head.islower() or not head.isalnum() or len(previous) >= _WRAP_WIDTH
+
+
+def _merge_lines(group: list[_Line]) -> SourceBlock:
+    """Join wrapped lines into one item, spanning the real source offsets.
+
+    The text is joined with a space so the extractors see one line, while the
+    offsets keep covering the original span, newline included, which is what
+    the evidence quote should show.
+    """
+    first, last = group[0], group[-1]
+    return replace(
+        first.block,
+        text=" ".join(line.text.strip() for line in group),
+        char_start=first.block.char_start + first.start,
+        char_end=last.block.char_start + last.end,
+    )
+
+
+def _line_items(blocks: list[SourceBlock]) -> list[SourceBlock]:
+    """Split a section into one item per entry header or bullet.
+
+    A PDF text layer offers no reliable paragraph boundary. PaddleOCR emits one
+    block per physical line, while an embedded text layer can hand over a whole
+    section as a single block. Both are flattened to lines here and regrouped by
+    one rule, so a bullet wrapped over three lines stays one item.
+
+    This used to rejoin wrapped lines only inside a block, which on the
+    PaddleOCR path never happened, because no block held more than one line: a
+    resume with 45 bullets was reported as 142, and every one of them missed.
+
+    A line carrying a date range opens an entry, and so does the line right
+    after it (a job title under "Công ty ABC (2020 - 2021)"). Offsets stay those
+    of the source text, so evidence spans remain valid.
+    """
+    lines: list[_Line] = []
+    for block in blocks:
+        offset = 0
+        for raw_line in block.text.split("\n"):
+            line_start, line_end = offset, offset + len(raw_line)
+            offset = line_end + 1
+            if raw_line.strip():
+                lines.append(_Line(block, line_start, line_end, raw_line))
+
+    groups: list[list[_Line]] = []
+    previous_dated = False
+    for line in lines:
+        dated = _DATE_RANGE_RE.search(line.text) is not None
+        opens = (
+            not groups
+            or dated
+            or previous_dated
+            or _opens_item(line.text)
+            or not _continues_item(groups[-1][-1].text, line.text)
+        )
+        if opens:
+            groups.append([line])
+        else:
+            groups[-1].append(line)
+        previous_dated = dated
+    return [_merge_lines(group) for group in groups]
+
+
+class EmploymentExtractor:
+    """Extract dated experience entries and their following responsibility blocks."""
+
+    def extract(self, source: SourceDocument, mapper: EvidenceMapper, draft) -> None:
+        blocks = _line_items(_section_blocks(source, "employment"))
+        starts = []
+        for index, block in enumerate(blocks):
+            if _is_section_title(block.text):
+                continue
+            match = _DATE_RANGE_RE.search(block.text)
+            if match is not None:
+                starts.append((index, match.start(), match.group("start"), match.group("end")))
+            elif _BULLET_RE.match(block.text) is None:
+                # A bare year only opens an entry on a header line, never on a
+                # responsibility bullet ("- Đạt giải 2022").
+                single_match = _STANDALONE_YEAR_RE.search(block.text)
+                if single_match is not None:
+                    starts.append(
+                        (
+                            index,
+                            single_match.start(),
+                            single_match.group(1),
+                            single_match.group(1),
+                        )
+                    )
+        for position, (start_index, start_pos, start_val, end_val) in enumerate(starts):
+            end_index = starts[position + 1][0] if position + 1 < len(starts) else len(blocks)
+            entry_blocks = blocks[start_index:end_index]
+            header = blocks[start_index]
+            # Dates are often wrapped: "Backend Developer — Công ty X (03/2023 – nay)".
+            header_text = header.text[:start_pos].strip(" -–—|,([")
+            parts = _split_header(header_text, dash_separated=True)
+            if not parts:
+                continue
+            job_title, organization = parts[0], (parts[1] if len(parts) > 1 else None)
+            if organization and _COMPANY_RE.search(job_title) and not _COMPANY_RE.search(organization):
+                # "Công ty X — Backend Developer": organization first.
+                job_title, organization = organization, job_title
+            if organization is None and _COMPANY_RE.search(job_title):
+                # Only an organization on the date line; the title is on the next line.
+                title = entry_blocks[1].text.strip() if len(entry_blocks) > 1 else ""
+                if not title or len(title) > 80 or re.match(r"^[-*•–—+]", title):
+                    continue
+                job_title, organization = title, job_title
+            refs = [_add_block_evidence(draft, mapper, block, "employment") for block in entry_blocks]
+            draft.employment.append(
+                EmploymentEntry(
+                    employmentId=_stable_id("employment", header),
+                    jobTitle=job_title,
+                    organization=organization,
+                    startDate=_partial_date(start_val),
+                    endDate=_partial_date(end_val),
+                    isCurrent=_partial_date(end_val) is None,
+                    responsibilities=[
+                        " ".join(_BULLET_RE.sub("", block.text).split()) for block in entry_blocks[1:]
+                    ],
+                    skillClaimIds=_skill_ids_for_blocks(draft, entry_blocks),
+                    evidenceRefs=refs,
+                )
+            )
+
+
+def _clean_institution(value: str) -> str:
+    cleaned = re.sub(
+        r"\s*(?:[-–—|,]|\b)?\s*(?:GPA|CPA|Điểm|Diem)\s*[:=]?\s*\d+(?:\.\d+)?(?:\s*/\s*\d+(?:\.\d+)?)?",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s*(?:[-–—|,]|\b)\s*(?:GPA|CPA)\b.*$", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip(" -–—|,")
+
+
+def _student_status(text: str) -> str | None:
+    if re.search(
+        r"\bfinal[ -]?year\b|\b(?:4th|fourth)[ -]+year\b|\byear[ -]+(?:4|four)\b|"
+        r"\bn\u0103m cu\u1ed1i\b|\bsinh vi\u00ean n\u0103m 4\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return "final_year"
+    if re.search(
+        r"\brecent graduate\b|\bm\u1edbi t\u1ed1t nghi\u1ec7p\b", text, re.IGNORECASE
+    ):
+        return "recent_graduate"
+    if re.search(r"\bstudent\b|\bsinh vi\u00ean\b", text, re.IGNORECASE):
+        return "student"
+    return None
+
+
+def _fold_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFD", value.casefold())
+    normalized = "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+    return re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+
+
+_INVALID_INSTITUTION_RE = re.compile(
+    r"^(?:"
+    r"information technology|software engineering|computer science|"
+    r"information technology\s*[-–—|]\s*software engineering|"
+    r"final-year student|student|sinh viên|năm cuối|"
+    r"gpa.*|cpa.*|"
+    r"projects?|dự án|research|nghiên cứu|education|học vấn"
+    r")$",
+    re.IGNORECASE,
+)
+
+
+class EducationExtractor:
+    """Extract dated education entries while preserving ambiguous labels as evidence."""
+
+    def extract(self, source: SourceDocument, mapper: EvidenceMapper, draft) -> None:
+        edu_blocks = _section_blocks(source, "education")
+        valid_blocks: list[SourceBlock] = []
+        for block in edu_blocks:
+            text = block.text.strip()
+            if not text or _is_section_title(text):
+                continue
+            has_edu_signal = bool(
+                _INSTITUTION_RE.search(text) or _DEGREE_RE.search(text) or _ACADEMIC_RE.search(text)
+            )
+            if not has_edu_signal:
+                continue
+            is_project_or_research = bool(
+                re.search(
+                    r"\b(projects?|dự án|research|nghiên cứu|publications?|competitions?)\b",
+                    text,
+                    re.I,
+                )
+            )
+            if is_project_or_research and not _INSTITUTION_RE.search(text):
+                continue
+            valid_blocks.append(block)
+
+        # Group blocks by institution anchor:
+        # Blocks before the first institution attach to it. Subsequent blocks attach to preceding institution.
+        inst_indices = [i for i, b in enumerate(valid_blocks) if _INSTITUTION_RE.search(b.text)]
+        groups: list[list[SourceBlock]] = []
+        if inst_indices:
+            for idx, inst_i in enumerate(inst_indices):
+                start = 0 if idx == 0 else inst_i
+                end = inst_indices[idx + 1] if idx + 1 < len(inst_indices) else len(valid_blocks)
+                groups.append(valid_blocks[start:end])
+        elif valid_blocks:
+            groups.append(valid_blocks)
+
+        for group in groups:
+            inst_block = next((b for b in group if _INSTITUTION_RE.search(b.text)), group[0])
+            match_inst = _DATE_RANGE_RE.search(inst_block.text)
+            inst_label_raw = (
+                inst_block.text[: match_inst.start()].strip(" -–—|,([")
+                if match_inst
+                else inst_block.text.strip()
+            )
+            inst_parts = _split_header(inst_label_raw)
+            inst_part = next(
+                (p for p in inst_parts if _INSTITUTION_RE.search(p)),
+                inst_parts[0] if inst_parts else inst_block.text,
+            )
+            institution = _clean_institution(inst_part)
+
+            degree: str | None = None
+            field_of_study: str | None = None
+            start_date = None
+            end_date = None
+            student_status = None
+            gpa = None
+            gpa_scale = None
+            fallback_academic_parts: list[str] = []
+
+            for b in group:
+                student_status = _student_status(b.text) or student_status
+                gpa_match = re.search(
+                    r"\b(?:GPA|CPA)\s*[:=]?\s*(?P<value>\d+(?:\.\d+)?)"
+                    r"(?:\s*/\s*(?P<scale>\d+(?:\.\d+)?))?",
+                    b.text,
+                    re.IGNORECASE,
+                )
+                if gpa_match:
+                    candidate_gpa = float(gpa_match.group("value"))
+                    candidate_scale = float(
+                        gpa_match.group("scale") or (4.0 if candidate_gpa <= 4.0 else 10.0)
+                    )
+                    if 0 < candidate_gpa <= candidate_scale:
+                        gpa, gpa_scale = candidate_gpa, candidate_scale
+                match = _DATE_RANGE_RE.search(b.text)
+                if match:
+                    if not start_date:
+                        start_date = _partial_date(match.group("start"))
+                    if not end_date:
+                        end_date = _partial_date(match.group("end"))
+                else:
+                    year_match = _STANDALONE_YEAR_RE.search(b.text)
+                    if year_match and not start_date:
+                        start_date = _partial_date(year_match.group(1))
+
+                text_without_date = b.text[: match.start()].strip(" -–—|,") if match else b.text.strip()
+                parts = _split_header(text_without_date)
+                for part in parts:
+                    part_cleaned = _clean_institution(part)
+                    if not part_cleaned:
+                        continue
+                    if part_cleaned.casefold().startswith("major:"):
+                        part_cleaned = part_cleaned.split(":", 1)[1].strip()
+                    if _DEGREE_RE.search(part_cleaned):
+                        if not degree:
+                            degree = part_cleaned
+                    elif _ACADEMIC_RE.search(part_cleaned) or re.search(
+                        r"\b(engineering|technology|science|computer|information|software|"
+                        r"kỹ thuật|công nghệ|khoa học|tin học|phần mềm)\b",
+                        part_cleaned,
+                        re.I,
+                    ):
+                        if part_cleaned != institution and part_cleaned != degree:
+                            if not field_of_study:
+                                field_of_study = part_cleaned
+                    elif (
+                        not degree
+                        and not field_of_study
+                        and part_cleaned != institution
+                        and not _DATE_OR_STATUS_ONLY_RE.fullmatch(part_cleaned)
+                    ):
+                        # Some CVs use an unlabelled second column for the
+                        # qualification (for example ``Institution | I.R.``).
+                        # Preserve that value instead of silently dropping it.
+                        fallback_academic_parts.append(part_cleaned)
+
+            if not degree and fallback_academic_parts:
+                degree = fallback_academic_parts[0]
+
+            # Never allow major, program, student-status, or GPA text to become institution
+            if not _INSTITUTION_RE.search(institution) or _INVALID_INSTITUTION_RE.match(institution):
+                if degree and not _INVALID_INSTITUTION_RE.match(degree):
+                    institution = degree
+                else:
+                    continue
+
+            institution = _clean_institution(institution)
+            if _INVALID_INSTITUTION_RE.match(institution):
+                continue
+
+            refs = [_add_block_evidence(draft, mapper, b, "education") for b in group]
+            if student_status not in {"final_year", "recent_graduate"} and field_of_study:
+                field_key = _fold_text(field_of_study.split("(", 1)[0])
+                for status_block in source.blocks:
+                    status = _student_status(status_block.text)
+                    if (
+                        status
+                        and status != "student"
+                        and field_key
+                        and field_key in _fold_text(status_block.text)
+                    ):
+                        student_status = status
+                        refs.append(_add_block_evidence(draft, mapper, status_block, "education"))
+                        break
+            draft.education.append(
+                EducationEntry(
+                    educationId=_stable_id("education", group[0]),
+                    institution=institution,
+                    degree=degree,
+                    fieldOfStudy=field_of_study,
+                    startDate=start_date,
+                    endDate=end_date,
+                    studentStatus=student_status,
+                    gpa=gpa,
+                    gpaScale=gpa_scale,
+                    evidenceRefs=refs,
+                )
+            )
+
+
+_PROJECT_DETAIL_PREFIX_RE = re.compile(
+    r"^(?:"
+    r"description|mo ta|mô tả|chi tiết(?: dự án)?|chi tiet(?: du an)?|"
+    r"responsibilities|trách nhiệm|nhiệm vụ|trach nhiem|nhiem vu|"
+    r"key features|features|tính năng(?: chính| nổi bật)?|tinh nang(?: chinh| noi bat)?|"
+    r"highlights|điểm nổi bật|diem noi bat|"
+    r"achievements|thành tựu|thành tích|thanh tuu|thanh tich|"
+    r"results|kết quả|ket qua|"
+    r"architecture|kiến trúc(?: hệ thống)?|kien truc(?: he thong)?|"
+    r"environment|môi trường|moi truong|"
+    r"tech|technologies|technology|tech stack|công nghệ(?: sử dụng)?|cong nghe(?: su dung)?|"
+    r"role|vai trò|position|vị trí|vai tro|vi tri|"
+    r"methods|methodology|phương pháp|phuong phap|"
+    r"tools|công cụ|cong cu|"
+    r"scientific paper|paper|bài báo|publication|bai bao|"
+    r"award|awards|giải thưởng|giai thuong|prize"
+    r")\s*[:\-–—]",
+    re.IGNORECASE,
+)
+
+
+_DATE_OR_STATUS_ONLY_RE = re.compile(
+    r"^(?:"
+    r"(?:(?:\d{1,2}[/-])?(?:19|20)\d{2}\s*[-\u2013\u2014/]\s*"
+    r"(?:present|current|nay|hi\u1ec7n t\u1ea1i|in progress|"
+    r"\u0111ang th\u1ef1c hi\u1ec7n|(?:\d{1,2}[/-])?(?:19|20)\d{2}))"
+    r"|(?:in progress|current|present|đang thực hiện|hoàn thành|completed)"
+    r")$",
+    re.IGNORECASE,
+)
+
+_PROJECT_SENTENCE_START_RE = re.compile(
+    r"^(?:built|developed|designed|implemented|created|engineered|architected|optimized|"
+    r"evaluated|trained|automated|analyzed|applied|cv|jd|configured|deployed|integrated|"
+    r"processed|conducted|led|managed|"
+    r"worked|responsible|experienced|proficient|using|utilized|leveraged|"
+    r"the|this|these|those|which|while|with|by|for|from|in|as|and|or)\b",
+    re.IGNORECASE,
+)
+_PROJECT_TITLE_STOPWORDS = {"a", "an", "and", "as", "for", "in", "of", "the", "to", "with"}
+
+# A line stating only what kind of project the entry above is belongs to that
+# entry; it is not a project of its own. _is_project_header already hard-coded
+# "team ...", which is why "Team Project - Developer & Tester" was handled and
+# "Research Project" was not. Anchored at both ends, so a real name such as
+# "Research Project Tracker" still passes.
+_PROJECT_KIND_ONLY_RE = re.compile(
+    r"^(?:"
+    r"(?:team|group|personal|individual|academic|research|capstone|side|freelance|"
+    r"university|school|class|course|thesis|graduation|final(?:\s+year)?)\s+projects?"
+    r"|dự\s+án\s+(?:cá\s+nhân|nhóm|nghiên\s+cứu|tốt\s+nghiệp)"
+    r"|du\s+an\s+(?:ca\s+nhan|nhom|nghien\s+cuu|tot\s+nghiep)"
+    r")$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_project_title(value: str, *, explicit_heading: bool = False) -> bool:
+    """Avoid treating wrapped description lines as separate project names."""
+    text = value.strip()
+    words = re.findall(r"[A-Za-zÀ-ỹ0-9]+(?:['’][A-Za-z]+)?", text)
+    if not words or len(words) > 16:
+        return False
+    if not any(char.isalpha() for word in words for char in word):
+        return False
+    # Comma-heavy lines are usually a technology stack or a wrapped list of
+    # tools, even when OCR marks the line as a title.
+    if text.count(",") >= 2:
+        return False
+    if re.search(r"[.!?;]$", text) or _PROJECT_SENTENCE_START_RE.match(text):
+        return False
+    if explicit_heading:
+        return True
+    meaningful = [word for word in words if word.casefold() not in _PROJECT_TITLE_STOPWORDS]
+    if not meaningful:
+        return False
+    if re.search(r"\b(?:19|20)\d{2}\b", text):
+        return True
+    title_case = sum(
+        word[0].isupper() or word.isupper() or any(char.isdigit() for char in word)
+        for word in meaningful
+    )
+    # Short standalone product names such as "HamTech" are valid titles;
+    # ordinary lowercase words like "feedback" and "environment" are not.
+    if len(meaningful) == 1:
+        word = meaningful[0]
+        if not any(char.isalpha() for char in word):
+            return False
+        return (
+            word.isupper()
+            or any(char.isupper() for char in word[1:])
+            or any(char.isdigit() for char in word)
+        )
+    return title_case / len(meaningful) >= 0.6
+
+
+def _project_name_key(value: str) -> str:
+    normalized = unicodedata.normalize("NFD", value.casefold())
+    normalized = "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+    normalized = re.sub(r"\([^)]*\)", " ", normalized)
+    normalized = re.sub(
+        r"\b(?:currently researching|currently in progress|in progress|ongoing|completed)\b.*$",
+        " ",
+        normalized,
+    )
+    normalized = _PROJECT_DATE_SUFFIX_RE.sub(" ", normalized)
+    return re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+
+
+def _project_names_match(left: str, right: str) -> bool:
+    left_key, right_key = _project_name_key(left), _project_name_key(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    shorter, longer = sorted((left_key.split(), right_key.split()), key=len)
+    # Merge a short repeated alias only when it is a complete leading part of
+    # a longer title (e.g. "HamTech" and "HamTech — OTT Chat Platform").
+    return len(shorter) <= 3 and len(shorter) < len(longer) and longer[: len(shorter)] == shorter
+
+
+_PROJECT_NAME_LEAD_RE = re.compile(r"^(?:project|projects|du an|de tai)\s+", re.IGNORECASE)
+
+
+def _project_titles_overlap(left: str, right: str) -> bool:
+    """True when two titles name the same project.
+
+    _project_names_match only merges a short alias of at most three words that
+    leads a longer title, so the two readings of one project survived as two
+    entries: "HComic - Comic Reading Platform" (LLM) against "HComic - Comic
+    Reading Platform 07/2026 - Present" (baseline, four words, date suffix not
+    stripped), and "Taskhive - Task Management App" against the baseline's
+    "Project: Taskhive - Task Management App", where the leading "Project:"
+    breaks the prefix relation. Drop that lead-in and allow containment in
+    either direction. Matching on overlapping evidence spans, which also covers
+    run-together text, is a later step.
+    """
+    if _project_names_match(left, right):
+        return True
+    left_key = _PROJECT_NAME_LEAD_RE.sub("", _project_name_key(left)).strip()
+    right_key = _PROJECT_NAME_LEAD_RE.sub("", _project_name_key(right)).strip()
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    shorter, longer = sorted((left_key.split(), right_key.split()), key=len)
+    # Two words is too little to identify a project on its own.
+    return len(shorter) >= 3 and longer[: len(shorter)] == shorter
+
+
+def _project_title_in_quote(name: str, quote: str) -> bool:
+    title_tokens = _project_name_key(name).split()
+    quote_tokens = _project_name_key(quote).split()
+    if not title_tokens or len(title_tokens) > len(quote_tokens):
+        return False
+    return any(
+        quote_tokens[index : index + len(title_tokens)] == title_tokens
+        for index in range(len(quote_tokens) - len(title_tokens) + 1)
+    )
+
+
+def _is_founder_employer_project(name: str, employment: list[EmploymentEntry]) -> bool:
+    """Avoid counting a founder's company product again as a separate project."""
+    project_key = _project_name_key(name).split()
+    if not project_key:
+        return False
+    for item in employment:
+        if not re.search(r"\b(founder|co-founder|cofounder|owner)\b", item.job_title, re.IGNORECASE):
+            continue
+        organization = item.organization or ""
+        if not organization:
+            role_parts = re.split(r"\s*[·|]\s*", item.job_title)
+            organization = role_parts[-1] if len(role_parts) > 1 else ""
+        organization_key = _project_name_key(organization).split()
+        if organization_key and project_key[: len(organization_key)] == organization_key:
+            return True
+    return False
+
+
+def _is_project_header(block_text: str, *, explicit_heading: bool = False) -> bool:
+    stripped = block_text.strip()
+    if not stripped or _is_section_title(stripped):
+        return False
+    if re.match(r"^[-*•–—+]\s+", stripped):
+        return False
+    without_bullet = re.sub(r"^[-*•–—+]\s*", "", stripped)
+    if re.match(r"^(?:team\s*size|team\b|technology\s+in\s+use\b|github\b)", without_bullet, re.IGNORECASE):
+        return False
+    if _PROJECT_DETAIL_PREFIX_RE.search(without_bullet):
+        return False
+    if _PROJECT_KIND_ONLY_RE.match(without_bullet.strip()):
+        return False
+    if _DATE_OR_STATUS_ONLY_RE.fullmatch(without_bullet):
+        return False
+    return _looks_like_project_title(without_bullet, explicit_heading=explicit_heading)
+
+
+class ProjectExtractor:
+    """Group project headings with their detail blocks and extract reviewable projects."""
+
+    def extract(self, source: SourceDocument, mapper: EvidenceMapper, draft) -> None:
+        project_sections = {"projects", "research", "competitions", "publications"}
+        blocks = [b for b in source.blocks if b.section in project_sections]
+
+        groups: list[list[SourceBlock]] = []
+        current_group: list[SourceBlock] = []
+        for block in blocks:
+            if _is_section_title(block.text):
+                continue
+            is_header = _is_project_header(
+                block.text, explicit_heading=block.block_type.casefold() in {"title", "heading"}
+            )
+            if is_header and current_group and re.search(
+                r"(?:\band|,|/|[-\u2013\u2014])\s*$", current_group[-1].text.strip(), re.IGNORECASE
+            ):
+                is_header = False
+            if is_header:
+                if current_group:
+                    groups.append(current_group)
+                current_group = [block]
+            else:
+                if current_group:
+                    current_group.append(block)
+                else:
+                    current_group = [block]
+        if current_group:
+            groups.append(current_group)
+
+        for group in groups:
+            header = group[0]
+            lines = [line.strip("•- ") for line in header.text.splitlines() if line.strip("•- ")]
+            if not lines or lines[0].casefold() in _SECTION_TITLES:
+                continue
+            if re.search(r"\bwithout a declared project name\b", lines[0], re.I):
+                continue
+            if _DATE_OR_STATUS_ONLY_RE.fullmatch(lines[0].strip()):
+                continue
+
+            name_raw = lines[0]
+            if _PROJECT_DETAIL_PREFIX_RE.search(name_raw):
+                continue
+            name_clean = _PROJECT_DATE_SUFFIX_RE.sub("", name_raw).strip()
+            name_clean = re.sub(r"\s*\((?:19|20)\d{2}[^)]*\)$", "", name_clean).strip()
+            name_clean = re.sub(r"\s*(?:\||\b(?:github|website)\b).*$", "", name_clean, flags=re.I).strip(
+                " -–—|,"
+            )
+            if not name_clean:
+                name_clean = name_raw
+
+            if any(_project_names_match(name_clean, item.name) for item in draft.projects):
+                continue
+            if any(
+                _project_name_key(name_clean) == _project_name_key(item.job_title)
+                for item in draft.employment
+            ):
+                # Freelance work is often listed under Experience and then
+                # repeated in a project portfolio; keep one canonical entry.
+                continue
+            if _is_founder_employer_project(name_clean, draft.employment):
+                continue
+
+            match = _DATE_RANGE_RE.search(header.text)
+            start_date = None
+            end_date = None
+            if match:
+                start_date = _partial_date(match.group("start"))
+                end_date = _partial_date(match.group("end"))
+            else:
+                year_match = _STANDALONE_YEAR_RE.search(header.text)
+                if year_match:
+                    start_date = _partial_date(year_match.group(1))
+
+            desc_parts = lines[1:] + [b.text for b in group[1:]]
+            description = "\n".join(desc_parts) if desc_parts else None
+
+            refs = [_add_block_evidence(draft, mapper, b, "project") for b in group]
+
+            draft.projects.append(
+                ProjectEntry(
+                    projectId=_stable_id("project", header),
+                    name=name_clean,
+                    description=description,
+                    startDate=start_date,
+                    endDate=end_date,
+                    skillClaimIds=_skill_ids_for_blocks(draft, group),
+                    evidenceRefs=refs,
+                )
+            )
+
+
+class CertificationExtractor:
+    """Extract one certification claim from each source block in the certification section."""
+
+    def extract(self, source: SourceDocument, mapper: EvidenceMapper, draft) -> None:
+        for block in _section_blocks(source, "certifications"):
+            name = block.text.strip("•- ")
+            if not name or _is_section_title(name):
+                continue
+            if re.search(r"^(no\s+certifications?|none|n/a|không\s+có)", name, re.I):
+                continue
+            match = _DATE_RANGE_RE.search(name)
+            # Date-only or malformed OCR blocks should be ignored rather than
+            # causing canonical validation to abort parsing the whole resume.
+            if match and not name[: match.start()].strip():
+                continue
+            ref = _add_block_evidence(draft, mapper, block, "certification")
+            draft.certifications.append(
+                CertificationEntry(
+                    certificationId=_stable_id("certification", block),
+                    name=name[: match.start()].strip(" -–—|,") if match else name,
+                    issuedDate=_partial_date(match.group("start")) if match else None,
+                    expiresDate=_partial_date(match.group("end")) if match else None,
+                    evidenceRefs=[ref],
+                )
+            )
