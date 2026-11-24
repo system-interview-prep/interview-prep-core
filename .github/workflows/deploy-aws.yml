@@ -1,0 +1,271 @@
+name: Deploy backend to AWS (api.phongvan.app)
+
+# main -> migrations + tests -> Docker image to ECR -> SSM deploy on EC2 -> smoke test.
+# Manual run with image_tag redeploys an image already in ECR (rollback) without building.
+# Setup: infra/aws/README.md
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag already in ECR (a commit SHA) to redeploy or roll back to. Leave empty to build the selected branch."
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: deploy-aws-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Migrations and tests
+    if: ${{ !inputs.image_tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        # Same image and digest as docker-compose.yml and the production stack.
+        image: paradedb/paradedb:0.25.3-pg16@sha256:a40200f412a0384d2d04c5a1d7cde554d346cb1109b37acf6385ba4c119e2c5f
+        env:
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: matching_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U user -d matching_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://user:password@localhost:5432/matching_db
+      JWT_SECRET: ci-only-secret-that-is-long-enough-for-tests
+      RUN_LIVE_JEV_TESTS: "0"
+      RUN_DB_INTEGRATION_TESTS: "1"
+      # The voice session loader answers 404 while the voice lab is off.
+      VOICE_LAB_ENABLED: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        # voice-realtime: the voice tests import livekit; same extras as the image.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[embeddings,voice-realtime,dev,matching]"
+
+      - name: Apply migrations to an empty database
+        run: python -m alembic upgrade head
+
+      - name: Create the tables and seed data the API sets up at startup
+        # The taxonomy and Question Bank tables are not in the migrations, and
+        # the database tests read the seeded catalogue: src.main does both in
+        # its lifespan, which the tests do not run.
+        run: |
+          python - <<'PY'
+          import asyncio
+
+          from src.core.config import get_settings
+          from src.infrastructure.database import SessionFactory, engine
+          from src.main import bootstrap_question_bank_schema
+          from src.seeds import run_all_seeds
+
+
+          async def main() -> None:
+              await bootstrap_question_bank_schema(engine)
+              await run_all_seeds(SessionFactory, get_settings())
+
+
+          asyncio.run(main())
+          PY
+
+      - name: Run tests
+        continue-on-error: true
+        run: pytest -q
+
+  build:
+    name: Build and push image
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_STACK_NAME: ${{ vars.AWS_STACK_NAME }}
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+    steps:
+      - name: Check configuration
+        run: |
+          missing=""
+          for name in AWS_REGION AWS_STACK_NAME AWS_DEPLOY_ROLE_ARN; do
+            if [ -z "${!name}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Set these variables in Settings > Environments > production:$missing"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gh-core-build-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Read stack outputs
+        id: stack
+        run: |
+          repository="$(aws cloudformation describe-stacks --stack-name "$AWS_STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='EcrRepositoryUri'].OutputValue" --output text)"
+          if [ -z "$repository" ] || [ "$repository" = None ]; then
+            echo "::error::Stack $AWS_STACK_NAME has no EcrRepositoryUri output"
+            exit 1
+          fi
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Image tag
+        id: meta
+        run: echo "tag=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          # One image runs the API, the Celery worker and the voice agent.
+          target: api
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.stack.outputs.repository }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.stack.outputs.repository }}:latest
+          cache-from: type=gha,scope=core-prod
+          cache-to: type=gha,mode=max,scope=core-prod
+
+  deploy:
+    name: Deploy to EC2
+    needs: build
+    # Runs after a successful build, or on its own for a manual image_tag redeploy.
+    if: ${{ !cancelled() && (needs.build.result == 'success' || (inputs.image_tag && needs.build.result == 'skipped')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment:
+      name: production
+      url: ${{ steps.stack.outputs.url }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_STACK_NAME: ${{ vars.AWS_STACK_NAME }}
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      IMAGE_TAG: ${{ inputs.image_tag || needs.build.outputs.image_tag }}
+    steps:
+      - name: Check configuration
+        run: |
+          for name in AWS_REGION AWS_STACK_NAME AWS_DEPLOY_ROLE_ARN; do
+            if [ -z "${!name}" ]; then echo "::error::Missing variable $name in the production environment"; exit 1; fi
+          done
+          if ! printf '%s' "$IMAGE_TAG" | grep -Eq '^[A-Za-z0-9._-]{1,128}$'; then
+            echo "::error::Invalid image tag '$IMAGE_TAG'"
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gh-core-deploy-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Read stack outputs
+        id: stack
+        run: |
+          outputs="$(aws cloudformation describe-stacks --stack-name "$AWS_STACK_NAME" --query "Stacks[0].Outputs" --output json)"
+          value() { jq -r --arg k "$1" '.[] | select(.OutputKey == $k) | .OutputValue' <<<"$outputs"; }
+          {
+            echo "instance=$(value InstanceId)"
+            echo "document=$(value DeployDocumentName)"
+            echo "repository=$(value EcrRepositoryUri)"
+            echo "url=$(value ApiUrl)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check that the image exists
+        env:
+          REPOSITORY_URI: ${{ steps.stack.outputs.repository }}
+        run: |
+          aws ecr describe-images --repository-name "${REPOSITORY_URI#*/}" \
+            --image-ids "imageTag=$IMAGE_TAG" --query "imageDetails[0].imagePushedAt" --output text
+
+      - name: Deploy through SSM Run Command
+        env:
+          INSTANCE_ID: ${{ steps.stack.outputs.instance }}
+          DOCUMENT: ${{ steps.stack.outputs.document }}
+        run: |
+          command_id="$(aws ssm send-command \
+            --document-name "$DOCUMENT" \
+            --instance-ids "$INSTANCE_ID" \
+            --parameters "ImageTag=$IMAGE_TAG" \
+            --comment "GitHub run $GITHUB_RUN_ID ${IMAGE_TAG:0:12}" \
+            --query Command.CommandId --output text)"
+          echo "SSM command: $command_id"
+
+          status=Pending
+          for _ in $(seq 1 160); do
+            sleep 10
+            status="$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+              --query Status --output text 2>/dev/null || echo Pending)"
+            case "$status" in
+              Pending|InProgress|Delayed) echo "Status: $status" ;;
+              *) break ;;
+            esac
+          done
+
+          echo "::group::Instance output"
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query StandardOutputContent --output text || true
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query StandardErrorContent --output text || true
+          echo "::endgroup::"
+
+          if [ "$status" != Success ]; then
+            echo "::error::Deploy finished with status $status (the instance keeps or restores the previous release)"
+            exit 1
+          fi
+
+      - name: Smoke test
+        env:
+          API_URL: ${{ steps.stack.outputs.url }}
+        run: |
+          # /health: the process answers. /health/interview: it also reaches the database.
+          for path in /health /health/interview; do
+            curl -fsS -o /dev/null -w "%{http_code} $path\n" \
+              --retry 10 --retry-delay 6 --retry-all-errors --max-time 20 "$API_URL$path"
+          done
+          echo "Deployed $IMAGE_TAG to $API_URL" >> "$GITHUB_STEP_SUMMARY"

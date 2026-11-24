@@ -14,6 +14,9 @@ RUN pip install --upgrade pip && \
 
 COPY src ./src
 COPY tests ./tests
+# Production runs "alembic upgrade head" from the image (no bind mounts there).
+COPY alembic.ini ./
+COPY migrations ./migrations
 
 FROM base AS api
 

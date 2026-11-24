@@ -47,6 +47,10 @@ router -> service -> repository -> infrastructure
 - `matching` không quản lý user, auth hay session.
 - API không chạy OCR/model inference trực tiếp; API publish task và trả `202`.
 
+## Triển khai production (AWS)
+
+CloudFormation + GitHub Actions cho `https://api.phongvan.app`: xem [infra/aws/README.md](infra/aws/README.md).
+
 ## Chạy local
 
 ```bash

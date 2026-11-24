@@ -1,0 +1,1174 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  INTERVIA backend (interview-prep-core: FastAPI + Socket.IO API, Celery worker,
+  LiveKit voice agent, ParadeDB and RabbitMQ) on an always-on EC2 instance in the
+  CloudFormation stack's selected Region, served at https://api.phongvan.app by a
+  Caddy reverse proxy with automatic Let's Encrypt certificates. Creates a
+  private ECR repository, an Elastic IP for the DNS A record, a separate
+  encrypted data volume for the database, Session Manager access, optional
+  Route 53 record, and a GitHub Actions OIDC role that can only push to this
+  ECR repository and run this stack's SSM deploy document. Application secrets
+  come from one SSM SecureString parameter holding the .env file.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Domain and HTTPS"
+        Parameters:
+          - ApiDomainName
+          - FrontendOrigins
+          - HostedZoneId
+          - AcmeEmail
+      - Label:
+          default: "Application"
+        Parameters:
+          - AppEnvParameter
+          - EnableVoiceAgent
+      - Label:
+          default: "Instance and access"
+        Parameters:
+          - InstanceType
+          - RootVolumeSize
+          - DataVolumeSize
+          - AvailabilityZone
+          - AmiId
+          - KeyPairName
+          - SshCidr
+      - Label:
+          default: "Container registry"
+        Parameters:
+          - EcrRepositoryName
+          - ImageRetainCount
+      - Label:
+          default: "GitHub Actions CI/CD"
+        Parameters:
+          - GitHubOwner
+          - GitHubRepo
+          - GitHubDeployBranch
+          - GitHubEnvironment
+          - GitHubOidcProviderArn
+    ParameterLabels:
+      ApiDomainName:
+        default: "Public API domain"
+      FrontendOrigins:
+        default: "Browser origins allowed by CORS and Socket.IO"
+      HostedZoneId:
+        default: "Route 53 hosted zone ID (optional)"
+      AcmeEmail:
+        default: "Email for Let's Encrypt expiry notices"
+      AppEnvParameter:
+        default: "SSM SecureString parameter holding the application .env"
+      EnableVoiceAgent:
+        default: "Run the LiveKit voice agent"
+      InstanceType:
+        default: "EC2 instance type"
+      RootVolumeSize:
+        default: "Root EBS size (GiB)"
+      DataVolumeSize:
+        default: "Data EBS size (GiB)"
+      AvailabilityZone:
+        default: "Availability Zone (optional)"
+      AmiId:
+        default: "Ubuntu 24.04 LTS AMI (SSM public parameter)"
+      KeyPairName:
+        default: "EC2 SSH key pair (optional)"
+      SshCidr:
+        default: "SSH administrator CIDR (optional)"
+      EcrRepositoryName:
+        default: "ECR repository name"
+      ImageRetainCount:
+        default: "Images kept in ECR"
+      GitHubOwner:
+        default: "GitHub owner (case-sensitive)"
+      GitHubRepo:
+        default: "GitHub repository (case-sensitive)"
+      GitHubDeployBranch:
+        default: "Branch allowed to deploy"
+      GitHubEnvironment:
+        default: "GitHub environment allowed to deploy"
+      GitHubOidcProviderArn:
+        default: "Existing GitHub OIDC provider ARN (optional)"
+
+Parameters:
+  ApiDomainName:
+    Type: String
+    Default: api.phongvan.app
+    MinLength: 3
+    MaxLength: 253
+    AllowedPattern: ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$
+    ConstraintDescription: Lowercase DNS name such as api.phongvan.app.
+    Description: >
+      Hostname served by Caddy. Point its DNS A record at the PublicIp output
+      (done automatically when HostedZoneId is set). The website stack keeps
+      phongvan.app and the GPU stack keeps ai.phongvan.app.
+
+  FrontendOrigins:
+    Type: String
+    Default: https://phongvan.app,https://www.phongvan.app
+    AllowedPattern: ^https://[A-Za-z0-9.-]+(:\d+)?(,https://[A-Za-z0-9.-]+(:\d+)?)*$
+    ConstraintDescription: Comma-separated https origins without spaces or trailing slashes.
+    Description: >
+      Passed to the application as CORS_ORIGINS (REST and Socket.IO). It
+      replaces any CORS_ORIGINS value in the SSM .env parameter.
+
+  HostedZoneId:
+    Type: String
+    Default: ''
+    AllowedPattern: ^(Z[A-Z0-9]{1,31})?$
+    ConstraintDescription: Leave blank or enter a Route 53 hosted zone ID such as Z0123456789ABCDEFGHIJ.
+    Description: >
+      Leave blank when DNS for the domain is managed elsewhere (create the A
+      record by hand). Enter the public hosted zone ID if Route 53 serves it.
+
+  AcmeEmail:
+    Type: String
+    Default: phitruong20192020@gmail.com
+    MinLength: 5
+    MaxLength: 254
+    Description: Contact address given to Let's Encrypt for certificate problems.
+
+  AppEnvParameter:
+    Type: String
+    Default: /intervia/core/app-env
+    AllowedPattern: ^/[A-Za-z0-9_./-]+$
+    Description: >
+      Existing SSM SecureString parameter in this Region containing the
+      complete application .env file (JWT_SECRET, OPENAI_API_KEY, R2_*,
+      LIVEKIT_*, ...). It is read again on every deploy. DATABASE_URL,
+      RABBITMQ_URL, CELERY_BROKER_URL, APP_ENV and CORS_ORIGINS in it are
+      ignored: the stack sets them.
+
+  EnableVoiceAgent:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >
+      true runs the LiveKit voice agent container (needs VOICE_LAB_ENABLED=true
+      and LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET in the .env).
+      false runs only the API and the worker (chat interviews still work).
+
+  InstanceType:
+    Type: String
+    Default: t3.medium
+    AllowedValues:
+      - t3.small
+      - t3.medium
+      - t3.large
+      - t3a.small
+      - t3a.medium
+      - t3a.large
+    Description: >
+      t3.medium (4 GiB) is the default: the instance runs the API, the Celery
+      worker, the voice agent, ParadeDB and RabbitMQ. t3.small (2 GiB plus the
+      2 GiB swap file) is only enough with the voice agent turned off.
+
+  RootVolumeSize:
+    Type: Number
+    Default: 30
+    MinValue: 20
+    MaxValue: 200
+    Description: Encrypted gp3 root volume for the OS and Docker images (about 1.3 GiB per release).
+
+  DataVolumeSize:
+    Type: Number
+    Default: 20
+    MinValue: 10
+    MaxValue: 500
+    Description: >
+      Encrypted gp3 volume mounted at /data for PostgreSQL, RabbitMQ,
+      certificates, caches and nightly database dumps. A snapshot is taken
+      when the stack is deleted.
+
+  AvailabilityZone:
+    Type: String
+    Default: ''
+    Description: >
+      Optional Availability Zone in this stack's Region. Leave blank to use the
+      first AZ returned for the Region.
+
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+    Description: >
+      Latest Canonical Ubuntu Server 24.04 LTS amd64 AMI, resolved in this
+      stack's Region. SSM Agent is preinstalled (snap).
+
+  KeyPairName:
+    Type: String
+    Default: ''
+    Description: >
+      Optional existing EC2 key pair in this Region. Leave blank to use only
+      Session Manager (recommended; deploys never need SSH).
+
+  SshCidr:
+    Type: String
+    Default: ''
+    AllowedPattern: ^((\d{1,3}\.){3}\d{1,3}/(\d|[1-2]\d|3[0-2]))?$
+    ConstraintDescription: Leave blank or enter an IPv4 CIDR such as 203.0.113.10/32.
+    Description: >
+      Optional IPv4 CIDR for SSH port 22. SSH is opened only when both this and
+      KeyPairName are set. Do not use 0.0.0.0/0.
+
+  EcrRepositoryName:
+    Type: String
+    Default: intervia-core
+    AllowedPattern: ^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$
+    MinLength: 2
+    MaxLength: 256
+    Description: Private ECR repository that GitHub Actions pushes images to.
+
+  ImageRetainCount:
+    Type: Number
+    Default: 10
+    MinValue: 3
+    MaxValue: 100
+    Description: Older images beyond this count are expired, which limits rollback depth.
+
+  GitHubOwner:
+    Type: String
+    Default: system-interview-prep
+    MinLength: 1
+    Description: GitHub user or organization exactly as in the repository URL.
+
+  GitHubRepo:
+    Type: String
+    Default: interview-prep-core
+    MinLength: 1
+    Description: GitHub repository name exactly as in the repository URL.
+
+  GitHubDeployBranch:
+    Type: String
+    Default: main
+    MinLength: 1
+    Description: Workflows from this branch may assume the deploy role.
+
+  GitHubEnvironment:
+    Type: String
+    Default: production
+    MinLength: 1
+    Description: >
+      Jobs using this GitHub environment may assume the deploy role. Protect
+      the environment in GitHub (Settings > Environments) to limit branches or
+      require an approval before deploys.
+
+  GitHubOidcProviderArn:
+    Type: String
+    Default: ''
+    AllowedPattern: ^(arn:aws[a-zA-Z-]*:iam::\d{12}:oidc-provider/token\.actions\.githubusercontent\.com)?$
+    ConstraintDescription: Leave blank or paste the ARN of the existing token.actions.githubusercontent.com provider.
+    Description: >
+      An AWS account can hold only one provider for token.actions.githubusercontent.com.
+      If the website stack (phongvan-frontend) already created it, paste its ARN
+      (IAM > Identity providers). Leave blank only when the account has none.
+
+Conditions:
+  UseProvidedAvailabilityZone: !Not [!Equals [!Ref AvailabilityZone, '']]
+  UseRoute53: !Not [!Equals [!Ref HostedZoneId, '']]
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, '']]
+  AllowSsh: !And [!Condition HasKeyPair, !Not [!Equals [!Ref SshCidr, '']]]
+  CreateGitHubOidcProvider: !Equals [!Ref GitHubOidcProviderArn, '']
+  UseVoiceAgent: !Equals [!Ref EnableVoiceAgent, 'true']
+
+Resources:
+  # ---------------------------------------------------------------- network
+  ApiVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.44.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-vpc'
+        - Key: Project
+          Value: INTERVIA-BACKEND-2026
+
+  ApiPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ApiVpc
+      CidrBlock: 10.44.1.0/24
+      AvailabilityZone: !If
+        - UseProvidedAvailabilityZone
+        - !Ref AvailabilityZone
+        - !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-public-subnet'
+        - Key: Project
+          Value: INTERVIA-BACKEND-2026
+
+  ApiInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-igw'
+        - Key: Project
+          Value: INTERVIA-BACKEND-2026
+
+  ApiInternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref ApiVpc
+      InternetGatewayId: !Ref ApiInternetGateway
+
+  ApiPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ApiVpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-public-rt'
+
+  ApiDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: ApiInternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref ApiPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref ApiInternetGateway
+
+  ApiPublicRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref ApiPublicSubnet
+      RouteTableId: !Ref ApiPublicRouteTable
+
+  # PostgreSQL and RabbitMQ are never published: only Caddy listens publicly.
+  ApiSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public HTTP/HTTPS for the INTERVIA API; SSH only when configured.
+      VpcId: !Ref ApiVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP for ACME validation and redirect to HTTPS
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS API and Socket.IO
+        - IpProtocol: udp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTP/3 API
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Package, image, ACME, SSM, LiveKit and AI provider traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-api'
+        - Key: Project
+          Value: INTERVIA-BACKEND-2026
+
+  ApiSshIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: AllowSsh
+    Properties:
+      GroupId: !Ref ApiSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: !Ref SshCidr
+      Description: SSH from the administrator CIDR
+
+  # The Elastic IP is attached to the network interface before the instance
+  # boots, so bootstrap downloads never lose their connection mid-way and the
+  # DNS A record survives stop/start.
+  ApiNetworkInterface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref ApiPublicSubnet
+      GroupSet:
+        - !Ref ApiSecurityGroup
+      Description: !Sub '${AWS::StackName} api interface'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-eni'
+
+  ApiElasticIp:
+    Type: AWS::EC2::EIP
+    DependsOn: ApiInternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-eip'
+        - Key: Project
+          Value: INTERVIA-BACKEND-2026
+
+  ApiElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt ApiElasticIp.AllocationId
+      NetworkInterfaceId: !Ref ApiNetworkInterface
+
+  # --------------------------------------------------------------- registry
+  CoreRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref EcrRepositoryName
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      EmptyOnDelete: true
+      LifecyclePolicy:
+        LifecyclePolicyText: !Sub |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep the newest ${ImageRetainCount} images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": ${ImageRetainCount}
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+      Tags:
+        - Key: Project
+          Value: INTERVIA-BACKEND-2026
+
+  # ------------------------------------------------------------------- data
+  # Database, broker state, certificates and caches live here, apart from the
+  # root volume, so replacing the instance does not lose them.
+  DataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      AvailabilityZone: !GetAtt ApiPublicSubnet.AvailabilityZone
+      Size: !Ref DataVolumeSize
+      VolumeType: gp3
+      Encrypted: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-data'
+        - Key: Project
+          Value: INTERVIA-BACKEND-2026
+
+  DataVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      InstanceId: !Ref ApiInstance
+      VolumeId: !Ref DataVolume
+      Device: /dev/sdf
+
+  # ---------------------------------------------------------- instance role
+  ApiInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      Policies:
+        - PolicyName: PullCoreImages
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:DescribeImages
+                Resource: !GetAtt CoreRepository.Arn
+        - PolicyName: ReadCoreAppEnvironment
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AppEnvParameter}'
+      Tags:
+        - Key: Project
+          Value: INTERVIA-BACKEND-2026
+
+  ApiInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref ApiInstanceRole
+
+  # ---------------------------------------------------------------- instance
+  ApiInstance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - ApiDefaultRoute
+      - ApiPublicRouteAssociation
+      - ApiElasticIpAssociation
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref AWS::NoValue]
+      IamInstanceProfile: !Ref ApiInstanceProfile
+      EbsOptimized: true
+      CreditSpecification:
+        CPUCredits: standard
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+        InstanceMetadataTags: enabled
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          NetworkInterfaceId: !Ref ApiNetworkInterface
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref RootVolumeSize
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+      # UserData runs only on the first boot. Changing it later does not
+      # reconfigure a running instance; see infra/aws/README.md.
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #!/bin/bash
+              set -Eeuo pipefail
+              exec > >(tee -a /var/log/intervia-core-bootstrap.log | logger -t intervia-core-bootstrap -s 2>/dev/console) 2>&1
+              export DEBIAN_FRONTEND=noninteractive
+              APT_OPTS="-o Acquire::Retries=5 -o DPkg::Lock::Timeout=300"
+
+              if [ ! -f /swapfile ]; then
+                fallocate -l 2G /swapfile
+                chmod 600 /swapfile
+                mkswap /swapfile
+                swapon /swapfile
+                echo '/swapfile none swap sw 0 0' >> /etc/fstab
+              fi
+
+              apt-get $APT_OPTS update -y
+              apt-get $APT_OPTS install -y ca-certificates curl gnupg unzip jq openssl
+
+              if ! /usr/local/bin/aws --version >/dev/null 2>&1; then
+                AWS_CLI_TMP="$(mktemp -d)"
+                curl -fsSL --retry 5 https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o "$AWS_CLI_TMP/awscliv2.zip"
+                unzip -q "$AWS_CLI_TMP/awscliv2.zip" -d "$AWS_CLI_TMP"
+                "$AWS_CLI_TMP/aws/install" --update
+                rm -rf "$AWS_CLI_TMP"
+              fi
+
+              # CloudFormation attaches the volume after the instance starts: wait.
+              VOLUME_ID='${DataVolume}'
+              DATA_DEVICE="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${!VOLUME_ID//-/}"
+              for _ in $(seq 1 180); do
+                [ -e "$DATA_DEVICE" ] && break
+                sleep 5
+              done
+              if [ ! -e "$DATA_DEVICE" ]; then
+                echo "Data volume $VOLUME_ID was not attached within 15 minutes" >&2
+                exit 1
+              fi
+              # Format only a blank volume.
+              if [ -z "$(blkid -o value -s TYPE "$DATA_DEVICE" 2>/dev/null || true)" ]; then
+                mkfs.ext4 -L intervia-data "$DATA_DEVICE"
+              fi
+              DATA_UUID="$(blkid -o value -s UUID "$DATA_DEVICE")"
+              install -d -m 0755 /data
+              if ! grep -q "UUID=$DATA_UUID " /etc/fstab; then
+                echo "UUID=$DATA_UUID /data ext4 defaults,nofail,x-systemd.device-timeout=180s 0 2" >> /etc/fstab
+              fi
+              systemctl daemon-reload
+              mountpoint -q /data || mount /data
+
+              install -d -m 0755 /data/postgres /data/rabbitmq /data/caddy /data/caddy/data /data/caddy/config \
+                /data/models_cache /data/tts-cache /data/backups
+              install -d -m 0700 /data/secrets
+              # Passwords are generated once and stay with the data.
+              if [ ! -f /data/secrets/stack-secrets.env ]; then
+                (
+                  umask 077
+                  printf 'POSTGRES_PASSWORD=%s\nRABBITMQ_PASSWORD=%s\n' \
+                    "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" > /data/secrets/stack-secrets.env
+                )
+              fi
+
+              if ! docker compose version >/dev/null 2>&1; then
+                install -m 0755 -d /etc/apt/keyrings
+                curl -fsSL --retry 5 https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+                chmod a+r /etc/apt/keyrings/docker.asc
+                . /etc/os-release
+                echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
+                apt-get $APT_OPTS update -y
+                apt-get $APT_OPTS install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+              fi
+
+              install -d -m 0755 /etc/docker /etc/systemd/system/docker.service.d
+              cat > /etc/docker/daemon.json <<'JSON'
+              {
+                "log-driver": "local",
+                "log-opts": { "max-size": "20m", "max-file": "5" }
+              }
+              JSON
+              # No containers before /data is mounted (else an empty database on root).
+              cat > /etc/systemd/system/docker.service.d/10-intervia-data.conf <<'UNIT'
+              [Unit]
+              RequiresMountsFor=/data
+              UNIT
+              systemctl daemon-reload
+              systemctl enable docker
+              systemctl restart docker
+              systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service || snap start amazon-ssm-agent || true
+
+              install -d -m 0755 /etc/intervia-core
+              cat > /etc/intervia-core/stack.env <<'ENV'
+              AWS_REGION='${AWS::Region}'
+              ECR_REGISTRY='${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}'
+              ECR_REPOSITORY='${CoreRepository}'
+              API_DOMAIN='${ApiDomainName}'
+              CORS_ORIGINS='${FrontendOrigins}'
+              APP_ENV_PARAMETER='${AppEnvParameter}'
+              COMPOSE_PROFILES='${ComposeProfiles}'
+              ENV
+
+              install -d -m 0750 /opt/intervia-core
+              [ -f /opt/intervia-core/release.env ] || : > /opt/intervia-core/release.env
+
+              cat > /opt/intervia-core/Caddyfile <<'CADDY'
+              {
+              	email ${AcmeEmail}
+              }
+
+              ${ApiDomainName} {
+              	encode zstd gzip
+              	header {
+              		Strict-Transport-Security "max-age=31536000"
+              		X-Content-Type-Options "nosniff"
+              		-Server
+              	}
+              	reverse_proxy api:5000
+              }
+              CADDY
+
+              cat > /opt/intervia-core/docker-compose.yml <<'COMPOSE'
+              name: intervia-core
+
+              # One image for the API, the worker and the voice agent.
+              x-app: &app
+                image: ${!CORE_IMAGE:-intervia-core:not-deployed}
+                restart: unless-stopped
+                env_file:
+                  - path: /opt/intervia-core/.env
+                    required: false
+                environment: &app-environment
+                  # These win over the same keys in the SSM .env file.
+                  APP_ENV: production
+                  DATABASE_URL: postgresql://intervia:${!POSTGRES_PASSWORD}@postgres:5432/intervia
+                  RABBITMQ_URL: amqp://intervia:${!RABBITMQ_PASSWORD}@rabbitmq:5672/
+                  CELERY_BROKER_URL: amqp://intervia:${!RABBITMQ_PASSWORD}@rabbitmq:5672/
+                  CELERY_RESULT_BACKEND: rpc://
+                  CORS_ORIGINS: ${!CORS_ORIGINS}
+                  LIVEKIT_AGENT_AUTOSTART: "false"
+                  VOICE_RUNTIME_API_BASE_URL: http://api:5000
+                  VOICE_LAB_TTS_CACHE_DIR: /var/cache/intervia-tts
+                  EMBEDDING_CACHE_DIR: models_cache/embedding_cache
+
+              services:
+                postgres:
+                  image: paradedb/paradedb:0.25.3-pg16@sha256:a40200f412a0384d2d04c5a1d7cde554d346cb1109b37acf6385ba4c119e2c5f
+                  container_name: intervia-core-postgres
+                  restart: unless-stopped
+                  environment:
+                    POSTGRES_USER: intervia
+                    POSTGRES_PASSWORD: ${!POSTGRES_PASSWORD}
+                    POSTGRES_DB: intervia
+                  shm_size: "256mb"
+                  volumes:
+                    - type: bind
+                      source: /data/postgres
+                      target: /var/lib/postgresql/data
+                      bind:
+                        create_host_path: false
+                  healthcheck:
+                    test: ["CMD-SHELL", "pg_isready -U intervia -d intervia"]
+                    interval: 5s
+                    timeout: 5s
+                    retries: 20
+
+                rabbitmq:
+                  image: rabbitmq:3
+                  container_name: intervia-core-rabbitmq
+                  hostname: rabbitmq
+                  restart: unless-stopped
+                  environment:
+                    RABBITMQ_DEFAULT_USER: intervia
+                    RABBITMQ_DEFAULT_PASS: ${!RABBITMQ_PASSWORD}
+                  volumes:
+                    - type: bind
+                      source: /data/rabbitmq
+                      target: /var/lib/rabbitmq
+                      bind:
+                        create_host_path: false
+                  healthcheck:
+                    test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+                    interval: 10s
+                    timeout: 5s
+                    retries: 12
+
+                api:
+                  <<: *app
+                  container_name: intervia-core-api
+                  # One process: Socket.IO rooms live in memory.
+                  command: ["uvicorn", "src.main:asgi_app", "--host", "0.0.0.0", "--port", "5000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+                  expose:
+                    - "5000"
+                  volumes:
+                    - /data/models_cache:/app/models_cache
+                  depends_on:
+                    postgres: {condition: service_healthy}
+                    rabbitmq: {condition: service_healthy}
+                  healthcheck:
+                    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=4)"]
+                    interval: 10s
+                    timeout: 5s
+                    retries: 6
+                    start_period: 180s
+
+                worker:
+                  <<: *app
+                  container_name: intervia-core-worker
+                  command: ["celery", "-A", "src.workers.celery_app:celery_app", "worker", "--loglevel=info", "--concurrency=1", "--queues=celery,cv-processing,jd-processing,matching"]
+                  volumes:
+                    - /data/models_cache:/app/models_cache
+                  depends_on:
+                    postgres: {condition: service_healthy}
+                    rabbitmq: {condition: service_healthy}
+
+                voice-agent:
+                  <<: *app
+                  profiles: ["voice"]
+                  container_name: intervia-core-voice-agent
+                  working_dir: /app
+                  command: ["python", "-m", "src.modules.interviews.adapters.voice.runtime.livekit_agent", "start"]
+                  volumes:
+                    - /data/tts-cache:/var/cache/intervia-tts
+                  init: true
+                  stop_grace_period: 30s
+                  depends_on:
+                    api: {condition: service_started}
+
+                caddy:
+                  image: caddy:2-alpine
+                  container_name: intervia-core-caddy
+                  restart: unless-stopped
+                  ports:
+                    - "80:80"
+                    - "443:443"
+                    - "443:443/udp"
+                  volumes:
+                    - /opt/intervia-core/Caddyfile:/etc/caddy/Caddyfile:ro
+                    - /data/caddy/data:/data
+                    - /data/caddy/config:/config
+              COMPOSE
+
+              # docker compose with stack settings, passwords and the current release.
+              cat > /usr/local/sbin/intervia-core-compose <<'SCRIPT'
+              #!/bin/bash
+              set -Eeuo pipefail
+              if ! mountpoint -q /data; then
+                echo "/data is not mounted; refusing to start containers" >&2
+                exit 1
+              fi
+              set -a
+              . /etc/intervia-core/stack.env
+              . /data/secrets/stack-secrets.env
+              . /opt/intervia-core/release.env
+              set +a
+              if [ -n "${!DEPLOY_IMAGE:-}" ]; then
+                export CORE_IMAGE="$DEPLOY_IMAGE"
+              fi
+              exec docker compose -f /opt/intervia-core/docker-compose.yml "$@"
+              SCRIPT
+
+              cat > /usr/local/sbin/intervia-core-ecr-login <<'SCRIPT'
+              #!/bin/bash
+              set -Eeuo pipefail
+              . /etc/intervia-core/stack.env
+              /usr/local/bin/aws ecr get-login-password --region "$AWS_REGION" \
+                | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+              SCRIPT
+
+              # Copies .env from SSM; the old file is kept if the new one is unusable.
+              cat > /usr/local/sbin/intervia-core-load-env <<'SCRIPT'
+              #!/bin/bash
+              set -Eeuo pipefail
+              . /etc/intervia-core/stack.env
+              umask 077
+              TMP="$(mktemp /opt/intervia-core/.env.XXXXXX)"
+              trap 'rm -f "$TMP"' EXIT
+              /usr/local/bin/aws ssm get-parameter --name "$APP_ENV_PARAMETER" --with-decryption \
+                --query 'Parameter.Value' --output text --region "$AWS_REGION" | tr -d '\r' > "$TMP"
+              JWT_SECRET_VALUE="$(sed -n 's/^JWT_SECRET=//p' "$TMP" | tail -n 1 | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//')"
+              if [ "${!#JWT_SECRET_VALUE}" -lt 32 ]; then
+                echo "$APP_ENV_PARAMETER must contain JWT_SECRET with at least 32 characters" >&2
+                exit 1
+              fi
+              chmod 0600 "$TMP"
+              mv "$TMP" /opt/intervia-core/.env
+              trap - EXIT
+              echo "Loaded .env from $APP_ENV_PARAMETER"
+              SCRIPT
+
+              # Starts the recorded release; only infrastructure before the first deploy.
+              cat > /usr/local/sbin/intervia-core-start <<'SCRIPT'
+              #!/bin/bash
+              set -Eeuo pipefail
+              cd /opt/intervia-core
+              if grep -q '^CORE_IMAGE=.' release.env; then
+                /usr/local/sbin/intervia-core-load-env || echo "Keeping the previous .env" >&2
+                /usr/local/sbin/intervia-core-ecr-login || true
+                /usr/local/sbin/intervia-core-compose up -d --remove-orphans
+              else
+                /usr/local/sbin/intervia-core-compose up -d caddy postgres rabbitmq
+              fi
+              SCRIPT
+
+              cat > /usr/local/sbin/intervia-core-deploy <<'SCRIPT'
+              #!/bin/bash
+              set -Eeuo pipefail
+              exec 9>/run/intervia-core-deploy.lock
+              flock -w 900 9
+
+              TAG="$*"
+              if ! printf '%s' "$TAG" | grep -Eq '^[A-Za-z0-9._-]{1,128}$'; then
+                echo "Invalid image tag: '$TAG'" >&2
+                exit 2
+              fi
+
+              . /etc/intervia-core/stack.env
+              COMPOSE=/usr/local/sbin/intervia-core-compose
+              IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:$TAG"
+              cd /opt/intervia-core
+              PREVIOUS="$(sed -n 's/^CORE_IMAGE=//p' release.env)"
+              APP_CONTAINERS="intervia-core-worker"
+              case ",$COMPOSE_PROFILES," in
+                *,voice,*) APP_CONTAINERS="$APP_CONTAINERS intervia-core-voice-agent" ;;
+              esac
+
+              # API healthy and the other app containers still running.
+              wait_healthy() {
+                local status="" ok=0 name
+                for _ in $(seq 1 100); do
+                  status="$(docker inspect --format '{{.State.Health.Status}}' intervia-core-api 2>/dev/null || echo missing)"
+                  if [ "$status" = healthy ]; then ok=1; break; fi
+                  if [ "$status" = unhealthy ]; then break; fi
+                  sleep 3
+                done
+                if [ "$ok" != 1 ]; then
+                  echo "API container health: $status" >&2
+                  return 1
+                fi
+                for _ in 1 2 3; do
+                  sleep 10
+                  for name in $APP_CONTAINERS; do
+                    if [ "$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || echo missing)" != running ]; then
+                      echo "Container $name is not running" >&2
+                      docker logs --tail 60 "$name" >&2 || true
+                      return 1
+                    fi
+                  done
+                done
+                return 0
+              }
+
+              echo "Deploying $IMAGE (previous: $PREVIOUS)"
+              /usr/local/sbin/intervia-core-load-env
+              /usr/local/sbin/intervia-core-ecr-login
+              docker pull "$IMAGE"
+
+              # Migrate with the new image first; on failure the old release stays up.
+              $COMPOSE up -d --wait postgres rabbitmq
+              echo "Applying database migrations"
+              if ! DEPLOY_IMAGE="$IMAGE" $COMPOSE run --rm --no-deps -T api python -m alembic upgrade head; then
+                echo "Database migration failed; the running release was not changed" >&2
+                exit 1
+              fi
+
+              printf 'CORE_IMAGE=%s\n' "$IMAGE" > release.env.next
+              mv release.env.next release.env
+              $COMPOSE up -d --remove-orphans || echo "docker compose up reported an error; checking health" >&2
+
+              if wait_healthy; then
+                echo "Release is healthy: $IMAGE"
+                docker image prune -af --filter "until=72h" >/dev/null || true
+                exit 0
+              fi
+
+              echo "Release did not become healthy: $IMAGE" >&2
+              docker logs --tail 80 intervia-core-api >&2 || true
+              if [ -n "$PREVIOUS" ] && [ "$PREVIOUS" != "$IMAGE" ]; then
+                echo "Rolling back to $PREVIOUS" >&2
+                printf 'CORE_IMAGE=%s\n' "$PREVIOUS" > release.env
+                $COMPOSE up -d --remove-orphans || true
+                wait_healthy && echo "Rollback is healthy: $PREVIOUS" >&2 || echo "Rollback is not healthy either" >&2
+              fi
+              exit 1
+              SCRIPT
+
+              # Database dump kept on /data for 7 days.
+              cat > /usr/local/sbin/intervia-core-backup <<'SCRIPT'
+              #!/bin/bash
+              set -Eeuo pipefail
+              mountpoint -q /data
+              OUT="/data/backups/intervia-$(date -u +%Y%m%dT%H%M%SZ).dump"
+              docker exec intervia-core-postgres pg_dump -U intervia -d intervia -Fc > "$OUT.part"
+              mv "$OUT.part" "$OUT"
+              find /data/backups -name 'intervia-*.dump' -mtime +7 -delete
+              SCRIPT
+              chmod 0755 /usr/local/sbin/intervia-core-compose /usr/local/sbin/intervia-core-ecr-login \
+                /usr/local/sbin/intervia-core-load-env /usr/local/sbin/intervia-core-start \
+                /usr/local/sbin/intervia-core-deploy /usr/local/sbin/intervia-core-backup
+
+              cat > /etc/systemd/system/intervia-core.service <<'UNIT'
+              [Unit]
+              Description=INTERVIA backend (API, worker, voice agent, PostgreSQL, RabbitMQ, Caddy) via Docker Compose
+              Requires=docker.service
+              After=docker.service network-online.target
+              Wants=network-online.target
+              RequiresMountsFor=/data
+
+              [Service]
+              Type=oneshot
+              RemainAfterExit=yes
+              WorkingDirectory=/opt/intervia-core
+              ExecStart=/usr/local/sbin/intervia-core-start
+              TimeoutStartSec=0
+
+              [Install]
+              WantedBy=multi-user.target
+              UNIT
+
+              systemctl daemon-reload
+              systemctl enable --now intervia-core.service
+              # Nightly database dump at 02:00 Asia/Ho_Chi_Minh.
+              echo '0 19 * * * root /usr/local/sbin/intervia-core-backup' > /etc/cron.d/intervia-core-backup
+
+              # Stack recreated after CI pushed images: go live at once.
+              if /usr/local/bin/aws ecr describe-images --region '${AWS::Region}' \
+                   --repository-name '${CoreRepository}' --image-ids imageTag=latest >/dev/null 2>&1; then
+                /usr/local/sbin/intervia-core-deploy latest || echo "Initial deploy of :latest failed; wait for CI" >&2
+              else
+                echo "No image yet. Caddy, PostgreSQL and RabbitMQ are up; the first GitHub Actions run deploys the API."
+              fi
+
+              /usr/local/sbin/intervia-core-compose ps
+            - ComposeProfiles: !If [UseVoiceAgent, voice, '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-api'
+        - Key: Project
+          Value: INTERVIA-BACKEND-2026
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # ---------------------------------------------------------------- deploy
+  # The only command CI may run on the instance: deploy one validated tag.
+  DeployDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Command
+      DocumentFormat: YAML
+      Content:
+        schemaVersion: '2.2'
+        description: Deploy one INTERVIA backend image tag from ECR, migrate the database and roll back if it is unhealthy.
+        parameters:
+          ImageTag:
+            type: String
+            description: ECR image tag, for example the Git commit SHA.
+            allowedPattern: ^[A-Za-z0-9._-]{1,128}$
+        mainSteps:
+          - action: aws:runShellScript
+            name: deployBackend
+            inputs:
+              timeoutSeconds: '1500'
+              runCommand:
+                - /usr/local/sbin/intervia-core-deploy '{{ ImageTag }}'
+      Tags:
+        - Key: Project
+          Value: INTERVIA-BACKEND-2026
+
+  # ------------------------------------------------------- GitHub Actions
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateGitHubOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      Tags:
+        - Key: Project
+          Value: INTERVIA-BACKEND-2026
+
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Assumed by GitHub Actions (OIDC) to push the backend image and deploy it.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateGitHubOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Ref GitHubOidcProviderArn
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+              - sts:TagSession
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  - !Sub 'repo:${GitHubOwner}/${GitHubRepo}:ref:refs/heads/${GitHubDeployBranch}'
+                  - !Sub 'repo:${GitHubOwner}/${GitHubRepo}:environment:${GitHubEnvironment}'
+      Policies:
+        - PolicyName: PushCoreImage
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:CompleteLayerUpload
+                  - ecr:DescribeImages
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource: !GetAtt CoreRepository.Arn
+        - PolicyName: DeployToInstance
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:SendCommand
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/${DeployDocument}'
+                  - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${ApiInstance}'
+              - Effect: Allow
+                Action:
+                  - ssm:GetCommandInvocation
+                  - ssm:ListCommandInvocations
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource: !Ref AWS::StackId
+      Tags:
+        - Key: Project
+          Value: INTERVIA-BACKEND-2026
+
+  # ------------------------------------------------------------------ DNS
+  ApiRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: UseRoute53
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref ApiDomainName
+      Type: A
+      TTL: '300'
+      ResourceRecords:
+        - !Ref ApiElasticIp
+
+Outputs:
+  DeploymentRegion:
+    Description: AWS Region of this stack. Use it for the GitHub variable AWS_REGION.
+    Value: !Ref AWS::Region
+
+  StackName:
+    Description: Use it for the GitHub variable AWS_STACK_NAME.
+    Value: !Ref AWS::StackName
+
+  ApiUrl:
+    Description: Public API base URL. Use it for NEXT_PUBLIC_API_URL in the frontend repository.
+    Value: !Sub 'https://${ApiDomainName}'
+
+  HealthEndpoint:
+    Description: Liveness endpoint used by the deploy smoke test.
+    Value: !Sub 'https://${ApiDomainName}/health'
+
+  PublicIp:
+    Description: Elastic IP. Point the A record of the API domain here.
+    Value: !Ref ApiElasticIp
+
+  DnsRecordToCreate:
+    Description: DNS record the API domain needs (already created when HostedZoneId is set).
+    Value: !Sub 'A ${ApiDomainName} -> ${ApiElasticIp}'
+
+  InstanceId:
+    Description: EC2 instance ID for Session Manager.
+    Value: !Ref ApiInstance
+
+  SsmSessionCommand:
+    Description: Open a shell on the instance without SSH.
+    Value: !Sub 'aws ssm start-session --target ${ApiInstance} --region ${AWS::Region}'
+
+  AppEnvParameterName:
+    Description: SSM SecureString parameter that must hold the application .env before the first deploy.
+    Value: !Ref AppEnvParameter
+
+  EcrRepositoryUri:
+    Description: Image repository that GitHub Actions pushes to.
+    Value: !GetAtt CoreRepository.RepositoryUri
+
+  DeployDocumentName:
+    Description: SSM document that deploys one image tag on the instance.
+    Value: !Ref DeployDocument
+
+  GitHubDeployRoleArn:
+    Description: Use it for the GitHub variable AWS_DEPLOY_ROLE_ARN.
+    Value: !GetAtt GitHubDeployRole.Arn
+
+  GitHubVariablesCommand:
+    Description: Run once with the GitHub CLI to set the CI/CD variables.
+    Value: !Sub 'gh variable set AWS_REGION -b ${AWS::Region} -e ${GitHubEnvironment} -R ${GitHubOwner}/${GitHubRepo} && gh variable set AWS_STACK_NAME -b ${AWS::StackName} -e ${GitHubEnvironment} -R ${GitHubOwner}/${GitHubRepo} && gh variable set AWS_DEPLOY_ROLE_ARN -b ${GitHubDeployRole.Arn} -e ${GitHubEnvironment} -R ${GitHubOwner}/${GitHubRepo}'
+
+  ManualDeployCommand:
+    Description: Deploy or roll back to an existing image tag by hand.
+    Value: !Sub 'aws ssm send-command --region ${AWS::Region} --document-name ${DeployDocument} --instance-ids ${ApiInstance} --parameters ImageTag=latest'
+
+  DataVolumeId:
+    Description: Encrypted data volume mounted at /data (database, broker, certificates, dumps).
+    Value: !Ref DataVolume
+
+  BootstrapLog:
+    Description: First-boot log on the instance.
+    Value: /var/log/intervia-core-bootstrap.log
