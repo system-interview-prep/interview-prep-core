@@ -1,6 +1,6 @@
 import pytest
 
-from src.modules.interviews.planning.planner import (
+from src.modules.interviews.agent.planner.planner import (
     PLANNER_POLICY_VERSION,
     derive_competency_plan,
 )
@@ -354,7 +354,7 @@ def test_planner_keeps_must_have_concepts_ahead_of_repeated_nice_to_have() -> No
 
 def test_question_budget_fits_the_session_time() -> None:
     """M10: the agenda's expected time (presets + questions with one probe) fits the session."""
-    from src.modules.interviews.planning.planner import (
+    from src.modules.interviews.agent.planner.planner import (
         _PRESET_EXPECTED_SECONDS,
         _TECHNICAL_EXPECTED_SECONDS,
         _question_budget,
@@ -477,7 +477,7 @@ def test_planner_asks_again_a_skill_and_preserves_the_exact_due_question() -> No
 @pytest.mark.asyncio
 async def test_due_reask_uses_the_first_due_question_for_that_position(monkeypatch) -> None:
     from src.modules.interviews.application import progress
-    from src.modules.interviews.planning import planner
+    from src.modules.interviews.agent.planner import planner
 
     async def fake_progress(_db, _user_id):
         return {

@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.trace_logging import trace_event
 from src.infrastructure.database import SessionFactory
+from src.modules.interviews.application.background.question_suggestions import enqueue_session_question_suggestions
 from src.modules.interviews.evaluation import evaluate_closed_session
 
 logger = logging.getLogger(__name__)
@@ -147,6 +148,7 @@ async def _grade(session_id: str) -> bool:
     try:
         async with SessionFactory() as db:
             await evaluate_closed_session(db, session_id)
+        enqueue_session_question_suggestions(session_id)
         trace_event("interviewer", "evaluation_admin_completed", session_id=session_id)
         return True
     except Exception as exc:  # noqa: BLE001 - reported in the pipeline view

@@ -13,8 +13,8 @@ from src.modules.interviews.core.session_policy.blueprint import (
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 from src.modules.interviews.core.conversation.turn_rules import MAX_QNA_QUESTIONS, QNA_BUDGET_SECONDS, TIME_THRESHOLDS
 from src.modules.interviews.core.contracts.interview import InterviewStage
-from src.modules.interviews.planning.planner import _question_budget
-from src.modules.interviews.planning.question_selector import _behavioral_snapshot, _technical_stage
+from src.modules.interviews.agent.planner.planner import _question_budget
+from src.modules.interviews.agent.planner.question_selector import _behavioral_snapshot, _technical_stage
 
 
 def test_default_blueprint_keeps_every_previous_constant() -> None:

@@ -3,7 +3,7 @@
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from src.modules.interviews.agent.state import InterviewCommand
+from src.modules.interviews.agent.session_workflow.state import InterviewCommand
 
 InterviewOperation = Callable[[Mapping[str, Any]], Awaitable[dict[str, Any]]]
 InterviewOperations = Mapping[InterviewCommand, InterviewOperation]

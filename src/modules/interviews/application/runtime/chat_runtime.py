@@ -39,9 +39,9 @@ from src.modules.interviews.core.dialogue.policy import (
     last_paragraph,
 )
 from src.modules.interviews.core.dialogue.topics import generic_transition
-from src.modules.interviews.agent import record as agent_record
+from src.modules.interviews.agent.interviewer import record as agent_record
 from src.modules.interviews.application.runtime import candidate_memory
-from src.modules.interviews.agent.turn_graph import run_turn
+from src.modules.interviews.agent.interviewer.interview_agent import run_turn
 from src.modules.interviews.core.conversation.turn_engine import (
     InterviewCoreEngine,
     pacing_seconds,

@@ -60,7 +60,7 @@ def _record_turn_snapshot(request: pytest.FixtureRequest, monkeypatch: pytest.Mo
         before = _plain(copy.deepcopy(session_state))
         graph_output = None
         if dual:
-            from src.modules.interviews.agent.turn_graph import run_turn
+            from src.modules.interviews.agent.interviewer.interview_agent import run_turn
 
             # A deep copy of the engine carries a copy of the test's LLM double, so
             # its prompt lists and call counters only see the engine's own run.

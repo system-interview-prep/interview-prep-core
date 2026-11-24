@@ -6,7 +6,7 @@ import itertools
 
 import pytest
 
-from src.modules.interviews.agent.menu import build_menu
+from src.modules.interviews.agent.interviewer.menu import build_menu
 from src.modules.interviews.core.contracts.interview import InterviewStage
 from src.modules.interviews.core.conversation.turn_context import ACTIONS, MAX_PROBES_PER_QUESTION
 

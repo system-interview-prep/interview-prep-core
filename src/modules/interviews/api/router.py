@@ -43,12 +43,12 @@ from src.modules.interviews.evaluation.evaluation_service import (
     get_session_evaluation,
 )
 from src.modules.interviews.planning.entry_gate import InterviewEntryBlocked, entry_policy, evaluate_entry
-from src.modules.interviews.planning.planner import (
+from src.modules.interviews.agent.planner.planner import (
     PlannerPolicyConfigurationError,
     evaluate_session_match,
     read_session_plan,
 )
-from src.modules.interviews.planning.question_selector import (
+from src.modules.interviews.agent.planner.question_selector import (
     QuestionUnavailableError,
     read_frozen_turns,
 )

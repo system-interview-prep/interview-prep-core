@@ -127,8 +127,4 @@ def emit(record: Dict[str, Any], *, session_id: Any, turn_index: int) -> None:
         agent=record.get("agent"),
         pacing=record.get("pacing"),
         contract=record.get("contract"),
-        stage_before=record.get("stage_before"),
-        stage_after=record.get("stage_after"),
-        transition=record.get("transition"),
-        agent_validation=record.get("transition", {}).get("validation"),
     )

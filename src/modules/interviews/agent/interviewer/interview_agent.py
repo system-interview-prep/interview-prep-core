@@ -28,11 +28,11 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from src.core.trace_logging import trace_event
-from src.modules.interviews.agent.decide import decide_by_model, is_violation
-from src.modules.interviews.agent.menu import build_menu
-from src.modules.interviews.agent.pacing import pacing_block
-from src.modules.interviews.agent.record import decision_record, emit
-from src.modules.interviews.agent.state import TurnGraphState
+from src.modules.interviews.agent.interviewer.decide import decide_by_model, is_violation
+from src.modules.interviews.agent.interviewer.menu import build_menu
+from src.modules.interviews.agent.interviewer.pacing import pacing_block
+from src.modules.interviews.agent.interviewer.record import decision_record, emit
+from src.modules.interviews.agent.interviewer.state import TurnGraphState
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput, InterviewerTurnOutput
 from src.modules.interviews.core.conversation.turn_context import build_turn_context
 from src.modules.interviews.core.guardrails.common import canary_scope
@@ -220,7 +220,10 @@ def build_turn_graph() -> Any:
     graph.add_edge("act", "guards_out")
     graph.add_edge("guards_out", "record")
     graph.add_edge("record", END)
-    return graph.compile(name="interview_turn")
+    # This is volatile working state (it contains the live engine and context).
+    # It runs inside the durable command graph, so None would inherit the
+    # parent's PostgreSQL checkpointer and try to msgpack-serialize the engine.
+    return graph.compile(checkpointer=False, name="interview_turn")
 
 
 _turn_graph: Any = None
@@ -249,12 +252,17 @@ async def run_turn(
     if not engine_has_steps(engine):
         return await engine.handle_turn(turn_input, session_state)
     with canary_scope(turn_input.session_id) as code:
-        state = await turn_graph().ainvoke({
-            "engine": engine,
-            "turn_input": turn_input,
-            "session_state": session_state,
-            "canary_code": code,
-            "mode": mode or agent_mode(),
-            "memory_search": memory_search,
-        })
+        state = await turn_graph().ainvoke(
+            {
+                "engine": engine,
+                "turn_input": turn_input,
+                "session_state": session_state,
+                "canary_code": code,
+                "mode": mode or agent_mode(),
+                "memory_search": memory_search,
+            },
+            # The parent command graph uses sync durability; explicitly avoid
+            # inheriting it because this graph has no checkpointer of its own.
+            durability="async",
+        )
     return state["output"]

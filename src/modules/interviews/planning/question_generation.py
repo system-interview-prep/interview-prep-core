@@ -1,14 +1,10 @@
-"""Generate Question Bank drafts for skills the bank does not cover yet.
+"""Generate Question Bank drafts for the separate bank-coverage workflow.
 
-Last step of the selector's fallback ladder (exact skill -> broader skill ->
-role question -> generated). The prompt carries only the skill label, its
-specialisation, the difficulty and the locale -- never JD text. Generated
-drafts are reused by later sessions before anyone reviews them, so text from
-one user's uploaded JD (or an injection in it) must not reach other candidates.
-
-Drafts are committed in their own short transaction, outside the plan-row lock
-the selector holds, and filed IN_REVIEW so reviewers can approve them into the
-bank. The selector then picks them up through its generated-draft step.
+This is not called from P2 or a live interview. The prompt carries only the
+skill label, its specialisation, the difficulty and locale -- never JD text.
+Generated drafts are filed IN_REVIEW for reviewers to approve into the bank.
+The selector may later consider already-filed generated drafts when its policy
+allows them, but never creates them during session preparation.
 
 Every draft passes an automatic quality gate before it is filed: rubric
 structure, language, no near-duplicate of a question the skill already has,
@@ -421,7 +417,7 @@ async def ensure_generated_questions(
     reach the same skill at once, and without the lock each would generate its
     own batch. The transaction ends (commit) before returning, releasing it.
     """
-    from src.modules.interviews.planning.question_selector import reachable_candidates
+    from src.modules.interviews.agent.planner.question_selector import reachable_candidates
 
     if not get_settings().question_generation_enabled or desired <= 0:
         return 0

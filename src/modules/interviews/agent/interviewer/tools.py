@@ -57,7 +57,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "Ghi nhận rồi chuyển sang câu kế tiếp (câu nào do hệ thống chọn).",
         {"reason": {"type": "string", "enum": ["sufficient", "budget", "pace_behind", "coverage", "candidate_skip"]}},
     ),
-    "repeat_question": _tool("repeat_question", "Ứng viên không nghe rõ: nhắc nguyên văn câu hỏi."),
+    "repeat_question": _tool(
+        "repeat_question",
+        "Chỉ dùng khi ứng viên nói rõ họ không nghe được hoặc muốn nhắc lại câu hỏi. "
+        "Không dùng cho câu trả lời ngắn/thiếu ý, lời chào hay lời xác nhận; action này lặp nguyên văn câu hỏi, không xử lý câu trả lời.",
+    ),
     "answer_candidate_question": _tool(
         "answer_candidate_question",
         "Ứng viên hỏi người phỏng vấn (về vị trí, cách làm bài…): trả lời ngắn, giữ câu hỏi đang chờ.",
@@ -70,8 +74,15 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "clarify_question": _tool("clarify_question", "Ứng viên chưa hiểu đề: nói lại câu hỏi theo cách khác."),
     "continue_warm_up": _tool(
         "continue_warm_up",
-        "Phần làm quen: hỏi tiếp đúng một ý còn thiếu.",
-        {"missing_aspect": {"type": "string"}},
+        "Phần làm quen khi giới thiệu còn thiếu: tự viết đầy đủ lời đáp sẽ gửi ứng viên, ghi nhận một chi tiết họ đã nói và hỏi đúng một ý còn thiếu. Xem câu interviewer gần đây để không hỏi lại ý đã hỏi; không lặp câu mở đầu.",
+        {
+            "missing_aspect": {"type": "string"},
+            "follow_up_text": {
+                "type": "string",
+                "maxLength": 280,
+                "description": "Toàn bộ lời thoại tự nhiên gửi ứng viên, gồm ghi nhận ngắn nếu phù hợp và đúng một câu hỏi tiếp theo; không phải chỉ dẫn hay đoạn câu rời.",
+            },
+        },
     ),
     "acknowledge_and_probe": _tool(
         "acknowledge_and_probe",

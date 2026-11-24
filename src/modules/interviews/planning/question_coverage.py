@@ -6,8 +6,9 @@ activated), a background task makes sure every must-have skill of the job
 already has MIN_QUESTIONS_PER_SKILL questions the selector can reach -- enough
 to rotate between sessions -- and generates gated drafts for the rest.
 
-Only must-have skills are prepared, to bound cost: a preferred skill that a
-25- or 45-minute plan still selects falls back to session-time generation.
+Only must-have skills are prepared here, to bound cost. Any remaining gap is
+recorded by P2 and can be used by the post-session suggestion worker; the
+session selector itself never generates Question Bank content.
 
 The report answers "how well does the bank cover real sessions and jobs?"
 from data the selector already persists (`questionSelection` in the plan).
@@ -24,13 +25,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
 from src.modules.interviews.core.session_policy.demo_mode import DEMO_DURATION_MINUTES
-from src.modules.interviews.planning.plan_structure import derive_difficulty
-from src.modules.interviews.planning.planner import _requirement_concepts
+from src.modules.interviews.agent.planner.plan_structure import derive_difficulty
+from src.modules.interviews.agent.planner.planner import _requirement_concepts
 from src.modules.interviews.planning.question_generation import (
     MAX_PREGENERATED_PER_TARGET,
     ensure_generated_questions,
 )
-from src.modules.interviews.planning.question_selector import _job_taxonomy, reachable_candidates
+from src.modules.interviews.agent.planner.question_selector import _job_taxonomy, reachable_candidates
 from src.modules.job_descriptions.schemas import CanonicalJobDescription
 from src.modules.matching.facade import canonical_job_from_description
 from src.modules.matching.schemas import CanonicalJob

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
 
-from src.modules.interviews.agent import turn_graph
+from src.modules.interviews.agent.interviewer import interview_agent as turn_graph
 from src.modules.interviews.core.contracts.interview import (
     CandidateTurnInput,
     InterviewStage,
@@ -143,6 +145,34 @@ async def test_a_double_without_steps_runs_through_handle_turn() -> None:
 
     out = await turn_graph.run_turn(Double(), _turn("x"), {})
     assert out.message_text == "ok" and "decision" not in out.metadata
+
+
+@pytest.mark.asyncio
+async def test_turn_graph_inside_checkpointed_command_does_not_serialize_engine(session_state_factory) -> None:
+    """The nested turn graph is volatile even when its caller has a durable checkpoint."""
+    engine = InterviewCoreEngine(llm_client=ScriptedLLM())
+    parent = StateGraph(dict)
+
+    async def execute_turn(_state):  # noqa: ANN001
+        output = await turn_graph.run_turn(
+            engine,
+            _turn("Em đã dùng Redis làm cache."),
+            session_state_factory(),
+        )
+        return {"action": output.action.value}
+
+    parent.add_node("execute_turn", execute_turn)
+    parent.add_edge(START, "execute_turn")
+    parent.add_edge("execute_turn", END)
+    command_graph = parent.compile(checkpointer=InMemorySaver())
+
+    result = await command_graph.ainvoke(
+        {},
+        config={"configurable": {"thread_id": "nested-turn-engine-serialization"}},
+        durability="sync",
+    )
+
+    assert result["action"]
 
 
 def test_decision_record_serialises() -> None:

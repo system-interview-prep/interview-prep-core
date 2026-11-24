@@ -1,13 +1,14 @@
-"""Deterministic P1 interview planner.
+"""Contract-bounded P1 interview planning.
 
-P1 converts grounded CV/JD matching context into a persisted competency agenda.
-It does not select questions and it does not ask an LLM to invent competencies.
+Code derives admissible targets and owns mandatory priority, budget, allocation,
+validation, and persistence. The Planner Agent may rank only that grounded
+target set before deterministic selection; it cannot invent competencies.
 """
 
 import hashlib
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -21,6 +22,7 @@ from src.core.trace_logging import trace_event
 from src.modules.interviews.core.session_policy.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
 from src.modules.interviews.application.interview_blueprints import DEFAULT_NAME as DEFAULT_BLUEPRINT_NAME
 from src.modules.interviews.application.interview_blueprints import resolve_blueprint
+from src.modules.interviews.agent.planner.contract_snapshot import PlannerContractSnapshot
 from src.modules.interviews.core.session_policy.blueprint import InterviewBlueprint, default_blueprint
 from src.modules.taxonomy.interview_groups import (
     EMPTY_TAXONOMY_SKILL_GROUPS,
@@ -32,17 +34,17 @@ from src.modules.interviews.planning.entry_gate import (
     evaluate_entry,
     fit_adjusted_difficulty,
 )
-from src.modules.interviews.planning.plan_structure import (
+from src.modules.interviews.agent.planner.plan_structure import (
     build_evaluation_targets,
     build_sections,
     derive_difficulty,
     validate_must_have_coverage,
 )
-from src.modules.interviews.planning.planner_config import (
+from src.modules.interviews.agent.planner.planner_config import (
     PlannerPolicyConfig,
     resolve_strict_hands_on_precedence,
 )
-from src.modules.interviews.planning.project_evidence import extract_project_evidences
+from src.modules.interviews.agent.planner.project_evidence import extract_project_evidences
 from src.modules.job_descriptions.schemas import CanonicalJobDescription
 from src.modules.matching.facade import (
     canonical_job_from_description,
@@ -76,6 +78,83 @@ _STATUS_BOOST = {
     "not_applicable": 0.0,
 }
 _MAX_QUESTIONS_PER_TARGET = 3
+
+
+def _planner_target_key(target: Mapping[str, Any]) -> str:
+    return json.dumps(
+        [str(target.get("taxonomyVersion") or ""), str(target.get("conceptId") or "")],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _planner_candidate_context(job: CanonicalJob, match: MatchResult) -> list[dict[str, Any]]:
+    """Expose only canonical, applicable competency targets to the Planner Agent."""
+    result_by_id = {item.requirement_id: item for item in match.requirement_results}
+    candidates: dict[tuple[str, str], dict[str, Any]] = {}
+    had_taxonomy_concepts = False
+    for requirement in job.requirements:
+        concepts = _requirement_concepts(requirement)
+        if not concepts:
+            continue
+        had_taxonomy_concepts = True
+        requirement_result = result_by_id.get(requirement.requirement_id)
+        for concept in concepts:
+            status = _status_for_concept(requirement_result, concept.concept_id)
+            if _STATUS_BOOST.get(status, 1.0) <= 0:
+                continue
+            key = (concept.taxonomy_version, concept.concept_id)
+            item = candidates.setdefault(
+                key,
+                {
+                    "taxonomyVersion": concept.taxonomy_version,
+                    "conceptId": concept.concept_id,
+                    "label": concept.label,
+                    "priorities": [],
+                    "matchStatuses": [],
+                    "requirementIds": [],
+                    "jobEvidenceRefs": [],
+                    "rawWeight": 0.0,
+                },
+            )
+            priority_weight = _PRIORITY_WEIGHT.get(requirement.priority, 0.0)
+            item["rawWeight"] += priority_weight * _STATUS_BOOST.get(status, 1.0) / len(concepts)
+            for name, value in (
+                ("priorities", requirement.priority),
+                ("matchStatuses", status),
+                ("requirementIds", requirement.requirement_id),
+                ("jobEvidenceRefs", requirement.source_evidence_ref),
+            ):
+                if value not in item[name]:
+                    item[name].append(value)
+
+    if not candidates and not had_taxonomy_concepts:
+        classifications = sorted(
+            job.career_classifications,
+            key=lambda item: (not item.is_primary, -item.confidence, item.code),
+        )
+        for classification in classifications[:2]:
+            item = {
+                "taxonomyVersion": classification.taxonomy_version,
+                "conceptId": classification.code,
+                "label": classification.label,
+                "priorities": ["must_have" if classification.is_primary else "nice_to_have"],
+                "matchStatuses": ["unknown"],
+                "requirementIds": [],
+                "jobEvidenceRefs": [],
+                "rawWeight": 1.0 if classification.is_primary else 0.5,
+            }
+            candidates[(classification.taxonomy_version, classification.code)] = item
+
+    return sorted(
+        candidates.values(),
+        key=lambda item: (
+            0 if "must_have" in item["priorities"] else 1,
+            -item["rawWeight"],
+            item["taxonomyVersion"],
+            item["conceptId"],
+        ),
+    )
 
 
 class PlannerPolicyConfigurationError(RuntimeError):
@@ -291,6 +370,7 @@ def _derive_competency_plan_legacy(
     reask: Sequence[Mapping[str, Any]] = (),
     blueprint: InterviewBlueprint | None = None,
     taxonomy_groups: TaxonomySkillGroups = EMPTY_TAXONOMY_SKILL_GROUPS,
+    preferred_target_keys: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Legacy fixed question budget algorithm (interview-planner-v1).
 
@@ -358,10 +438,15 @@ def _derive_competency_plan_legacy(
 
     budget = _question_budget(duration_minutes, blueprint)
     askable, folded = _split_minor(list(candidates.values()))
+    preferred_rank = {key: index for index, key in enumerate(preferred_target_keys or ())}
     ranked = sorted(
         askable,
         key=lambda item: (
             0 if "must_have" in item.priorities else 1,
+            preferred_rank.get(_planner_target_key({
+                "taxonomyVersion": item.concept.taxonomy_version,
+                "conceptId": item.concept.concept_id,
+            }), len(preferred_rank)) if preferred_target_keys is not None else -item.raw_weight,
             -item.raw_weight,
             item.concept.taxonomy_version,
             item.concept.concept_id,
@@ -482,6 +567,7 @@ def _derive_competency_plan_dynamic(
     duration_minutes: int,
     config: PlannerPolicyConfig,
     listing: Mapping[str, Any] | None = None,
+    preferred_target_keys: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Gate 2 dynamic time envelope allocation algorithm (interview-planner-v2-dynamic)."""
     result_by_id = {item.requirement_id: item for item in match.requirement_results}
@@ -656,10 +742,15 @@ def _derive_competency_plan_dynamic(
         return plan
 
     # 5. Deterministic Ranking of Candidate Targets
+    preferred_rank = {key: index for index, key in enumerate(preferred_target_keys or ())}
     ranked_candidates = sorted(
         candidates,
         key=lambda item: (
             0 if "must_have" in item["priorities"] else 1,
+            preferred_rank.get(_planner_target_key({
+                "taxonomyVersion": item["concept"].taxonomy_version,
+                "conceptId": item["concept"].concept_id,
+            }), len(preferred_rank)) if preferred_target_keys is not None else -item["raw_weight"],
             -item["raw_weight"],
             item["concept"].taxonomy_version,
             item["concept"].concept_id,
@@ -951,6 +1042,7 @@ def derive_competency_plan(
     reask: Sequence[Mapping[str, Any]] = (),
     blueprint: InterviewBlueprint | None = None,
     taxonomy_groups: TaxonomySkillGroups = EMPTY_TAXONOMY_SKILL_GROUPS,
+    preferred_target_keys: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic competency agenda from canonical requirements.
 
@@ -971,6 +1063,7 @@ def derive_competency_plan(
             reask=reask,
             blueprint=blueprint,
             taxonomy_groups=taxonomy_groups,
+            preferred_target_keys=preferred_target_keys,
         )
     return _derive_competency_plan_dynamic(
         job=job,
@@ -978,6 +1071,7 @@ def derive_competency_plan(
         duration_minutes=duration_minutes,
         config=policy_config,
         listing=listing,
+        preferred_target_keys=preferred_target_keys,
     )
 
 
@@ -1196,6 +1290,8 @@ async def build_and_persist_session_plan(
     db: AsyncSession,
     user: dict,
     session_row: dict,
+    target_order_proposer: Callable[[Mapping[str, Any]], Awaitable[Sequence[str]]] | None = None,
+    project_evidence_extractor: Callable[..., Awaitable[list[Any]]] | None = None,
 ) -> dict[str, Any]:
     plan_id = session_row.get("plan_id")
     if not plan_id:
@@ -1259,10 +1355,100 @@ async def build_and_persist_session_plan(
     # The expert-configured stage policy in force now, frozen into the plan so a
     # later activation never changes this session. Demo keeps the built-in one.
     if is_demo_duration(session_row["duration_minutes"]):
-        blueprint_ref, blueprint = None, default_blueprint()
+        # Demo keeps its fixed question script but uses the SQL-backed system
+        # contract snapshot for stage timing and guardrails.
+        blueprint_ref, blueprint = await resolve_blueprint(db)
     else:
-        # The interview type the candidate chose; the default type when none (or it is gone).
-        blueprint_ref, blueprint = await resolve_blueprint(db, await _requested_blueprint(db, plan_id=str(plan_id)))
+        # Resolve the selected Admin contract, or the SQL-backed system default.
+        blueprint_ref, blueprint = await resolve_blueprint(
+            db, await _requested_blueprint(db, plan_id=str(plan_id))
+        )
+    planner_decision: dict[str, Any] = {
+        "source": "deterministic_fallback",
+        "status": "NOT_CONFIGURED" if target_order_proposer is None else "FALLBACK",
+        "reason": "proposal_not_configured" if target_order_proposer is None else "no_candidates",
+        "orderedTargetKeys": [],
+    }
+    preferred_target_keys: list[str] | None = None
+    candidate_targets = _planner_candidate_context(job, match)
+    if target_order_proposer is not None and candidate_targets:
+        candidate_keys = [
+            _planner_target_key(target) for target in candidate_targets
+        ]
+        try:
+            proposal_context = {
+                "locale": session_row.get("locale") or "vi",
+                "contract": {
+                    "blueprintId": (blueprint_ref or {}).get("blueprintId"),
+                    "blueprintName": (blueprint_ref or {}).get("blueprintName"),
+                    "policyBlueprintId": (blueprint_ref or {}).get("policyBlueprintId"),
+                    "versionId": (blueprint_ref or {}).get("versionId"),
+                    "fingerprint": hashlib.sha256(
+                        json.dumps(
+                            blueprint.to_payload(), sort_keys=True, separators=(",", ":"),
+                            ensure_ascii=False,
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                    "policy": blueprint.to_payload(),
+                },
+                "durationMinutes": int(session_row["duration_minutes"]),
+                "questionBudget": blueprint.technical_question_budget(
+                    int(session_row["duration_minutes"])
+                ),
+                "candidateTargets": [
+                    {
+                        **target,
+                        "targetKey": _planner_target_key(target),
+                    }
+                    for target in candidate_targets
+                ],
+            }
+            proposed_keys = list(await target_order_proposer(proposal_context))
+            if (
+                len(proposed_keys) != len(candidate_keys)
+                or len(set(proposed_keys)) != len(proposed_keys)
+                or set(proposed_keys) != set(candidate_keys)
+            ):
+                raise ValueError("Planner proposal must be an exact permutation of candidate target keys")
+
+            # Mandatory requirements are always first, regardless of model output.
+            target_by_key = {
+                _planner_target_key(target): target for target in candidate_targets
+            }
+            must_keys = [
+                key for key in proposed_keys
+                if "must_have" in target_by_key[key]["priorities"]
+            ]
+            other_keys = [key for key in proposed_keys if key not in set(must_keys)]
+            preferred_target_keys = [*must_keys, *other_keys]
+            planner_decision = {
+                "source": "llm_proposal",
+                "status": "ACCEPTED",
+                "orderedTargetKeys": preferred_target_keys,
+            }
+            trace_event(
+                "planner",
+                "p1_target_order_accepted",
+                session_id=session_row.get("id"),
+                candidate_count=len(candidate_targets),
+                must_have_count=len(must_keys),
+                contract_version_id=(blueprint_ref or {}).get("versionId"),
+            )
+        except Exception as exc:  # noqa: BLE001 - constrained proposal has deterministic fallback
+            planner_decision = {
+                "source": "deterministic_fallback",
+                "status": "FALLBACK",
+                "reason": type(exc).__name__,
+                "orderedTargetKeys": candidate_keys,
+            }
+            trace_event(
+                "planner",
+                "p1_target_order_fallback",
+                session_id=session_row.get("id"),
+                reason=type(exc).__name__,
+                candidate_count=len(candidate_targets),
+            )
+
     plan = derive_competency_plan(
         job=job,
         match=match,
@@ -1276,20 +1462,34 @@ async def build_and_persist_session_plan(
         reask=await _requested_reask(db, plan_id=str(plan_id))
         + await _due_reask(db, user_id=str(user["sub"]), job_id=str(session_row["job_id"])),
         taxonomy_groups=taxonomy_groups,
+        preferred_target_keys=preferred_target_keys,
     )
     # Practice tier from the match score (entry_gate): basic is one level
     # easier than the job, challenge one level harder and probes sufficient
     # answers too. Everyone practises; the score decides the level.
     plan["difficulty"] = fit_adjusted_difficulty(plan.get("difficulty") or {}, entry)
     plan["practiceTier"] = entry.tier
+    blueprint_payload = blueprint.to_payload()
+    blueprint_fingerprint = hashlib.sha256(
+        json.dumps(blueprint_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+    plan["plannerDecision"] = planner_decision
+
     plan["blueprint"] = {
         "blueprintId": (blueprint_ref or {}).get("blueprintId"),
         "blueprintName": (blueprint_ref or {}).get("blueprintName"),
+        "policyBlueprintId": (blueprint_ref or {}).get("policyBlueprintId"),
         "versionId": (blueprint_ref or {}).get("versionId"),
         "version": (blueprint_ref or {}).get("version"),
         "name": (blueprint_ref or {}).get("name") or DEFAULT_BLUEPRINT_NAME,
-        "policy": blueprint.to_payload(),
+        "fingerprint": blueprint_fingerprint,
+        "policy": blueprint_payload,
     }
+    # Validate before any write so an incomplete/corrupt SQL contract can never
+    # leave a READY plan behind. This exact snapshot is also checked again when
+    # P2 freezes the question queue.
+    PlannerContractSnapshot.from_plan_blueprint(plan["blueprint"])
     plan.pop("fingerprint", None)
     canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     plan["fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -1309,6 +1509,14 @@ async def build_and_persist_session_plan(
         question_budget=plan.get("questionBudget"),
         targets_count=len(plan.get("targets", [])),
     )
+
+    project_evidences = []
+    if project_evidence_extractor is not None and resume.projects:
+        project_evidences = await project_evidence_extractor(
+            projects_data=resume.projects,
+            job_requirements=job.requirements,
+            cv_skills=resume.skills,
+        )
 
     # Re-acquire the plan row under a write lock immediately before
     # persistence. Matching can take time, so the session snapshot received by
@@ -1347,13 +1555,10 @@ async def build_and_persist_session_plan(
         "plannerPolicyVersion": plan["policyVersion"],
         "blueprintVersionId": plan["blueprint"]["versionId"],
         "blueprintId": plan["blueprint"]["blueprintId"],
+        "blueprintFingerprint": plan["blueprint"]["fingerprint"],
         "questionBudget": plan.get("questionBudget"),
         "nonCompetencyRequirementIds": plan["nonCompetencyRequirementIds"],
-        "projectEvidences": [p.to_dict() for p in extract_project_evidences(
-            projects_data=resume.projects,
-            job_requirements=job.requirements,
-            cv_skills=resume.skills,
-        )] if hasattr(resume, "projects") and resume.projects else [],
+        "projectEvidences": [p.to_dict() for p in project_evidences],
     }
 
     await db.execute(
@@ -1456,6 +1661,7 @@ async def read_session_plan(
         "difficulty": payload.get("difficulty"),
         "sections": payload.get("sections", []),
         "evaluationTargets": payload.get("evaluationTargets", []),
+        "blueprint": payload.get("blueprint"),
         "sourceContext": context,
         "targets": targets,
         "createdAt": plan_row["created_at"].isoformat(),

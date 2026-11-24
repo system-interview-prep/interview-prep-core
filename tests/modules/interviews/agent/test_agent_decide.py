@@ -6,13 +6,14 @@ import re
 
 import pytest
 
-from src.modules.interviews.agent import decide as decide_module
-from src.modules.interviews.agent.decide import decide_by_model, is_violation
-from src.modules.interviews.agent.tools import SEARCH_MEMORY, TOOLS, tools_for
+from src.modules.interviews.agent.interviewer import decide as decide_module
+from src.modules.interviews.agent.interviewer.decide import decide_by_model, is_violation
+from src.modules.interviews.agent.interviewer.tools import SEARCH_MEMORY, TOOLS, tools_for
 from src.modules.interviews.core.conversation.prompt.decide import decide_input, decide_prompt
 from src.modules.interviews.core.conversation.turn_context import ACTIONS
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 from src.modules.interviews.core.conversation.turn_rules import PROHIBITED_LEAK_PATTERNS
+from src.modules.interviews.core.contracts.interview import InterviewStage
 from tests.modules.interviews.agent.conftest import FakeToolCaller, tool_call
 
 MENU = ["confirm_abort", "repeat_question", "answer_candidate_question", "decline_system_probe",
@@ -38,6 +39,32 @@ def test_t1_2_2_the_decide_prompt_leaks_no_scoring_words(is_vi: bool) -> None:
         assert not re.search(pattern, prompt, re.IGNORECASE), (pattern, prompt)
 
 
+@pytest.mark.parametrize("is_vi", [True, False])
+def test_decide_prompt_distinguishes_repeat_from_incomplete_answer(is_vi: bool) -> None:
+    prompt = decide_prompt(is_vi).casefold()
+    assert "repeat_question" in prompt
+    assert "continue_warm_up" in prompt
+    if is_vi:
+        assert "không nghe được" in prompt
+        assert "câu trả lời ngắn" in prompt
+        assert "không lặp câu mở đầu" in prompt
+    else:
+        assert "could not hear the question" in prompt
+        assert "answer is short" in prompt
+        assert "do not repeat the original opening question" in prompt
+
+
+def test_action_tool_descriptions_reinforce_repeat_and_warmup_guidance() -> None:
+    repeat = TOOLS["repeat_question"]["description"].casefold()
+    warmup = TOOLS["continue_warm_up"]["description"].casefold()
+    assert "chỉ dùng khi ứng viên nói rõ" in repeat
+    assert "không dùng cho câu trả lời ngắn" in repeat
+    assert "không lặp câu mở đầu" in warmup
+    schema = TOOLS["continue_warm_up"]["parameters"]
+    assert "follow_up_text" in schema["required"]
+    assert schema["properties"]["follow_up_text"]["maxLength"] == 280
+
+
 def test_t1_2_3_the_decide_input_carries_no_rubric_score_or_other_session(ctx_factory) -> None:
     text = decide_input(
         question="Bạn dùng Redis cache thế nào?",
@@ -53,6 +80,41 @@ def test_t1_2_3_the_decide_input_carries_no_rubric_score_or_other_session(ctx_fa
     assert "4.5" not in text and "rubric" not in text.lower() and "điểm chính" not in text
     assert "lần trước em nói" not in text  # memory contributes its topic, never its evidence
     assert "<candidate_response>" in text and "Menu: " in text and "pace" in text
+
+
+@pytest.mark.asyncio
+async def test_live_warmup_action_returns_agent_authored_line_without_recovery(ctx_factory, monkeypatch) -> None:
+    prior_question = "Bạn giới thiệu ngắn về bản thân và lý do quan tâm vị trí này?"
+    agent_line = "Em nghe bạn yêu thích C#. Điều gì ở vị trí này khiến bạn muốn ứng tuyển?"
+    ctx = ctx_factory(
+        text="Em đam mê lập trình C#.",
+        stage=InterviewStage.WARM_UP,
+        extra={"recent_interviewer_lines": [prior_question]},
+    )
+    caller = FakeToolCaller([
+        tool_call("continue_warm_up", missing_aspect="lý do quan tâm vị trí", follow_up_text=agent_line)
+    ])
+    decision = await decide_by_model(
+        ctx,
+        allowed_actions=["continue_warm_up"],
+        pacing=PACING,
+        generate=caller,
+    )
+
+    assert decision.action == "continue_warm_up"
+    assert decision.args["follow_up_text"] == agent_line
+    model_input = caller.inputs[0]["input_items"]
+    assert prior_question in model_input
+    assert "Em đam mê lập trình C#" in model_input
+
+    engine = InterviewCoreEngine()
+
+    async def unexpected_recovery(**_kwargs):
+        raise AssertionError("warm-up live action must not call a recovery LLM")
+
+    monkeypatch.setattr(engine, "_generate_interviewer_line", unexpected_recovery)
+    output = await engine.act_continue_warm_up(ctx, decision)
+    assert output.message_text == agent_line
 
 
 @pytest.mark.asyncio

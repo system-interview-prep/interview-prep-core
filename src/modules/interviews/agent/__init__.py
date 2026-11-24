@@ -1,12 +1,12 @@
-"""Command runtime of the interview: one durable, idempotent entry point.
+"""Interview agent packages and session workflow compatibility exports.
 
-``InterviewAgent.execute`` runs one of six session commands (prepare, freeze,
-open, respond, finish, score) on a checkpointed LangGraph thread. The decision
-inside a candidate turn is the core engine's (``core.conversation``); the turn
-contract is ``core.contracts.interview`` for every modality. Decision-making by
-the model arrives with INTERVIEW_AGENT_DECISION_PLAN_V1 (Pha 1+).
+``InterviewCommandRunner`` executes durable session commands. It is workflow
+infrastructure, not the Planner Agent or the per-turn Interviewer Agent.
 """
 
-from src.modules.interviews.agent.interview_agent import InterviewAgent
+from src.modules.interviews.agent.session_workflow.command_runner import InterviewCommandRunner
 
-__all__ = ["InterviewAgent"]
+# Backwards-compatible public name used by the module facade and older callers.
+InterviewAgent = InterviewCommandRunner
+
+__all__ = ["InterviewAgent", "InterviewCommandRunner"]

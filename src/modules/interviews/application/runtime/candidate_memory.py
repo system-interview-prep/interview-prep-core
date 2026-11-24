@@ -1,7 +1,7 @@
 """Trí nhớ về ứng viên xuyên phiên (INTERVIEW_AGENT_DECISION_PLAN_V1 §7, LANGMEM plan).
 
 Store: the LangGraph ``AsyncPostgresStore`` the agent opens next to its
-checkpointer (``agent/checkpoints.py``); namespace ``("candidate", user_id)``.
+checkpointer (``agent/shared/checkpoints.py``); namespace ``("candidate", user_id)``.
 An item names a topic — "còn hở phần invalidation" — never the candidate's
 words (§5 of the plan: the interviewer must not recite). The flag
 ``INTERVIEW_CANDIDATE_MEMORY`` is ``0`` (default), ``read`` (seed from the gap
@@ -39,7 +39,7 @@ from src.core.config import get_settings
 from src.core.pipeline_events import ai_call_timer
 from src.core.trace_logging import trace_event
 from src.infrastructure import langfuse
-from src.modules.interviews.agent.checkpoints import get_interview_store
+from src.modules.interviews.agent.shared.checkpoints import get_interview_store
 from src.modules.interviews.application.progress.progress_repository import load_progress
 from src.modules.interviews.core.conversation.prompt.candidate_memory import (
     MAX_ITEMS,

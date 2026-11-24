@@ -17,7 +17,8 @@ import json
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 
 from src.modules.ai.facade import generate_tool_calls
-from src.modules.interviews.agent.tools import SEARCH_MEMORY, tools_for
+from src.modules.interviews.agent.interviewer.tools import SEARCH_MEMORY, tools_for
+from src.modules.interviews.core.guardrails.output import checked_probe
 from src.modules.interviews.core.conversation.prompt.decide import decide_input, decide_prompt
 from src.modules.interviews.core.conversation.turn_context import Decision, TurnContext
 
@@ -98,6 +99,15 @@ async def decide_by_model(
         refs = args.pop("evidence_refs", None)
         if not reason:
             return _violation("parse", "missing rationale", calls)
+        if name == "continue_warm_up":
+            follow_up = checked_probe(
+                str(args.get("follow_up_text") or ""),
+                question=ctx.question_prompt,
+                answer=ctx.candidate_text,
+            )
+            if not follow_up:
+                return _violation("invalid_follow_up", "missing or rejected warm-up utterance", calls)
+            args["follow_up_text"] = follow_up
         decision = Decision(
             name,
             args,

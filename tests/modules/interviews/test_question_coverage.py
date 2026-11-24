@@ -158,7 +158,7 @@ async def test_pregeneration_may_file_three_variants(monkeypatch) -> None:
 async def test_ensure_generates_only_what_selection_cannot_reach(
     monkeypatch, reachable, expected_count
 ) -> None:
-    from src.modules.interviews.planning import question_selector
+    from src.modules.interviews.agent.planner import question_selector
 
     monkeypatch.setattr(
         question_selector, "reachable_candidates", AsyncMock(return_value=[object()] * reachable)

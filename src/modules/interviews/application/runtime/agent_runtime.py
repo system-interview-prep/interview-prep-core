@@ -4,32 +4,40 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.modules.interviews.agent.interview_agent import InterviewAgent
-from src.modules.interviews.agent.ports import InterviewOperations
-from src.modules.interviews.agent.state import InterviewCommand
+from src.modules.interviews.agent.planner import PlannerAgent
+from src.modules.interviews.agent.session_workflow.command_runner import InterviewCommandRunner
+from src.modules.interviews.agent.session_workflow.ports import InterviewOperations
+from src.modules.interviews.agent.session_workflow.state import InterviewCommand
 from src.modules.interviews.application.runtime import candidate_memory
 from src.modules.interviews.application.runtime.chat_runtime import (
     complete_chat_session,
     process_candidate_message,
     start_chat_session,
 )
+from src.modules.interviews.application.background.question_suggestions import enqueue_session_question_suggestions
+from src.modules.interviews.application.runtime.spoken_questions import add_spoken_versions
 from src.modules.interviews.evaluation.evaluation_service import (
     evaluate_closed_session,
     get_session_evaluation,
 )
-from src.modules.interviews.planning.planner import build_and_persist_session_plan
-from src.modules.interviews.planning.question_selector import select_and_freeze_questions
 
 
 def database_operations(*, db: AsyncSession, user: dict, session_row: dict) -> InterviewOperations:
     """Bind trusted ownership-checked context outside checkpointed state."""
     session_id = str(session_row["id"])
+    planner = PlannerAgent()
 
     async def prepare(_: dict) -> dict:
-        return await build_and_persist_session_plan(db=db, user=user, session_row=session_row)
+        return await planner.prepare(db=db, user=user, session_row=session_row)
 
     async def freeze(_: dict) -> dict:
-        return await select_and_freeze_questions(db=db, session_row=session_row)
+        result = await planner.freeze(db=db, session_row=session_row)
+        if result.get("status") == "LOCKED":
+            # Interviewer-owned wording capability runs after the deterministic
+            # queue has been selected and before the session is opened.
+            await add_spoken_versions(db=db, session_id=session_id, locale=session_row.get("locale") or "vi-VN")
+            result["turns"] = await planner.read_frozen_turns(db=db, session_id=session_id)
+        return result
 
     async def open_session(_: dict) -> dict:
         result = await start_chat_session(db=db, session_row=session_row)
@@ -58,14 +66,19 @@ def database_operations(*, db: AsyncSession, user: dict, session_row: dict) -> I
     async def score(_: dict) -> dict:
         existing = await get_session_evaluation(db=db, session_id=session_id)
         if existing:
-            return existing
-        await evaluate_closed_session(db=db, session_id=session_id)
-        result = await get_session_evaluation(db=db, session_id=session_id)
-        if result is None:
-            raise RuntimeError("Evaluation completed without a report")
-        if candidate_memory.enabled() == "readwrite":
-            # After grading, from the grader's conclusions; never undoes a finished grade.
-            await candidate_memory.extract_after_session(db, session_id)
+            result = existing
+        else:
+            await evaluate_closed_session(db=db, session_id=session_id)
+            result = await get_session_evaluation(db=db, session_id=session_id)
+            if result is None:
+                raise RuntimeError("Evaluation completed without a report")
+        # Question Bank proposals are generated only after the session is closed
+        # and scored; the worker re-checks both conditions and is idempotent.
+        enqueue_session_question_suggestions(session_id)
+        if not existing:
+            if candidate_memory.enabled() == "readwrite":
+                # After grading, from the grader's conclusions; never undoes a finished grade.
+                await candidate_memory.extract_after_session(db, session_id)
         return result
 
     return {
@@ -86,8 +99,8 @@ async def run_interview_command(
     payload: dict[str, Any] | None = None,
     event_id: str | None = None,
 ) -> dict[str, Any]:
-    """Application entry point; InterviewAgent owns graph execution."""
-    return await InterviewAgent().execute(
+    """Application entry point; the session workflow runner owns graph execution."""
+    return await InterviewCommandRunner().execute(
         session_id=session_id, command=command, operations=operations,
         payload=payload, event_id=event_id,
     )

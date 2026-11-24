@@ -16,8 +16,8 @@ from src.modules.interviews.evaluation.evaluation_types import (
     DecisionRecommendation,
     SessionEvaluationResult,
 )
-from src.modules.interviews.planning import planner
-from src.modules.interviews.planning.planner import PlannerPolicyConfigurationError
+from src.modules.interviews.agent.planner import planner
+from src.modules.interviews.agent.planner.planner import PlannerPolicyConfigurationError
 
 # `api/__init__.py` re-exports the APIRouter as `router`, which shadows the
 # submodule attribute, so reach the module through sys.modules instead.

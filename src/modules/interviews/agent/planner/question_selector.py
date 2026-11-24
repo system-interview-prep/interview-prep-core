@@ -1,14 +1,12 @@
-"""Deterministic P2 question selector for the structured interview runtime.
+"""Contract-bounded P2 Question Bank selection for the interview runtime.
 
 P2 consumes a READY P1 plan and freezes qualifying Question Bank versions into
-interview_turns. A target without enough approved questions walks a fallback
-ladder: an approved question on a broader skill, then a role question whose own
-skill the JD also requires, then a generated draft (filed IN_REVIEW by an
-unlocked preflight, see ``question_generation``). A target that is still short
-is interviewed with what was found, or dropped, and reported in
-``questionSelection.uncoveredTargets``. Selection fails closed with
-``question_bank_insufficient`` only when no target can be covered at all.
-Every turn snapshot records its ``questionSource``.
+interview_turns. A target without enough approved questions walks the existing
+bank fallback ladder (broader skill, role, then an already-filed generated
+draft). P2 never generates or files new questions. Every turn snapshot records
+its ``questionSource`` and uncovered targets remain visible in the result. The
+Planner Agent can select only from code-filtered candidates/feasible subsets;
+code validates and freezes, with deterministic fallback on invalid output.
 """
 
 from __future__ import annotations
@@ -16,23 +14,22 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 from uuid import uuid4
 
+from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
 from src.core.trace_logging import trace_event
-from src.modules.ai.facade import generate_text
 from src.modules.interviews.core.session_policy.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
-from src.modules.interviews.core.session_policy.blueprint import InterviewBlueprint, blueprint_from_payload
+from src.modules.interviews.core.session_policy.blueprint import InterviewBlueprint
 from src.modules.interviews.core.dialogue.opening import warmup_question
-from src.modules.interviews.planning.spoken_questions import add_spoken_versions
-from src.modules.interviews.planning.project_evidence import (
-    extract_project_evidences,
+from src.modules.interviews.agent.planner.project_evidence import (
+    project_evidence_from_dict,
     select_best_project,
 )
 from src.modules.question_bank.facade import GENERATED_QUESTION_AUTHOR
@@ -587,34 +584,6 @@ async def _fallback_candidates(
     return list(unique.values())
 
 
-async def _plan_targets_for_preflight(db: AsyncSession, plan_id: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
-    raw_targets = payload.get("targets") if isinstance(payload.get("targets"), list) else None
-    if not raw_targets:
-        result = await db.execute(
-            text(
-                "SELECT taxonomy_version, concept_id, label, target_question_count, rationale "
-                "FROM session_competency_targets WHERE plan_id = :plan_id"
-            ),
-            {"plan_id": plan_id},
-        )
-        raw_targets = [dict(row) for row in result.mappings().all()]
-    targets = []
-    for item in raw_targets:
-        concept_id = item.get("conceptId") or item.get("concept_id")
-        if not concept_id:
-            continue
-        targets.append(
-            {
-                "taxonomyVersion": item.get("taxonomyVersion") or item.get("taxonomy_version") or "internal-2026.1",
-                "conceptId": concept_id,
-                "label": item.get("label") or concept_id,
-                "needed": max(1, int(item.get("targetQuestionCount") or item.get("target_question_count") or 1)),
-                "rationale": item.get("rationale") or {},
-            }
-        )
-    return targets
-
-
 async def reachable_candidates(
     db: AsyncSession,
     *,
@@ -647,36 +616,6 @@ async def reachable_candidates(
         job_role=job_role,
     )
     return found + [item for item in extra if item.question_version_id not in seen]
-
-
-async def _generate_missing_questions(
-    db: AsyncSession, *, session_row: dict[str, Any], plan_id: str, payload: dict[str, Any]
-) -> None:
-    """Preflight: file generated drafts for targets nothing else can cover.
-
-    Runs before the plan row is locked: an LLM call can take tens of seconds
-    and must not hold the lock. The selection that follows reads the drafts
-    through the generated step of the fallback ladder. Skills of published
-    JDs are usually covered already by the background pre-generation
-    (question_coverage); this is the fallback for the rest.
-    """
-    from src.modules.interviews.planning.question_generation import ensure_generated_questions
-
-    difficulty = (payload.get("difficulty") or {}).get("level", "unspecified")
-    locale = session_row.get("locale") or "vi-VN"
-    job_concepts, job_role = await _job_taxonomy(db, session_row.get("job_id"))
-    for target in await _plan_targets_for_preflight(db, plan_id, payload):
-        if (target["rationale"] or {}).get("source") == "career_classification_fallback":
-            continue
-        await ensure_generated_questions(
-            db,
-            target=target,
-            job_concepts=job_concepts,
-            job_role=job_role,
-            difficulty=difficulty,
-            locale=locale,
-            desired=target["needed"],
-        )
 
 
 def _snapshot(
@@ -1124,24 +1063,20 @@ async def select_and_freeze_questions(
     *,
     db: AsyncSession,
     session_row: dict[str, Any],
+    project_question_generator: Callable[[Mapping[str, Any]], Awaitable[str]] | None = None,
+    question_selection_proposer: Callable[[Mapping[str, Any]], Awaitable[list[dict[str, Any]]]] | None = None,
 ) -> dict[str, Any]:
-    """Freeze deterministic Question Bank selections and lock the P1 plan."""
+    """Select and freeze Question Bank questions, then lock the P1 plan.
+
+    The Planner Agent may propose selections only from code-filtered Question
+    Bank candidates or feasible subsets. Code validates and deterministically
+    falls back before any turns are written. Missing bank content is never
+    generated during P2.
+    """
 
     plan_id = session_row.get("plan_id")
     if not plan_id:
         raise ValueError("Interview session has no plan container")
-
-    # Unlocked read: generating drafts for uncovered skills calls the LLM and
-    # must finish before the plan row is locked below.
-    preflight = await db.execute(
-        text("SELECT status, plan_payload FROM interview_session_plans WHERE id = :plan_id AND session_id = :session_id"),
-        {"plan_id": plan_id, "session_id": session_row["id"]},
-    )
-    preflight_plan = preflight.mappings().one_or_none()
-    if preflight_plan and preflight_plan["status"] == "READY":
-        await _generate_missing_questions(
-            db, session_row=session_row, plan_id=plan_id, payload=preflight_plan["plan_payload"] or {}
-        )
 
     plan_result = await db.execute(
         text(
@@ -1195,6 +1130,35 @@ async def select_and_freeze_questions(
     unreviewed_cap = unreviewed_budget(payload, demo=is_demo_duration(session_row.get("duration_minutes")))
     unreviewed_left = unreviewed_cap
     plan_tier = payload.get("practiceTier") if isinstance(payload, dict) else None
+
+    # Validate the frozen contract before asking the Planner Agent to select
+    # Question Bank items; the proposal must use the exact session snapshot.
+    blueprint_record = payload.get("blueprint") if isinstance(payload, dict) else None
+    if not isinstance(blueprint_record, dict) or not isinstance(blueprint_record.get("policy"), dict):
+        raise RuntimeError("READY interview plan has no frozen Admin contract snapshot")
+    try:
+        blueprint = InterviewBlueprint.model_validate(blueprint_record["policy"])
+    except ValidationError as exc:
+        raise RuntimeError("Frozen Admin contract snapshot is invalid") from exc
+    contract_fingerprint = hashlib.sha256(
+        json.dumps(blueprint.to_payload(), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    stored_contract_fingerprint = blueprint_record.get("fingerprint")
+    if stored_contract_fingerprint and stored_contract_fingerprint != contract_fingerprint:
+        raise RuntimeError("Frozen Admin contract fingerprint does not match its policy")
+    blueprint_record["fingerprint"] = contract_fingerprint
+    validate_enabled = blueprint.validate_cv.enabled
+    planner_selection: dict[str, Any] = {
+        "source": "deterministic_fallback",
+        "status": "NOT_CONFIGURED" if question_selection_proposer is None else "FALLBACK",
+        "reason": "proposal_not_configured" if question_selection_proposer is None else "not_run",
+    }
+    if is_demo_duration(session_row.get("duration_minutes")):
+        planner_selection = {
+            "source": "deterministic_fallback",
+            "status": "NOT_APPLICABLE",
+            "reason": "demo_question_script_is_deterministic",
+        }
 
     if is_dynamic:
         # -------------------------------------------------------------------
@@ -1350,11 +1314,131 @@ async def select_and_freeze_questions(
         targets = [t for t in targets if f"{t['taxonomyVersion']}:{t['conceptId']}" in target_domains]
 
         # Layer B: Global Allocation Search (Policy 2 — Global Constraint Satisfaction / Backtracking)
-        global_assignment = _solve_global_question_assignment(
-            targets=targets,
-            target_domains=target_domains,
-            session_id=str(session_row.get("id") or ""),
-        )
+        # Offer only code-enumerated feasible subsets to the Planner Agent.
+        # Code verifies the complete assignment and falls back to its exact
+        # solver if the proposal is malformed or conflicts across targets.
+        global_assignment = None
+        if (
+            question_selection_proposer is not None
+            and targets
+            and not is_demo_duration(session_row.get("duration_minutes"))
+        ):
+            option_map: dict[str, dict[str, list[_Candidate]]] = {}
+            target_options: list[dict[str, Any]] = []
+            for target_index, target in enumerate(targets):
+                t_key = f"{target['taxonomyVersion']}:{target['conceptId']}"
+                options_for_target: dict[str, list[_Candidate]] = {}
+                option_rows = []
+                for option_index, (_objective, subset) in enumerate(target_domains[t_key][:6]):
+                    option_id = f"option-{target_index + 1}-{option_index + 1}"
+                    options_for_target[option_id] = subset
+                    option_rows.append(
+                        {
+                            "optionId": option_id,
+                            "questions": [
+                                {
+                                    "questionVersionId": item.question_version_id,
+                                    "questionType": item.question_type,
+                                    "difficulty": item.difficulty_band,
+                                    "questionText": (item.question_text or "")[:500],
+                                    "objective": (item.objective or "")[:240],
+                                    "estimatedSeconds": _estimated_cost(item),
+                                    "source": item.source,
+                                }
+                                for item in subset
+                            ],
+                            "estimatedTotalSeconds": sum(_estimated_cost(item) for item in subset),
+                        }
+                    )
+                option_map[t_key] = options_for_target
+                target_options.append(
+                    {
+                        "targetKey": t_key,
+                        "label": target["label"],
+                        "importance": target.get("importance"),
+                        "rationale": target.get("rationale") or {},
+                        "targetArchetype": target["targetArchetype"],
+                        "timeEnvelopeSeconds": target["timeEnvelopeSeconds"],
+                        "floorSeconds": target["floorSeconds"],
+                        "options": option_rows,
+                    }
+                )
+
+            try:
+                proposal_context = {
+                    "sessionId": str(session_row.get("id") or ""),
+                    "locale": locale,
+                    "contract": {
+                        "blueprintId": blueprint_record.get("blueprintId"),
+                        "versionId": blueprint_record.get("versionId"),
+                        "fingerprint": contract_fingerprint,
+                        "objective": blueprint.contract.objective,
+                        "coverageTarget": blueprint.contract.coverage_target,
+                        "technical": blueprint.technical.model_dump(mode="json"),
+                    },
+                    "difficulty": difficulty,
+                    "targets": target_options,
+                }
+                proposed = await question_selection_proposer(proposal_context)
+                proposed_by_target: dict[str, str] = {}
+                for item in proposed:
+                    target_key = item.get("targetKey")
+                    option_id = item.get("optionId")
+                    if (
+                        not isinstance(target_key, str)
+                        or not isinstance(option_id, str)
+                        or target_key in proposed_by_target
+                        or set(item) != {"targetKey", "optionId"}
+                    ):
+                        raise ValueError("Planner must return exactly one known option per target")
+                    proposed_by_target[target_key] = option_id
+                if set(proposed_by_target) != set(option_map):
+                    raise ValueError("Planner must select an option for every target")
+
+                assignment: dict[str, list[_Candidate]] = {}
+                used_ids: set[str] = set()
+                for target_key, option_id in proposed_by_target.items():
+                    subset = option_map[target_key].get(option_id)
+                    if subset is None:
+                        raise ValueError("Planner selected an option outside the feasible candidate set")
+                    ids = {item.question_version_id for item in subset}
+                    if len(ids) != len(subset) or not ids.isdisjoint(used_ids):
+                        raise ValueError("Planner selection contains duplicate Question Bank versions")
+                    used_ids.update(ids)
+                    assignment[target_key] = subset
+                global_assignment = assignment
+                planner_selection = {
+                    "source": "llm_proposal",
+                    "status": "ACCEPTED",
+                    "selectedOptions": proposed_by_target,
+                }
+                trace_event(
+                    "planner",
+                    "p2_question_selection_accepted",
+                    session_id=session_row.get("id"),
+                    target_count=len(targets),
+                    question_count=len(used_ids),
+                    contract_version_id=blueprint_record.get("versionId"),
+                )
+            except Exception as exc:  # noqa: BLE001 - invalid proposals use the exact solver
+                planner_selection = {
+                    "source": "deterministic_fallback",
+                    "status": "FALLBACK",
+                    "reason": type(exc).__name__,
+                }
+                trace_event(
+                    "planner",
+                    "p2_question_selection_fallback",
+                    session_id=session_row.get("id"),
+                    reason=type(exc).__name__,
+                    target_count=len(targets),
+                )
+        if global_assignment is None:
+            global_assignment = _solve_global_question_assignment(
+                targets=targets,
+                target_domains=target_domains,
+                session_id=str(session_row.get("id") or ""),
+            )
 
         if global_assignment is None:
             raise QuestionUnavailableError(
@@ -1406,6 +1490,10 @@ async def select_and_freeze_questions(
 
         used_versions: set[str] = set()
         frozen: list[tuple[_Candidate | None, dict[str, Any], int, dict[str, Any] | None]] = []
+        selected_by_target: dict[str, list[_Candidate]] = {}
+        target_by_key: dict[str, dict[str, Any]] = {}
+        pool_by_target: dict[str, list[_Candidate]] = {}
+        required_by_target: dict[str, list[str]] = {}
 
         for target in targets:
             candidates = await _load_candidates(
@@ -1441,6 +1529,7 @@ async def select_and_freeze_questions(
             # a planner/Question-Bank concern, not something P2 may re-decide.
             needed = max(1, int(target["targetQuestionCount"]))
             selected = available[:needed]
+            agent_pool = list(available[:_SUBSET_CANDIDATE_POOL])
             blocked_drafts = 0
 
             if len(selected) < needed:
@@ -1461,6 +1550,7 @@ async def select_and_freeze_questions(
                 fresh = [c for c in extra if c.question_version_id not in taken]
                 usable, blocked_drafts = limit_unreviewed(fresh, unreviewed_left)
                 picked = usable[:room]
+                agent_pool.extend(picked)
                 # A draft dropped by the cap only matters if it would have been asked.
                 blocked_drafts = min(blocked_drafts, max(0, room - len(picked)))
                 unreviewed_left -= sum(c.source == GENERATED_SOURCE for c in picked)
@@ -1482,9 +1572,133 @@ async def select_and_freeze_questions(
                     }
                 )
 
+            target_key = f"{target['taxonomyVersion']}:{target['conceptId']}"
+            selected_by_target[target_key] = list(selected)
+            target_by_key[target_key] = target
+            pool_by_target[target_key] = list(
+                {candidate.question_version_id: candidate for candidate in [*agent_pool, *selected]}.values()
+            )
+            required_by_target[target_key] = (
+                [repeat_id] if repeat_id and any(item.question_version_id == repeat_id for item in selected) else []
+            )
+            for candidate in selected:
+                used_versions.add(candidate.question_version_id)
+
+        if (
+            question_selection_proposer is not None
+            and selected_by_target
+            and not is_demo_duration(session_row.get("duration_minutes"))
+        ):
+            target_options = []
+            for target_key, target in target_by_key.items():
+                target_options.append(
+                    {
+                        "targetKey": target_key,
+                        "label": target["label"],
+                        "importance": target.get("importance"),
+                        "rationale": target.get("rationale") or {},
+                        "requestedCount": len(selected_by_target[target_key]),
+                        "requiredQuestionVersionIds": required_by_target[target_key],
+                        "candidates": [
+                            {
+                                "questionVersionId": candidate.question_version_id,
+                                "questionType": candidate.question_type,
+                                "difficulty": candidate.difficulty_band,
+                                "questionText": (candidate.question_text or "")[:500],
+                                "objective": (candidate.objective or "")[:240],
+                                "estimatedSeconds": _estimated_cost(candidate),
+                                "source": candidate.source,
+                            }
+                            for candidate in pool_by_target[target_key]
+                        ],
+                    }
+                )
+            try:
+                proposal_context = {
+                    "sessionId": str(session_row.get("id") or ""),
+                    "locale": locale,
+                    "contract": {
+                        "blueprintId": blueprint_record.get("blueprintId"),
+                        "versionId": blueprint_record.get("versionId"),
+                        "fingerprint": contract_fingerprint,
+                        "objective": blueprint.contract.objective,
+                        "coverageTarget": blueprint.contract.coverage_target,
+                        "technical": blueprint.technical.model_dump(mode="json"),
+                    },
+                    "difficulty": difficulty,
+                    "targets": target_options,
+                }
+                proposed = await question_selection_proposer(proposal_context)
+                proposed_by_target: dict[str, list[str]] = {}
+                for item in proposed:
+                    target_key = item.get("targetKey")
+                    question_ids = item.get("questionVersionIds")
+                    if (
+                        not isinstance(target_key, str)
+                        or not isinstance(question_ids, list)
+                        or any(not isinstance(question_id, str) for question_id in question_ids)
+                        or target_key in proposed_by_target
+                        or set(item) != {"targetKey", "questionVersionIds"}
+                    ):
+                        raise ValueError("Planner must return question IDs for every target")
+                    proposed_by_target[target_key] = question_ids
+                if set(proposed_by_target) != set(selected_by_target):
+                    raise ValueError("Planner must return a selection for every planned target")
+
+                candidate_maps = {
+                    target_key: {
+                        candidate.question_version_id: candidate
+                        for candidate in pool_by_target[target_key]
+                    }
+                    for target_key in selected_by_target
+                }
+                agent_selected: dict[str, list[_Candidate]] = {}
+                globally_used: set[str] = set()
+                for target_key, question_ids in proposed_by_target.items():
+                    expected_count = len(selected_by_target[target_key])
+                    if len(question_ids) != expected_count or len(set(question_ids)) != len(question_ids):
+                        raise ValueError("Planner selection must preserve the code-planned count without duplicates")
+                    if not set(required_by_target[target_key]).issubset(question_ids):
+                        raise ValueError("Planner selection removed a required due-reask question")
+                    if not set(question_ids).issubset(candidate_maps[target_key]):
+                        raise ValueError("Planner selected a question outside its eligible candidate pool")
+                    if not globally_used.isdisjoint(question_ids):
+                        raise ValueError("Planner selected a Question Bank version for multiple targets")
+                    globally_used.update(question_ids)
+                    agent_selected[target_key] = [candidate_maps[target_key][qid] for qid in question_ids]
+
+                selected_by_target = agent_selected
+                planner_selection = {
+                    "source": "llm_proposal",
+                    "status": "ACCEPTED",
+                    "selectedQuestionVersionIds": proposed_by_target,
+                }
+                trace_event(
+                    "planner",
+                    "p2_question_selection_accepted",
+                    session_id=session_row.get("id"),
+                    target_count=len(selected_by_target),
+                    question_count=len(globally_used),
+                    contract_version_id=blueprint_record.get("versionId"),
+                )
+            except Exception as exc:  # noqa: BLE001 - invalid proposals retain rule selection
+                planner_selection = {
+                    "source": "deterministic_fallback",
+                    "status": "FALLBACK",
+                    "reason": type(exc).__name__,
+                }
+                trace_event(
+                    "planner",
+                    "p2_question_selection_fallback",
+                    session_id=session_row.get("id"),
+                    reason=type(exc).__name__,
+                    target_count=len(selected_by_target),
+                )
+
+        for target_key, selected in selected_by_target.items():
+            target = target_by_key[target_key]
             for candidate in selected:
                 frozen.append((candidate, target, len(frozen), None))
-                used_versions.add(candidate.question_version_id)
 
         if not frozen:
             # No target could be served at all: 0 turns written, plan not locked.
@@ -1515,12 +1729,11 @@ async def select_and_freeze_questions(
     selected_project = None
     all_project_evidences = []
 
-    # Retrieve evaluation targets and match statuses from session plan if present
-    eval_targets = []
-    req_match_statuses = {}
+    # Reuse the quote-validated project evidence saved by P1.
+    persisted_project_evidences = []
     if session_row.get("id"):
         plan_row = await db.execute(
-            text("SELECT plan_payload FROM interview_session_plans WHERE session_id = :sid"),
+            text("SELECT plan_payload, source_context FROM interview_session_plans WHERE session_id = :sid"),
             {"sid": session_row["id"]},
         )
         p_row = plan_row.mappings().first()
@@ -1531,11 +1744,24 @@ async def select_and_freeze_questions(
                     payload = json.loads(payload)
                 except Exception:
                     payload = {}
-            if isinstance(payload, dict):
-                eval_targets = payload.get("evaluationTargets") or []
-                for et in eval_targets:
-                    if isinstance(et, dict) and et.get("requirementId"):
-                        req_match_statuses[et["requirementId"]] = et.get("status", "unknown")
+            source_context = p_row.get("source_context") or {}
+            if isinstance(source_context, str):
+                try:
+                    source_context = json.loads(source_context)
+                except Exception:
+                    source_context = {}
+            if isinstance(source_context, dict):
+                persisted_project_evidences = source_context.get("projectEvidences") or []
+
+    if isinstance(persisted_project_evidences, list):
+        all_project_evidences = [
+            project_evidence_from_dict(item)
+            for item in persisted_project_evidences
+            if isinstance(item, dict) and item.get("projectId") and item.get("name")
+        ]
+        selected_project = select_best_project(all_project_evidences)
+        if selected_project:
+            project_name = selected_project.name
 
     if session_row.get("resume_id"):
         cv_res = await db.scalar(
@@ -1548,20 +1774,6 @@ async def select_and_freeze_questions(
             except Exception:
                 cv_res = {}
         if cv_res and isinstance(cv_res, dict):
-            # 1. Trích xuất và xếp hạng dự án theo JD relevance
-            projects = cv_res.get("projects") or []
-            cv_skills = cv_res.get("skills") or []
-            all_project_evidences = extract_project_evidences(
-                projects_data=projects,
-                job_requirements=eval_targets,
-                cv_skills=cv_skills,
-                requirement_match_statuses=req_match_statuses,
-            )
-            selected_project = select_best_project(all_project_evidences)
-            if selected_project:
-                project_name = selected_project.name
-
-            # 2. Nếu không có mục projects riêng, trích xuất từ kinh nghiệm làm việc (employment)
             if not project_name:
                 employment = cv_res.get("employment") or []
                 if employment and isinstance(employment, list):
@@ -1576,7 +1788,6 @@ async def select_and_freeze_questions(
                                 project_name = role
                                 break
 
-            # 3. Trích xuất kỹ năng / công nghệ cốt lõi
             skills = cv_res.get("skills") or []
             if skills and isinstance(skills, list):
                 for s in skills:
@@ -1594,12 +1805,14 @@ async def select_and_freeze_questions(
     # The question only: the greeting, agenda and how-to are the opening's
     # (core/dialogue/opening.py), spoken once before it.
     warmup_text = warmup_question(is_vi=is_vi, is_demo=is_demo_duration(session_row.get("duration_minutes")))
-    # The stage policy the planner froze (core.session_policy.blueprint); older plans have none.
-    blueprint_record = payload.get("blueprint") if isinstance(payload, dict) else None
-    blueprint = blueprint_from_payload((blueprint_record or {}).get("policy"))
-    validate_enabled = blueprint.validate_cv.enabled
-
-    project_context: dict[str, Any] = {"job_title": job_title}
+    # The already-validated contract snapshot controls the remaining presets.
+    project_context: dict[str, Any] = {
+        "job_title": job_title,
+        "interview_contract": {
+            "objective": blueprint.contract.objective,
+            "coverage_target": blueprint.contract.coverage_target,
+        },
+    }
     if selected_project:
         project_context.update(
             {
@@ -1613,7 +1826,7 @@ async def select_and_freeze_questions(
             }
         )
         trace_event(
-            "interviewer",
+            "planner",
             "project_evidence_selected",
             session_id=session_row.get("id"),
             selected_project=selected_project.name,
@@ -1635,43 +1848,33 @@ async def select_and_freeze_questions(
         project_context["project_evidence"] = "No structured project or technology was found in the CV."
 
     is_vi = (locale or "vi").lower().startswith("vi")
-    question_language = "Vietnamese" if is_vi else "English"
     validate_text = ""
     if validate_enabled:
-        validate_text = str(
-            await generate_text(
-                instructions=(
-                    f"Write exactly one natural spoken interview question in {question_language} about the candidate's project evidence. "
-                    "Use only the supplied CV facts. Choose exactly ONE focus: personal contribution, a technical decision, "
-                    "or a concrete problem solved. Never combine two focuses, never use 'and why/how', and do not ask a second question. "
-                    "If the CV has no project details, ask one open project question without assuming facts. "
-                    "Do not add an introduction, evaluation, answer hint, or rubric. Output only the question."
-                ),
-                input_text=json.dumps(project_context, ensure_ascii=False),
-                max_output_tokens=120,
-            )
-        ).strip()
-        if (
-            not validate_text
-            or len(validate_text.split()) > 40
-            or not _is_single_focus_question(validate_text)
-        ):
-            # Fail closed to a short, single-focus prompt instead of freezing a
-            # compound question into every session using this plan.
-            project_label = str(project_context.get("project_name") or "dự án trong CV").strip()
+        if project_question_generator is not None:
+            validate_text = str(await project_question_generator(project_context)).strip()
+        else:
+            # Domain-only callers use a deterministic, single-focus fallback.
+            project_label = str(project_context.get("project_name") or "d\u1ef1 \u00e1n trong CV").strip()
             validate_text = (
-                f"Trong dự án {project_label}, bạn trực tiếp phụ trách phần nào?"
+                f"Trong d\u1ef1 \u00e1n {project_label}, b\u1ea1n tr\u1ef1c ti\u1ebfp ph\u1ee5 tr\u00e1ch ph\u1ea7n n\u00e0o?"
+                if is_vi
+                else f"What part of {project_label} did you personally own?"
+            )
+        if not validate_text or len(validate_text.split()) > 40 or not _is_single_focus_question(validate_text):
+            project_label = str(project_context.get("project_name") or "d\u1ef1 \u00e1n trong CV").strip()
+            validate_text = (
+                f"Trong d\u1ef1 \u00e1n {project_label}, b\u1ea1n tr\u1ef1c ti\u1ebfp ph\u1ee5 tr\u00e1ch ph\u1ea7n n\u00e0o?"
                 if is_vi
                 else f"What part of {project_label} did you personally own?"
             )
             trace_event(
-                "interviewer",
+                "planner",
                 "project_question_replaced_multi_focus",
                 session_id=session_row.get("id"),
                 project_name=project_label,
             )
         trace_event(
-            "interviewer",
+            "planner",
             "project_question_generated",
             session_id=session_row.get("id"),
             project_name=project_context.get("project_name"),
@@ -1711,6 +1914,7 @@ async def select_and_freeze_questions(
             "blueprintName": (blueprint_record or {}).get("blueprintName"),
             "versionId": (blueprint_record or {}).get("versionId"),
             "version": (blueprint_record or {}).get("version"),
+            "fingerprint": contract_fingerprint,
             "name": (blueprint_record or {}).get("name"),
             "policy": blueprint.to_payload(),
         },
@@ -1923,16 +2127,13 @@ async def select_and_freeze_questions(
                         "unreviewedBudget": unreviewed_cap,
                         "practiceTier": plan_tier if isinstance(plan_tier, str) else None,
                         "uncoveredTargets": uncovered_targets,
+                        "plannerDecision": planner_selection,
                     }
                 }
             ),
         },
     )
     await db.commit()
-    # Spoken versions of the frozen questions, written after the lock is
-    # committed (no row lock held during the model call). Best effort: on any
-    # failure the session simply asks the written questions.
-    await add_spoken_versions(db=db, session_id=session_row["id"], locale=locale)
     return {
         "sessionId": session_row["id"],
         "planId": plan_id,
@@ -1943,6 +2144,7 @@ async def select_and_freeze_questions(
         "fallbackQuestionCount": sum(candidate is None for candidate, _, _, _ in frozen),
         "generatedQuestionCount": source_counts.get("generated_unreviewed", 0),
         "uncoveredTargets": uncovered_targets,
+        "plannerDecision": planner_selection,
         "fingerprint": fingerprint,
         "turns": await read_frozen_turns(db=db, session_id=session_row["id"]),
     }

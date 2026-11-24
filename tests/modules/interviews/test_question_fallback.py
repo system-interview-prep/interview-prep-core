@@ -11,7 +11,8 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.modules.interviews.planning import question_generation, question_selector
+from src.modules.interviews.planning import question_generation
+from src.modules.interviews.agent.planner import question_selector
 from tests.modules.interviews.test_question_selector import candidate
 
 

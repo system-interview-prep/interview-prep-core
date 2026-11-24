@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from src.modules.interviews.agent import InterviewAgent
-from src.modules.interviews.agent import graph as agent_graph
+from src.modules.interviews.agent import InterviewAgent, InterviewCommandRunner
+from src.modules.interviews.agent.session_workflow import graph as agent_graph
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput
 
 SRC = Path(__file__).resolve().parents[3] / "src" / "modules" / "interviews"
@@ -23,6 +23,7 @@ SRC = Path(__file__).resolve().parents[3] / "src" / "modules" / "interviews"
 def test_the_agent_has_no_second_turn_contract() -> None:
     """``InterviewAgentRequest``/``handle_turn`` were a parallel, uncalled path (T2.0.3)."""
     assert not hasattr(InterviewAgent, "handle_turn")
+    assert InterviewAgent is InterviewCommandRunner  # legacy export; not the per-turn Interviewer Agent
     assert not (SRC / "agent" / "contracts.py").exists()
     for modality in ("chat", "voice", "video_calls"):
         assert not (SRC / "adapters" / modality / "input").exists()
@@ -50,13 +51,13 @@ async def test_the_compiled_graph_is_built_once_per_checkpointer(monkeypatch) ->
 
     monkeypatch.setattr(agent_graph, "build_interview_graph", counting)
     saver = InMemorySaver()
-    monkeypatch.setattr(importlib.import_module("src.modules.interviews.agent.checkpoints"), "_checkpointer", saver)
+    monkeypatch.setattr(importlib.import_module("src.modules.interviews.agent.shared.checkpoints"), "_checkpointer", saver)
 
     async def operation(payload):
         return {"echo": payload}
 
     operations = {name: operation for name in agent_graph.COMMANDS}
-    agent = InterviewAgent()
+    agent = InterviewCommandRunner()
     for i in range(100):
         result = await agent.execute(
             session_id="s", command="respond", operations=operations,
@@ -72,14 +73,14 @@ async def test_the_compiled_graph_is_built_once_per_checkpointer(monkeypatch) ->
 async def test_operations_are_scoped_to_the_call_not_the_graph(monkeypatch) -> None:
     """Two requests with different closures share the compiled graph but never each other's operations."""
     agent_graph.reset_compiled_graphs()
-    monkeypatch.setattr(importlib.import_module("src.modules.interviews.agent.checkpoints"), "_checkpointer", None)
+    monkeypatch.setattr(importlib.import_module("src.modules.interviews.agent.shared.checkpoints"), "_checkpointer", None)
 
     def ops_for(tag):
         async def operation(payload):
             return {"tag": tag, **payload}
         return {name: operation for name in agent_graph.COMMANDS}
 
-    agent = InterviewAgent()
+    agent = InterviewCommandRunner()
     a = await agent.execute(session_id="s", command="open", operations=ops_for("a"))
     b = await agent.execute(session_id="s", command="open", operations=ops_for("b"))
     assert (a["tag"], b["tag"]) == ("a", "b")

@@ -2,9 +2,9 @@
 
     api, adapters ─► application ─► agent ─► core ─► ai.facade
 
-``agent/`` decides and must not touch the database, the application layer or any
-adapter; ``core/`` executes and must not know LangGraph or the agent; ``prompt/``
-only builds strings.
+``agent/interviewer/`` decides without database access. The bounded Planner P1/P2
+tools own their preparation persistence; ``core/`` executes and must not know
+LangGraph or the agent; ``prompt/`` only builds strings.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[4] / "src" / "modules" / "interviews"
 
 RULES = {
     "agent": (
-        "sqlalchemy", "psycopg",  # checkpoints.py is the one exception, below
+        "sqlalchemy", "psycopg",  # shared/checkpoints.py is the one exception, below
         "src.modules.interviews.application",
         "src.modules.interviews.adapters",
         "src.modules.interviews.evaluation",
@@ -37,8 +37,16 @@ RULES = {
         "src.modules.ai",
     ),
 }
-# The checkpointer/store owner talks to Postgres by design.
-EXEMPT = {"agent/checkpoints.py": ("psycopg",)}
+# Checkpoint storage and the Planner's bounded P1/P2 tools talk to persistence
+# by design. Other agent modules retain the no-database boundary.
+EXEMPT = {
+    "agent/shared/checkpoints.py": ("psycopg",),
+    "agent/planner/planner.py": (
+        "sqlalchemy",
+        "src.modules.interviews.application",
+    ),
+    "agent/planner/question_selector.py": ("sqlalchemy",),
+}
 
 
 def _imports(path: Path) -> list[str]:

@@ -13,14 +13,14 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from src.modules.interviews.agent.ports import InterviewOperations
-from src.modules.interviews.agent.state import InterviewCommand, InterviewGraphState
+from src.modules.interviews.agent.session_workflow.ports import InterviewOperations
+from src.modules.interviews.agent.session_workflow.state import InterviewCommand, InterviewGraphState
 
 COMMANDS: tuple[InterviewCommand, ...] = (
     "prepare", "freeze", "open", "respond", "finish", "score"
 )
 
-# Operations of the request being executed. Set by ``InterviewAgent.execute``
+# Operations of the request being executed. Set by ``InterviewCommandRunner.execute``
 # around the graph call; nodes read it instead of closing over it, so the
 # compiled graph can be shared. A graph built with explicit ``operations``
 # (tests, scripts) falls back to those when nothing is set.

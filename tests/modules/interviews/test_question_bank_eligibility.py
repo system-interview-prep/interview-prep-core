@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.modules.interviews.planning.question_selector import (
+from src.modules.interviews.agent.planner.question_selector import (
     QuestionUnavailableError,
     _allowed_purposes,
     _Candidate,
@@ -293,7 +293,7 @@ class TestSelectorEligibilityRules:
 
     async def test_empty_bank_fails_closed_without_writing_turns(self) -> None:
         """An empty bank cannot create an unreviewed interview."""
-        from src.modules.interviews.planning.question_selector import select_and_freeze_questions
+        from src.modules.interviews.agent.planner.question_selector import select_and_freeze_questions
 
         db = AsyncMock()
         db.execute = AsyncMock()
@@ -318,8 +318,7 @@ class TestSelectorEligibilityRules:
         ]
 
         async def _side_effect(query, params=None):
-            # Dispatch on the statement, not call order: the selector now runs
-            # an unlocked generation preflight before the FOR UPDATE read.
+            # Dispatch on the statement rather than depending on SQL call order.
             q_str = str(query)
             result = MagicMock()
             if "interview_session_plans" in q_str:
@@ -359,7 +358,7 @@ class TestSelectorEligibilityRules:
 
     async def test_sufficient_candidates_do_not_raise(self) -> None:
         """3+ eligible questions → no error raised from the selector."""
-        from src.modules.interviews.planning.question_selector import _load_candidates
+        from src.modules.interviews.agent.planner.question_selector import _load_candidates
 
         db = AsyncMock()
 
@@ -424,7 +423,7 @@ class TestSelectorEligibilityRules:
 
     async def test_unapproved_question_is_excluded(self) -> None:
         """Questions with status != APPROVED|CALIBRATED are filtered out."""
-        from src.modules.interviews.planning.question_selector import _load_candidates
+        from src.modules.interviews.agent.planner.question_selector import _load_candidates
 
         db = AsyncMock()
 
@@ -466,7 +465,7 @@ class TestSelectorEligibilityRules:
 
     async def test_wrong_locale_candidate_excluded(self) -> None:
         """Candidates with a completely mismatched locale are excluded."""
-        from src.modules.interviews.planning.question_selector import _load_candidates
+        from src.modules.interviews.agent.planner.question_selector import _load_candidates
 
         db = AsyncMock()
 
@@ -507,7 +506,7 @@ class TestSelectorEligibilityRules:
     @pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
     async def test_fewer_candidates_are_used_and_the_shortfall_reported(self) -> None:
         """Partial coverage: ask what the bank has and report the missing question."""
-        from src.modules.interviews.planning.question_selector import select_and_freeze_questions
+        from src.modules.interviews.agent.planner.question_selector import select_and_freeze_questions
 
         db = AsyncMock()
 

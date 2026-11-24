@@ -1,4 +1,4 @@
-"""The one Interview Agent: durable, idempotent execution of session commands.
+"""Durable, idempotent execution of session commands.
 
 Decisions inside a turn are made by the core engine (``core.conversation``),
 reached through the ``respond`` operation the application layer binds. This
@@ -12,14 +12,14 @@ from __future__ import annotations
 from hashlib import sha256
 from typing import Any
 
-from src.modules.interviews.agent.checkpoints import get_interview_checkpointer
-from src.modules.interviews.agent.graph import compiled_interview_graph, current_operations
-from src.modules.interviews.agent.ports import InterviewOperations
-from src.modules.interviews.agent.state import InterviewCommand
+from src.modules.interviews.agent.shared.checkpoints import get_interview_checkpointer
+from src.modules.interviews.agent.session_workflow.graph import compiled_interview_graph, current_operations
+from src.modules.interviews.agent.session_workflow.ports import InterviewOperations
+from src.modules.interviews.agent.session_workflow.state import InterviewCommand
 
 
-class InterviewAgent:
-    """One modality-agnostic agent for Chat, Voice, and Video sessions."""
+class InterviewCommandRunner:
+    """One modality-agnostic workflow runner for Chat, Voice, and Video."""
 
     async def execute(
         self,

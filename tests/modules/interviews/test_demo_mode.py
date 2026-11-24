@@ -13,8 +13,8 @@ from src.modules.interviews.core.contracts.interview import (
     SessionExitReason,
     TurnAction,
 )
-from src.modules.interviews.planning.planner import _CandidateTarget, _demo_targets, _question_budget
-from src.modules.interviews.planning.question_selector import _technical_stage
+from src.modules.interviews.agent.planner.planner import _CandidateTarget, _demo_targets, _question_budget
+from src.modules.interviews.agent.planner.question_selector import _technical_stage
 from src.modules.user_cvs.schemas import TaxonomyRef
 
 
