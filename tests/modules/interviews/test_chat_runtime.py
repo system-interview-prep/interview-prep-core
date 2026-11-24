@@ -35,6 +35,12 @@ class MockResult:
     def one_or_none(self):
         return self._rows[0] if self._rows else None
 
+    def scalar_one_or_none(self):
+        if not self._rows:
+            return None
+        row = self._rows[0]
+        return next(iter(row.values())) if isinstance(row, dict) else row
+
 
 class MockChatSession:
     def __init__(self, session_row: dict[str, Any], turns: list[dict[str, Any]], messages: list[dict[str, Any]] | None = None):
@@ -161,11 +167,16 @@ class MockChatSession:
         if "UPDATE interview_chat_messages" in sql:
             for message in self.messages:
                 if message.get("id") == params.get("message_id"):
-                    message["message_type"] = params.get("message_type")
+                    if params.get("message_type"):
+                        message["message_type"] = params["message_type"]
                     extra = params.get("extra_metadata")
                     message.setdefault("metadata", {}).update(
                         json.loads(extra) if isinstance(extra, str) else (extra or {})
                     )
+                    if "processingStatus" in sql:
+                        message.setdefault("metadata", {})["processingStatus"] = (
+                            "PROCESSING" if '"PROCESSING"' in sql else "FAILED"
+                        )
             return MockResult([])
 
         if "INSERT INTO interview_chat_messages" in sql:
@@ -382,6 +393,52 @@ async def test_inv2_idempotency_duplicate_client_message(mock_session_data):
         assert res2["userMessage"]["sequence"] == 2
         assert res2["assistantResponse"]["sequence"] == 3
         assert len(db.messages) == 3
+
+
+@pytest.mark.asyncio
+async def test_failed_unanswered_message_can_be_retried_without_duplicate_candidate_row(mock_session_data):
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    content = "Em dùng Redis làm cache và đặt TTL cho key."
+    stuck_message = {
+        "id": "stuck-user-message",
+        "session_id": session_row["id"],
+        "role": "user",
+        "content": content,
+        "metadata": {"processingStatus": "FAILED", "previousAnswer": None, "telemetry": {}},
+        "turn_id": "turn-1",
+        "message_type": "CANDIDATE_ANSWER",
+        "sequence": 2,
+        "client_message_id": "stuck-event",
+        "created_at": datetime.now(UTC),
+    }
+    db.messages.append(stuck_message)
+
+    class RecoveryEngine:
+        async def handle_turn(self, turn_input, _session_state):
+            return InterviewerTurnOutput(
+                session_id=turn_input.session_id,
+                turn_index=turn_input.turn_index + 1,
+                message_text="Bạn có thể nói thêm cách xử lý khi cache hết hạn không?",
+                action=TurnAction.CLARIFY,
+                current_stage=InterviewStage.DEEP_DIVE,
+                metadata={},
+            )
+
+    result = await process_candidate_message(
+        db,
+        session_row,
+        client_message_id="stuck-event",
+        content=content,
+        core_engine=RecoveryEngine(),
+    )
+
+    candidate_rows = [message for message in db.messages if message.get("client_message_id") == "stuck-event"]
+    assert len(candidate_rows) == 1
+    assert result["userMessage"]["messageId"] == "stuck-user-message"
+    assert result["assistantResponse"]["content"] == "Bạn có thể nói thêm cách xử lý khi cache hết hạn không?"
+    assert candidate_rows[0]["metadata"]["processingStatus"] == "PROCESSING"
 
 
 @pytest.mark.xfail(strict=True, reason="REAL: guard rejection raises out of the turn instead of a safe fallback (agent plan Pha 1 guards_out); tests/TRIAGE_2026-11-24.md")

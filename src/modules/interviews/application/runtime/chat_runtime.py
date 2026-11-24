@@ -1311,24 +1311,27 @@ async def process_candidate_message(
             )
             asst_msg = asst_res.mappings().one_or_none()
             if asst_msg is None or asst_msg.get("role") != "assistant":
-                age_seconds = existing_user_msg.get("age_seconds")
-                created_at = existing_user_msg.get("created_at")
-                if age_seconds is None and isinstance(created_at, datetime):
-                    if created_at.tzinfo is None:
-                        created_at = created_at.replace(tzinfo=UTC)
-                    age_seconds = (datetime.now(UTC) - created_at).total_seconds()
-                if float(age_seconds or 0) < _IN_FLIGHT_STALE_SECONDS:
-                    raise ChatRuntimeError(
-                        "IN_PROGRESS: Câu trả lời trước vẫn đang được xử lý. Vui lòng chờ phản hồi của người phỏng vấn."
-                    )
-                if str(existing_user_msg.get("content") or "").strip() != cleaned_content:
-                    raise ValueError("EVENT_ID_PAYLOAD_MISMATCH")
                 metadata = existing_user_msg.get("metadata") or {}
                 if isinstance(metadata, str):
                     try:
                         metadata = json.loads(metadata)
                     except ValueError:
                         metadata = {}
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                processing_failed = metadata.get("processingStatus") == "FAILED"
+                age_seconds = existing_user_msg.get("age_seconds")
+                created_at = existing_user_msg.get("created_at")
+                if age_seconds is None and isinstance(created_at, datetime):
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=UTC)
+                    age_seconds = (datetime.now(UTC) - created_at).total_seconds()
+                if not processing_failed and float(age_seconds or 0) < _IN_FLIGHT_STALE_SECONDS:
+                    raise ChatRuntimeError(
+                        "IN_PROGRESS: Câu trả lời trước vẫn đang được xử lý. Vui lòng chờ phản hồi của người phỏng vấn."
+                    )
+                if str(existing_user_msg.get("content") or "").strip() != cleaned_content:
+                    raise ValueError("EVENT_ID_PAYLOAD_MISMATCH")
                 previous_answer = metadata.get("previousAnswer")
                 telemetry = metadata.get("telemetry") or telemetry
                 user_msg_id = str(existing_user_msg["id"])
@@ -1359,7 +1362,8 @@ async def process_candidate_message(
             await db.execute(
                 text(
                     """
-                    SELECT role, client_message_id,
+                    SELECT id, session_id, role, content, metadata, created_at,
+                           turn_id, message_type, sequence, client_message_id,
                            EXTRACT(EPOCH FROM (now() - created_at)) AS age_seconds
                     FROM interview_chat_messages
                     WHERE session_id = :sid
@@ -1370,14 +1374,34 @@ async def process_candidate_message(
             )
         ).mappings().one_or_none()
         if last_msg and last_msg.get("role") == "user":
-            if float(last_msg.get("age_seconds") or 0) < _IN_FLIGHT_STALE_SECONDS:
+            metadata = last_msg.get("metadata") or {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except ValueError:
+                    metadata = {}
+            processing_failed = isinstance(metadata, dict) and metadata.get("processingStatus") == "FAILED"
+            if not processing_failed and float(last_msg.get("age_seconds") or 0) < _IN_FLIGHT_STALE_SECONDS:
                 raise ChatRuntimeError(
                     "IN_PROGRESS: Câu trả lời trước vẫn đang được xử lý. Vui lòng chờ phản hồi của người phỏng vấn."
                 )
-            raise ChatRuntimeError(
-                "RECOVERY_REQUIRED: Câu trả lời trước đã được lưu nhưng chưa có phản hồi. "
-                "Vui lòng thử lại đúng tin nhắn đó."
-            )
+            if str(last_msg.get("content") or "").strip() != cleaned_content:
+                raise ChatRuntimeError(
+                    "RECOVERY_REQUIRED: Câu trả lời trước đã được lưu nhưng chưa có phản hồi. "
+                    "Vui lòng gửi lại đúng tin nhắn đó trước khi trả lời câu mới."
+                )
+
+            # A browser refresh or an older client may retry the exact saved
+            # answer with a new/missing event id. Recover the persisted phase-1
+            # row by content instead of leaving this session permanently stuck.
+            previous_answer = metadata.get("previousAnswer") if isinstance(metadata, dict) else None
+            if isinstance(metadata, dict):
+                telemetry = metadata.get("telemetry") or telemetry
+            user_msg_id = str(last_msg["id"])
+            user_seq = int(last_msg["sequence"])
+            asst_seq = user_seq + 1
+            existing_user_msg = last_msg
+            recovered_phase1 = True
 
     # A stage transition is a separate conversational beat. A short "dạ" only
     # confirms readiness; it must not be evaluated or stored as the answer to
@@ -1521,7 +1545,11 @@ async def process_candidate_message(
                     "sid": session_id,
                     "content": cleaned_content,
                     "metadata": json.dumps(
-                        {"telemetry": telemetry or {}, "previousAnswer": previous_answer}
+                        {
+                            "telemetry": telemetry or {},
+                            "previousAnswer": previous_answer,
+                            "processingStatus": "PROCESSING",
+                        }
                     ),
                     "turn_id": current_turn_id,
                     "seq": user_seq,
@@ -1550,6 +1578,20 @@ async def process_candidate_message(
         )
     # Commit/release the Phase 1 lock before the provider call. Recovered
     # requests skip the writes above, so answer_text is not accumulated twice.
+    if recovered_phase1:
+        await db.execute(
+            text(
+                """
+                UPDATE interview_chat_messages
+                SET metadata = jsonb_set(
+                    COALESCE(metadata, '{}'::jsonb),
+                    '{processingStatus}', '"PROCESSING"'::jsonb, true
+                )
+                WHERE id = :message_id
+                """
+            ),
+            {"message_id": user_msg_id},
+        )
     await db.commit()
 
     # =========================================================================

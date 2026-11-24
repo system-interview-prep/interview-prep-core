@@ -1101,8 +1101,30 @@ async def send_chat(
     await interview_rate_limiter.check(user["sub"], "respond")
     session = await _owned_session(db, user["sub"], session_id)
     _require_runtime_mode(session, mode="text", experience_type="interview_chat")
+    message_id = payload.client_message_id or str(uuid4())
+
+    async def mark_failed_message() -> None:
+        """Make a persisted unanswered message immediately recoverable after a failed request."""
+        try:
+            await db.rollback()
+            await db.execute(
+                text(
+                    """
+                    UPDATE interview_chat_messages
+                    SET metadata = jsonb_set(
+                        COALESCE(metadata, '{}'::jsonb),
+                        '{processingStatus}', '"FAILED"'::jsonb, true
+                    )
+                    WHERE session_id = :sid AND client_message_id = :cid AND role = 'user'
+                    """
+                ),
+                {"sid": session_id, "cid": message_id},
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+
     try:
-        message_id = payload.client_message_id or str(uuid4())
         result = await run_interview_command(
             session_id=session_id, command="respond",
             operations=database_operations(db=db, user=user, session_row=session),
@@ -1132,6 +1154,8 @@ async def send_chat(
             duration_ms=round((time.monotonic() - started_at) * 1000),
         )
         await db.rollback()
+        if str(exc) != "EVENT_ID_PAYLOAD_MISMATCH":
+            await mark_failed_message()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ChatRuntimeError as exc:
         trace_event(
@@ -1144,6 +1168,8 @@ async def send_chat(
             duration_ms=round((time.monotonic() - started_at) * 1000),
         )
         await db.rollback()
+        if not str(exc).startswith("IN_PROGRESS:"):
+            await mark_failed_message()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         trace_event(
@@ -1155,7 +1181,11 @@ async def send_chat(
             error_message=str(exc),
             duration_ms=round((time.monotonic() - started_at) * 1000),
         )
-        raise
+        await mark_failed_message()
+        raise HTTPException(
+            status_code=502,
+            detail="INTERVIEW_TURN_FAILED: Người phỏng vấn gặp lỗi khi tạo phản hồi. Vui lòng gửi lại câu trả lời trước.",
+        ) from exc
 
 
 @router.post("/sessions/{session_id}/video/message")

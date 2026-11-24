@@ -20,7 +20,7 @@ Mục đích: sửa lời prompt mà không phải đọc logic, và ngược l�
 | `interviewer_line.py` | `interviewer_line_prompt(...)` | `_generate_interviewer_line` |
 | `transition.py` | `transition_context(...)` | Context builder độc lập; luồng hỏi hiện tại phát nguyên câu hỏi đã đóng băng, không ghép thêm lời chuyển |
 | `closing_qna.py` | `closing_qna_speech_prompt(...)` | `turn_engine._answer_closing_question` |
-| `decide.py` | `decide_prompt(is_vi)`, `decide_input(...)` | `agent/decide.py`, model decider (shadow/live) |
+| `decide.py` | `decide_prompt(is_vi)`, `decide_input(...)` | `agent/interviewer/decide.py`, per-turn model decider (shadow/live) |
 | `candidate_memory.py` | `block(items, is_vi, competency)` | evaluate/probe/clarify, sau `playbook.block` |
 | | `extract_instructions(is_vi)` | `application/runtime/candidate_memory.py`, chỉ dẫn cho memory manager của `langmem` ở lệnh `score` |
 

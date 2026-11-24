@@ -177,7 +177,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
         - session_state: state lấy từ DB (PostgreSQL session + turns)
 
         The steps are also the nodes of the agent's turn graph
-        (``agent/turn_graph.py``); this method is the same pipeline without
+        (``agent/interviewer/interview_agent.py``); this method is the same pipeline without
         LangGraph, for tests, scripts and the Voice Lab.
         """
         ctx = build_turn_context(turn_input, session_state)
@@ -246,7 +246,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
         # Not an answer, so it is neither evaluated nor counted against the
         # one clarification each question allows.
         if ctx.active_prompt and is_repeat_request(ctx.candidate_text):
-            return Decision("repeat_question", reason="repeat phrase", evidence_refs=["answer:text"], path=["#5"])
+            return Decision("repeat_question", reason="repeat phrase", evidence_refs=["answer:text"], path=path + ["#5"])
 
         ctx.intent = classify_candidate_intent(ctx.candidate_text, ctx.question_prompt)
 
@@ -601,32 +601,44 @@ class InterviewCoreEngine(InterviewResponseMixin):
 
     async def act_continue_warm_up(self, ctx: TurnContext, decision: Decision) -> InterviewerTurnOutput:
         eval_result = ctx.eval_result
-        follow_up = checked_probe(
-            str(eval_result.get("probe_question") or ""),
-            question=ctx.question_prompt,
-            answer=ctx.candidate_text,
-            rubric="",
-        )
-        if follow_up:
-            speech_checks.record("probe", "pass", "warmup_from_evaluation")
-            continuation = follow_up
-            speech_plan = [{"act": "QUESTION", "source": "llm_evaluation"}]
+        if decision.source == "agent":
+            # In live mode the decider owns both the action and the exact line
+            # the candidate will hear. It has the accumulated answer and recent
+            # interviewer messages in its input; do not make a recovery LLM call.
+            continuation = str(decision.args.get("follow_up_text") or "").strip()
+            speech_checks.record("probe", "pass", "warmup_from_agent")
+            speech_plan = [{"act": "QUESTION", "source": "agent_decision"}]
         else:
-            # Keep a natural recovery for malformed/unsafe model output;
-            # the ordinary path above needs only the evaluation call.
-            continuation = await self._generate_interviewer_line(
-                purpose="invite_candidate_to_continue_intro",
-                context=(
-                    f"Câu mở đầu: {ctx.question_prompt}\n"
-                    f"Toàn bộ phần ứng viên đã nói: {ctx.candidate_text}\n"
-                    f"Ý còn thiếu theo đánh giá: {eval_result.get('missing_aspect') or 'chưa rõ'}\n"
-                    "Phản hồi thân thiện, ghi nhận một chi tiết đã nghe và hỏi đúng một điều còn thiếu. "
-                    "Không hỏi lại điều ứng viên đã nói và không lặp nguyên câu mở đầu."
-                ),
-                is_vi=ctx.is_vi,
-                max_words=22,
+            # Rule/shadow and live-error fallback can use the evaluator's
+            # already-produced utterance, but must not start another LLM call.
+            continuation = checked_probe(
+                str(eval_result.get("probe_question") or ""),
+                question=ctx.question_prompt,
+                answer=ctx.candidate_text,
+                rubric="",
             )
-            speech_plan = [{"act": "QUESTION", "source": "llm_recovery"}]
+            if continuation:
+                speech_checks.record("probe", "pass", "warmup_from_evaluation")
+                speech_plan = [{"act": "QUESTION", "source": "llm_evaluation"}]
+            else:
+                # Last-resort rule response when the evaluator did not provide
+                # a usable question. This is a single complete utterance, not a
+                # second model-generated recovery.
+                missing = str(eval_result.get("missing_aspect") or "").strip()
+                if ctx.is_vi:
+                    continuation = (
+                        f"Cảm ơn bạn đã chia sẻ. Bạn có thể nói thêm về {missing} không?"
+                        if missing
+                        else "Cảm ơn bạn đã chia sẻ. Bạn muốn bổ sung thêm điều gì về phần giới thiệu của mình không?"
+                    )
+                else:
+                    continuation = (
+                        f"Thanks for sharing. Could you tell me a little more about {missing}?"
+                        if missing
+                        else "Thanks for sharing. Is there anything else you would like to add to your introduction?"
+                    )
+                speech_checks.record("probe", "pass", "warmup_rule_fallback")
+                speech_plan = [{"act": "QUESTION", "source": "rule_fallback"}]
         trace_event(
             "interviewer",
             "warmup_continuation_invited",
@@ -634,7 +646,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
             answer_chars=len(ctx.candidate_text),
             intent=ctx.intent,
             missing_aspect=str(eval_result.get("missing_aspect") or "")[:200],
-            question_source="llm_evaluation" if follow_up else "llm_recovery",
+            question_source=speech_plan[0]["source"],
         )
         return InterviewerTurnOutput(
             session_id=ctx.session_id,
@@ -651,7 +663,7 @@ class InterviewCoreEngine(InterviewResponseMixin):
                 "intent": ctx.intent,
                 "ack_source": "none",
                 "missing_aspect": eval_result.get("missing_aspect"),
-                "probe_generated_in_evaluation": bool(follow_up),
+                "probe_generated_in_evaluation": speech_plan[0]["source"] == "llm_evaluation",
                 "speech_plan": speech_plan,
             },
         )
