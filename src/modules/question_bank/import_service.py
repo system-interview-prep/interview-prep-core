@@ -9,16 +9,19 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.modules.question_bank.import_parser import (
+    CatalogConcept,
     normalize_row_payload,
     parse_csv,
     parse_xlsx,
+    rubric_criteria,
     validate_row_payload,
 )
 from src.modules.question_bank.models import (
+    ExpectedPoint,
     InterviewQuestion,
     InterviewQuestionVersion,
     QuestionImport,
@@ -27,6 +30,7 @@ from src.modules.question_bank.models import (
     QuestionVersionTaxonomyConcept,
     Rubric,
 )
+from src.modules.question_bank.schemas import DEFAULT_TAXONOMY_VERSION, AttachRubricRequest
 from src.modules.question_bank.service import QuestionBankService
 
 MAX_IMPORT_FILE_SIZE = 5 * 1024 * 1024
@@ -76,6 +80,17 @@ class QuestionImportService:
         import_run.error_rows = sum(row.status == "ERROR" for row in rows)
         await self.db.flush()
         return import_run
+
+    async def template_catalog(self) -> list[CatalogConcept]:
+        """Active concepts an author may reference in the default taxonomy version."""
+        result = await self.db.execute(
+            text(
+                "SELECT concept_id, label, kind FROM taxonomy_concepts "
+                "WHERE is_active AND taxonomy_version = :version AND kind IN ('competency', 'skill', 'job_role')"
+            ),
+            {"version": DEFAULT_TAXONOMY_VERSION},
+        )
+        return [CatalogConcept(row["concept_id"], row["label"], row["kind"]) for row in result.mappings()]
 
     async def summary(self, import_id: object) -> QuestionImport:
         result = await self.db.scalar(select(QuestionImport).where(QuestionImport.id == import_id))
@@ -170,6 +185,8 @@ class QuestionImportService:
                 id=uuid4(),
                 question_id=question.id,
                 version=payload["version"],
+                # Explicit, not the server default: attach_rubric below reads it before a refresh.
+                status="DRAFT",
                 taxonomy_version=payload["taxonomy_version"],
                 question_type=payload["question_type"],
                 difficulty_band=payload["difficulty_band"],
@@ -198,6 +215,24 @@ class QuestionImportService:
             )
             if rubric_version_id is not None:
                 self.db.add(QuestionVersionRubric(question_version_id=version.id, rubric_version_id=rubric_version_id))
+            await self.db.flush()
+            # Expected points drive checklist grading; without them a question is graded holistically.
+            self.db.add_all(
+                ExpectedPoint(
+                    id=uuid4(),
+                    question_version_id=version.id,
+                    stable_key=point["stable_key"],
+                    description=point["description"],
+                    importance=point["importance"],
+                    display_order=order,
+                )
+                for order, point in enumerate(payload.get("expected_points") or [])
+            )
+            criteria = rubric_criteria(payload)
+            if criteria:
+                await QuestionBankService(self.db).attach_rubric(
+                    version.id, actor_id, AttachRubricRequest(criteria=criteria)
+                )
             row.status, row.draft_question_id, row.draft_question_version_id = (
                 "COMMITTED",
                 question.id,

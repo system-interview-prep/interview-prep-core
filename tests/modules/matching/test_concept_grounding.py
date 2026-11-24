@@ -81,7 +81,7 @@ def test_all_of_concepts_are_grounded_independently() -> None:
     assert result.concept_results[1].evidence_strength == "applied"
 
 
-def test_all_of_with_one_unmentioned_concept_is_not_evidenced_not_failed() -> None:
+def test_all_of_with_one_unmentioned_concept_is_not_met() -> None:
     result = evaluate_unresolved_requirement(
         _requirement(
             "Basic knowledge of NLP, GenAI and LLM",
@@ -93,11 +93,10 @@ def test_all_of_with_one_unmentioned_concept_is_not_evidenced_not_failed() -> No
         _resume("Built NLP pipeline.", "Built GenAI workflow."),
     )
 
-    # An unmentioned concept is "not evidenced" (ask the candidate), not a
-    # confident not_met that fails a must-have.
-    assert result.status == "unknown"
-    assert result.reason_code == "concept_group_evidence_missing"
-    assert [item.status for item in result.concept_results] == ["met", "met", "unknown"]
+    # Every required concept needs evidence in the submitted CV.
+    assert result.status == "not_met"
+    assert result.reason_code == "concept_group_not_met"
+    assert [item.status for item in result.concept_results] == ["met", "met", "not_met"]
     assert result.concept_results[2].reason_code == "concept_not_evidenced"
     assert result.concept_results[2].evidence_refs == []
 
@@ -116,7 +115,7 @@ def test_any_of_one_supported_concept_is_met() -> None:
     assert result.group_operator == "any_of"
     assert result.status == "met"
     assert result.concept_results[0].status == "met"
-    assert result.concept_results[1].status == "unknown"
+    assert result.concept_results[1].status == "not_met"
 
 
 def test_mention_is_not_sufficient_for_production_experience() -> None:
@@ -146,18 +145,18 @@ def test_concept_keeps_only_two_strongest_deduplicated_evidence_refs() -> None:
     assert result.evidence_refs == concept.evidence_refs
 
 
-def test_no_evidence_is_not_evidenced_and_similarity_cannot_promote_it() -> None:
+def test_no_evidence_is_not_met_and_similarity_cannot_promote_it() -> None:
     result = evaluate_unresolved_requirement(
         _requirement("Experience with Rust", ("skill-rust", "Rust")),
         _resume("Built a high-performance distributed systems service."),
     )
 
-    assert result.status == "unknown"
-    assert result.reason_code == "concept_group_not_evidenced"
-    assert result.concept_results[0].status == "unknown"
+    assert result.status == "not_met"
+    assert result.reason_code == "concept_group_not_met"
+    assert result.concept_results[0].status == "not_met"
     assert result.concept_results[0].reason_code == "concept_not_evidenced"
     assert result.concept_results[0].evidence_refs == []
-    assert "chưa nhắc tới" in result.evidence_explanation
+    assert "b\u1eb1ng ch\u1ee9ng" in result.evidence_explanation.lower()
 
 
 def test_taxonomy_concepts_are_generic_not_fixture_specific() -> None:
@@ -173,7 +172,7 @@ def test_taxonomy_concepts_are_generic_not_fixture_specific() -> None:
 
     assert result.status == "met"
     assert [concept.label for concept in result.concept_results] == ["Ruby", "Elixir"]
-    assert [concept.status for concept in result.concept_results] == ["unknown", "met"]
+    assert [concept.status for concept in result.concept_results] == ["not_met", "met"]
 
 
 def test_same_evidence_found_via_claim_and_text_is_deduplicated() -> None:

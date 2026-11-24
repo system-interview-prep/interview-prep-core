@@ -43,7 +43,7 @@ async def test_paradedb_provider_score_async_match():
     mock_session = AsyncMock()
     mock_result = MagicMock()
     mock_mappings = MagicMock()
-    mock_mappings.one_or_none.return_value = {"bm25_score": 15.0}
+    mock_mappings.one_or_none.return_value = {"indexed": True, "bm25_score": 15.0}
     mock_result.mappings.return_value = mock_mappings
     mock_session.execute.return_value = mock_result
 
@@ -73,12 +73,11 @@ async def test_paradedb_provider_score_async_match():
     assert mock_session.execute.called
 
 
-@pytest.mark.asyncio
-async def test_paradedb_provider_score_async_no_match():
+def _factory_returning(row):
     mock_session = AsyncMock()
     mock_result = MagicMock()
     mock_mappings = MagicMock()
-    mock_mappings.one_or_none.return_value = None
+    mock_mappings.one_or_none.return_value = row
     mock_result.mappings.return_value = mock_mappings
     mock_session.execute.return_value = mock_result
 
@@ -92,7 +91,15 @@ async def test_paradedb_provider_score_async_no_match():
         async def __aexit__(self, exc_type, exc_val, exc_tb):
             pass
 
-    provider = ParadeDbBm25Provider(session_factory=MockSessionFactory())
+    return MockSessionFactory()
+
+
+@pytest.mark.asyncio
+async def test_an_indexed_cv_that_shares_no_term_scores_zero():
+    """Searched, and nothing matched. That is evidence, so it is a real 0.0."""
+    provider = ParadeDbBm25Provider(
+        session_factory=_factory_returning({"indexed": True, "bm25_score": None})
+    )
     score = await provider.score_async(
         query_text="Rust Systems Engineer",
         doc_text="Java Developer",
@@ -103,7 +110,24 @@ async def test_paradedb_provider_score_async_no_match():
 
 
 @pytest.mark.asyncio
-async def test_paradedb_provider_fallback_on_db_exception():
+async def test_a_cv_with_no_indexed_text_is_unknown_not_zero():
+    """Nothing was searched, so 0.0 would assert an overlap nobody measured."""
+    provider = ParadeDbBm25Provider(
+        session_factory=_factory_returning({"indexed": False, "bm25_score": None})
+    )
+    score = await provider.score_async(
+        query_text="Rust Systems Engineer",
+        doc_text="Java Developer",
+        doc_id="cv_456",
+    )
+
+    assert score is None
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_index_is_unknown_and_never_another_formula():
+    """The in-memory scorer is ~4.7x lower on real pairs; substituting it would
+    change the scale without the caller ever being told."""
     mock_session = AsyncMock()
     mock_session.execute.side_effect = ConnectionError("PostgreSQL connection refused")
 
@@ -118,14 +142,19 @@ async def test_paradedb_provider_fallback_on_db_exception():
             pass
 
     provider = ParadeDbBm25Provider(session_factory=MockSessionFactory())
-    # Should not raise; should gracefully fallback to InMemory provider
     score = await provider.score_async(
         query_text="Python FastAPI",
         doc_text="Experienced with Python and FastAPI",
         doc_id="cv_789",
     )
 
-    assert score > 0.0
+    assert score is None
+
+
+@pytest.mark.asyncio
+async def test_a_resume_with_no_document_id_cannot_be_scored():
+    provider = ParadeDbBm25Provider(session_factory=_factory_returning(None))
+    assert await provider.score_async("Python", "Python developer", None) is None
 
 
 def test_factory_returns_expected_types():

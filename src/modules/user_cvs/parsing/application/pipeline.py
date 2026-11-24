@@ -8,7 +8,21 @@ from src.core.trace_logging import trace_event
 from src.modules.user_cvs.application import run_tracking
 from src.modules.user_cvs.domain.schemas import ParsedResume
 from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
-from src.modules.user_cvs.parsing.domain.source import SourceDocument
+from src.modules.user_cvs.parsing.domain.source import (
+    SHREDDED_TEXT_RATIO,
+    SourceDocument,
+    character_shredded_ratio,
+)
+from src.modules.user_cvs.parsing.domain.text_repair import (
+    REPAIR_VERSION,
+    TextRepairer,
+    repair_artifacts,
+)
+
+# The measure and threshold live in the domain so the PDF extractor can pick a
+# repair strategy from the same definition the pipeline reports coverage with.
+_character_shredded_ratio = character_shredded_ratio
+_SHREDDED_TEXT_RATIO = SHREDDED_TEXT_RATIO
 
 
 def _coverage_snapshot(parsed: ParsedResume, source: SourceDocument) -> dict:
@@ -24,6 +38,12 @@ def _coverage_snapshot(parsed: ParsedResume, source: SourceDocument) -> dict:
     raw_coverage = "complete" if source.text.strip() else "unavailable"
     if any(item.severity == "error" for item in warnings):
         raw_coverage = "partial" if source.text.strip() else "unavailable"
+    # Character-shredded text is present but unreadable: counting it as a
+    # complete read is what lets a damaged CV reach matching as a candidate
+    # with no skills, instead of as a document that needs re-extraction.
+    text_shredded = _character_shredded_ratio(source.text) >= _SHREDDED_TEXT_RATIO
+    if text_shredded and raw_coverage == "complete":
+        raw_coverage = "partial"
 
     section_values = {
         "profile": bool(resume.profile.headline or resume.profile.summary),
@@ -57,6 +77,10 @@ def _coverage_snapshot(parsed: ParsedResume, source: SourceDocument) -> dict:
     )
     evidence_coverage = "complete" if evidence_valid else "partial" if resume.evidence else "unavailable"
     reasons: list[str] = []
+    if text_shredded:
+        # Named separately from the generic code so the fix is actionable:
+        # this document needs a different extractor, not a better parser.
+        reasons.append("raw_text_character_shredded")
     if raw_coverage != "complete":
         reasons.append("raw_text_incomplete")
     if any(value == "partial" for value in section_coverage.values()):
@@ -169,12 +193,15 @@ class CvParsingPipeline:
         extractor: DocumentExtractor,
         parser: ResumeParser,
         source_builder: SourceBuilder,
+        repairer: TextRepairer | None = None,
     ) -> None:
         self._repository = repository
         self._storage = storage
         self._extractor = extractor
         self._parser = parser
         self._source_builder = source_builder
+        # Whitespace-only repair of torn extraction text; None skips the phase.
+        self._repairer = repairer
 
     async def run(self, cv_id: str, *, final_attempt: bool = True) -> PipelineResult:
         started_at = time.monotonic()
@@ -185,6 +212,34 @@ class CvParsingPipeline:
         # CV-parsing view (the Celery task may already have opened it).
         with run_tracking.cv_run(cv_id, reuse_active=True):
             return await self._run(cv_id, started_at=started_at, final_attempt=final_attempt)
+
+    def _repair(self, cv_id: str, artifacts: DocumentArtifacts) -> tuple[DocumentArtifacts, str]:
+        """The artifacts with torn text repaired, and the provenance tag to record it.
+
+        The stored artifact is the extractor's own output; what the source
+        builder sees is the repaired copy, so evidence offsets, the parser and
+        the raw text shown to people all agree.  A failure here keeps the
+        original: a torn read is still a read.
+        """
+        if self._repairer is None:
+            return artifacts, ""
+        step_started = time.monotonic()
+        try:
+            repaired, outcome = repair_artifacts(artifacts, self._repairer)
+        except Exception as exc:  # noqa: BLE001
+            _emit("text_repair_failed", cv_id=cv_id, error_type=type(exc).__name__)
+            return artifacts, ""
+        _emit(
+            "text_repaired",
+            cv_id=cv_id,
+            skipped=outcome is None,
+            blocks_changed=outcome.changed if outcome else 0,
+            blocks_rejected=outcome.rejected if outcome else 0,
+            calls=outcome.calls if outcome else 0,
+            signals=outcome.signals if outcome else None,
+            duration_ms=run_tracking.monotonic_ms(step_started),
+        )
+        return repaired, (f"+{REPAIR_VERSION}" if outcome and outcome.changed else "")
 
     async def _run(self, cv_id: str, *, started_at: float, final_attempt: bool) -> PipelineResult:
         document = await self._repository.claim(cv_id)
@@ -223,6 +278,8 @@ class CvParsingPipeline:
             )
             artifact_key = f"{document.storage_key}.artifacts/{document.checksum}/{provider_name}.json"
             self._storage.write_json(artifact_key, artifacts.as_dict())
+            phase = "repair"
+            artifacts, repair_tag = self._repair(document.cv_id, artifacts)
             phase = "source"
             step_started = time.monotonic()
             source = self._source_builder(
@@ -326,7 +383,7 @@ class CvParsingPipeline:
                 document,
                 raw_text=source.text,
                 parsed=parsed,
-                parse_source=f"{provider_name}+{parser_version}",
+                parse_source=f"{provider_name}{repair_tag}+{parser_version}",
             )
             _emit("cv_saved", cv_id=document.cv_id, duration_ms=run_tracking.monotonic_ms(step_started))
             canonical_status = parsed.resume.parsing.status if parsed.resume.parsing else None

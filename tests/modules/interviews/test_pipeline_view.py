@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from src.modules.interviews.application.pipeline_view import assemble_pipeline, summarize_ai_calls
+from src.modules.interviews.application.quality_admin.pipeline_view import assemble_pipeline, summarize_ai_calls
 
 T0 = datetime(2026, 10, 19, 9, 0, tzinfo=UTC)
 
@@ -257,7 +257,7 @@ def test_ai_call_summary():
 
 # --- live state, clocks, voice room ------------------------------------------------
 
-from src.modules.interviews.application.pipeline_view import live_state, timing, voice_summary  # noqa: E402
+from src.modules.interviews.application.quality_admin.pipeline_view import live_state, timing, voice_summary  # noqa: E402
 
 NOW = T0 + timedelta(minutes=10)
 

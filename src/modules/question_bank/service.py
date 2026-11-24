@@ -150,6 +150,19 @@ class QuestionBankService:
         )
         if rubric_version_id is not None:
             self.db.add(QuestionVersionRubric(question_version_id=version.id, rubric_version_id=rubric_version_id))
+        # A revision keeps the expected points, or it would silently fall back to holistic grading.
+        points = (
+            await self.db.execute(
+                select(ExpectedPoint).where(ExpectedPoint.question_version_id == source.id)
+            )
+        ).scalars().all()
+        self.db.add_all(
+            ExpectedPoint(
+                id=uuid4(), question_version_id=version.id, stable_key=point.stable_key,
+                description=point.description, importance=point.importance, display_order=point.display_order,
+            )
+            for point in points
+        )
         await self.db.flush()
         return version
 

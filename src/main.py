@@ -22,9 +22,9 @@ from src.modules.auth import build_module as build_auth_module
 from src.modules.health import build_module as build_health_module
 from src.modules.interviews import build_module as build_interviews_module
 from src.modules.interviews.agent.checkpoints import interview_checkpoint_lifespan
-from src.modules.interviews.application.admin_notifier import notifier as admin_notifier
-from src.modules.interviews.application.pipeline_live import bridge as pipeline_live_bridge
-from src.modules.interviews.application.session_reaper import session_reaper_loop
+from src.modules.interviews.application.quality_admin.admin_notifier import notifier as admin_notifier
+from src.modules.interviews.application.quality_admin.pipeline_live import bridge as pipeline_live_bridge
+from src.modules.interviews.application.runtime.session_reaper import session_reaper_loop
 from src.modules.interviews.planning.planner import configured_planner_policy
 from src.modules.job_descriptions import build_module as build_job_descriptions_module
 from src.modules.matching import build_module as build_matching_module
@@ -72,20 +72,14 @@ async def _start_livekit_agent(settings: object) -> asyncio.subprocess.Process |
     if run_mode not in {"dev", "start"}:
         raise RuntimeError("LIVEKIT_AGENT_RUN_MODE must be 'dev' or 'start'")
 
-    agent_script = (
-        Path(__file__).resolve().parent
-        / "modules"
-        / "interviews"
-        / "adapters"
-        / "voice"
-        / "livekit_agent.py"
-    )
+    project_root = Path(__file__).resolve().parent.parent
     try:
         process = await asyncio.create_subprocess_exec(
             sys.executable,
-            str(agent_script),
+            "-m",
+            "src.modules.interviews.adapters.voice.runtime.livekit_agent",
             run_mode,
-            cwd=str(agent_script.parents[3]),
+            cwd=str(project_root),
         )
     except OSError:
         logger.exception("Could not start the LiveKit agent process")
@@ -174,7 +168,8 @@ def create_app() -> FastAPI:
         allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+        expose_headers=["X-Voice-Lab-Elapsed-Ms", "X-Speech-Provider", "X-Speech-Model"],
     )
 
     @app.exception_handler(HTTPException)

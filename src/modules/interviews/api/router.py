@@ -1,8 +1,4 @@
-"""P0 structured interview runtime foundation API.
-
-This module owns the new interview runtime contract. Legacy /ai/session remains
-available during migration, but new product flows should create sessions here.
-"""
+"""Structured interview runtime API."""
 
 import json
 import time
@@ -19,13 +15,22 @@ from src.core.security import current_user
 from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
 from src.modules.interviews.api.rate_limit import interview_rate_limiter
-from src.modules.interviews.application.agent_runtime import database_operations, run_interview_command
-from src.modules.interviews.application.session_reaper import CANDIDATE_LEFT_GRACE_MINUTES
-from src.modules.interviews.application.chat_runtime import (
+from src.modules.interviews.application.runtime.agent_runtime import database_operations, run_interview_command
+from src.modules.interviews.application.runtime.chat_runtime import (
     ChatRuntimeError,
     get_chat_runtime,
 )
-from src.modules.interviews.application.text_runtime import (
+from src.modules.interviews.application.interview_blueprints import BlueprintError, resolve_blueprint
+from src.modules.interviews.core.session_policy.demo_mode import is_demo_duration
+from src.modules.interviews.application.progress import compare_with_previous, load_progress, set_weekly_goal
+from src.modules.interviews.application.progress.real_interviews import (
+    delete_report,
+    list_reports,
+    readiness_snapshot,
+    save_report,
+)
+from src.modules.interviews.application.runtime.session_reaper import CANDIDATE_LEFT_GRACE_MINUTES
+from src.modules.interviews.application.runtime.text_runtime import (
     TurnStateError,
     answer_turn,
     ask_turn,
@@ -37,13 +42,6 @@ from src.modules.interviews.evaluation.evaluation_service import (
     EvaluationServiceError,
     get_session_evaluation,
 )
-from src.modules.interviews.application.progress import compare_with_previous, load_progress, set_weekly_goal
-from src.modules.interviews.application.real_interviews import (
-    delete_report,
-    list_reports,
-    readiness_snapshot,
-    save_report,
-)
 from src.modules.interviews.planning.entry_gate import InterviewEntryBlocked, entry_policy, evaluate_entry
 from src.modules.interviews.planning.planner import (
     PlannerPolicyConfigurationError,
@@ -54,6 +52,8 @@ from src.modules.interviews.planning.question_selector import (
     QuestionUnavailableError,
     read_frozen_turns,
 )
+from src.modules.matching.facade import get_candidate_fit_attempt
+from src.modules.matching.schemas import MatchResult
 
 router = APIRouter(prefix="/api/v1/interviews", tags=["interviews"])
 
@@ -140,18 +140,20 @@ class SubmitInterviewAnswer(BaseModel):
 class CreateInterviewSession(BaseModel):
     resume_id: str = Field(alias="resumeId", min_length=1)
     job_id: str = Field(alias="jobId", min_length=1)
+    fit_attempt_id: str | None = Field(default=None, alias="fitAttemptId", max_length=64)
     mode: InterviewMode = "text"
     experience_type: ExperienceType = Field(default="interview_chat", alias="experienceType")
     locale: str = Field(default="vi-VN", min_length=2, max_length=35)
     duration_minutes: int = Field(default=25, alias="durationMinutes", ge=2, le=120)
-    # "Luyện vòng này" on the progress page: half of the technical questions
-    # come from this round (interview_rounds.FOCUSABLE_AREAS).
-    focus_area: Literal["language", "framework", "data", "api", "infra", "ai"] | None = Field(
-        default=None, alias="focusArea"
-    )
+    # Taxonomy group to prioritize in the interview plan; validated from DB.
+    focus_area: str | None = Field(default=None, alias="focusArea", max_length=160)
     # "Luyện lại ý này": a skill (concept id) to ask again in this session,
     # with a question the candidate has not seen (planner._due_reask).
     reask_concept_id: str | None = Field(default=None, alias="reaskConceptId", max_length=120)
+    # Repeat yesterday's exact missed question once; the grader closes it after a covered answer.
+    reask_question_version_id: str | None = Field(default=None, alias="reaskQuestionVersionId", max_length=64)
+    # The interview type the candidate chose (interview_blueprints); None: the default type.
+    blueprint_id: str | None = Field(default=None, alias="blueprintId", max_length=36)
 
     model_config = {"populate_by_name": True}
 
@@ -193,7 +195,7 @@ _SESSION_SELECT = """
            s.status, s.started_at, s.ended_at, s.experience_type, s.end_reason, s.metadata,
            j.title AS job_title,
            p.id AS plan_id, p.schema_version AS plan_schema_version,
-           p.status AS plan_status
+           p.status AS plan_status, p.source_context AS plan_source_context
     FROM interview_sessions s
     LEFT JOIN job_descriptions j ON j.id = s.job_id
     LEFT JOIN interview_session_plans p ON p.session_id = s.id
@@ -267,14 +269,33 @@ def _entry_blocked_http(exc: InterviewEntryBlocked) -> HTTPException:
     return HTTPException(status_code=409, detail=exc.decision.detail())
 
 
-async def _require_match_threshold(db: AsyncSession, user: dict, resume_id: str, job_id: str) -> None:
+async def _require_match_threshold(
+    db: AsyncSession,
+    user: dict,
+    resume_id: str,
+    job_id: str,
+    fit_attempt_id: str | None = None,
+) -> None:
     """Refuse to create a session whose CV–job match is missing or below the threshold.
 
     The match comes from the same cache as the fit report page, so this is the
     score the candidate has just seen. No session row is written when blocked.
     """
     try:
-        match = await evaluate_session_match(db=db, user=user, resume_id=resume_id, job_id=job_id)
+        if fit_attempt_id:
+            attempt = await get_candidate_fit_attempt(
+                db, user_id=str(user["sub"]), attempt_id=fit_attempt_id
+            )
+            if attempt is None:
+                raise HTTPException(status_code=404, detail="Assessment history not found")
+            if attempt["cvId"] != resume_id or attempt["jobId"] != job_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Assessment history does not match this CV and job",
+                )
+            match = MatchResult.model_validate(attempt["resultSnapshot"])
+        else:
+            match = await evaluate_session_match(db=db, user=user, resume_id=resume_id, job_id=job_id)
     except ValueError as exc:
         # CV or job not parsed yet: there is no score to enter the room with.
         raise HTTPException(
@@ -442,7 +463,18 @@ async def create_interview_session(
                 ),
             )
         await _validate_context(db, user, payload.resume_id, payload.job_id)
-        await _require_match_threshold(db, user, payload.resume_id, payload.job_id)
+        await _require_match_threshold(
+            db, user, payload.resume_id, payload.job_id, payload.fit_attempt_id
+        )
+        if payload.blueprint_id and not is_demo_duration(payload.duration_minutes):
+            # Ask the candidate to choose again rather than switching their choice silently.
+            try:
+                await resolve_blueprint(db, payload.blueprint_id, strict=True)
+            except BlueprintError as exc:
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail={"errorCode": exc.code, "message": "Interview type is no longer available."},
+                ) from exc
 
         session_id = str(uuid4())
         plan_id = str(uuid4())
@@ -481,9 +513,12 @@ async def create_interview_session(
                     {
                         "resumeId": payload.resume_id,
                         "jobId": payload.job_id,
+                        "fitAttemptId": payload.fit_attempt_id,
                         "source": "p0-session-context",
                         "focusArea": payload.focus_area,
                         "reaskConceptId": payload.reask_concept_id,
+                        "reaskQuestionVersionId": payload.reask_question_version_id,
+                        "blueprintId": payload.blueprint_id,
                     }
                 ),
             },
@@ -531,20 +566,28 @@ async def get_interview_session(
 async def list_interview_sessions(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
+    limit: int = Query(default=100, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
 ) -> dict:
     result = await db.execute(
         text(
-            _SESSION_SELECT
+            _SESSION_SELECT.replace(
+                "p.status AS plan_status",
+                "p.status AS plan_status, COUNT(*) OVER() AS total_count",
+            )
             + " WHERE s.user_id = :uid AND " + _STRUCTURED_SESSION
-            + " ORDER BY s.started_at DESC LIMIT 100"
+            + " ORDER BY s.started_at DESC, s.id DESC LIMIT :limit OFFSET :offset"
         ),
-        {"uid": user["sub"]},
+        {"uid": user["sub"], "limit": limit, "offset": offset},
     )
-    sessions = [_session_payload(dict(row)) for row in result.mappings().all()]
+    rows = [dict(row) for row in result.mappings().all()]
+    total = int(rows[0].get("total_count", len(rows))) if rows else 0
+    sessions = [_session_payload(row) for row in rows]
     summaries = await _session_summaries(db, [item["sessionId"] for item in sessions])
     for item in sessions:
         item.update(summaries.get(item["sessionId"], _EMPTY_SUMMARY))
-    return {"sessions": sessions}
+    next_offset = offset + len(sessions) if offset + len(sessions) < total else None
+    return {"sessions": sessions, "total": total, "offset": offset, "nextOffset": next_offset}
 
 
 _EMPTY_SUMMARY = {

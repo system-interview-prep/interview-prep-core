@@ -148,7 +148,8 @@ def test_boundary_case_d_structured_threshold():
     # 3. Matcher handles unresolved education without crashing
     request = _base_match_request(parsed)
     result = MatchingFacade(StubEmbedder()).match(request)
-    assert result.eligibility == "eligible"
+    assert result.requirement_results[0].status == "not_met"
+    assert result.eligibility == "ineligible"
 
 
 # =========================================================================

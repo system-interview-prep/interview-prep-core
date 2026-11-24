@@ -5,12 +5,14 @@ from src.modules.job_descriptions.schemas import (
     JobRequirement,
     resolve_known_skill_concepts,
 )
+from src.modules.matching.domain.requirement_gating import classify_requirement_gate
 from src.modules.matching.domain.schemas import (
     CanonicalJob,
     GroundedJobText,
     SkillRequirement,
     UnresolvedRequirement,
 )
+from src.modules.matching.judge.gate_judge import gate_reading_for
 
 _PRIORITY_MAP: dict[str, Literal["must_have", "nice_to_have"]] = {
     # Official canonical JD contract (CanonicalJobDescription)
@@ -85,6 +87,41 @@ def job_description_to_matching_job(
                 f"unsupported requirement priority '{requirement.priority}' "
                 f"for requirement '{requirement.requirement_id}'"
             )
+
+        # A posting's wording decides what it says; it does not decide what may
+        # disqualify a person.  Negated lines ("No experience required") state
+        # the absence of a condition; attitude, protected-attribute, voice and
+        # equipment lines cannot be confirmed from a CV at all; and a line the
+        # posting itself marks optional ("là 1 lợi thế") is not a condition of
+        # entry.  Keep them for context, but never let the gate fire on them.
+        gate = classify_requirement_gate(
+            requirement.raw_label,
+            requirement.kind,
+            gate_reading_for(requirement.raw_label, requirement.kind),
+        )
+        if gate.gate_class == "vacuous":
+            # Not a condition.  Scoring it would penalise every candidate for
+            # failing to evidence a requirement the employer waived.
+            continue
+        if not gate.may_gate:
+            # ``optional`` still carries fit signal, so it keeps scoring as
+            # ``nice_to_have``.  The rest - soft signals included, see
+            # ``GateDecision.is_scorable`` - carry none and drop to
+            # ``context``, which neither gates nor scores.
+            #
+            # This used to be keyed on ``priority == "must_have"`` as well, so a
+            # line of the same kind that arrived as ``preferred`` was left at
+            # ``nice_to_have`` and scored 0.0 against every candidate - it could
+            # never be evidenced from a CV, which is why it may not gate in the
+            # first place. Measured at BASELINE-B: 195 such requirements across
+            # 132 pairs, 0 of which ever gated. Whether a line can be assessed
+            # does not depend on how loudly the posting asked for it.
+            if gate.is_scorable:
+                if priority == "must_have":
+                    priority = "nice_to_have"
+            else:
+                priority = "context"
+
         common = {
             "requirementId": requirement.requirement_id,
             "priority": priority,

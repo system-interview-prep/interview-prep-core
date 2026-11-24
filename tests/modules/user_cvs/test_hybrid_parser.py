@@ -85,6 +85,63 @@ async def test_hybrid_resume_falls_back_without_losing_deterministic_result() ->
     assert parsed.identity.emails[0].value == "jane@example.com"
 
 
+async def test_hybrid_resume_rejects_description_fragment_as_project_name() -> None:
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown=(
+                "Experience\nFounder & Fullstack Developer at IVORA 2025 - Present\n"
+                "Projects\nOnline Bookstore System\nDescription: feedback\n"
+                "IVORA — Online Wedding Invitation Platform"
+            ),
+            content_list=[
+                {"type": "title", "text": "EXPERIENCE"},
+                {"type": "text", "text": "Founder & Fullstack Developer at IVORA 2025 - Present"},
+                {"type": "title", "text": "PROJECTS"},
+                {"type": "text", "text": "Online Bookstore System"},
+                {"type": "text", "text": "Description: feedback"},
+                {"type": "text", "text": "feedback"},
+                {"type": "text", "text": "IVORA — Online Wedding Invitation Platform"},
+                {"type": "text", "text": "– Architected a multi-stage RAG system."},
+                {"type": "title", "text": "Python, PyTorch, YOLOv8, OpenCV, EasyOCR"},
+            ],
+        ),
+        document_id="cv-project-fragment",
+        document_sha256="c" * 64,
+    )
+    candidate = {
+        "headline": None,
+        "summary": None,
+        "employment": [],
+        "education": [],
+        "projects": [
+            {"name": "feedback", "description": None, "quote": "feedback"},
+            {
+                "name": "IVORA — Online Wedding Invitation Platform",
+                "description": None,
+                "quote": "IVORA — Online Wedding Invitation Platform",
+            },
+            {
+                "name": "Architected a multi-stage RAG system",
+                "description": None,
+                "quote": "Architected a multi-stage RAG system",
+            },
+            {
+                "name": "Python, PyTorch, YOLOv8",
+                "description": None,
+                "quote": "Python, PyTorch, YOLOv8, OpenCV, EasyOCR",
+            },
+            {"name": "Advanced Multi-Stage RAG Pipeline", "description": None, "quote": "feedback"},
+        ],
+        "certifications": [],
+    }
+
+    parsed = await HybridResumeParser(client=FakeClient(json.dumps(candidate))).parse(
+        source, extraction_version="test"
+    )
+
+    assert [project.name for project in parsed.resume.projects] == ["Online Bookstore System"]
+
+
 async def test_hybrid_resume_falls_back_when_grounded_candidate_breaks_domain_invariants() -> None:
     candidate = {
         "headline": None,
@@ -108,3 +165,89 @@ async def test_hybrid_resume_falls_back_when_grounded_candidate_breaks_domain_in
         _source(), extraction_version="test"
     )
     assert any(warning.code == "llm_fallback" for warning in parsed.resume.parsing.warnings)
+
+
+async def test_llm_reading_wins_a_clash_with_the_deterministic_baseline() -> None:
+    """The baseline used to shadow the LLM whenever their keys collided.
+
+    The deterministic pass names the project from the heading line, dates and
+    all; the LLM names it from the title alone. Both are grounded, so the
+    merge has to keep one -- and it used to keep the baseline's.
+    """
+    raw = (
+        "Jane Doe\nProjects\nHComic - Comic Reading Platform 07/2026 - Present\n"
+        "Role: Fullstack Developer"
+    )
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown=raw,
+            content_list=[
+                {"type": "text", "text": "Jane Doe"},
+                {"type": "title", "text": "Projects"},
+                {"type": "title", "text": "HComic - Comic Reading Platform 07/2026 - Present"},
+                {"type": "text", "text": "Role: Fullstack Developer"},
+            ],
+        ),
+        document_id="cv-hybrid-clash",
+        document_sha256="a" * 64,
+    )
+    payload = json.dumps(
+        {
+            "projects": [
+                {
+                    "name": "HComic - Comic Reading Platform",
+                    "description": "Comic reading platform.",
+                    "quote": "HComic - Comic Reading Platform 07/2026 - Present",
+                }
+            ]
+        }
+    )
+
+    parsed = await HybridResumeParser(client=FakeClient(payload)).parse(
+        source, extraction_version="test"
+    )
+    names = [item.name for item in parsed.resume.projects]
+
+    # One project, named the way the LLM read it.
+    assert names == ["HComic - Comic Reading Platform"]
+
+
+async def test_deterministic_baseline_still_fills_what_the_llm_missed() -> None:
+    """Inverting the precedence must not drop baseline-only entries."""
+    raw = (
+        "Jane Doe\nProjects\nHComic - Comic Reading Platform 07/2026 - Present\n"
+        "URL Shortener Service 04/2026 - 07/2026"
+    )
+    source = build_source_document(
+        DocumentArtifacts(
+            markdown=raw,
+            content_list=[
+                {"type": "text", "text": "Jane Doe"},
+                {"type": "title", "text": "Projects"},
+                {"type": "title", "text": "HComic - Comic Reading Platform 07/2026 - Present"},
+                {"type": "title", "text": "URL Shortener Service 04/2026 - 07/2026"},
+            ],
+        ),
+        document_id="cv-hybrid-gapfill",
+        document_sha256="a" * 64,
+    )
+    payload = json.dumps(
+        {
+            "projects": [
+                {
+                    "name": "HComic - Comic Reading Platform",
+                    "description": "Comic reading platform.",
+                    "quote": "HComic - Comic Reading Platform 07/2026 - Present",
+                }
+            ]
+        }
+    )
+
+    parsed = await HybridResumeParser(client=FakeClient(payload)).parse(
+        source, extraction_version="test"
+    )
+    names = [item.name for item in parsed.resume.projects]
+
+    assert names[0] == "HComic - Comic Reading Platform"
+    assert any("URL Shortener Service" in name for name in names)
+    assert len(names) == 2

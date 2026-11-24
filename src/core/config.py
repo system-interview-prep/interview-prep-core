@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # Store truncated model inputs/outputs in ai_call_logs. They contain CV
     # and answer text, so this is off unless an operator turns it on.
     ai_call_log_capture_text: bool = False
-    # Langfuse (src/core/llm_tracing.py): one trace per interview turn and per
+    # Langfuse (src/infrastructure/langfuse/): one trace per interview turn and per
     # grading run, with every model call, the engine's decision, guard results
     # and rule scores. Off unless the keys are set (and the `langfuse` package
     # is installed). Self-hosted: LANGFUSE_BASE_URL=http://host.docker.internal:3000.
@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     # When a job is published, a background task generates gated drafts so each
     # must-have skill has enough questions to rotate (question_coverage).
     question_pregeneration_enabled: bool = True
+    # Unreviewed generated drafts one regular session may ask (none in the
+    # challenge tier). A demo session may fill every technical slot with them
+    # so any IT CV-JD pair the audience picks can run end to end.
+    interview_max_unreviewed_generated: int = Field(default=1, ge=0, le=10)
+    demo_allow_unreviewed_generated: bool = True
     # Old unstructured interview endpoints bypass the structured turn state
     # machine. They remain opt-in only for a controlled migration window.
     legacy_interview_api_enabled: bool = False
@@ -85,11 +90,40 @@ class Settings(BaseSettings):
     jev_timeout_seconds: float = Field(default=5.0, gt=0)
     jev_clarification_confidence_threshold: float = Field(default=0.75, ge=0, le=1)
     jev_max_evidence_items: int = Field(default=5, ge=1, le=20)
+    # ``threshold`` keeps the gate's historical behaviour: one LLM call per
+    # unknown requirement, in requirement-id order.  ``information_gain`` ranks
+    # the unknowns by expected reduction in decision entropy first and calls the
+    # gate only for those whose answer could change the decision.  The default
+    # stays ``threshold`` so frozen baselines remain comparable.
+    matching_clarification_selection: Literal["threshold", "information_gain"] = "threshold"
+    matching_clarification_max_questions: int = Field(default=0, ge=0, le=30)
     matching_clarification_questions_enabled: bool = False
     matching_clarification_model: str = "gpt-5.4-mini"
     matching_llm_evidence_search_enabled: bool = True
+    # One call per requirement instead of one call for all of them. Together,
+    # the single answer is a channel between requirements: a line the
+    # candidate could never meet changed the verdict on a different one.
+    # Separate calls close it, at roughly 3.7x the calls on a cold cache -
+    # a cost decision, so it stays a setting and defaults to the old
+    # behaviour until a run measures it.
+    # Measured on, 2026-11-14: separate calls are what stop one requirement's
+    # answer depending on another's presence, and that defect changed a
+    # candidate's conclusion. Roughly 3.7x the calls on a cold cache; set it
+    # to false to trade the correctness back for the cost.
+    matching_llm_evidence_search_per_requirement: bool = True
     matching_llm_evidence_search_max_chars: int = Field(default=12_000, ge=1_000, le=100_000)
     matching_llm_evidence_search_max_requirements: int = Field(default=12, ge=1, le=30)
+    # Grounded LLM reading in matching (src/modules/matching/judge), two readers
+    # behind one switch. The gate judge reads each posting line once and may
+    # demote a line the rules call objective to a class that cannot gate; it
+    # can never promote one. The entailment judge reads CV spans against each
+    # unresolved requirement and may raise a rule verdict to met with verbatim
+    # evidence; it can never lower one. Both degrade to the rules without
+    # OPENAI_API_KEY. False is the rules-only baseline, for measurement.
+    matching_judge_enabled: bool = True
+    matching_judge_model: str | None = None
+    matching_judge_top_k: int = Field(default=8, ge=1, le=20)
+    matching_judge_max_output_tokens: int = Field(default=600, ge=128, le=4_000)
     # Kept as text so a deliberately blank .env.example value stays valid.
     matching_clarification_semantic_threshold: str | None = None
     voice_lab_enabled: bool = False
@@ -126,7 +160,19 @@ class Settings(BaseSettings):
     jd_parser_mode: str = "deterministic"
     cv_parser_max_output_tokens: int = Field(default=4_096, ge=128, le=8_192)
     cv_parser_mode: str = "deterministic"
-    parser_section_regex_v2_enabled: bool = True
+    # Hybrid CV parsing: let the grounded LLM reading win a clash with the
+    # deterministic baseline instead of only filling the baseline's gaps.
+    parser_llm_first_merge_enabled: bool = True
+    # Whitespace-only repair of torn extraction text ("GP A: 3.25" -> "GPA:
+    # 3.25") before the source document is built. The model may only add or
+    # remove whitespace; a block that differs in any other character is kept
+    # as extracted. Needs OPENAI_API_KEY; uses MATCHING_JUDGE_MODEL.
+    cv_text_repair_enabled: bool = True
+    # Where the answers of structured model calls (judges, text repair, evidence
+    # search) are kept so one input is asked once: "postgres" = the
+    # llm_call_cache table, shared by every instance and kept across deploys;
+    # "file" = one JSON per answer under models_cache/, for a developer machine.
+    llm_cache_backend: Literal["file", "postgres"] = "postgres"
     embedding_provider: str = "openai"
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1024

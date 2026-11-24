@@ -4,20 +4,13 @@ from types import SimpleNamespace
 import pytest
 
 from src.modules.matching.rag.embedding import OpenAIEmbeddingAdapter, build_embedding_adapter_from_env
-from src.modules.matching.rag.llm import LLMService
 
 
 class FakeOpenAI:
     def __init__(self, api_key):
         self.api_key = api_key
-        self.responses = SimpleNamespace(create=self.create_response)
         self.embeddings = SimpleNamespace(create=self.create_embeddings)
-        self.response_calls = []
         self.embedding_calls = []
-
-    def create_response(self, **kwargs):
-        self.response_calls.append(kwargs)
-        return SimpleNamespace(output_text="OpenAI answer")
 
     def create_embeddings(self, **kwargs):
         self.embedding_calls.append(kwargs)
@@ -40,17 +33,6 @@ def fake_openai(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=factory))
     return created
-
-
-def test_llm_uses_openai_responses_api(monkeypatch, fake_openai):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("LLM_PROVIDER", "openai")
-    monkeypatch.setenv("LLM_MODEL", "gpt-5.4-mini")
-
-    assert LLMService().generate_text("Summarize this matching result") == "OpenAI answer"
-    assert fake_openai[0].response_calls == [
-        {"model": "gpt-5.4-mini", "input": "Summarize this matching result", "store": False}
-    ]
 
 
 def test_embedding_uses_openai_with_configured_dimensions(monkeypatch, fake_openai):
@@ -89,11 +71,7 @@ def test_embedding_cache_reuses_vectors_across_adapter_instances(tmp_path, monke
     assert len(fake_openai[1].embedding_calls) == 0
 
 
-def test_bedrock_providers_are_rejected(monkeypatch):
-    monkeypatch.setenv("LLM_PROVIDER", "bedrock")
-    with pytest.raises(ValueError, match="Only 'openai' is supported"):
-        LLMService()
-
+def test_a_non_openai_embedding_provider_is_rejected(monkeypatch):
     monkeypatch.setenv("EMBEDDING_PROVIDER", "bedrock")
     with pytest.raises(ValueError, match="Only 'openai' is supported"):
         build_embedding_adapter_from_env()

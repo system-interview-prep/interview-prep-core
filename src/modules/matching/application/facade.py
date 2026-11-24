@@ -11,6 +11,10 @@ from src.modules.job_descriptions.schemas import CanonicalJobDescription
 from src.modules.matching.application import run_tracking
 from src.modules.matching.application.targeted_reparse import reparse_partial_resume
 from src.modules.matching.domain.adapters import job_description_to_matching_job
+from src.modules.matching.domain.requirement_gating import (
+    GateDecision,
+    classify_requirement_gate,
+)
 from src.modules.matching.domain.schemas import (
     CanonicalJob,
     CompatibilityResult,
@@ -26,10 +30,17 @@ from src.modules.matching.domain.schemas import (
     SkillRequirement,
     UnresolvedRequirement,
 )
+from src.modules.matching.evaluation.coverage_semantic import (
+    ScoredRequirement,
+    ScoredSpan,
+    score_by_coverage,
+)
 from src.modules.matching.evaluation.requirement_evaluators import (
     evaluate_unresolved_requirement,
     select_evaluator,
 )
+from src.modules.matching.judge.gate_judge import gate_reading_for
+from src.modules.matching.judge.reading_pass import build_reading_set
 from src.modules.matching.rag.embedding import (
     EmbeddingAdapter,
     build_embedding_adapter_from_env,
@@ -87,6 +98,58 @@ POLICY_WEIGHTS = {
 
 _REQUIREMENT_IMPORTANCE = {"must_have": 1.0, "nice_to_have": 0.35, "context": 0.15}
 
+
+def _unit(value: float) -> float:
+    """Trim floating-point overshoot from a quantity that is a ratio by construction.
+
+    ``raw_score`` and ``reliability`` are weighted means of values in [0, 1]
+    divided by the sum of the same weights, so both are mathematically bounded
+    by 1. Summing the weights in one order for the numerator and another for
+    the denominator can still land a unit above - a 500 from
+    ``FactorResult``'s ``le=1`` on an input of 1.0000000000000002. Clamping
+    cannot hide a real defect: a genuine overshoot would be far larger than an
+    ulp, and would show up as a score of 1.0 rather than being silently passed
+    through.
+    """
+    return min(1.0, max(0.0, value))
+
+# ``requirement_coverage`` already aggregates every requirement.  ``skill``,
+# ``experience`` and ``language`` are slices of that same set re-read through a
+# category filter, so adding them to the weighted sum counts the same evidence
+# twice - for a JD whose requirements are all skills, ``skill`` is numerically
+# identical to ``requirement_coverage``.  They stay in the response as
+# per-category diagnostics, but only these two factors carry score weight.
+_SCORING_FACTORS = frozenset({"requirement_coverage", "semantic"})
+
+# How many evaluated requirements a JD needs before requirement coverage is
+# treated as a full-confidence view of the role.  Real postings parse down to a
+# single requirement surprisingly often; one requirement is a real signal but a
+# thin basis for a 60%-weight factor, so confidence grows with breadth and
+# saturates here rather than starting at 1.0.
+_COVERAGE_BREADTH_TARGET = 5.0
+
+# The most a requirement can earn while its CV passage is retrieved and cited
+# but unconfirmed.  Deliberately below the midpoint: it must stay clearly
+# weaker than a confirmed ``met`` while remaining distinguishable from an
+# outright ``not_met``.  It is a ceiling, not a payment - see
+# ``_unconfirmed_credit``.
+_UNCONFIRMED_EVIDENCE_CREDIT = 0.45
+
+# Quartiles of the semantic factor measured across the 1000-pair CV/JD corpus:
+# p25 0.198, p50 0.279, p75 0.352, observed range 0.047-0.583.  Cosine
+# similarity has no absolute meaning, so the published band states where a pair
+# sits within that measured spread rather than asserting a quality threshold -
+# hence "typical" rather than "good".
+#
+# The cuts are the quartiles themselves so each band holds the share its name
+# claims, and they sit in the thin shoulders of the distribution rather than at
+# the median, where the density peak would flip a pair's label on a reworded CV
+# line.  Tukey's upper fence (p75 + 1.5*IQR) lands at 0.583, exactly the
+# observed maximum, so there is no outlier population above p75 for a fourth
+# band to describe.  Revisit these if the corpus changes materially.
+_PROFILE_MATCH_P25 = 0.198
+_PROFILE_MATCH_P75 = 0.352
+
 PROFICIENCY_RANK = {
     "basic": 1,
     "beginner": 1,
@@ -96,14 +159,146 @@ PROFICIENCY_RANK = {
     "expert": 3,
 }
 
-# Confidence of "the CV does not mention this skill": the absence itself is
-# observed reliably, but it says little about the candidate.
+# Confidence in the document evidence assessment, not in the candidate's
+# underlying ability.
 _NOT_EVIDENCED_CONFIDENCE = 0.6
+
+# Confidence attached to "found nothing" on a CV that did not parse completely.
+# Low on purpose: the finding describes our reading of the document, not the
+# candidate.
+_INCONCLUSIVE_ABSENCE_CONFIDENCE = 0.2
+
+# A ``not_met`` carrying one of these codes means "this CV could not be read
+# well enough to conclude absence".  Such a finding is reported and scored, but
+# it may not by itself disqualify a candidate; it routes the pair to review.
+_INCONCLUSIVE_ABSENCE_REASON_CODES = frozenset({"skill_evidence_missing"})
+
+
+def _fold(value: str | None) -> str:
+    """Case-fold one item before it takes part in an order.
+
+    The groups below are sorted so the text handed to the embedding does not
+    depend on the order they arrived in - an embedding is not order-invariant.
+    But sorting ran on the strings as written and the folding came afterwards,
+    on the joined text, so case still decided the order: in ASCII the capitals
+    sort before the lower case, and ["Python", "docker"] orders one way while
+    ["PYTHON", "DOCKER"] orders the other. The same CV in capitals therefore
+    produced a different text, a different vector and a different score - MR6,
+    30 of 30 pairs, through every fix aimed at the cache. Fold first, then
+    sort, and the order stops depending on how the CV was typed.
+    """
+    return (value or "").casefold()
+
+
+def _requirement_label(requirement: Requirement) -> str:
+    """The posting's own wording for a requirement, for scoring it on its own."""
+    if isinstance(requirement, SkillRequirement):
+        return requirement.raw_label or requirement.skill.label or ""
+    if isinstance(requirement, UnresolvedRequirement):
+        return requirement.raw_label or ""
+    if isinstance(requirement, LanguageRequirement):
+        level = f" {requirement.minimum_level}" if requirement.minimum_level else ""
+        return f"language {requirement.language_code}{level}"
+    return ""
+
+
+def _requirement_gate(requirement: Requirement) -> GateDecision:
+    """Ask the same question the adapter asked, of the converted requirement.
+
+    The adapter classifies the posting's own line and spends the answer on the
+    requirement's priority, which is all it needs; the class itself is not
+    carried on the requirement. Rather than widen the contract to carry it,
+    this asks ``classify_requirement_gate`` again, with the same function and
+    the same wording the adapter used.
+    """
+    if isinstance(requirement, SkillRequirement):
+        label = requirement.raw_label or requirement.skill.label or ""
+        return classify_requirement_gate(label, "skill", gate_reading_for(label, "skill"))
+    if isinstance(requirement, LanguageRequirement):
+        return classify_requirement_gate(f"language {requirement.language_code}", "language")
+    if isinstance(requirement, UnresolvedRequirement):
+        return classify_requirement_gate(
+            requirement.raw_label,
+            requirement.kind,
+            gate_reading_for(requirement.raw_label, requirement.kind),
+        )
+    return GateDecision("objective")
 
 
 def _not_evidenced_text(label: str) -> str:
-    return f"CV hiện tại chưa nhắc tới {label} — cần ứng viên xác nhận thêm."
+    return f"CV hiện tại không có bằng chứng cho {label}; tiêu chí chưa được đáp ứng theo hồ sơ đã cung cấp."
 
+
+def _resume_absence_is_conclusive(resume: CanonicalResume) -> bool:
+    """Whether "no skill passage found" may be read as "candidate lacks it".
+
+    Absence is only informative when the CV was read completely.  A resume
+    whose text or evidence index is partial, or whose skills section produced
+    nothing at all, cannot distinguish "the candidate does not have this" from
+    "we failed to read this CV" - and resolving that ambiguity against the
+    candidate rejects people for a parser shortfall.
+    """
+    parsing = resume.parsing
+    if parsing is None:
+        # No parser was involved: the caller supplied structured skills
+        # directly, so what is absent is absent by assertion, not by oversight.
+        return True
+    if resume.skills:
+        # The skills section produced claims, so this CV demonstrably parsed
+        # well enough for a missing skill to say something about the candidate.
+        return True
+    # No canonical skill at all.  That is the signature of a skills section we
+    # failed to read, unless the parser explicitly reports having read it -
+    # ``complete_empty`` means "read, and genuinely empty", which is a finding
+    # about the CV rather than about our reading of it.
+    #
+    # Deliberately keyed on the section signal alone: ``raw_text_coverage`` and
+    # ``evidence_index_coverage`` are reported as "partial" for every CV this
+    # parser emits, so requiring "complete" there would suppress the gate for
+    # every candidate rather than only the unreadable ones.
+    section_coverage = parsing.canonical_section_coverage or {}
+    return section_coverage.get("skills") in ("complete", "complete_empty")
+
+
+
+def _unconfirmed_credit(result: RequirementResult) -> float:
+    """What a cited-but-unconfirmed passage earns, scaled by how well it fits.
+
+    The ceiling used to be paid out flat, to any ``unknown`` that cited any
+    passage, without ever looking at the passage.  Retrieval returns its best
+    k candidates whether or not any of them is about the requirement, so
+    "a passage was found" is close to contentless on its own - and the credit
+    was the same for a passage squarely on the subject and one that merely
+    came back first.
+
+    Two things followed.  A constant was published as a measurement: on
+    jobscan_0260 of the frozen corpus every requirement was ``unknown`` with a
+    citation, so the pair's requirement coverage was 45.0 exactly - the
+    constant itself, carrying nothing about that candidate.  And because
+    coverage is a weighted mean, a requirement paid a constant pulls the mean
+    toward that constant: measured under MR2, adding a requirement nobody
+    could meet raised coverage on every pair sitting below 0.45 and lowered it
+    on every pair above, which is drift toward the prior rather than an
+    answer about the candidate.
+
+    Retrieval already scores how well each candidate passage fits the
+    requirement, so that score decides the payout and the ceiling stays a
+    ceiling.
+
+    Where no retrieval scored the cited passage - the targeted LLM search and
+    self-reported answers arrive without a trace - the flat ceiling is kept,
+    because there is no measurement to scale by.  That path is unchanged and
+    still drifts; it is a known residue, not a fix.
+    """
+    cited = set(result.evidence_refs)
+    measured = [
+        candidate.semantic_score
+        for candidate in result.retrieval_candidates
+        if candidate.evidence_ref in cited
+    ]
+    if not measured:
+        return _UNCONFIRMED_EVIDENCE_CREDIT
+    return _UNCONFIRMED_EVIDENCE_CREDIT * max(measured)
 
 class MatchingFacade:
     """The only application entry point for one CV-to-one-JD fit assessment."""
@@ -141,6 +336,9 @@ class MatchingFacade:
             warnings.extend(["semantic_only_estimate", "semantic_only_score_suppressed"])
         suitability = diagnostic_score if eligibility == "eligible" and not semantic_only else None
         decision, fit_band = self._decision(eligibility, suitability, factors)
+        # Derived after every strict decision above is final, from the factor
+        # list those decisions already produced, so it cannot influence them.
+        profile_match, profile_match_band = self._profile_match(factors)
         result = MatchResult(
             resumeId=payload.resume.resume_id,
             jobId=payload.job.job_id,
@@ -150,6 +348,8 @@ class MatchingFacade:
             compatibilityStatus=compatibility_status,
             diagnosticScore=diagnostic_score,
             suitabilityScore=suitability,
+            profileMatchScore=profile_match,
+            profileMatchBand=profile_match_band,
             fitBand=fit_band,
             decision=decision,
             failedMustHaveRequirements=self._failed_must_have_requirements(payload, requirements),
@@ -189,6 +389,9 @@ class MatchingFacade:
             warnings.extend(["semantic_only_estimate", "semantic_only_score_suppressed"])
         suitability = diagnostic_score if eligibility == "eligible" and not semantic_only else None
         decision, fit_band = self._decision(eligibility, suitability, factors)
+        # Derived after every strict decision above is final, from the factor
+        # list those decisions already produced, so it cannot influence them.
+        profile_match, profile_match_band = self._profile_match(factors)
         result = MatchResult(
             resumeId=payload.resume.resume_id,
             jobId=payload.job.job_id,
@@ -198,6 +401,8 @@ class MatchingFacade:
             compatibilityStatus=compatibility_status,
             diagnosticScore=diagnostic_score,
             suitabilityScore=suitability,
+            profileMatchScore=profile_match,
+            profileMatchBand=profile_match_band,
             fitBand=fit_band,
             decision=decision,
             failedMustHaveRequirements=self._failed_must_have_requirements(payload, requirements),
@@ -260,8 +465,46 @@ class MatchingFacade:
         document_evidence = [
             item for item in resume.evidence if item.evidence_source == "document"
         ]
+        # The judge reads every unresolved requirement once, up front, so the
+        # evaluators below stay synchronous and see a fixed set of readings.
+        # None unless Settings.matching_judge_enabled.
+        readings = build_reading_set(resume, job)
         results: list[RequirementResult] = []
         for requirement in job.requirements:
+            # A line a CV cannot answer must not be answered. Gating already
+            # keeps these out of eligibility and out of the score, but it left
+            # them to the evaluators, which returned a verdict anyway: on the
+            # frozen corpus "Nam từ 25 đến 35 tuổi" came back ``met``, citing
+            # the candidate's degree line as the evidence for it. A posting's
+            # demand about someone's sex, age or appearance may not be reported
+            # as answered - nor as unanswered, which reads as the candidate
+            # falling short of it. It is not a question this system asks.
+            gate = _requirement_gate(requirement)
+            if gate.gate_class in ("non_assessable", "soft_signal"):
+                # A soft signal ("tư duy logic tốt", "năng động") used to be
+                # evaluated anyway, at context weight, and came back not_met
+                # for want of the posting's own words in the CV - so the
+                # reader saw "chưa phù hợp" on a line no CV can answer. It
+                # is reported the way the other unanswerable lines are.
+                results.append(
+                    RequirementResult(
+                        requirementId=requirement.requirement_id,
+                        status="not_applicable",
+                        score=None,
+                        confidence=1.0,
+                        reasonCode=gate.reason_code or "requirement_not_assessable_from_a_cv",
+                        evidenceExplanation=(
+                            "Đây là phẩm chất hoặc thái độ làm việc, không thể đánh giá từ hồ sơ "
+                            "nên không được chấm, không tham gia quyết định đủ điều kiện, và "
+                            "không được tính là đáp ứng hay không đáp ứng."
+                            if gate.gate_class == "soft_signal"
+                            else "Yêu cầu này không thể đánh giá từ hồ sơ nên không được chấm, "
+                            "không tham gia quyết định đủ điều kiện, và không được tính là "
+                            "đáp ứng hay không đáp ứng."
+                        ),
+                    )
+                )
+                continue
             scoped_document_evidence = [
                 item
                 for item in document_evidence
@@ -309,18 +552,32 @@ class MatchingFacade:
                     recovered_refs = [item.evidence_id for item in recovered_evidence]
                     context_refs = [item.evidence.evidence_id for item in context_candidates]
                     has_uncertain_evidence = bool(context_candidates or recovered_evidence)
-                    # A CV that never mentions a skill is not evidence the
-                    # candidate lacks it: CVs are short and parsers miss
-                    # sections. Absence is "not evidenced" (unknown, ask the
-                    # candidate), never a confident not_met that fails the
-                    # must-have gate. not_met is kept for skills the CV shows
-                    # below the required level or duration.
+                    # Keep uncertain, cited evidence as unknown. If neither
+                    # canonical nor recovered evidence exists, the skill is
+                    # not met according to the CV supplied for this match -
+                    # but only when this CV can actually support that
+                    # conclusion.  When its own skill section failed to parse,
+                    # finding no skill evidence says the parse is incomplete,
+                    # not that the candidate lacks the skill, so the finding
+                    # stays ``unknown`` for review (the same rule the GPA,
+                    # language and education evaluators already apply).
+                    # ``unknown`` must cite a passage (schema invariant), so a
+                    # CV we could not read stays ``not_met`` here and is
+                    # instead held back from the eligibility gate by its
+                    # reason code - see ``_INCONCLUSIVE_ABSENCE_REASON_CODES``.
+                    absence_is_conclusive = _resume_absence_is_conclusive(resume)
                     results.append(
                         RequirementResult(
                             requirementId=requirement.requirement_id,
-                            status="unknown",
-                            score=None,
-                            confidence=0.45 if has_uncertain_evidence else _NOT_EVIDENCED_CONFIDENCE,
+                            status="unknown" if has_uncertain_evidence else "not_met",
+                            score=None if has_uncertain_evidence else 0.0,
+                            confidence=(
+                                0.45
+                                if has_uncertain_evidence
+                                else _NOT_EVIDENCED_CONFIDENCE
+                                if absence_is_conclusive
+                                else _INCONCLUSIVE_ABSENCE_CONFIDENCE
+                            ),
                             evidenceRefs=list(dict.fromkeys([*context_refs, *recovered_refs])),
                             reasonCode=(
                                 "skill_semantic_context_needs_confirmation"
@@ -328,11 +585,18 @@ class MatchingFacade:
                                 else "skill_retrieved_evidence_needs_confirmation"
                                 if recovered_evidence
                                 else "skill_not_evidenced"
+                                if absence_is_conclusive
+                                else "skill_evidence_missing"
                             ),
                             evidenceExplanation=(
                                 "CV source passage was recovered but still needs confirmation."
                                 if has_uncertain_evidence
                                 else _not_evidenced_text(requirement.skill.label)
+                                if absence_is_conclusive
+                                else (
+                                    f"CV này chưa bóc tách được phần kỹ năng nên chưa thể kết luận "
+                                    f"“{requirement.skill.label}” là thiếu; cần kiểm tra lại bản gốc."
+                                )
                             ),
                             retrievalCandidates=[
                                 EvidenceCandidateTrace(**item.trace(rank=index, evidence_strength="applied"))
@@ -344,8 +608,8 @@ class MatchingFacade:
                     results.append(
                         RequirementResult(
                             requirementId=requirement.requirement_id,
-                            status="unknown",
-                            score=None,
+                            status="not_met",
+                            score=0.0,
                             confidence=_NOT_EVIDENCED_CONFIDENCE,
                             evidenceRefs=[],
                             reasonCode="skill_not_evidenced",
@@ -530,7 +794,9 @@ class MatchingFacade:
                         )
                     )
             elif isinstance(requirement, UnresolvedRequirement):
-                results.append(evaluate_unresolved_requirement(requirement, scoped_resume))
+                results.append(
+                    evaluate_unresolved_requirement(requirement, scoped_resume, readings)
+                )
         # Structured skill/language requirements historically bypassed the
         # evaluator trace. Emit the same grounded event shape so every
         # requirement can be audited, including preferred Docker/Linux rows.
@@ -603,12 +869,26 @@ class MatchingFacade:
             for requirement, result in zip(payload.job.requirements, results, strict=True)
             if requirement.priority == "must_have"
         ]
-        if payload.matching_policy.must_have_mode == "strict" and any(
-            result.status == "not_met" and result.confidence >= 0.80 for result in must
-        ):
+        # A must-have may only disqualify when the CV could actually support
+        # that conclusion.  "We found nothing in a CV we could not fully read"
+        # is a gap in our reading, and rejecting on it turns a parser shortfall
+        # into a rejection the candidate cannot see or answer.
+        disqualifying = [
+            result
+            for result in must
+            if result.status == "not_met"
+            and result.reason_code not in _INCONCLUSIVE_ABSENCE_REASON_CODES
+        ]
+        inconclusive = [
+            result
+            for result in must
+            if result.status == "not_met"
+            and result.reason_code in _INCONCLUSIVE_ABSENCE_REASON_CODES
+        ]
+        if payload.matching_policy.must_have_mode == "strict" and disqualifying:
             return "ineligible"
-        if payload.matching_policy.unknown_handling == "manual_review" and any(
-            result.status == "unknown" for result in must
+        if payload.matching_policy.unknown_handling == "manual_review" and (
+            any(result.status == "unknown" for result in must) or inconclusive
         ):
             return "review_required"
         return "eligible"
@@ -617,10 +897,16 @@ class MatchingFacade:
     def _failed_must_have_requirements(
         payload: MatchRequest, results: list[RequirementResult]
     ) -> list[str]:
+        # Mirrors ``_eligibility``: only requirements that actually disqualify
+        # are reported as failed.  An absence we could not confirm is surfaced
+        # through its reason code and the review decision, not as a failure
+        # charged to the candidate.
         return [
             requirement.requirement_id
             for requirement, result in zip(payload.job.requirements, results, strict=True)
-            if requirement.priority == "must_have" and result.status == "not_met"
+            if requirement.priority == "must_have"
+            and result.status == "not_met"
+            and result.reason_code not in _INCONCLUSIVE_ABSENCE_REASON_CODES
         ]
 
     def _score_factors(
@@ -685,12 +971,30 @@ class MatchingFacade:
                 policyWeight=policy_weight,
                 effectiveWeight=0.0,
             )
-        evaluated = [(requirement, result) for requirement, result in applicable if result.score is not None]
+        # An ``unknown`` that cites retrieved CV evidence is not the same as an
+        # ``unknown`` with nothing behind it: the passage was found, only its
+        # confirmation is pending.  Dropping both alike discards the weaker of
+        # the two real signals, so cited-but-unconfirmed evidence earns partial
+        # credit here while its ``unknown`` status - and therefore the review
+        # decision it triggers - stays untouched.  How much it earns is set by
+        # how well the passage fits, not by the fact that one came back:
+        # see ``_unconfirmed_credit``.
+        evaluated = [
+            (requirement, result, result.score)
+            for requirement, result in applicable
+            if result.score is not None
+        ] + [
+            (requirement, result, _unconfirmed_credit(result))
+            for requirement, result in applicable
+            if result.score is None and result.status == "unknown" and result.evidence_refs
+        ]
         evidence = list(dict.fromkeys(ref for _, result in applicable for ref in result.evidence_refs))
         applicable_weight = sum(
             _REQUIREMENT_IMPORTANCE[requirement.priority] for requirement, _ in applicable
         )
-        evaluated_weight = sum(_REQUIREMENT_IMPORTANCE[requirement.priority] for requirement, _ in evaluated)
+        evaluated_weight = sum(
+            _REQUIREMENT_IMPORTANCE[requirement.priority] for requirement, _, _ in evaluated
+        )
         if not evaluated:
             return FactorResult(
                 factor="requirement_coverage",
@@ -703,18 +1007,25 @@ class MatchingFacade:
             )
         score = (
             sum(
-                _REQUIREMENT_IMPORTANCE[requirement.priority] * (result.score or 0.0)
-                for requirement, result in evaluated
+                _REQUIREMENT_IMPORTANCE[requirement.priority] * (credit or 0.0)
+                for requirement, _, credit in evaluated
             )
             / evaluated_weight
         )
+        # Unknown evidence is excluded from satisfaction, but lowers confidence
+        # through reliability rather than being silently counted as a failure.
+        evaluated_share = evaluated_weight / applicable_weight
+        # A JD parsed down to one requirement says little about overall fit.
+        # Confidence in requirement coverage therefore grows with how many
+        # requirements were actually assessed and saturates at the target, so a
+        # thin extraction leans on semantic context instead of turning one
+        # requirement into the whole verdict.
+        breadth = min(1.0, (len(evaluated) / _COVERAGE_BREADTH_TARGET) ** 0.5)
         return FactorResult(
             factor="requirement_coverage",
             status="scored",
-            rawScore=score,
-            # Unknown evidence is excluded from satisfaction, but lowers confidence
-            # through reliability rather than being silently counted as a failure.
-            reliability=evaluated_weight / applicable_weight,
+            rawScore=_unit(score),
+            reliability=_unit(evaluated_share * breadth),
             policyWeight=policy_weight,
             effectiveWeight=0.0,
             evidenceRefs=evidence,
@@ -773,8 +1084,8 @@ class MatchingFacade:
                 evidenceRefs=evidence,
                 warningCode="factor_not_evidenced",
             )
-        score = sum(result.score for result in scored if result.score is not None) / len(scored)
-        reliability = sum(result.confidence for result in scored) / len(scored)
+        score = _unit(sum(result.score for result in scored if result.score is not None) / len(scored))
+        reliability = _unit(sum(result.confidence for result in scored) / len(scored))
         return FactorResult(
             factor=factor,
             status="scored",
@@ -793,10 +1104,13 @@ class MatchingFacade:
         *,
         started: float | None = None,
         bm25_used: str | None = None,
+        sparse_resolved: bool = False,
     ) -> tuple[FactorResult, str | None]:
         started = time.perf_counter() if started is None else started
         with track_bm25_provider() as used:
-            factor, warning, outcome = self._semantic_factor_scored(payload, policy_weight, sparse_score)
+            factor, warning, outcome = self._semantic_factor_scored(
+                payload, policy_weight, sparse_score, sparse_resolved=sparse_resolved
+            )
         if run_tracking.active_run() is not None:
             policy = payload.matching_policy
             run_tracking.emit(
@@ -816,44 +1130,63 @@ class MatchingFacade:
         return factor, warning
 
     def _semantic_factor_scored(
-        self, payload: MatchRequest, policy_weight: float, sparse_score: float | None = None
+        self,
+        payload: MatchRequest,
+        policy_weight: float,
+        sparse_score: float | None = None,
+        *,
+        sparse_resolved: bool = False,
     ) -> tuple[FactorResult, str | None, str | None]:
         """The semantic factor, its warning, and the embedding outcome
         (ok | disk_cache | disabled | error, None when no embedding was needed)."""
+        if payload.matching_policy.semantic_aggregation == "requirement_coverage":
+            return self._coverage_semantic_factor(payload, policy_weight)
         contextual_resume_text = [
             value for value in (payload.resume.profile.headline, payload.resume.profile.summary) if value
         ]
-        contextual_resume_text.extend(claim.concept.label for claim in payload.resume.skills)
-        contextual_resume_text.extend(item.label for item in payload.resume.career_classifications)
-        contextual_resume_text.extend(project.name for project in payload.resume.projects)
-        contextual_resume_text.extend(
+        # Each group below is sorted before it joins the text. An embedding is
+        # not order-invariant, so leaving the incoming array order in meant a
+        # posting whose requirements were merely listed differently scored
+        # differently.
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (claim.concept.label for claim in payload.resume.skills))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (item.label for item in payload.resume.career_classifications))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (project.name for project in payload.resume.projects))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (
             text for employment in payload.resume.employment for text in employment.responsibilities
-        )
-        contextual_resume_text.extend(
+        ))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (
             achievement.text
             for employment in payload.resume.employment
             for achievement in employment.achievements
-        )
-        contextual_resume_text.extend(
+        ))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (
             project.description for project in payload.resume.projects if project.description
-        )
+        ))))
         contextual_job_text = [value for value in (payload.job.job_title,) if value]
-        contextual_job_text.extend(
+        contextual_job_text.extend(sorted(set(_fold(x) for x in (
             item.raw_label for item in payload.job.requirements if isinstance(item, UnresolvedRequirement)
-        )
-        contextual_job_text.extend(
+        ))))
+        contextual_job_text.extend(sorted(set(_fold(x) for x in (
             item.skill.label for item in payload.job.requirements if isinstance(item, SkillRequirement)
-        )
-        contextual_job_text.extend(item.text for item in payload.job.responsibilities)
-        contextual_job_text.extend(item.label for item in payload.job.career_classifications)
-        resume_text = "\n".join(contextual_resume_text) or "\n".join(
+        ))))
+        contextual_job_text.extend(sorted(set(_fold(x) for x in (item.text for item in payload.job.responsibilities))))
+        contextual_job_text.extend(sorted(set(_fold(x) for x in (item.label for item in payload.job.career_classifications))))
+        # Folded to lower case before it reaches the embedding. Case carries no
+        # meaning for a skill label, but an embedding is case sensitive: the same
+        # CV written in capitals scored 2.6 to 5.0 points lower on every pair
+        # tested (MR6). The sparse half is unaffected - its query already goes
+        # through tokenize_text, which casefolds.
+        resume_text = ("\n".join(contextual_resume_text) or "\n".join(
             item.text for item in payload.resume.evidence
-        )
-        job_text = "\n".join(contextual_job_text) or "\n".join(item.text for item in payload.job.evidence)
+        )).casefold()
+        job_text = ("\n".join(contextual_job_text) or "\n".join(item.text for item in payload.job.evidence)).casefold()
         if not resume_text or not job_text:
             return (*self._unknown_semantic(policy_weight, "semantic_input_not_evidenced"), None)
 
-        if sparse_score is None:
+        mode = payload.matching_policy.semantic_mode
+        bm25_w = payload.matching_policy.bm25_weight
+
+        if not sparse_resolved and sparse_score is None and mode != "dense_only":
             if payload.matching_policy.bm25_provider_mode == "in_memory":
                 sparse_score = bm25_similarity(job_text, resume_text)
             else:
@@ -861,15 +1194,24 @@ class MatchingFacade:
                 sparse_score = self._bm25_provider.score(
                     query_text=job_text, doc_text=resume_text, doc_id=doc_id
                 )
-        mode = payload.matching_policy.semantic_mode
-        bm25_w = payload.matching_policy.bm25_weight
+
+        sparse_warning: str | None = None
+        if sparse_score is None and mode != "dense_only":
+            # The index could not answer: this CV has no stored text, or
+            # ParadeDB was unreachable. Nothing is borrowed from the in-memory
+            # formula - it is on a different scale, so quoting it would report a
+            # score nobody computed. Embeddings need no index, so semantic is
+            # still scored, on dense alone, and the caller is told which half
+            # is missing.
+            sparse_warning = "semantic_sparse_unavailable"
+            mode = "dense_only"
 
         if mode == "sparse_only":
             return (
                 FactorResult(
                     factor="semantic",
                     status="scored",
-                    rawScore=sparse_score,
+                    rawScore=_unit(sparse_score),
                     reliability=0.90,
                     policyWeight=policy_weight,
                     effectiveWeight=0.0,
@@ -909,20 +1251,22 @@ class MatchingFacade:
                 final_score = dense_score
             else:  # hybrid
                 final_score = (1.0 - bm25_w) * dense_score + bm25_w * sparse_score
+            # Reliability drops when half the hybrid signal is missing.
+            reliability = 0.85 if sparse_warning else 1.0
 
             return (
                 FactorResult(
                     factor="semantic",
                     status="scored",
-                    rawScore=round(final_score, 4),
-                    reliability=1.0,
+                    rawScore=_unit(round(final_score, 4)),
+                    reliability=reliability,
                     policyWeight=policy_weight,
                     effectiveWeight=0.0,
                     evidenceRefs=[item.evidence_id for item in payload.resume.evidence],
                     denseScore=round(dense_score, 4),
-                    sparseScore=round(sparse_score, 4),
+                    sparseScore=None if sparse_score is None else round(sparse_score, 4),
                 ),
-                None,
+                sparse_warning,
                 embedding_outcome,
             )
 
@@ -931,12 +1275,12 @@ class MatchingFacade:
             return (*self._unknown_semantic(policy_weight, "semantic_scorer_unavailable"), embedding_outcome)
 
         # Dense failed unexpectedly: graceful sparse degradation
-        if sparse_score > 0.0:
+        if sparse_score is not None and sparse_score > 0.0:
             return (
                 FactorResult(
                     factor="semantic",
                     status="scored",
-                    rawScore=round(sparse_score, 4),
+                    rawScore=_unit(round(sparse_score, 4)),
                     reliability=0.85,
                     policyWeight=policy_weight,
                     effectiveWeight=0.0,
@@ -947,47 +1291,146 @@ class MatchingFacade:
                 embedding_outcome,
             )
 
-        return (*self._unknown_semantic(policy_weight, "semantic_scorer_unavailable"), embedding_outcome)
+        return (
+            *self._unknown_semantic(
+                policy_weight,
+                "semantic_sparse_unavailable" if sparse_warning else "semantic_scorer_unavailable",
+            ),
+            embedding_outcome,
+        )
+
+    def _coverage_semantic_factor(
+        self, payload: MatchRequest, policy_weight: float
+    ) -> tuple[FactorResult, str | None, str | None]:
+        """Score the pair by the share of its needs the CV answers.
+
+        Each requirement is scored against each passage by the same two halves
+        in the same proportion as before, only at a smaller grain, and the
+        assignment between them is settled under a budget. What the pair scores
+        then depends on which needs are answered rather than on how many terms
+        the posting happens to contain.
+        """
+        requirements = [
+            ScoredRequirement(
+                requirement_id=item.requirement_id,
+                priority=item.priority,
+                text=_requirement_label(item),
+            )
+            for item in payload.job.requirements
+        ]
+        spans = [
+            ScoredSpan(evidence_id=item.evidence_id, text=item.text)
+            for item in payload.resume.evidence
+            if item.text
+        ]
+
+        vectors: dict[str, list[float]] = {}
+        embedding_outcome: str | None = None
+        warning: str | None = None
+        if payload.matching_policy.semantic_mode != "sparse_only":
+            texts = sorted({item.text for item in requirements if item.text.strip()} | {
+                item.text for item in spans
+            })
+            try:
+                if self._embedder is None:
+                    self._embedder = build_embedding_adapter_from_env()
+                embedded = embed_texts_for(
+                    self._embedder, texts, purpose="matching.semantic.embeddings"
+                )
+                if len(embedded) != len(texts):
+                    raise ValueError("embedding provider returned an invalid vector count")
+                vectors = dict(zip(texts, embedded, strict=True))
+                embedding_outcome = last_embedding_outcome() or "ok"
+            except Exception as exc:  # noqa: BLE001 - a missing half is reported, not raised
+                vectors = {}
+                embedding_outcome = "disabled" if "disabled" in str(exc).lower() else "error"
+                warning = "semantic_dense_provider_fallback_to_sparse"
+
+        def dense(left: str, right: str) -> float | None:
+            if left not in vectors or right not in vectors:
+                return None
+            return cosine_similarity(vectors[left], vectors[right])
+
+        result = score_by_coverage(
+            requirements,
+            spans,
+            sparse_similarity=lambda left, right: bm25_similarity(left, right, reference_length=40.0),
+            dense_similarity=dense if vectors else None,
+            bm25_weight=payload.matching_policy.bm25_weight,
+        )
+        if result is None:
+            return (
+                *self._unknown_semantic(policy_weight, "semantic_input_not_evidenced"),
+                embedding_outcome,
+            )
+        return (
+            FactorResult(
+                factor="semantic",
+                status="scored",
+                rawScore=_unit(round(result.score, 4)),
+                reliability=1.0 if vectors else 0.85,
+                policyWeight=policy_weight,
+                effectiveWeight=0.0,
+                evidenceRefs=list(result.evidence_refs),
+                denseScore=result.mean_dense,
+                sparseScore=result.mean_sparse,
+            ),
+            warning,
+            embedding_outcome,
+        )
 
     async def _semantic_factor_async(
         self, payload: MatchRequest, policy_weight: float
     ) -> tuple[FactorResult, str | None]:
         """Async equivalent of the semantic factor's sparse-score portion."""
         started = time.perf_counter()
+        if payload.matching_policy.semantic_aggregation == "requirement_coverage":
+            # Coverage scores each requirement against each passage, so the
+            # document-level index query this method exists to make would be
+            # work nobody reads.
+            return self._semantic_factor(payload, policy_weight, started=started)
         contextual_resume_text = [
             value for value in (payload.resume.profile.headline, payload.resume.profile.summary) if value
         ]
-        contextual_resume_text.extend(claim.concept.label for claim in payload.resume.skills)
-        contextual_resume_text.extend(item.label for item in payload.resume.career_classifications)
-        contextual_resume_text.extend(project.name for project in payload.resume.projects)
-        contextual_resume_text.extend(
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (claim.concept.label for claim in payload.resume.skills))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (item.label for item in payload.resume.career_classifications))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (project.name for project in payload.resume.projects))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (
             text for employment in payload.resume.employment for text in employment.responsibilities
-        )
-        contextual_resume_text.extend(
+        ))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (
             achievement.text
             for employment in payload.resume.employment
             for achievement in employment.achievements
-        )
-        contextual_resume_text.extend(
+        ))))
+        contextual_resume_text.extend(sorted(set(_fold(x) for x in (
             project.description for project in payload.resume.projects if project.description
-        )
+        ))))
         contextual_job_text = [value for value in (payload.job.job_title,) if value]
-        contextual_job_text.extend(
+        contextual_job_text.extend(sorted(set(_fold(x) for x in (
             item.raw_label for item in payload.job.requirements if isinstance(item, UnresolvedRequirement)
-        )
-        contextual_job_text.extend(
+        ))))
+        contextual_job_text.extend(sorted(set(_fold(x) for x in (
             item.skill.label for item in payload.job.requirements if isinstance(item, SkillRequirement)
-        )
-        contextual_job_text.extend(item.text for item in payload.job.responsibilities)
-        contextual_job_text.extend(item.label for item in payload.job.career_classifications)
-        resume_text = "\n".join(contextual_resume_text) or "\n".join(
+        ))))
+        contextual_job_text.extend(sorted(set(_fold(x) for x in (item.text for item in payload.job.responsibilities))))
+        contextual_job_text.extend(sorted(set(_fold(x) for x in (item.label for item in payload.job.career_classifications))))
+        # Folded to lower case before it reaches the embedding. Case carries no
+        # meaning for a skill label, but an embedding is case sensitive: the same
+        # CV written in capitals scored 2.6 to 5.0 points lower on every pair
+        # tested (MR6). The sparse half is unaffected - its query already goes
+        # through tokenize_text, which casefolds.
+        resume_text = ("\n".join(contextual_resume_text) or "\n".join(
             item.text for item in payload.resume.evidence
-        )
-        job_text = "\n".join(contextual_job_text) or "\n".join(item.text for item in payload.job.evidence)
+        )).casefold()
+        job_text = ("\n".join(contextual_job_text) or "\n".join(item.text for item in payload.job.evidence)).casefold()
         if not resume_text or not job_text:
             return self._semantic_factor(payload, policy_weight, started=started)
         bm25_used: str | None = None
-        if payload.matching_policy.bm25_provider_mode == "in_memory":
+        sparse_score: float | None = None
+        if payload.matching_policy.semantic_mode == "dense_only":
+            pass  # embeddings only: the index is not consulted at all
+        elif payload.matching_policy.bm25_provider_mode == "in_memory":
             sparse_score = bm25_similarity(job_text, resume_text)
         else:
             with track_bm25_provider() as used:
@@ -1001,7 +1444,12 @@ class MatchingFacade:
         # The remaining semantic work is CPU-only and shares the established
         # scoring implementation without touching the database again.
         return self._semantic_factor(
-            payload, policy_weight, sparse_score=sparse_score, started=started, bm25_used=bm25_used
+            payload,
+            policy_weight,
+            sparse_score=sparse_score,
+            started=started,
+            bm25_used=bm25_used,
+            sparse_resolved=True,
         )
 
     @staticmethod
@@ -1137,13 +1585,22 @@ class MatchingFacade:
 
     @staticmethod
     def _apply_effective_weights(factors: list[FactorResult]) -> None:
-        denominator = sum(
-            item.policy_weight * item.reliability for item in factors if item.status == "scored"
-        )
+        """Share weight among the independent factors only.
+
+        Category factors are slices of requirement coverage, so they are
+        reported but never added to the weighted sum (see ``_SCORING_FACTORS``).
+        """
+        scoring = [
+            item
+            for item in factors
+            if item.status == "scored" and item.factor in _SCORING_FACTORS
+        ]
+        denominator = sum(item.policy_weight * item.reliability for item in scoring)
+        scoring_ids = {id(item) for item in scoring}
         for item in factors:
             item.effective_weight = (
                 item.policy_weight * item.reliability / denominator
-                if denominator and item.status == "scored"
+                if denominator and id(item) in scoring_ids
                 else 0.0
             )
 
@@ -1153,6 +1610,36 @@ class MatchingFacade:
         if not scored:
             return None
         return sum(item.effective_weight * item.raw_score for item in scored if item.raw_score is not None)
+
+    @staticmethod
+    def _profile_match(factors: list[FactorResult]) -> tuple[float | None, str | None]:
+        """How close this profile reads to this posting, as a published metric.
+
+        Read, never recomputed: this is the semantic factor's own score, so the
+        published number and ``factorResults`` cannot disagree, and publishing
+        it costs no extra model call.  Deliberately not blended with requirement
+        coverage - blending pulls the distribution away from the range that
+        makes it comparable - and deliberately not gated on eligibility, so a
+        rejected pair still carries one.
+
+        Returns ``(None, None)`` only where the semantic factor did not score,
+        which is the ``_unknown_semantic`` path and already warns for itself.
+        """
+        score = next(
+            (
+                item.raw_score
+                for item in factors
+                if item.factor == "semantic" and item.status == "scored"
+            ),
+            None,
+        )
+        if score is None:
+            return None, None
+        if score < _PROFILE_MATCH_P25:
+            return score, "below_typical"
+        if score < _PROFILE_MATCH_P75:
+            return score, "typical"
+        return score, "above_typical"
 
     @staticmethod
     def _score_provenance(

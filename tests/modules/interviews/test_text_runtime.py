@@ -3,7 +3,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 import pytest
 
-from src.modules.interviews.application.text_runtime import (
+from src.modules.interviews.application.runtime.text_runtime import (
     TurnStateError,
     _turn_payload,
     ask_turn,

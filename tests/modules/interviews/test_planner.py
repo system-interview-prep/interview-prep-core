@@ -1,3 +1,5 @@
+import pytest
+
 from src.modules.interviews.planning.planner import (
     PLANNER_POLICY_VERSION,
     derive_competency_plan,
@@ -443,8 +445,8 @@ def test_planner_gives_half_the_questions_to_the_round_the_candidate_chose() -> 
     assert plain["selection"]["focusArea"] is None
 
 
-def test_planner_asks_again_a_skill_with_a_point_due_for_practice() -> None:
-    """Spaced re-ask (research 24/10): the due skill gets a slot even when ranked low."""
+def test_planner_asks_again_a_skill_and_preserves_the_exact_due_question() -> None:
+    """A due competency gets a slot, preferring yesterday's exact question."""
     requirements = [
         _skill("req-python", "skill-python", "Python"),
         _skill("req-docker", "skill-docker", "Docker"),
@@ -456,14 +458,48 @@ def test_planner_asks_again_a_skill_with_a_point_due_for_practice() -> None:
         job=_job(*requirements),
         match=results,
         duration_minutes=20,
-        reask=[{"conceptId": "skill-redis", "points": ["TTL ngẫu nhiên", "Hot key"]}],
+        reask=[{"conceptId": "skill-redis", "points": ["TTL ngẫu nhiên", "Hot key"], "questionVersionId": "qv-redis"}],
     )
     asked = [item["conceptId"] for item in plan["targets"]]
     assert plan["questionBudget"] == 2 and "skill-redis" in asked
     reask = plan["selection"]["reask"]
-    assert reask == [{"conceptId": "skill-redis", "points": ["TTL ngẫu nhiên", "Hot key"]}]
+    assert reask == [{"conceptId": "skill-redis", "points": ["TTL ngẫu nhiên", "Hot key"], "questionVersionId": "qv-redis"}]
     # A due skill the job does not ask about is ignored.
     other = derive_competency_plan(
         job=_job(*requirements), match=results, duration_minutes=20, reask=[{"conceptId": "skill-kafka"}]
     )
     assert other["selection"]["reask"] == []
+
+
+@pytest.mark.asyncio
+async def test_due_reask_uses_the_first_due_question_for_that_position(monkeypatch) -> None:
+    from src.modules.interviews.application import progress
+    from src.modules.interviews.planning import planner
+
+    async def fake_progress(_db, _user_id):
+        return {
+            "gaps": {
+                "open": [
+                    {
+                        "skillKey": "skill-redis", "point": "Cache stampede", "timesMissed": 2, "due": True,
+                        "lastSeen": {"jobId": "job-1", "questionVersionId": "qv-yesterday"},
+                    },
+                    {
+                        "skillKey": "skill-redis", "point": "TTL", "timesMissed": 1, "due": True,
+                        "lastSeen": {"jobId": "job-1", "questionVersionId": "qv-older"},
+                    },
+                    {
+                        "skillKey": "skill-python", "point": "Types", "timesMissed": 1, "due": True,
+                        "lastSeen": {"jobId": "other-job", "questionVersionId": "qv-other"},
+                    },
+                ]
+            }
+        }
+
+    monkeypatch.setattr(progress, "load_progress", fake_progress)
+    result = await planner._due_reask(object(), user_id="user-1", job_id="job-1")
+    assert result == [{
+        "conceptId": "skill-redis",
+        "points": ["Cache stampede", "TTL"],
+        "questionVersionId": "qv-yesterday",
+    }]

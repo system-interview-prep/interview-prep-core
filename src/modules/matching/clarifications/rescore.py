@@ -61,15 +61,16 @@ async def rescore_match_with_clarification_answers(
         evidence_by_requirement[answer.requirement_id] = evidence
         negative = is_explicit_negative(answer.answer_text)
 
-        if negative and isinstance(requirement, (SkillRequirement, LanguageRequirement)):
+        # "Tôi không biết" is an answer, and it answers no.  The negative
+        # branch used to apply only to skill and language requirements, so for
+        # every other kind the reply fell through to ordinary evaluation - and
+        # once the answer was cited there at all, the requirement moved from
+        # ``not_met`` to ``unknown``, which raised the score for saying no.
+        if negative:
             if isinstance(requirement, SkillRequirement) and requirement.operator == "gte":
                 claim = skill_claim_from_answer(requirement, answer.answer_text, evidence)
                 if claim is not None:
                     skill_claims.append(claim)
-            elif isinstance(requirement, SkillRequirement) and requirement.operator == "proficiency_gte":
-                overrides[requirement.requirement_id] = candidate_negative_result(requirement, evidence)
-            elif isinstance(requirement, SkillRequirement):
-                overrides[requirement.requirement_id] = candidate_negative_result(requirement, evidence)
             else:
                 overrides[requirement.requirement_id] = candidate_negative_result(requirement, evidence)
             continue

@@ -20,6 +20,13 @@ def _source(content_list: list) -> object:
     )
 
 
+def test_source_document_strips_nul_bytes_from_extracted_text() -> None:
+    source = _source([{"type": "text", "text": "PROJECTS\x00\nMessage Me\x00"}])
+
+    assert "\x00" not in source.text
+    assert all("\x00" not in block.text for block in source.blocks)
+
+
 def test_source_document_preserves_page_order_bbox_and_sections() -> None:
     source = _source(
         [
@@ -237,7 +244,7 @@ def test_deterministic_parser_uses_explicit_profile_headline_for_ai_primary_clas
 
     assert result.resume.profile.headline == "AI Engineer Intern | NLP | GenAI | LLM/RAG"
     primary = next(item for item in result.resume.career_classifications if item.is_primary)
-    assert primary.code == "technology.artificial-intelligence"
+    assert primary.code == "technology.ai-engineering"
     assert primary.evidence_refs
 
 
@@ -478,7 +485,7 @@ def test_deterministic_parser_regression_education_and_projects() -> None:
     assert "skill-large-language-models" in skill_ids
     assert "skill-retrieval-augmented-generation" in skill_ids
     primary = next(item for item in result.resume.career_classifications if item.is_primary)
-    assert primary.code == "technology.artificial-intelligence"
+    assert primary.code == "technology.ai-engineering"
 
     # 5. 100% of extracted claims have valid, resolvable evidence refs
     evidence_map = {ev.evidence_id: ev for ev in result.resume.evidence}
@@ -493,6 +500,8 @@ def test_deterministic_parser_regression_education_and_projects() -> None:
 def test_deterministic_parser_project_detail_prefix_grouping() -> None:
     source = _source(
         [
+            {"type": "title", "text": "EXPERIENCE"},
+            {"type": "text", "text": "Blockly Programming Mobile App for IoT (Freelance) 2025 - 2026"},
             {"type": "title", "text": "PROJECTS"},
             {"type": "text", "text": "Career Assistant X"},
             {
@@ -531,6 +540,117 @@ def test_deterministic_parser_project_detail_prefix_grouping() -> None:
         assert not p.name.lower().startswith("description")
         assert not p.name.lower().startswith("responsibilities")
         assert not p.name.lower().startswith("technologies")
+
+
+def test_project_extractor_keeps_wrapped_description_lines_with_their_project() -> None:
+    source = _source(
+        [
+            {"type": "title", "text": "EXPERIENCE"},
+            {"type": "text", "text": "Blockly Programming Mobile App for IoT (Freelance) 2025 - 2026"},
+            {"type": "text", "text": "Founder & Fullstack Developer · IVORA 2025 - Present"},
+            {"type": "title", "text": "PROJECTS"},
+            {
+                "type": "text",
+                "text": "Interview Preparation Support System (Scientific Research) Currently Researching",
+            },
+            {
+                "type": "text",
+                "text": "Description: An interview preparation platform with AI and real-time video, supporting skill assessment and",
+            },
+            {"type": "text", "text": "CV ranking against Job Descriptions (JD)"},
+            {"type": "text", "text": "Technologies: Next.js, Spring Boot, Java, DynamoDB, WebRTC"},
+            {"type": "text", "text": "- Built an interview preparation system with AI and automated assessments"},
+            {"type": "text", "text": "feedback"},
+            {"type": "text", "text": "environment"},
+            {"type": "text", "text": "are missing)"},
+            {"type": "text", "text": "features, 384-768 dimensional embeddings"},
+            {"type": "text", "text": "algorithm"},
+            {"type": "text", "text": "Online Bookstore System"},
+            {"type": "text", "text": "Description: Built a distributed e-commerce system based on microservices."},
+            {"type": "text", "text": "- Designed and implemented a microservices architecture"},
+            {"type": "title", "text": "~25%"},
+            {"type": "text", "text": "HamTech — OTT Chat Platform with Integrated AI Agent"},
+            {"type": "text", "text": "- Developed a real-time multi-platform chat system with an AI agent."},
+            {"type": "text", "text": "Interview Preparation Support System"},
+            {"type": "text", "text": "An interview preparation platform with AI and real-time video."},
+            {"type": "text", "text": "HamTech"},
+            {"type": "text", "text": "Developed a real-time multi-platform chat system with an AI agent."},
+            {"type": "text", "text": "Blockly Programming Mobile App for IoT"},
+            {"type": "text", "text": "Developed a React Native application for programming IoT devices."},
+            {"type": "text", "text": "IVORA — Online Wedding Invitation Platform"},
+            {"type": "text", "text": "A platform for creating and sharing digital wedding invitations."},
+        ]
+    )
+
+    parsed = DeterministicResumeParser().parse(source, extraction_version="test-extractor")
+
+    assert [project.name for project in parsed.resume.projects] == [
+        "Interview Preparation Support System (Scientific Research) Currently Researching",
+        "Online Bookstore System",
+        "HamTech — OTT Chat Platform with Integrated AI Agent",
+    ]
+    assert "CV ranking against Job Descriptions (JD)" in (parsed.resume.projects[0].description or "")
+
+
+def test_project_extractor_deduplicates_dated_titles_and_ignores_technology_lists() -> None:
+    source = _source(
+        [
+            {"type": "title", "text": "PROJECTS"},
+            {"type": "text", "text": "Smart License Plate Recognition & Security SystemOct. 2025 – Dec. 2025"},
+            {"type": "title", "text": "Python, PyTorch, YOLOv8, OpenCV, EasyOCR, Flask, MySQL, Scikit-learn, Pandas"},
+            {"type": "text", "text": "– Engineered an end-to-end automated smart parking surveillance system."},
+            {"type": "text", "text": "Hybrid MoLD-ViT Deepfake DetectionMar. 2026 – Jun. 2026"},
+            {"type": "title", "text": "Python, TensorFlow/Keras, Vision Transformers (ViT), ResNet50V2, OpenCV, Scikit-learn"},
+            {"type": "text", "text": "– Developed an end-to-end deepfake detection system."},
+            {"type": "text", "text": "Advanced Multi-Stage RAG Pipeline with Citation VerificationJul. 2026 – Aug. 2026"},
+            {"type": "title", "text": "Python, LangChain, FAISS, Sentence-Transformers, BM25, Gemini API, Streamlit, PyPDF2"},
+            {"type": "text", "text": "– Architected a multi-stage Retrieval-Augmented Generation system."},
+            {"type": "text", "text": "Smart License Plate Recognition & Security System"},
+            {"type": "text", "text": "Engineered an automated smart parking surveillance system."},
+            {"type": "text", "text": "Hybrid MoLD-ViT Deepfake Detection"},
+            {"type": "text", "text": "Developed a deepfake detection system."},
+            {"type": "text", "text": "Advanced Multi-Stage RAG Pipeline with Citation Verification"},
+            {"type": "text", "text": "Architected a multi-stage RAG system."},
+        ]
+    )
+
+    parsed = DeterministicResumeParser().parse(source, extraction_version="test-extractor")
+
+    assert [project.name for project in parsed.resume.projects] == [
+        "Smart License Plate Recognition & Security System",
+        "Hybrid MoLD-ViT Deepfake Detection",
+        "Advanced Multi-Stage RAG Pipeline with Citation Verification",
+    ]
+
+
+def test_project_extractor_deduplicates_titles_with_month_day_date_ranges() -> None:
+    source = _source(
+        [
+            {"type": "title", "text": "PROJECTS"},
+            {"type": "title", "text": "Message Me - Chat app realtime April 28 - June 22, 2026"},
+            {"type": "text", "text": "Team size 1 - Position: Full-stack Developer"},
+            {
+                "type": "text",
+                "text": "Technology in use: Node.js, ExpressJs, Socket.IO, MongoBD, JWT, ReactJs, Vite",
+            },
+            {"type": "text", "text": "Descriptions: Developed a real-time messaging application using Socket.IO"},
+            {"type": "title", "text": "EV Station-based Rental System Oct 20 - Nov 15, 2025"},
+            {"type": "text", "text": "Team size 4 - Position: Full-stack Developer"},
+            {"type": "text", "text": "Technology in use: Node.js, ExpressJs, PostgreSQL, JWT, ReactJs, Vite"},
+            {"type": "text", "text": "Descriptions: Developed a full-stack authentication and KYC service"},
+            {"type": "text", "text": "Message Me - Chat app realtime"},
+            {"type": "text", "text": "Team size 1 - Position: Full-stack Developer. Developed a real-time messaging application."},
+            {"type": "text", "text": "EV Station-based Rental System"},
+            {"type": "text", "text": "Team size 4 - Position: Full-stack Developer. Developed an authentication and KYC service."},
+        ]
+    )
+
+    parsed = DeterministicResumeParser().parse(source, extraction_version="test-extractor")
+
+    assert [project.name for project in parsed.resume.projects] == [
+        "Message Me - Chat app realtime",
+        "EV Station-based Rental System",
+    ]
 
 
 def test_deterministic_parser_negative_education_major_and_gpa_guards() -> None:
@@ -602,26 +722,215 @@ def test_deterministic_parser_negative_heading_and_label_guards() -> None:
     assert "Career Assistant X" not in all_institutions
 
 
-def test_deterministic_parser_rollback_feature_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    from src.core.config import get_settings
-    from src.modules.user_cvs.parsing.domain.source import (
-        _section_for_heading,
-        is_section_regex_v2_enabled,
-    )
+def test_compound_project_headings_are_recognised() -> None:
+    """Headings that combine a qualifier with "projects" still open a projects section."""
+    from src.modules.user_cvs.parsing.domain.source import _section_for_heading
 
-    settings = get_settings()
-
-    # When flag is True (default)
-    monkeypatch.setattr(settings, "parser_section_regex_v2_enabled", True)
-    assert is_section_regex_v2_enabled() is True
     assert _section_for_heading("RESEARCH & AI PROJECTS") == "projects"
     assert _section_for_heading("ADDITIONAL SOFTWARE & AI PROJECTS") == "projects"
-
-    # When flag is False (instant rollback)
-    monkeypatch.setattr(settings, "parser_section_regex_v2_enabled", False)
-    assert is_section_regex_v2_enabled() is False
-    # In legacy headings, compound phrases like "RESEARCH & AI PROJECTS" are not recognized
-    assert _section_for_heading("RESEARCH & AI PROJECTS") is None
-    # Standard legacy headings still work
     assert _section_for_heading("PROJECTS") == "projects"
     assert _section_for_heading("EDUCATION") == "education"
+
+
+def test_wrapped_summary_tail_and_project_kind_line_are_not_projects() -> None:
+    """Three projects in the CV must not parse as five.
+
+    Two separate faults produced the two extras. The summary wrapped onto a
+    line reading only "projects.", which source._section_for_heading matched
+    as the PROJECTS heading because it strips punctuation, while
+    _is_section_title did not strip it, so the line fell through and was
+    named as a project. And "Research Project", the kind line under the third
+    project's title, was read as a fourth heading and swallowed that
+    project's whole body.
+    """
+    # The PDF extractor emits one block per line, which is what leaves the
+    # wrapped summary tail and the kind line on blocks of their own.
+    source = _source(
+        [
+            {"type": "text", "text": line}
+            for line in [
+                "SUMMARY",
+                "Final-year Information Technology student seeking an AI Engineer Intern",
+                "position while contributing to enterprise",
+                "projects.",
+                "PROJECTS",
+                "Mini search engine Mar 2026 - May 2026",
+                "Team Project - Developer & Tester",
+                "Tech Stack: Java SE, Swing, Apache Lucene",
+                "Movie booking Website Nov 2025 - Jan 2026",
+                "Team Project - BE developer & Tester",
+                "Tech Stack: NestJS, TypeScript, MongoDB/Mongoose",
+                "Recommender System using GNN Dec 2024 - May 2025",
+                "Research Project",
+                "Tech Stack: Python, PyTorch, PyTorch Geometric",
+                "Description:",
+                "• Trained a movie recommendation system using Graph Neural Networks.",
+            ]
+        ]
+    )
+
+    parsed = DeterministicResumeParser().parse(source, extraction_version="test-extractor")
+    names = [item.name for item in parsed.resume.projects]
+
+    assert names == [
+        "Mini search engine",
+        "Movie booking",
+        "Recommender System using GNN",
+    ]
+    # The kind line belongs to the project above it, and so does that
+    # project's body, which it used to take with it.
+    gnn = parsed.resume.projects[-1]
+    assert gnn.description is not None
+    assert "Research Project" in gnn.description
+    assert "PyTorch Geometric" in gnn.description
+
+
+def test_header_separator_is_ignored_inside_brackets() -> None:
+    """A dash inside brackets qualifies one field, it never separates two.
+
+    ResumeBench case a41b9daf turned "Scientific Affairs Lead, Specialty
+    (I&I - Rare)" into an employer named "Rare)". The bracketed qualifier now
+    stays whole; the comma outside it still separates, which is unchanged.
+    """
+    from src.modules.user_cvs.parsing.domain.structured import _split_header
+
+    parts = _split_header(
+        "Scientific Affairs Lead, Specialty (I&I - Rare)", dash_separated=True
+    )
+    assert parts == ["Scientific Affairs Lead", "Specialty (I&I - Rare)"]
+    assert "Rare)" not in parts
+
+    assert _split_header(
+        "Principal Architect (Division Chief), Digital Banking Platform"
+    ) == ["Principal Architect (Division Chief)", "Digital Banking Platform"]
+
+    # Separators outside brackets still split.
+    assert _split_header(
+        "Backend Developer — Công ty ShopNow", dash_separated=True
+    ) == ["Backend Developer", "Công ty ShopNow"]
+    assert _split_header("Data Analyst | Acme Corp") == ["Data Analyst", "Acme Corp"]
+
+
+def test_number_comma_is_not_a_field_separator() -> None:
+    """A comma between digits groups a number, it never separates two fields.
+
+    ResumeBench case federal-resume-marcus-williams carries the header line
+    "Salary: $138,491 per annum Dates: 03/2021 - Present". Splitting on that
+    comma produced a job title of "Salary: $138" and an employer of
+    "491 per annum Dates:", so the entry failed the benchmark's four-field
+    identity gate and all 142 of its description bullets scored zero.
+    """
+    from src.modules.user_cvs.parsing.domain.structured import _split_header
+
+    assert _split_header("Salary: $138,491 per annum Dates:", dash_separated=True) == [
+        "Salary: $138,491 per annum Dates:"
+    ]
+
+    # A comma outside a number still separates.
+    assert _split_header("Data Analyst, Acme Corp") == ["Data Analyst", "Acme Corp"]
+
+
+def test_wrapped_lines_rejoin_across_blocks() -> None:
+    """One bullet wrapped over three lines is one item, not three.
+
+    PaddleOCR emits one block per physical line, so the earlier rejoining,
+    which only looked inside a block, never ran: a resume with 45 bullets was
+    reported as 142. A labelled field such as "Address:" still opens its own
+    item, and so does a line that carries a date range.
+    """
+    from dataclasses import replace
+
+    from src.modules.user_cvs.parsing.domain.source import SourceBlock
+    from src.modules.user_cvs.parsing.domain.structured import _line_items
+
+    lines = [
+        "Salary: $138,491 per annum Dates: 03/2021 - Present",
+        "Employer: Department of Homeland Security, Cybersecurity and Infrastructure Agency",
+        "(CISA)",
+        "Address: 245 Murray Lane SW, Washington, DC 20528",
+        "Serve as technical lead for the Threat Analytics Division, directing a team",
+        "of 8 data scientists in developing machine learning models that process",
+        "2.3 billion network events daily",
+    ]
+    template = SourceBlock(
+        block_id="b",
+        text="",
+        page=1,
+        reading_order=0,
+        bounding_box=None,
+        block_type="text",
+        char_start=0,
+        char_end=0,
+        section="employment",
+    )
+    blocks = []
+    offset = 0
+    for index, line in enumerate(lines):
+        blocks.append(
+            replace(
+                template,
+                block_id=f"b{index}",
+                text=line,
+                reading_order=index,
+                char_start=offset,
+                char_end=offset + len(line),
+            )
+        )
+        offset += len(line) + 1
+
+    items = [item.text for item in _line_items(blocks)]
+
+    assert items == [
+        "Salary: $138,491 per annum Dates: 03/2021 - Present",
+        "Employer: Department of Homeland Security, Cybersecurity and Infrastructure Agency (CISA)",
+        "Address: 245 Murray Lane SW, Washington, DC 20528",
+        "Serve as technical lead for the Threat Analytics Division, directing a team"
+        " of 8 data scientists in developing machine learning models that process"
+        " 2.3 billion network events daily",
+    ]
+
+
+def test_section_title_is_never_merged_into_the_line_above() -> None:
+    """A bare heading opens an item; it is not the tail of the bullet above it.
+
+    The colon rule catches "EDUCATION:" but not "EDUCATION". A heading joined
+    onto a long preceding bullet stops matching _is_section_title, so the
+    extractors no longer skip it and read it as content.
+    """
+    from dataclasses import replace
+
+    from src.modules.user_cvs.parsing.domain.source import SourceBlock
+    from src.modules.user_cvs.parsing.domain.structured import _line_items
+
+    lines = [
+        "Delivered the payment gateway rewrite across four teams and two regions",
+        "EDUCATION",
+        "Bachelor of Engineering in Computer Science",
+    ]
+    template = SourceBlock(
+        block_id="b",
+        text="",
+        page=1,
+        reading_order=0,
+        bounding_box=None,
+        block_type="text",
+        char_start=0,
+        char_end=0,
+        section="employment",
+    )
+    blocks = []
+    offset = 0
+    for index, line in enumerate(lines):
+        blocks.append(
+            replace(
+                template,
+                block_id=f"b{index}",
+                text=line,
+                reading_order=index,
+                char_start=offset,
+                char_end=offset + len(line),
+            )
+        )
+        offset += len(line) + 1
+
+    assert [item.text for item in _line_items(blocks)] == lines

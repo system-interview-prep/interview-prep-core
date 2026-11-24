@@ -694,7 +694,7 @@ class ai_call_timer:
 def caller_purpose(depth: int = 2) -> str:
     """``area.file.Function`` of the code that called the model wrapper.
 
-    ``interviews.interview_engine.InterviewCoreEngine._generate_probe_question``:
+    ``interviews.turn_engine.InterviewCoreEngine._generate_probe_question``:
     the module area keeps same-named files apart (CV and JD both parse in
     ``hybrid.py``).
     """

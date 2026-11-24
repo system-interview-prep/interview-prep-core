@@ -27,11 +27,20 @@ class MatchClarificationAnalysis(CanonicalModel):
 
 
 class ClarificationCandidate(CanonicalModel):
-    """An unknown requirement that passed Jev's ask-candidate gate."""
+    """An unknown requirement the clarification step will ask the candidate about.
+
+    ``confidence`` used to be floored at 0.75, encoding the assumption that
+    every candidate had cleared a 0.75 gate.  That stopped being true twice
+    over: the gate's threshold is configurable and deployments run it at 0, and
+    a requirement the gate declines still leaves with a template plan at
+    confidence 0 so the reader is never handed an unanswerable verdict.  The
+    floor then rejected the very plans it was meant to describe and failed the
+    whole response, so it is 0 here and the gate alone decides what is asked.
+    """
 
     requirement_id: str = Field(min_length=1)
     missing_dimension: str = Field(min_length=1)
-    confidence: float = Field(ge=0.75, le=1.0)
+    confidence: float = Field(ge=0.0, le=1.0)
 
 
 class CandidateClarificationAnswer(CanonicalModel):

@@ -5,6 +5,7 @@ import unicodedata
 from collections.abc import Iterable
 from dataclasses import replace
 from hashlib import sha1
+from typing import NamedTuple
 
 from src.modules.user_cvs.domain.schemas import (
     CertificationEntry,
@@ -21,6 +22,8 @@ from src.modules.user_cvs.parsing.domain.source import (
 )
 
 _YEAR = r"(?:19|20)\d{2}"
+# A bare four-digit year, used where a block carries no full date range.
+_STANDALONE_YEAR_RE = re.compile(rf"\b({_YEAR})\b")
 _MONTH_EN = (
     r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
     r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
@@ -34,6 +37,17 @@ _DATE_RANGE_RE = re.compile(
     rf"(?P<start>{_DATE})\s*(?:-|\u2013|\u2014|to|\u0111\u1ebfn)\s*"
     rf"(?:(?:expected|anticipated|est\.?|d\u1ef1\s*ki\u1ebfn)\s*)?"
     rf"(?P<end>{_DATE}|present|current|now|hi\u1ec7n\s*t\u1ea1i|hi\u1ec7n\s*nay|nay)",
+    re.IGNORECASE,
+)
+_PROJECT_DATE_SUFFIX_RE = re.compile(
+    rf"(?:"
+    # Month/day ranges are common in student CVs and often OCR-extracted as
+    # part of the project title, e.g. "April 28 - June 22, 2026".
+    rf"\s+{_MONTH_EN}\.?\s+\d{{1,2}}\s*(?:-|\u2013|\u2014|to)\s*"
+    rf"{_MONTH_EN}\.?\s+\d{{1,2}},?\s*{_YEAR}"
+    rf"|\s*(?:{_MONTH_EN})?\.?\s*{_YEAR}\s*(?:-|\u2013|\u2014|to)\s*"
+    rf"(?:(?:{_MONTH_EN})?\.?\s*)?{_YEAR}"
+    rf")$",
     re.IGNORECASE,
 )
 _COMPANY_RE = re.compile(
@@ -157,6 +171,9 @@ def _add_block_evidence(draft, mapper: EvidenceMapper, block: SourceBlock, kind:
             evidence_id=evidence_id,
             char_start=block.char_start,
             char_end=block.char_end,
+            # A merged item spans several blocks, so the mapper cannot find a
+            # containing one and would label the span "other".
+            section=block.section,
         ),
     )
     return evidence_id
@@ -166,31 +183,85 @@ def _section_blocks(source: SourceDocument, section: str) -> list[SourceBlock]:
     return [block for block in source.blocks if block.section == section]
 
 
+_CLOSERS = {")": "(", "]": "[", "}": "{"}
+# A comma between digits groups one number, it never separates two fields.
+_GROUPED_NUMBER_RE = re.compile(r"\d[.,]\d")
+
+
+def _mask_protected_spans(value: str) -> str:
+    """Blank out spans where a separator character does not separate fields.
+
+    Two such spans exist. Inside brackets, a dash or comma qualifies the field
+    that holds it ("Scientific Affairs Lead, Specialty (I&I - Rare)"); the
+    split there invented an organization called "Rare)". Inside a number, a
+    comma groups digits ("Salary: $138,491 per annum"); the split there made a
+    job title of "Salary: $138" and an employer of "491 per annum".
+
+    Offsets are preserved, so the caller slices the original string and keeps
+    the protected text intact.
+    """
+    out = list(value)
+    depth = 0
+    for index, char in enumerate(value):
+        if char in "([{":
+            depth += 1
+        elif char in _CLOSERS:
+            depth = max(0, depth - 1)
+        elif depth:
+            out[index] = " "
+    for match in _GROUPED_NUMBER_RE.finditer(value):
+        # Mask the separator itself; the digits around it stay addressable.
+        out[match.start() + 1] = " "
+    return "".join(out)
+
+
 def _split_header(value: str, *, dash_separated: bool = False) -> list[str]:
     # Commas are common inside job titles (for example, a department suffix).
     # Prefer explicit separators; only use commas when no stronger delimiter is
     # present in the CV header.
     # A spaced dash ("Backend Developer — Công ty ShopNow") is the usual
     # Vietnamese title/organization separator.
-    if re.search(r"\||@|\bat\b", value, re.I):
+    masked = _mask_protected_spans(value)
+    if re.search(r"\||@|\bat\b", masked, re.I):
         separator = r"\s*(?:\||@|\bat\b)\s*"
-    elif dash_separated and re.search(r"\s[-–—]\s", value):
+    elif dash_separated and re.search(r"\s[-–—]\s", masked):
         separator = r"\s+[-–—]\s+"
     else:
         separator = r"\s*,\s*"
-    return [part.strip(" -–—|,") for part in re.split(separator, value) if part.strip(" -–—|,")]
+    parts: list[str] = []
+    cursor = 0
+    for match in re.finditer(separator, masked):
+        parts.append(value[cursor : match.start()])
+        cursor = match.end()
+    parts.append(value[cursor:])
+    return [part.strip(" -–—|,") for part in parts if part.strip(" -–—|,")]
 
 
 def _is_section_title(value: str) -> bool:
     stripped = value.strip()
     if not stripped:
         return False
-    if _section_for_heading(stripped) is not None:
-        return True
     cleaned = unicodedata.normalize("NFD", stripped.casefold())
     without_marks = "".join(c for c in cleaned if unicodedata.category(c) != "Mn")
     raw = stripped.casefold()
-    return raw in _SECTION_TITLES or without_marks in _SECTION_TITLES
+    if raw in _SECTION_TITLES or without_marks in _SECTION_TITLES:
+        return True
+    # source._section_for_heading strips punctuation before it matches, so a
+    # line like "projects." or "Projects:" opens the projects section there.
+    # Matching exactly here let that same line through as a project, and the
+    # group loop below names a project after it ("projects.").
+    unpunctuated = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", without_marks)).strip()
+    if unpunctuated and unpunctuated in _SECTION_TITLES:
+        return True
+    # The broad source heading classifier is useful for headings such as
+    # "RESEARCH & AI PROJECTS", but must not swallow project names that merely
+    # mention research (e.g. "... (Scientific Research)").
+    return (
+        _section_for_heading(stripped) is not None
+        and stripped.upper() == stripped
+        and any(char.isalpha() for char in stripped)
+        and len(stripped.split()) <= 7
+    )
 
 
 def _skill_ids_for_blocks(draft, blocks: Iterable[SourceBlock]) -> list[str]:
@@ -203,47 +274,102 @@ def _skill_ids_for_blocks(draft, blocks: Iterable[SourceBlock]) -> list[str]:
     return [skill.claim_id for skill in draft.skills if matching_evidence.intersection(skill.evidence_refs)]
 
 
-_BULLET_RE = re.compile(r"^\s*[-*•–—+●▪◦]\s*")
+# Symbol and Wingdings bullets survive PDF extraction as private-use code
+# points, so a bullet list can arrive without one recognisable marker.
+_BULLET_RE = re.compile(r"^\s*[-*•–—+●▪◦]\s*")
+# "Employer:", "Grade/Series:", "Supervisor:" head a field in a labelled resume
+# layout. They open an item; they are never the tail of one.
+_LABELLED_FIELD_RE = re.compile(r"^\s*[A-Z][A-Za-z/ ]{0,24}:")
+# A colon ends a heading or a field label ("EDUCATION:"); what follows is
+# new content, never the tail of a wrapped line.
+_SENTENCE_END_RE = re.compile(r"[.;:!?]\s*$")
+# A wrapped line runs close to the column width. A short line that ends
+# without punctuation is a list entry of its own, not the head of a wrap.
+_WRAP_WIDTH = 60
+
+
+class _Line(NamedTuple):
+    block: SourceBlock
+    start: int
+    end: int
+    text: str
+
+
+def _opens_item(text: str) -> bool:
+    if _BULLET_RE.match(text) is not None or _LABELLED_FIELD_RE.match(text) is not None:
+        return True
+    # "EDUCATION:" is caught by the colon rule, bare "EDUCATION" is not, and a
+    # heading joined onto the bullet above it stops being recognised as one.
+    return _is_section_title(text)
+
+
+def _continues_item(previous: str, text: str) -> bool:
+    """Report whether `text` is the wrapped tail of `previous`."""
+    if _SENTENCE_END_RE.search(previous) or _is_section_title(previous):
+        return False
+    head = text.lstrip()[:1]
+    # A tail starts mid-sentence: lower case, or punctuation such as "(CISA)".
+    return head.islower() or not head.isalnum() or len(previous) >= _WRAP_WIDTH
+
+
+def _merge_lines(group: list[_Line]) -> SourceBlock:
+    """Join wrapped lines into one item, spanning the real source offsets.
+
+    The text is joined with a space so the extractors see one line, while the
+    offsets keep covering the original span, newline included, which is what
+    the evidence quote should show.
+    """
+    first, last = group[0], group[-1]
+    return replace(
+        first.block,
+        text=" ".join(line.text.strip() for line in group),
+        char_start=first.block.char_start + first.start,
+        char_end=last.block.char_start + last.end,
+    )
 
 
 def _line_items(blocks: list[SourceBlock]) -> list[SourceBlock]:
-    """Split blocks into one item per entry header or bullet.
+    """Split a section into one item per entry header or bullet.
 
-    PDF text layers often have no blank line between paragraphs, so a whole
-    section arrives as one block and only its first date range was seen: the
-    second job of a CV was lost. A line with a date range or a bullet starts a
-    new item, and so does the line right after a dated header (a job title
-    under "Công ty ABC (2020 – 2021)"); any other line is a wrapped
-    continuation of the previous one. Offsets stay those of the source text,
-    so evidence spans remain valid.
+    A PDF text layer offers no reliable paragraph boundary. PaddleOCR emits one
+    block per physical line, while an embedded text layer can hand over a whole
+    section as a single block. Both are flattened to lines here and regrouped by
+    one rule, so a bullet wrapped over three lines stays one item.
+
+    This used to rejoin wrapped lines only inside a block, which on the
+    PaddleOCR path never happened, because no block held more than one line: a
+    resume with 45 bullets was reported as 142, and every one of them missed.
+
+    A line carrying a date range opens an entry, and so does the line right
+    after it (a job title under "Công ty ABC (2020 - 2021)"). Offsets stay those
+    of the source text, so evidence spans remain valid.
     """
-    items: list[SourceBlock] = []
+    lines: list[_Line] = []
     for block in blocks:
-        lines: list[tuple[int, int]] = []
-        previous_dated = False
         offset = 0
         for raw_line in block.text.split("\n"):
-            start, end = offset, offset + len(raw_line)
-            offset = end + 1
-            if not raw_line.strip():
-                continue
-            dated = _DATE_RANGE_RE.search(raw_line) is not None
-            starts_item = not lines or dated or previous_dated or _BULLET_RE.match(raw_line) is not None
-            if starts_item:
-                lines.append((start, end))
-            else:
-                lines[-1] = (lines[-1][0], end)
-            previous_dated = dated
-        for start, end in lines:
-            items.append(
-                replace(
-                    block,
-                    text=block.text[start:end],
-                    char_start=block.char_start + start,
-                    char_end=block.char_start + end,
-                )
-            )
-    return items
+            line_start, line_end = offset, offset + len(raw_line)
+            offset = line_end + 1
+            if raw_line.strip():
+                lines.append(_Line(block, line_start, line_end, raw_line))
+
+    groups: list[list[_Line]] = []
+    previous_dated = False
+    for line in lines:
+        dated = _DATE_RANGE_RE.search(line.text) is not None
+        opens = (
+            not groups
+            or dated
+            or previous_dated
+            or _opens_item(line.text)
+            or not _continues_item(groups[-1][-1].text, line.text)
+        )
+        if opens:
+            groups.append([line])
+        else:
+            groups[-1].append(line)
+        previous_dated = dated
+    return [_merge_lines(group) for group in groups]
 
 
 class EmploymentExtractor:
@@ -261,7 +387,7 @@ class EmploymentExtractor:
             elif _BULLET_RE.match(block.text) is None:
                 # A bare year only opens an entry on a header line, never on a
                 # responsibility bullet ("- Đạt giải 2022").
-                single_match = re.search(r"\b((?:19|20)\d{2})\b", block.text)
+                single_match = _STANDALONE_YEAR_RE.search(block.text)
                 if single_match is not None:
                     starts.append(
                         (
@@ -438,7 +564,7 @@ class EducationExtractor:
                     if not end_date:
                         end_date = _partial_date(match.group("end"))
                 else:
-                    year_match = re.search(r"\b((?:19|20)\d{2})\b", b.text)
+                    year_match = _STANDALONE_YEAR_RE.search(b.text)
                     if year_match and not start_date:
                         start_date = _partial_date(year_match.group(1))
 
@@ -548,19 +674,170 @@ _DATE_OR_STATUS_ONLY_RE = re.compile(
     re.IGNORECASE,
 )
 
+_PROJECT_SENTENCE_START_RE = re.compile(
+    r"^(?:built|developed|designed|implemented|created|engineered|architected|optimized|"
+    r"evaluated|trained|automated|analyzed|applied|cv|jd|configured|deployed|integrated|"
+    r"processed|conducted|led|managed|"
+    r"worked|responsible|experienced|proficient|using|utilized|leveraged|"
+    r"the|this|these|those|which|while|with|by|for|from|in|as|and|or)\b",
+    re.IGNORECASE,
+)
+_PROJECT_TITLE_STOPWORDS = {"a", "an", "and", "as", "for", "in", "of", "the", "to", "with"}
 
-def _is_project_header(block_text: str) -> bool:
+# A line stating only what kind of project the entry above is belongs to that
+# entry; it is not a project of its own. _is_project_header already hard-coded
+# "team ...", which is why "Team Project - Developer & Tester" was handled and
+# "Research Project" was not. Anchored at both ends, so a real name such as
+# "Research Project Tracker" still passes.
+_PROJECT_KIND_ONLY_RE = re.compile(
+    r"^(?:"
+    r"(?:team|group|personal|individual|academic|research|capstone|side|freelance|"
+    r"university|school|class|course|thesis|graduation|final(?:\s+year)?)\s+projects?"
+    r"|dự\s+án\s+(?:cá\s+nhân|nhóm|nghiên\s+cứu|tốt\s+nghiệp)"
+    r"|du\s+an\s+(?:ca\s+nhan|nhom|nghien\s+cuu|tot\s+nghiep)"
+    r")$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_project_title(value: str, *, explicit_heading: bool = False) -> bool:
+    """Avoid treating wrapped description lines as separate project names."""
+    text = value.strip()
+    words = re.findall(r"[A-Za-zÀ-ỹ0-9]+(?:['’][A-Za-z]+)?", text)
+    if not words or len(words) > 16:
+        return False
+    if not any(char.isalpha() for word in words for char in word):
+        return False
+    # Comma-heavy lines are usually a technology stack or a wrapped list of
+    # tools, even when OCR marks the line as a title.
+    if text.count(",") >= 2:
+        return False
+    if re.search(r"[.!?;]$", text) or _PROJECT_SENTENCE_START_RE.match(text):
+        return False
+    if explicit_heading:
+        return True
+    meaningful = [word for word in words if word.casefold() not in _PROJECT_TITLE_STOPWORDS]
+    if not meaningful:
+        return False
+    if re.search(r"\b(?:19|20)\d{2}\b", text):
+        return True
+    title_case = sum(
+        word[0].isupper() or word.isupper() or any(char.isdigit() for char in word)
+        for word in meaningful
+    )
+    # Short standalone product names such as "HamTech" are valid titles;
+    # ordinary lowercase words like "feedback" and "environment" are not.
+    if len(meaningful) == 1:
+        word = meaningful[0]
+        if not any(char.isalpha() for char in word):
+            return False
+        return (
+            word.isupper()
+            or any(char.isupper() for char in word[1:])
+            or any(char.isdigit() for char in word)
+        )
+    return title_case / len(meaningful) >= 0.6
+
+
+def _project_name_key(value: str) -> str:
+    normalized = unicodedata.normalize("NFD", value.casefold())
+    normalized = "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+    normalized = re.sub(r"\([^)]*\)", " ", normalized)
+    normalized = re.sub(
+        r"\b(?:currently researching|currently in progress|in progress|ongoing|completed)\b.*$",
+        " ",
+        normalized,
+    )
+    normalized = _PROJECT_DATE_SUFFIX_RE.sub(" ", normalized)
+    return re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+
+
+def _project_names_match(left: str, right: str) -> bool:
+    left_key, right_key = _project_name_key(left), _project_name_key(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    shorter, longer = sorted((left_key.split(), right_key.split()), key=len)
+    # Merge a short repeated alias only when it is a complete leading part of
+    # a longer title (e.g. "HamTech" and "HamTech — OTT Chat Platform").
+    return len(shorter) <= 3 and len(shorter) < len(longer) and longer[: len(shorter)] == shorter
+
+
+_PROJECT_NAME_LEAD_RE = re.compile(r"^(?:project|projects|du an|de tai)\s+", re.IGNORECASE)
+
+
+def _project_titles_overlap(left: str, right: str) -> bool:
+    """True when two titles name the same project.
+
+    _project_names_match only merges a short alias of at most three words that
+    leads a longer title, so the two readings of one project survived as two
+    entries: "HComic - Comic Reading Platform" (LLM) against "HComic - Comic
+    Reading Platform 07/2026 - Present" (baseline, four words, date suffix not
+    stripped), and "Taskhive - Task Management App" against the baseline's
+    "Project: Taskhive - Task Management App", where the leading "Project:"
+    breaks the prefix relation. Drop that lead-in and allow containment in
+    either direction. Matching on overlapping evidence spans, which also covers
+    run-together text, is a later step.
+    """
+    if _project_names_match(left, right):
+        return True
+    left_key = _PROJECT_NAME_LEAD_RE.sub("", _project_name_key(left)).strip()
+    right_key = _PROJECT_NAME_LEAD_RE.sub("", _project_name_key(right)).strip()
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    shorter, longer = sorted((left_key.split(), right_key.split()), key=len)
+    # Two words is too little to identify a project on its own.
+    return len(shorter) >= 3 and longer[: len(shorter)] == shorter
+
+
+def _project_title_in_quote(name: str, quote: str) -> bool:
+    title_tokens = _project_name_key(name).split()
+    quote_tokens = _project_name_key(quote).split()
+    if not title_tokens or len(title_tokens) > len(quote_tokens):
+        return False
+    return any(
+        quote_tokens[index : index + len(title_tokens)] == title_tokens
+        for index in range(len(quote_tokens) - len(title_tokens) + 1)
+    )
+
+
+def _is_founder_employer_project(name: str, employment: list[EmploymentEntry]) -> bool:
+    """Avoid counting a founder's company product again as a separate project."""
+    project_key = _project_name_key(name).split()
+    if not project_key:
+        return False
+    for item in employment:
+        if not re.search(r"\b(founder|co-founder|cofounder|owner)\b", item.job_title, re.IGNORECASE):
+            continue
+        organization = item.organization or ""
+        if not organization:
+            role_parts = re.split(r"\s*[·|]\s*", item.job_title)
+            organization = role_parts[-1] if len(role_parts) > 1 else ""
+        organization_key = _project_name_key(organization).split()
+        if organization_key and project_key[: len(organization_key)] == organization_key:
+            return True
+    return False
+
+
+def _is_project_header(block_text: str, *, explicit_heading: bool = False) -> bool:
     stripped = block_text.strip()
     if not stripped or _is_section_title(stripped):
         return False
     if re.match(r"^[-*•–—+]\s+", stripped):
         return False
     without_bullet = re.sub(r"^[-*•–—+]\s*", "", stripped)
+    if re.match(r"^(?:team\s*size|team\b|technology\s+in\s+use\b|github\b)", without_bullet, re.IGNORECASE):
+        return False
     if _PROJECT_DETAIL_PREFIX_RE.search(without_bullet):
+        return False
+    if _PROJECT_KIND_ONLY_RE.match(without_bullet.strip()):
         return False
     if _DATE_OR_STATUS_ONLY_RE.fullmatch(without_bullet):
         return False
-    return True
+    return _looks_like_project_title(without_bullet, explicit_heading=explicit_heading)
 
 
 class ProjectExtractor:
@@ -575,7 +852,14 @@ class ProjectExtractor:
         for block in blocks:
             if _is_section_title(block.text):
                 continue
-            if _is_project_header(block.text):
+            is_header = _is_project_header(
+                block.text, explicit_heading=block.block_type.casefold() in {"title", "heading"}
+            )
+            if is_header and current_group and re.search(
+                r"(?:\band|,|/|[-\u2013\u2014])\s*$", current_group[-1].text.strip(), re.IGNORECASE
+            ):
+                is_header = False
+            if is_header:
                 if current_group:
                     groups.append(current_group)
                 current_group = [block]
@@ -600,12 +884,25 @@ class ProjectExtractor:
             name_raw = lines[0]
             if _PROJECT_DETAIL_PREFIX_RE.search(name_raw):
                 continue
-            name_clean = re.sub(r"\s*\((?:19|20)\d{2}[^)]*\)$", "", name_raw).strip()
+            name_clean = _PROJECT_DATE_SUFFIX_RE.sub("", name_raw).strip()
+            name_clean = re.sub(r"\s*\((?:19|20)\d{2}[^)]*\)$", "", name_clean).strip()
             name_clean = re.sub(r"\s*(?:\||\b(?:github|website)\b).*$", "", name_clean, flags=re.I).strip(
                 " -–—|,"
             )
             if not name_clean:
                 name_clean = name_raw
+
+            if any(_project_names_match(name_clean, item.name) for item in draft.projects):
+                continue
+            if any(
+                _project_name_key(name_clean) == _project_name_key(item.job_title)
+                for item in draft.employment
+            ):
+                # Freelance work is often listed under Experience and then
+                # repeated in a project portfolio; keep one canonical entry.
+                continue
+            if _is_founder_employer_project(name_clean, draft.employment):
+                continue
 
             match = _DATE_RANGE_RE.search(header.text)
             start_date = None
@@ -614,7 +911,7 @@ class ProjectExtractor:
                 start_date = _partial_date(match.group("start"))
                 end_date = _partial_date(match.group("end"))
             else:
-                year_match = re.search(r"\b((?:19|20)\d{2})\b", header.text)
+                year_match = _STANDALONE_YEAR_RE.search(header.text)
                 if year_match:
                     start_date = _partial_date(year_match.group(1))
 

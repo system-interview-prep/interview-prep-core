@@ -17,9 +17,15 @@ from contextvars import ContextVar
 from typing import Literal, Protocol, runtime_checkable
 
 import httpx
+from pydantic import ValidationError
 
 from src.core.pipeline_events import ai_call_timer
 from src.core.trace_logging import trace_event
+from src.modules.matching.clarifications.information_gain import (
+    UnknownRequirement,
+    met_probability_for,
+    rank_by_information_gain,
+)
 from src.modules.matching.clarifications.question_generation import (
     ClarificationPlan,
     ClarificationQuestion,
@@ -376,24 +382,70 @@ class JevAmbiguityAnalyzer:
         return []
 
 
+def _template_plan(requirement, resume) -> ClarificationPlan | None:
+    """A plan for an unknown requirement the Jev gate declined to serve.
+
+    The gate answers "is asking the candidate the safest next action", and it
+    says no for reasons the candidate cannot act on: the model was unsure which
+    single dimension is missing, it wanted the retrieval reviewed first, or the
+    call failed.  None of those make the requirement any less unknown, and the
+    reader is left with a verdict of "needs confirmation" and no way to supply
+    the confirmation.  So a declined requirement still leaves here with a plan;
+    only the dimension is unknown, which ``other`` already expresses.
+
+    Requirements whose answer provably cannot change the decision never reach
+    this function - information-gain selection drops them earlier, and for them
+    not asking is the correct outcome, not a dead end.
+    """
+
+    requirement_text = JevAmbiguityAnalyzer._requirement_text(requirement)
+    if not requirement_text.strip():
+        return None
+    evidence = JevAmbiguityAnalyzer._select_evidence(requirement_text, resume)
+    try:
+        return ClarificationPlan(
+            requirementId=requirement.requirement_id,
+            missingDimension="other",
+            confidence=0.0,
+            evidenceRefs=[item.evidence_id for item in evidence],
+            requirementText=requirement_text,
+            subjectTerms=JevAmbiguityAnalyzer._subject_terms(requirement),
+            evidenceTexts=[item.text for item in evidence],
+        )
+    except ValidationError:
+        return None
+
+
 def build_clarification_plans(
     payload: MatchRequest,
     result: MatchResult,
     analyzer: AmbiguityAnalyzer,
     requirement_ids: set[str] | None = None,
+    selection: str | None = None,
+    max_questions: int | None = None,
 ) -> list[ClarificationPlan]:
     """Run the Jev eligibility gate for requirements already marked unknown.
 
     This is intentionally a post-processing step. ``result`` is read-only here;
     no scores, statuses, eligibility, or fit-band values are changed.
+
+    ``selection`` picks which unknowns reach the gate at all.  The default
+    keeps every unknown and visits them in requirement order.  Under
+    ``information_gain`` the unknowns are ranked by expected reduction in
+    decision entropy first, and those whose answer provably cannot change the
+    decision never reach the gate, so they cost no LLM call.
     """
 
     started = time.perf_counter()
     results_by_id = {item.requirement_id: item for item in result.requirement_results}
     plans: list[ClarificationPlan] = []
+    template_count = 0
+    ordered_requirements, selection_trace = _select_requirements(
+        payload, result, results_by_id, requirement_ids, selection, max_questions
+    )
     with gate_stats() as stats:
         stats["unknown"] = sum(item.status == "unknown" for item in result.requirement_results)
-        for requirement in payload.job.requirements:
+        for requirement in ordered_requirements:
             if requirement_ids is not None and requirement.requirement_id not in requirement_ids:
                 continue
             requirement_result = results_by_id.get(requirement.requirement_id)
@@ -419,17 +471,81 @@ def build_clarification_plans(
                     requirement_id=requirement.requirement_id,
                     reason="no_approved_plan",
                 )
+                # A disabled analyzer is a deployment choosing not to run this
+                # step at all; substituting a template there would override the
+                # operator. Only a real analyzer that declined gets a floor.
+                fallback = (
+                    None
+                    if isinstance(analyzer, NoopAmbiguityAnalyzer)
+                    else _template_plan(requirement, payload.resume)
+                )
+                if fallback is not None:
+                    plans.append(fallback)
+                    template_count += 1
+                    trace_event(
+                        "clarification",
+                        "template_plan_served",
+                        requirement_id=requirement.requirement_id,
+                    )
         trace_event(
             "clarification",
             "clarification_gate_completed",
             unknown_count=stats["unknown"],
             analyzed_count=stats["analyzed"],
-            approved_count=len(plans),
+            # The gate approved these; the templates below are a floor the
+            # gate declined, counted apart so neither number flatters the other.
+            approved_count=len(plans) - template_count,
+            template_count=template_count,
             rejected_by_reason=dict(stats["rejected"]),
             jev_failures=stats["failures"],
             duration_ms=int((time.perf_counter() - started) * 1000),
+            **selection_trace,
         )
     return plans
+
+
+def _select_requirements(
+    payload: MatchRequest,
+    result: MatchResult,
+    results_by_id: dict,
+    requirement_ids: set[str] | None,
+    selection: str | None,
+    max_questions: int | None,
+) -> tuple[list[Requirement], dict]:
+    """Decide which unknown requirements reach the gate, and in what order."""
+
+    if selection != "information_gain":
+        return list(payload.job.requirements), {"selection": selection or "threshold"}
+
+    unknowns = [
+        UnknownRequirement(
+            requirement_id=requirement.requirement_id,
+            is_must_have=requirement.priority == "must_have",
+            met_probability=met_probability_for(
+                getattr(results_by_id.get(requirement.requirement_id), "reason_code", None),
+                getattr(results_by_id.get(requirement.requirement_id), "confidence", None),
+            ),
+        )
+        for requirement in payload.job.requirements
+        if getattr(results_by_id.get(requirement.requirement_id), "status", None) == "unknown"
+        and (requirement_ids is None or requirement.requirement_id in requirement_ids)
+    ]
+    # ``failedMustHaveRequirements`` is the facade's own list of must-haves that
+    # actually disqualify, so this reads the decision rather than re-deriving it.
+    already_disqualified = bool(result.failed_must_have_requirements)
+    ranked = rank_by_information_gain(unknowns, already_disqualified=already_disqualified)
+    if max_questions:
+        ranked = ranked[:max_questions]
+
+    by_id = {item.requirement_id: item for item in payload.job.requirements}
+    selected = [by_id[item.requirement_id] for item in ranked if item.requirement_id in by_id]
+    return selected, {
+        "selection": "information_gain",
+        "already_disqualified": already_disqualified,
+        "ranked_count": len(ranked),
+        "skipped_zero_gain_count": len(unknowns) - len(ranked),
+        "information_gain_top": round(ranked[0].information_gain, 4) if ranked else 0.0,
+    }
 
 
 def build_clarification_requests_from_plans(

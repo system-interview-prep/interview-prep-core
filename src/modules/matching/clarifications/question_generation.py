@@ -37,6 +37,32 @@ _DIMENSION_INTENTS = {
     "experience_context": "hỏi một ví dụ cụ thể về kinh nghiệm thực tế liên quan của ứng viên",
     "other": "hỏi thông tin thực tế cụ thể còn thiếu để đánh giá yêu cầu",
 }
+# A question the candidate can actually answer, built with no model call.
+# Each phrasing is fixed so it passes _grounding_failure_reason by
+# construction: exactly one question mark and it ends the sentence, the opener
+# is in _VIETNAMESE_QUESTION_STARTERS, no digit is introduced, and the only
+# named terms are the subject terms the requirement already carried.
+_DIMENSION_QUESTIONS = {
+    "duration": "Bạn đã trực tiếp sử dụng {subject} trong khoảng thời gian bao lâu?",
+    "proficiency": "Bạn tự đánh giá mức độ thành thạo của mình với {subject} ra sao?",
+    "scale": "Bạn đã làm việc với {subject} ở quy mô công việc như thế nào?",
+    "responsibility": "Bạn đã trực tiếp phụ trách phần việc nào liên quan tới {subject}?",
+    "education": "Bạn có bằng cấp hoặc chuyên ngành nào liên quan tới {subject} không?",
+    "language_level": "Bạn đang ở trình độ nào đối với {subject}?",
+    "certification": "Bạn có chứng chỉ nào cho {subject} không?",
+    "experience_context": (
+        "Bạn có thể nêu một ví dụ cụ thể về công việc thực tế đã làm "
+        "với {subject} không?"
+    ),
+    "other": "Bạn có thể bổ sung thông tin cụ thể nào về {subject} không?",
+}
+# When a requirement was never split into concepts, its whole sentence is the
+# subject, and dropping that sentence into the middle of another one reads as
+# broken Vietnamese. Quoting it keeps the question grammatical whatever the
+# posting wrote.
+_WHOLE_REQUIREMENT_QUESTION = (
+    "Bạn có thể bổ sung thông tin cụ thể cho yêu cầu “{subject}” không?"
+)
 _NUMBER_RE = re.compile(r"(?<![\w])\d+(?:[.,]\d+)*(?![\w])")
 _PROPER_TERM_RE = re.compile(r"\b(?:[A-Z][A-Za-z0-9]*|[A-Z]{2,}[A-Z0-9]*)\b")
 _QUESTION_MARKS = ("?", "？")
@@ -368,7 +394,7 @@ class ClarificationQuestionService:
             attempts=self._max_attempts,
             semantic_threshold=self._semantic_threshold,
         )
-        return None
+        return build_template_question(plan)
 
     @staticmethod
     def _is_structurally_grounded(draft: GeneratedQuestion, plan: ClarificationPlan) -> bool:
@@ -405,6 +431,65 @@ class ClarificationQuestionService:
         if any(term.casefold() not in question.casefold() for term in plan.subject_terms if term.strip()):
             return "missing_subject_term"
         return None
+
+
+def build_template_question(plan: ClarificationPlan) -> ClarificationQuestion | None:
+    """The question a plan is owed when the model could not write one.
+
+    A requirement is unknown precisely because one more fact from the candidate
+    would settle it.  Returning nothing there hands the reader a dead end and
+    strands the requirement in the state the whole step exists to clear, so the
+    floor is a question derived from the plan itself - no model call, and no
+    failure mode to fall through.  A model draft is an upgrade on this floor,
+    never a precondition for asking at all.
+
+    The result still goes through the same grounding check as a model draft, so
+    a template can never leak a term or a number the requirement did not have.
+    """
+
+    subject = ", ".join(term.strip() for term in plan.subject_terms if term.strip())
+    if subject:
+        template = _DIMENSION_QUESTIONS.get(
+            plan.missing_dimension, _DIMENSION_QUESTIONS["other"]
+        )
+    else:
+        flat = " ".join(_NUMBER_RE.sub("", plan.requirement_text).split())
+        subject = flat.strip(" ;,.")
+        template = _WHOLE_REQUIREMENT_QUESTION
+    if not subject:
+        return None
+    try:
+        draft = GeneratedQuestion(
+            question_text=template.format(subject=subject),
+            evidence_refs=list(plan.evidence_refs),
+        )
+    except ValidationError:
+        return None
+    failure = ClarificationQuestionService._grounding_failure_reason(draft, plan)
+    if failure is not None:
+        trace_event(
+            "clarification",
+            "question_template_rejected",
+            requirement_id=plan.requirement_id,
+            reason=failure,
+        )
+        return None
+    trace_event(
+        "clarification",
+        "question_template_served",
+        requirement_id=plan.requirement_id,
+        missing_dimension=plan.missing_dimension,
+    )
+    return ClarificationQuestion(
+        requirementId=plan.requirement_id,
+        missingDimension=plan.missing_dimension,
+        confidence=plan.confidence,
+        evidenceRefs=draft.evidence_refs,
+        questionText=draft.question_text,
+        # The template is the intent restated, so alignment is exact by
+        # construction; the trace above is what distinguishes it in stats.
+        semanticAlignmentScore=1.0,
+    )
 
 
 def build_clarification_question_service_from_env() -> ClarificationQuestionService | None:

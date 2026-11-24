@@ -3,13 +3,13 @@ import importlib.util
 import json
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "generate_vi_stt_collection_plan.py"
+SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "eval" / "interviews" / "voice" / "generate_vi_stt_collection_plan.py"
 SPEC = importlib.util.spec_from_file_location("collection_plan", SCRIPT)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
-COLLECTOR_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "collect_vi_stt_corpus.py"
+COLLECTOR_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "eval" / "interviews" / "voice" / "collect_vi_stt_corpus.py"
 COLLECTOR_SPEC = importlib.util.spec_from_file_location("corpus_collector", COLLECTOR_SCRIPT)
 assert COLLECTOR_SPEC and COLLECTOR_SPEC.loader
 COLLECTOR = importlib.util.module_from_spec(COLLECTOR_SPEC)

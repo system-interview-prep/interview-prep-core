@@ -1,4 +1,4 @@
-from src.modules.interviews.adapters.voice.transcript_quality import assess_transcript
+from src.modules.interviews.adapters.voice.stt.transcript_quality import assess_transcript
 
 
 def test_rejects_low_confidence_transcript() -> None:

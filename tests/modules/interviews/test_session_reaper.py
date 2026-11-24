@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.modules.interviews.application.session_reaper import reap_abandoned_sessions
+from src.modules.interviews.application.runtime.session_reaper import reap_abandoned_sessions
 
 
 class _SessionContext:
@@ -49,6 +49,17 @@ async def test_reaper_closes_rooms_the_candidate_left_as_candidate_left() -> Non
     # Chat rooms: no heartbeat for the grace period also counts as having left.
     assert "mode = 'text' AND metadata->>'candidate_seen_at'" in sql
     assert params == {"left_grace": 5}
+
+
+@pytest.mark.asyncio
+async def test_regular_chat_expiry_does_not_inherit_the_media_ten_minute_cleanup_grace():
+    db = AsyncMock()
+    db.execute.return_value.all = MagicMock(return_value=[])
+    await reap_abandoned_sessions(lambda: _SessionContext(db))
+    sql = " ".join(str(db.execute.await_args.args[0]).split())
+    assert "COALESCE(experience_type, 'interview_chat') = 'interview_chat'" in sql
+    assert "THEN 180 ELSE 0 END" in sql
+    assert "ELSE interval '10 minutes' END <= now()" in sql
 
 
 @pytest.mark.asyncio

@@ -3,8 +3,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from src.modules.interviews.adapters.voice import lab
-from src.modules.interviews.adapters.voice.voice_events import (
+from src.modules.interviews.adapters.voice.api import lab
+from src.modules.interviews.adapters.voice.conversation.voice_events import (
     VOICE_EVENTS,
     VoiceEventReporter,
     sanitize_fields,
@@ -147,7 +147,7 @@ def test_runtime_events_endpoint_records_known_events_on_the_current_turn(monkey
 def test_every_reported_event_is_in_the_allow_list():
     import inspect
 
-    from src.modules.interviews.adapters.voice import livekit_agent
+    from src.modules.interviews.adapters.voice.runtime import livekit_agent
 
     source = inspect.getsource(livekit_agent)
     import re

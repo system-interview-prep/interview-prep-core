@@ -9,6 +9,7 @@ from src.modules.user_cvs.parsing.domain.deterministic import DeterministicResum
 from src.modules.user_cvs.parsing.domain.hybrid import HybridResumeParser
 from src.modules.user_cvs.parsing.domain.source import build_source_document
 from src.modules.user_cvs.parsing.infrastructure.extractor_factory import build_document_extractor
+from src.modules.user_cvs.parsing.infrastructure.repair_client import build_text_repairer
 from src.modules.user_cvs.parsing.infrastructure.repository import SqlAlchemyCvParseRepository
 from src.modules.user_cvs.parsing.infrastructure.storage import R2ObjectStorage
 from src.workers.async_runner import worker_async_runner
@@ -55,6 +56,7 @@ async def _parse_cv_in_run(cv_id: str, *, mode: str, final_attempt: bool) -> dic
             extractor=build_document_extractor(),
             parser=parser,
             source_builder=build_source_document,
+            repairer=build_text_repairer(),
         )
         result = await pipeline.run(cv_id, final_attempt=final_attempt)
         return {

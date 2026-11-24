@@ -15,6 +15,7 @@ from src.core.security import current_user
 from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
 from src.modules.matching.application import run_tracking
+from src.modules.matching.application.fit_history import persist_candidate_fit
 from src.modules.matching.application.input_resolver import (
     resolve_job,
     resolve_resume,
@@ -68,8 +69,6 @@ def _inputs_from_body(request: MatchRequest) -> None:
 async def _resolve_match_request(
     payload: MatchClarificationIdsRequest, db: AsyncSession, user: dict
 ) -> MatchRequest:
-    if payload.candidate_id.startswith("sample-") or payload.job_id.startswith("sample-"):
-        raise HTTPException(status_code=422, detail="Sample matches do not support clarification answers")
     started = time.perf_counter()
     which = "resume"
     try:
@@ -266,4 +265,5 @@ async def rescore_after_clarifications_by_ids(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         run_tracking.emit_match_completed(result.final_match_result)
+    await persist_candidate_fit(db, user=user, result=result.final_match_result)
     return result

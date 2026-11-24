@@ -1,12 +1,20 @@
 """One spoken answer = one Interview Core turn, however many STT fragments it has."""
 
+from pathlib import Path
+
 import pytest
 
-from src.modules.interviews.adapters.voice.answer_window import (
+from src.modules.interviews.adapters.voice.conversation.answer_window import (
+    PROCESSING_FILLERS_EN,
+    PROCESSING_FILLERS_VI,
     SHORT_ANSWER_WORDS,
     AnswerWindow,
+    pick_processing_filler,
+    processing_filler,
+    processing_fillers,
     silence_reprompt,
     turn_taking_tip,
+    without_leading_interjection,
 )
 
 
@@ -36,6 +44,14 @@ def test_short_buffer_waits_longer_before_submitting() -> None:
     assert window.commit_delay() == 2.5
 
 
+def test_default_commit_delays_reduce_wait_without_committing_short_answers_immediately(monkeypatch) -> None:
+    monkeypatch.delenv("VOICE_ANSWER_COMMIT_SILENCE", raising=False)
+    monkeypatch.delenv("VOICE_ANSWER_SHORT_COMMIT_SILENCE", raising=False)
+    window = AnswerWindow()
+    assert window.commit_silence == 1.8
+    assert window.short_commit_silence == 2.2
+
+
 def test_blank_fragments_are_ignored() -> None:
     window = AnswerWindow()
     window.add("   ", message_id="m1")
@@ -50,17 +66,44 @@ def test_voice_guidance_is_hands_free(locale: str) -> None:
     assert "press" not in guidance
 
 
-def test_processing_filler_rotates_between_answers() -> None:
-    from src.modules.interviews.adapters.voice.answer_window import processing_filler, processing_fillers
+def test_processing_filler_is_opt_in_and_silent_by_default(monkeypatch) -> None:
+    """No "Ừm, chờ mình một chút nhé" while Core works (removed 31/10)."""
+    from src.modules.interviews.adapters.voice.conversation import answer_window, voice_phrases
+    from src.modules.interviews.core.dialogue import phrases as script
 
     lines = [processing_filler("vi-VN", i) for i in range(len(processing_fillers("vi-VN")))]
     assert len(set(lines)) == len(lines) >= 3
     assert processing_filler("vi-VN") == "Ừm, chờ mình một chút nhé."
     assert processing_filler("en-US", 1) != processing_filler("en-US", 0)
+    monkeypatch.delenv("VOICE_PROCESSING_FILLER_ENABLED", raising=False)
+    assert not answer_window.processing_filler_enabled()
+    monkeypatch.setenv("VOICE_PROCESSING_FILLER_ENABLED", "true")
+    assert answer_window.processing_filler_enabled()
+    assert voice_phrases.PROCESSING_FILLERS_VI
+    agent = (Path(answer_window.__file__).parents[1] / "runtime" / "livekit_agent.py").read_text(encoding="utf-8")
+    assert 'kind="filler"' in agent
+
+
+def test_answer_pause_nudges_vary_by_turn_and_do_not_repeat_back_to_back() -> None:
+    from src.modules.interviews.adapters.voice.conversation.answer_window import (
+        ANSWER_PAUSE_NUDGES_VI,
+        pick_answer_pause_nudge,
+    )
+
+    picked = []
+    for index in range(30):
+        picked.append(
+            pick_answer_pause_nudge(
+                "vi-VN", f"session:turn:{index}", avoid=picked[-1] if picked else None
+            )
+        )
+    assert len(set(picked)) == len(ANSWER_PAUSE_NUDGES_VI)
+    for index, line in enumerate(picked[1:], start=1):
+        assert line != picked[index - 1]
 
 
 def test_filler_varies_by_session_and_the_reply_does_not_repeat_its_interjection() -> None:
-    from src.modules.interviews.adapters.voice.answer_window import (
+    from src.modules.interviews.adapters.voice.conversation.answer_window import (
         PROCESSING_FILLERS_VI,
         pick_processing_filler,
         without_leading_interjection,
@@ -78,8 +121,8 @@ def test_filler_varies_by_session_and_the_reply_does_not_repeat_its_interjection
 
 
 def test_room_lines_follow_the_voice_dialect_and_acknowledgements_are_cached(monkeypatch) -> None:
-    from src.modules.interviews.adapters.voice.answer_window import localize_particles, scripted_reply_lines
-    from src.modules.interviews.core import interviewer_script as script
+    from src.modules.interviews.adapters.voice.conversation.answer_window import localize_particles, scripted_reply_lines
+    from src.modules.interviews.core.dialogue import phrases as script
 
     assert set(script.ACK_FALLBACK_VI) <= set(scripted_reply_lines("vi-VN"))
     monkeypatch.setenv("INTERVIEWER_VOICE_DIALECT", "nam")

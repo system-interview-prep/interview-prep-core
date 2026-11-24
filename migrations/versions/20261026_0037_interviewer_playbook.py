@@ -3,7 +3,7 @@
 "AI tích luỹ skill phỏng vấn" (ADVISOR_FEEDBACK_RESEARCH_2026-10-26.md, section 3).
 A reflection job proposes entries (PROPOSED) from flagged and reviewed turns;
 an admin approves them (ACTIVE) and only ACTIVE entries reach the engine's
-prompts (interviews/core/playbook.py). ``helpful`` / ``harmful`` count the
+prompts (interviews/core/dialogue/playbook.py). ``helpful`` / ``harmful`` count the
 reviewed turns that ran with the entry and passed or failed.
 
 Revision ID: 20261026_0037

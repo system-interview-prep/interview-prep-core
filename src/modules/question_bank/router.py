@@ -18,6 +18,7 @@ from src.modules.question_bank import insights
 from src.modules.question_bank.facade import GENERATED_QUESTION_AUTHOR
 from src.modules.question_bank.import_parser import csv_template, xlsx_template
 from src.modules.question_bank.import_service import QuestionImportService
+from src.modules.question_bank.notifications import notify_question_author
 from src.modules.question_bank.permissions import (
     REVIEW_TYPES,
     version_actions,
@@ -36,6 +37,10 @@ from src.modules.question_bank.service import QuestionBankService
 router = APIRouter(prefix="/admin/question-bank", tags=["question-bank"])
 
 
+class RetireQuestionsRequest(BaseModel):
+    question_ids: list[UUID] = Field(alias="questionIds", min_length=1, max_length=100)
+
+
 def _import_response(import_run: object) -> dict:
     return {
         "importId": str(import_run.id),
@@ -50,11 +55,12 @@ def _import_response(import_run: object) -> dict:
 @router.get("/imports/template")
 async def import_template(
     _: dict = Depends(require_roles(QUESTION_AUTHOR)),
-    format: str = Query(default="csv"),
+    db: AsyncSession = Depends(get_db),
+    format: str = Query(default="xlsx"),
 ) -> Response:
     if format == "xlsx":
         return Response(
-            content=xlsx_template(),
+            content=xlsx_template(await QuestionImportService(db).template_catalog()),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": "attachment; filename=question-bank-import-v1.xlsx"},
         )
@@ -140,7 +146,9 @@ async def import_report(
 async def commit_import(
     import_id: UUID,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    actor: dict = Depends(require_admin),
+    # Authors stage and commit their own imports: commit only creates DRAFT
+    # versions, which still need an admin review and final approval.
+    actor: dict = Depends(require_roles(QUESTION_AUTHOR)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     if not idempotency_key:
@@ -219,6 +227,33 @@ async def create_draft(
     return _version_response(version)
 
 
+@router.post("/questions/retire")
+async def retire_questions(
+    payload: RetireQuestionsRequest,
+    actor: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Soft-remove questions from the active bank while preserving interview history."""
+    question_ids = list(dict.fromkeys(payload.question_ids))
+    result = await db.execute(
+        text(
+            "UPDATE interview_questions SET retired_at = now() "
+            "WHERE id = ANY(CAST(:ids AS uuid[])) AND retired_at IS NULL RETURNING id"
+        ),
+        {"ids": question_ids},
+    )
+    retired_ids = [str(row["id"]) for row in result.mappings().all()]
+    await db.commit()
+    await record_admin_action(
+        db,
+        actor,
+        "RETIRE_QUESTIONS",
+        target_id=retired_ids[0] if len(retired_ids) == 1 else None,
+        detail={"questionIds": retired_ids, "retiredCount": len(retired_ids)},
+    )
+    return {"retiredQuestionIds": retired_ids, "retiredCount": len(retired_ids)}
+
+
 @router.get("/questions")
 async def list_questions(
     actor: dict = Depends(require_roles(QUESTION_AUTHOR)),
@@ -236,7 +271,7 @@ async def list_questions(
     ``mine`` narrows to the signed-in person's work (permissions.work_filter);
     ``source=ai`` to drafts the system generated.
     """
-    filters = ["1 = 1"]
+    filters = ["q.retired_at IS NULL"]
     params: dict[str, object] = {"limit": page_size, "offset": (page - 1) * page_size}
     work = work_filter(mine)
     if work:
@@ -416,8 +451,12 @@ async def _version_rubric(db: AsyncSession, version_id: object) -> dict | None:
         return None
     criteria = await db.execute(
         text(
-            "SELECT stable_key, name, description, weight, critical FROM rubric_criteria "
-            "WHERE rubric_version_id = :rubric_version_id ORDER BY display_order"
+            "SELECT rc.stable_key, rc.name, rc.description, rc.weight, rc.critical, "
+            "COALESCE(json_agg(json_build_object('level', ra.level, 'description', ra.description) "
+            "ORDER BY ra.level) FILTER (WHERE ra.level IS NOT NULL), '[]'::json) AS anchors "
+            "FROM rubric_criteria rc LEFT JOIN rubric_anchors ra ON ra.criterion_id = rc.id "
+            "WHERE rc.rubric_version_id = :rubric_version_id "
+            "GROUP BY rc.id ORDER BY rc.display_order"
         ),
         {"rubric_version_id": rubric["id"]},
     )
@@ -434,6 +473,7 @@ async def _version_rubric(db: AsyncSession, version_id: object) -> dict | None:
                 "description": row["description"],
                 "weight": float(row["weight"]),
                 "critical": row["critical"],
+                "anchors": row["anchors"],
             }
             for row in criteria.mappings().all()
         ],
@@ -561,7 +601,11 @@ async def review(
     actor: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    review_record = await QuestionBankService(db).record_review(version_id, actor["sub"], payload)
+    service = QuestionBankService(db)
+    review_record = await service.record_review(version_id, actor["sub"], payload)
+    await notify_question_author(
+        db, await service._version_or_404(version_id), review_record.decision, comment=payload.comment
+    )
     await db.commit()
     await record_admin_action(
         db, actor, "REVIEW_QUESTION", target_id=version_id, detail={"decision": review_record.decision}
@@ -577,6 +621,7 @@ async def approve(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     version = await QuestionBankService(db).approve(version_id, actor["sub"], payload.approval_policy_version)
+    await notify_question_author(db, version, "APPROVED")
     await db.commit()
     await record_admin_action(db, actor, "APPROVE_QUESTION", target_id=version_id)
     return _version_response(version)

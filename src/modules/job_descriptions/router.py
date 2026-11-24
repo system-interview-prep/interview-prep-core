@@ -534,6 +534,24 @@ async def get_upload(
     return await _get_upload(db, user["sub"], upload_id)
 
 
+@_inner_router.get("/uploads")
+async def list_uploads(
+    user: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(default=100, ge=1, le=100),
+) -> dict:
+    """List the current admin's unfinished JD uploads so drafts can be resumed."""
+    result = await db.execute(
+        text(
+            _UPLOAD_SELECT
+            + " WHERE owner_user_id = :user_id AND item_type = 'JD_UPLOAD' "
+            + "ORDER BY updated_at DESC, id DESC LIMIT :limit"
+        ),
+        {"user_id": user["sub"], "limit": limit},
+    )
+    return {"items": [_upload(row) for row in result.mappings().all()]}
+
+
 @_inner_router.get("/uploads/{upload_id}/events")
 async def stream_upload_status(
     upload_id: str,

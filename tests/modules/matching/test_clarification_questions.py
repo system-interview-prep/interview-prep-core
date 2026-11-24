@@ -8,11 +8,17 @@ import pytest
 from src.modules.matching.clarifications.question_generation import (
     ClarificationPlan,
     ClarificationQuestionService,
+    build_template_question,
     EmbeddingSemanticScorer,
     GeneratedQuestion,
     OpenAIQuestionGenerator,
     build_clarification_question_service_from_env,
 )
+
+
+# What the plan is owed when no model draft survives: the duration template
+# with the plan's own subject term, and nothing the plan did not already carry.
+_FLOOR_QUESTION = "Bạn đã trực tiếp sử dụng React trong khoảng thời gian bao lâu?"
 
 
 def _plan(**updates) -> ClarificationPlan:
@@ -84,9 +90,24 @@ def test_creates_ai_question_with_semantic_alignment_and_provenance() -> None:
         "Bạn có thể mô tả kinh nghiệm AWS của mình không?",
     ],
 )
-def test_rejects_multiple_incomplete_or_unsupported_numeric_questions(question) -> None:
+def test_replaces_an_unusable_draft_instead_of_asking_nothing(question) -> None:
+    """The draft is still refused; the requirement is still asked about.
+
+    Each case here would put a number, a tool or a second question in front of
+    the candidate that the plan never supported. None of them reaches them.
+    What changes is that refusing the draft no longer refuses the question: the
+    requirement is unknown either way, and a template built from the plan asks
+    for the missing fact without inventing anything.
+    """
+
     result = _service(generator=FakeGenerator(GeneratedQuestion(questionText=question))).create(_plan())
-    assert result is None
+
+    assert result is not None
+    assert result.question_text != question
+    assert result.question_text == _FLOOR_QUESTION
+    assert "5" not in result.question_text
+    assert "24" not in result.question_text
+    assert "AWS" not in result.question_text
 
 
 def test_allows_number_that_is_supported_by_source_text() -> None:
@@ -101,19 +122,31 @@ def test_rejects_evidence_reference_outside_supplied_cv_evidence() -> None:
         questionText="Bạn đã trực tiếp sử dụng React trong khoảng thời gian bao lâu?",
         evidenceRefs=["made-up-evidence"],
     )
-    assert _service(generator=FakeGenerator(question)).create(_plan()) is None
+    result = _service(generator=FakeGenerator(question)).create(_plan())
+
+    assert result is not None
+    assert result.evidence_refs == ["cv-ev-1"]
+    assert "made-up-evidence" not in result.evidence_refs
 
 
 def test_rejects_question_that_drops_required_subject() -> None:
     question = GeneratedQuestion(
         questionText="Bạn đã trực tiếp sử dụng kỹ năng này trong khoảng thời gian bao lâu?"
     )
-    assert _service(generator=FakeGenerator(question)).create(_plan()) is None
+    result = _service(generator=FakeGenerator(question)).create(_plan())
+
+    assert result is not None
+    assert "React" in result.question_text
 
 
 def test_rejects_semantically_unrelated_question() -> None:
     scorer = FakeScorer(0.79)
-    assert _service(scorer=scorer, threshold=0.8).create(_plan()) is None
+    result = _service(scorer=scorer, threshold=0.8).create(_plan())
+
+    # A score of 1.0 is the template's signature: it restates the intent, so it
+    # cannot be the 0.79 draft that was just refused.
+    assert result is not None
+    assert result.semantic_alignment_score == 1.0
 
 
 def test_retries_question_generation_after_semantic_rejection() -> None:
@@ -136,23 +169,82 @@ def test_retries_question_generation_after_semantic_rejection() -> None:
     assert len(scorer.calls) == 2
 
 
-def test_semantic_validation_error_fails_closed() -> None:
+def test_semantic_validation_error_still_asks_the_requirement() -> None:
     scorer = FakeScorer(error=RuntimeError("embedding unavailable"))
-    assert _service(scorer=scorer).create(_plan()) is None
+    result = _service(scorer=scorer).create(_plan())
+
+    assert result is not None
+    assert result.question_text == _FLOOR_QUESTION
 
 
-def test_invalid_semantic_score_fails_closed() -> None:
-    assert _service(scorer=FakeScorer(1.2)).create(_plan()) is None
+def test_invalid_semantic_score_still_asks_the_requirement() -> None:
+    result = _service(scorer=FakeScorer(1.2)).create(_plan())
+
+    assert result is not None
+    assert result.question_text == _FLOOR_QUESTION
 
 
-def test_generator_failure_fails_closed_without_calling_semantic_scorer() -> None:
+def test_generator_failure_asks_without_calling_semantic_scorer() -> None:
     class FailedGenerator:
         def generate(self, plan):
             return None
 
     scorer = FakeScorer()
-    assert _service(generator=FailedGenerator(), scorer=scorer).create(_plan()) is None
+    result = _service(generator=FailedGenerator(), scorer=scorer).create(_plan())
+
+    assert result is not None
+    assert result.question_text == _FLOOR_QUESTION
+    # The template needs no embedding, so a dead generator must not drag the
+    # scorer in behind it.
     assert scorer.calls == []
+
+
+def test_compound_requirement_still_gets_one_answerable_question() -> None:
+    """A posting line naming five technologies must not end in silence.
+
+    The Jev gate tends to decline this shape, because no single missing
+    dimension covers five subjects at once, and every model draft for it is
+    easy to reject. The candidate is then told their criterion needs
+    confirmation and given no way to confirm it. One question naming all five
+    is worse than five questions and far better than none.
+    """
+
+    plan = _plan(
+        requirementId="req-frontend-stack",
+        missingDimension="other",
+        confidence=0.0,
+        requirementText="Có kinh nghiệm về HTML, CSS, JS, Ajax và jQuery",
+        subjectTerms=["HTML", "CSS", "JS", "Ajax", "jQuery"],
+        evidenceRefs=[],
+        evidenceTexts=[],
+    )
+
+    result = build_template_question(plan)
+
+    assert result is not None
+    assert result.question_text.endswith("?")
+    assert result.question_text.count("?") == 1
+    for term in ["HTML", "CSS", "JS", "Ajax", "jQuery"]:
+        assert term in result.question_text
+    # Nothing may be served that the frontend will silently drop.
+    assert result.reason_code == "candidate_clarification_needed"
+
+
+def test_unsplit_requirement_is_quoted_rather_than_inlined() -> None:
+    plan = _plan(
+        missingDimension="other",
+        requirementText="Có kinh nghiệm về HTML, CSS, JS, Ajax và jQuery",
+        subjectTerms=[],
+        evidenceRefs=[],
+        evidenceTexts=[],
+    )
+
+    result = build_template_question(plan)
+
+    assert result is not None
+    # Dropping a whole sentence into the middle of another reads as broken
+    # Vietnamese; quoting it keeps the question grammatical.
+    assert "“Có kinh nghiệm về HTML, CSS, JS, Ajax và jQuery”" in result.question_text
 
 
 def test_semantic_threshold_must_be_validated() -> None:

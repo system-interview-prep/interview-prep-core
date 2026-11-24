@@ -4,9 +4,20 @@ from functools import lru_cache
 
 from fastapi.concurrency import run_in_threadpool
 
-from src.core import llm_tracing
+from src.infrastructure import langfuse
 from src.core.config import get_settings
 from src.core.pipeline_events import ai_call_timer, caller_purpose
+from src.modules.ai.cache_store import (  # noqa: F401 - re-exported for other modules
+    CacheStore,
+    FileCacheStore,
+    SqlCacheStore,
+    cache_store_for,
+)
+from src.modules.ai.structured import (  # noqa: F401 - re-exported for other modules
+    CachingStructuredClient,
+    OpenAIStructuredClient,
+    StructuredClient,
+)
 
 # Models that answered "temperature is not supported" once. Every later call
 # skips the parameter instead of paying for a rejected request first.
@@ -58,7 +69,7 @@ async def generate_text(
     model = settings.llm_model
 
     # Langfuse generation inside the current interview turn or grading run (no-op otherwise).
-    generation = llm_tracing.Generation(
+    generation = langfuse.Generation(
         purpose,
         model=model,
         instructions=instructions,

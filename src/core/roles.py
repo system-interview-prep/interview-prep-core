@@ -2,6 +2,8 @@ from typing import Final
 
 CANDIDATE: Final = "CANDIDATE"
 ADMIN: Final = "ADMIN"
+# Shown as "Chuyên gia phỏng vấn" (interview expert): writes questions and drafts
+# for the interview process. The stored code keeps its original name.
 QUESTION_AUTHOR: Final = "QUESTION_AUTHOR"
 # Retired 28/10: reviewing and final approval are done by ADMIN. Kept so old
 # assignments still parse; no permission is granted by them and they cannot be assigned.

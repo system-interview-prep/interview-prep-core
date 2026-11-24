@@ -2,7 +2,20 @@
 
 from dataclasses import dataclass
 
-from src.modules.taxonomy.skill_catalog import AI, BACKEND, DEVOPS, FRONTEND, GAME, MOBILE, role_skill_ids
+from src.modules.taxonomy.skill_catalog import (
+    AI,
+    BA,
+    BACKEND,
+    DATA,
+    DEVOPS,
+    EMBEDDED,
+    FRONTEND,
+    GAME,
+    MOBILE,
+    QA,
+    SECURITY,
+    role_skill_ids,
+)
 
 TAXONOMY_VERSION = "internal-career-2026.1"
 
@@ -68,10 +81,80 @@ _NODES = (
     CareerTaxonomyNode(
         "technology.artificial-intelligence", "Artificial Intelligence", "specialization", "technology"
     ),
+    CareerTaxonomyNode("technology.ai-engineering", "AI Engineering", "specialization", "technology"),
+    CareerTaxonomyNode("technology.data-science", "Data Science", "specialization", "technology"),
+    CareerTaxonomyNode("technology.qa-automation", "QA & Test Automation", "specialization", "technology"),
+    CareerTaxonomyNode("technology.ux-ui-design", "UX/UI Design", "specialization", "technology"),
+    CareerTaxonomyNode("technology.business-analysis", "Business Analysis", "specialization", "technology"),
     CareerTaxonomyNode("technology.game-development", "Game Development", "specialization", "technology"),
+    CareerTaxonomyNode(EMBEDDED, "Embedded Engineering", "specialization", "technology.software-engineering"),
+    CareerTaxonomyNode(QA, "Software Testing & QA", "specialization", "technology"),
+    CareerTaxonomyNode(DATA, "Data Engineering & Analytics", "specialization", "technology"),
+    CareerTaxonomyNode(SECURITY, "Cybersecurity", "specialization", "technology"),
 )
 
 _RULES = (
+    CareerRule(
+        "technology.ai-engineering",
+        "AI Engineering",
+        (
+            "ai engineer",
+            "ai engineering",
+            "llm engineer",
+            "generative ai engineer",
+            "machine learning engineer",
+        ),
+        frozenset(
+            {
+                "skill-machine-learning",
+                "skill-natural-language-processing",
+                "skill-generative-ai",
+                "skill-large-language-models",
+                "skill-retrieval-augmented-generation",
+                "skill-langgraph",
+            }
+        ),
+        "technology",
+    ),
+    CareerRule(
+        "technology.data-science",
+        "Data Science",
+        ("data scientist", "data science", "research scientist"),
+        frozenset(),
+        "technology",
+    ),
+    CareerRule(
+        "technology.qa-automation",
+        "QA & Test Automation",
+        ("qa engineer", "quality assurance", "test automation", "software tester", "sdet"),
+        frozenset(),
+        "technology",
+    ),
+    CareerRule(
+        "technology.ux-ui-design",
+        "UX/UI Design",
+        ("ux designer", "ui designer", "ux/ui designer", "product designer"),
+        frozenset(),
+        "technology",
+    ),
+    CareerRule(
+        "technology.business-analysis",
+        "Business Analysis",
+        (
+            "business analyst",
+            "business analysis",
+            "systems analyst",
+            # "systems analyst" does not cover the far commoner singular.
+            "system analyst",
+            # Vietnamese CVs title the role in Vietnamese; without this the rule
+            # only ever fired on English titles.
+            "phân tích nghiệp vụ",
+        ),
+        # Was frozenset(): with no skill able to signal it, the rule could only
+        # ever reach 0.75 and lost every tie-break to a skill-backed rule.
+        role_skill_ids(BA),
+        "technology",
+    ),
     CareerRule(
         "technology.game-development",
         "Game Development",
@@ -82,7 +165,7 @@ _RULES = (
     CareerRule(
         "technology.artificial-intelligence",
         "Artificial Intelligence",
-        ("ai engineer", "machine learning", "data scientist"),
+        ("artificial intelligence", "machine learning"),
         role_skill_ids(AI),
         "technology",
     ),
@@ -114,6 +197,44 @@ _RULES = (
         role_skill_ids(DEVOPS),
         "technology",
     ),
+    CareerRule(
+        EMBEDDED,
+        "Embedded Engineering",
+        ("embedded", "firmware", "iot", "nhúng"),
+        role_skill_ids(EMBEDDED),
+        "technology.software-engineering",
+    ),
+    CareerRule(
+        QA,
+        "Software Testing & QA",
+        ("tester", "qa", "qc", "quality assurance", "test engineer", "automation test", "kiểm thử"),
+        role_skill_ids(QA),
+        "technology",
+    ),
+    CareerRule(
+        DATA,
+        "Data Engineering & Analytics",
+        (
+            "data engineer",
+            # Was only on the removed duplicate rule; "data engineer" does not
+            # match it and "data analytics" does not either.
+            "analytics engineer",
+            "data analyst",
+            "data analytics",
+            "business intelligence",
+            "bi developer",
+            "phân tích dữ liệu",
+        ),
+        role_skill_ids(DATA),
+        "technology",
+    ),
+    CareerRule(
+        SECURITY,
+        "Cybersecurity",
+        ("security", "pentest", "penetration", "soc analyst", "bảo mật", "an toàn thông tin"),
+        role_skill_ids(SECURITY),
+        "technology",
+    ),
 )
 
 
@@ -122,7 +243,7 @@ def career_taxonomy() -> tuple[CareerTaxonomyNode, ...]:
 
 
 def _specializations(skill_refs, title_refs, *, minimum_skill_signals: int):
-    results: list[CareerClassificationResult] = []
+    results: list[tuple[float, frozenset[str], CareerClassificationResult]] = []
     for rule in _RULES:
         supporting_ids = sorted(rule.skill_ids.intersection(skill_refs))
         matching_titles = [
@@ -145,20 +266,47 @@ def _specializations(skill_refs, title_refs, *, minimum_skill_signals: int):
         # A title is explicit intent, while supported skills establish the domain.
         # This makes an AI Engineer with a backend implementation stack classify
         # by its AI specialization instead of relying on declaration order ties.
-        confidence = min(0.95, 0.45 + 0.15 * len(supporting_ids) + 0.30 * bool(matching_titles))
+        score = 0.45 + 0.15 * len(supporting_ids) + 0.30 * bool(matching_titles)
         results.append(
-            CareerClassificationResult(
-                code=rule.code,
-                label=rule.label,
-                dimension="specialization",
-                taxonomy_version=TAXONOMY_VERSION,
-                confidence=confidence,
-                evidence_refs=tuple(refs),
+            (
+                score,
+                rule.skill_ids,
+                CareerClassificationResult(
+                    code=rule.code,
+                    label=rule.label,
+                    dimension="specialization",
+                    taxonomy_version=TAXONOMY_VERSION,
+                    # Reported confidence stays capped; the ranking below does not.
+                    confidence=min(0.95, score),
+                    evidence_refs=tuple(refs),
+                ),
             )
         )
-    # Python's sort is stable, so equal-confidence results retain the explicit
-    # domain-priority order declared in _RULES.
-    return sorted(results, key=lambda item: -item.confidence)
+
+    # A rule whose skills sit entirely inside another matched rule's is the more
+    # specific reading of the same evidence: ai-engineering's six skills are a
+    # subset of artificial-intelligence's twenty-one, which also count generic
+    # Python, so the broad rule can never match fewer. _RULES encoded that
+    # preference by declaring the specific rule first, which worked only while
+    # every score clamped to 0.95 and the sort was therefore a tie. Let the
+    # specific rule inherit the broader score so the tie -- and with it the
+    # declaration order -- comes back. Skill-less rules are excluded, since
+    # frozenset() is a subset of everything.
+    ranked: list[tuple[float, CareerClassificationResult]] = []
+    for score, skills, item in results:
+        broader = [other for other, other_skills, _ in results if skills and skills < other_skills]
+        if broader and max(broader) > score:
+            score = max(broader)
+            item = CareerClassificationResult(**{**item.__dict__, "confidence": min(0.95, score)})
+        ranked.append((score, item))
+
+    # Rank on the uncapped score. Capping first threw the evidence away: a CV
+    # with six frontend skills and a "Frontend Engineer" title scored 1.65 and a
+    # backend reading of the same CV scored 1.05, but both clamped to 0.95 and
+    # the tie fell through to declaration order in _RULES, where backend comes
+    # first -- so every such CV was classified backend, title and all.
+    # Python's sort is stable, so a genuine tie still keeps _RULES order.
+    return [item for _, item in sorted(ranked, key=lambda pair: -pair[0])]
 
 
 def classify_career(

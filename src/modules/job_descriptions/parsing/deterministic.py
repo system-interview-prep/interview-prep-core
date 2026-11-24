@@ -226,12 +226,29 @@ def resolve_known_skill_concepts(
             seen.add(concept.concept_id)
     return resolved
 
+# A Vietnamese posting states a cumulative-grade threshold without ever
+# writing "GPA": "Điểm trung bình tích lũy từ 7.0/10 trở lên", "ĐTB >= 3.2/4".
+# Reading only the English token left those lines with no threshold and no
+# scale, so they were not education requirements at all downstream - they fell
+# through to the skill evaluator, which searched the CV for a technology named
+# "điểm trung bình tích lũy" and of course did not find one.
+_GPA_NAMED = (
+    r"(?:GPA|CPA|ĐTB"
+    r"|điểm\s*trung\s*bình(?:\s*tích\s*lũy)?"
+    r"|điểm\s*tích\s*lũy"
+    r"|điểm\s*TBTL)"
+)
+_GPA_COMPARATOR = r"(?:>=|>|=|≥|tối\s*thiểu|từ|đạt|:)"
 _GPA_RE = re.compile(
-    r"\b(?:GPA|CPA|Điểm\s*(?:GPA)?)\s*(?:>=|>=|≥|tối\s*thiểu|từ|\s*:\s*)?\s*(?P<thresh>\d+(?:\.\d+)?)\s*(?:/|\s*trên\s*)(?P<scale>\d+(?:\.\d+)?)",
+    rf"\b(?:{_GPA_NAMED}|Điểm\s*(?:GPA)?)(?:\s*{_GPA_COMPARATOR})*\s*"
+    r"(?P<thresh>\d+(?:\.\d+)?)\s*(?:/|\s*trên\s*)(?P<scale>\d+(?:\.\d+)?)",
     re.I,
 )
+# Without an explicit scale the subject has to carry the meaning on its own, so
+# a bare "Điểm" is not enough here, and a comparator is required: "điểm trung
+# bình 3 môn chuyên ngành" must not be read as a 3.0 threshold.
 _GPA_STANDALONE_RE = re.compile(
-    r"\b(?:GPA|CPA)\s*(?:>=|>=|≥|tối\s*thiểu|từ|\s*:\s*)\s*(?P<thresh>\d+(?:\.\d+)?)",
+    rf"\b{_GPA_NAMED}(?:\s*{_GPA_COMPARATOR})+\s*(?P<thresh>\d+(?:\.\d+)?)",
     re.I,
 )
 _LANG_CERT_RE = re.compile(
@@ -260,6 +277,51 @@ _RESEARCH_COMPETITION_DISJUNCTION = re.compile(
     r"(?P<opt2>(?:từng\s+)?(?:tham\s+gia\s+)?(?:cuộc\s+thi\s+AI|thi\s+AI)|AI\s+competition|hackathon)",
     re.I,
 )
+
+# When a requirement names several technologies, whether they are alternatives
+# or all of them required is the difference between a condition a candidate can
+# meet and one nobody can.  "Thành thạo ít nhất một ngôn ngữ lập trình (C, C++,
+# Java, C#, JavaScript,...)" was read as a conjunction, so a candidate had to
+# evidence all five languages the posting happened to list; a Java and
+# JavaScript developer failed it.  Only "hoặc|hay|or" marked a list as
+# alternatives, which that sentence never says.
+#
+# Three wordings make a list disjunctive, and all three appear in that one
+# line: an explicit count ("ít nhất một"), an illustrative lead-in ("such as",
+# "như"), and an open end ("...", "v.v", "etc") - a list the posting itself
+# says is incomplete cannot be a list of things all of which are required.
+_DISJUNCTIVE_LIST_RE = re.compile(
+    r"\b(?:hoac|hay|or|either)\b"
+    r"|\bit\s*nhat\s*(?:mot|1)\b"
+    r"|\bat\s+least\s+(?:one|1)\b"
+    r"|\bmot\s+trong\b"
+    r"|\b(?:any|one)\s+of\b"
+    r"|\bsuch\s+as\b"
+    r"|\be\s*\.?\s*g\b"
+    r"|\bvi\s*du\b"
+    # "như" introduces examples ("các ngôn ngữ như Java, Python").  The guard
+    # keeps the everyday phrases - "nhu cầu", "như trên|sau|vậy" - out.
+    r"|\bnhu\b(?!\s*(?:cau|tren|sau|vay|the))"
+    r"|\.\s*\.\s*\.|…"
+    r"|\bv\s*\.?\s*v\b|\betc\b",
+    re.I,
+)
+
+
+def _fold_for_grouping(text: str) -> str:
+    decomposed = unicodedata.normalize("NFD", (text or "").lower())
+    stripped = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
+    return stripped.replace("đ", "d")
+
+
+def requirement_list_is_disjunctive(text: str) -> bool:
+    """Whether a requirement's list of named skills offers alternatives.
+
+    Shared with matching so one sentence is read the same way when the posting
+    is parsed and when a CV is scored against it.
+    """
+    return bool(_DISJUNCTIVE_LIST_RE.search(_fold_for_grouping(text)))
+
 
 PARSER_VERSION = "deterministic-jd-v5"
 _HEADERS = {
@@ -513,6 +575,31 @@ def _section_headings(text: str) -> dict[int, tuple[str, bool]]:
         elif kind := _keyword_heading(lines, index):
             found[offset] = (kind, True)
     return found
+
+
+def section_ranges_all(text: str, kind: str) -> list[tuple[int, int]]:
+    """Every span belonging to one section kind, in document order.
+
+    ``_ranges`` keeps only the last span per kind because its callers want a
+    single authoritative section.  A posting that repeats a section - most often
+    a bilingual listing carrying "Requirements" and "Yêu cầu" as two separate
+    blocks - genuinely has several, and treating only the last one as real
+    discards the other block's requirements entirely.
+    """
+    headings: list[tuple[int, str]] = []
+    for offset, (section_kind, by_keyword) in _section_headings(text).items():
+        if section_kind == "preferred" or (
+            by_keyword and headings and headings[-1][1] == section_kind
+        ):
+            continue
+        headings.append((offset, section_kind))
+    headings.sort()
+    spans: list[tuple[int, int]] = []
+    for index, (start, section_kind) in enumerate(headings):
+        if section_kind == kind:
+            end = headings[index + 1][0] if index + 1 < len(headings) else len(text)
+            spans.append((start, end))
+    return spans
 
 
 def _ranges(text: str) -> dict[str, tuple[int, int]]:
@@ -1080,7 +1167,7 @@ class DeterministicJobDescriptionParser:
                         last_end = s_end
 
                 if len(unique_skills) > 1:
-                    has_disjunction = bool(re.search(r"\b(?:hoặc|hay|or)\b", value, re.I))
+                    has_disjunction = requirement_list_is_disjunctive(value)
                     group_op = "any_of" if has_disjunction else "all_of"
                     group_id = f"req-group-{('any' if has_disjunction else 'all')}-{absolute_start}"
                 else:

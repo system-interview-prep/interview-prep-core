@@ -1,5 +1,5 @@
 """Modality-agnostic interview core engine & domain contracts."""
-from src.modules.interviews.core.interview_types import (
+from src.modules.interviews.core.contracts.interview import (
     CandidateTurnInput,
     InterviewerTurnOutput,
     InterviewStage,
@@ -7,7 +7,7 @@ from src.modules.interviews.core.interview_types import (
     SessionExitReason,
     TurnAction,
 )
-from src.modules.interviews.core.interview_engine import InterviewCoreEngine
+from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 
 __all__ = [
     "CandidateTurnInput",

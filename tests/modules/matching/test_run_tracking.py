@@ -221,13 +221,19 @@ def test_jev_gate_is_logged_as_an_ai_call_with_gate_counts(recorder):
     assert result.requirement_results[0].status == "unknown"
     with run_tracking.match_run("clarify_prepare") as run:
         plans = build_clarification_plans(request, result, analyzer)
-    assert plans == []
+    # The gate said "review the evidence first", which is advice to us and not
+    # something the candidate can act on, so the requirement keeps a plan. The
+    # counts have to show both: nothing approved, one floor served.
+    assert len(plans) == 1
+    assert plans[0].missing_dimension == "other"
+    assert plans[0].confidence == 0.0
     (call,) = recorder.match_calls
     assert call["purpose"] == "matching.clarification.jev_gate" and call["provider"] == "typesafe"
     assert call["model"] == "jev-x" and call["match_run_id"] == run.run_id
     gate = _events(recorder)["clarification_gate_completed"]
     assert gate["stage"] == "clarify"
     assert gate["payload"]["analyzed_count"] == 1 and gate["payload"]["approved_count"] == 0
+    assert gate["payload"]["template_count"] == 1
     assert gate["payload"]["rejected_by_reason"] == {"next_action_not_ask_candidate": 1}
 
 
