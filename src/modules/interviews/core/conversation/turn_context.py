@@ -27,6 +27,10 @@ from src.modules.interviews.core.conversation.turn_rules import pacing_seconds
 # can clarify their concrete role or evidence before the engine changes topic.
 MAX_PROBES_PER_QUESTION = 2
 
+# One warm-up follow-up can fill a missing introduction point; further attempts
+# tend to repeat the same question and should give way to the interview plan.
+MAX_WARMUP_CONTINUATIONS = 1
+
 # The closed set of actions a decider may choose. Each has one ``act_*`` in
 # ``turn_engine`` and one tool schema in ``agent/tools.py`` (Pha 2).
 ACTIONS: tuple[str, ...] = (

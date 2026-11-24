@@ -15,7 +15,12 @@ from dataclasses import dataclass, field
 from typing import Dict, List
 
 from src.modules.interviews.core.contracts.interview import InterviewStage
-from src.modules.interviews.core.conversation.turn_context import ACTIONS, TurnContext, probe_window
+from src.modules.interviews.core.conversation.turn_context import (
+    ACTIONS,
+    MAX_WARMUP_CONTINUATIONS,
+    TurnContext,
+    probe_window,
+)
 
 # Actions a candidate's own words can always trigger (control of the conversation).
 CONVERSATIONAL = ("repeat_question", "answer_candidate_question", "decline_system_probe", "redirect_off_topic")
@@ -59,7 +64,10 @@ def build_menu(ctx: TurnContext, *, memory_enabled: bool = False) -> Menu:
     deny("closing_qna", "not in closing stage")
 
     if stage == InterviewStage.WARM_UP:
-        allow("continue_warm_up")
+        if ctx.clarify_count < MAX_WARMUP_CONTINUATIONS:
+            allow("continue_warm_up")
+        else:
+            deny("continue_warm_up", "warm-up continuation limit reached")
         deny("acknowledge_and_probe", "warm-up never probes")
         deny("clarify_question", "warm-up uses continue_warm_up")
     else:

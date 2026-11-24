@@ -25,6 +25,7 @@ from src.modules.interviews.core.conversation.prompt.candidate_tone import (
     candidate_tone_instruction,
 )
 from src.modules.interviews.core.conversation.turn_context import (
+    MAX_WARMUP_CONTINUATIONS,
     MAX_PROBES_PER_QUESTION,
     Decision,
     TurnContext,
@@ -333,7 +334,11 @@ class InterviewCoreEngine(InterviewResponseMixin):
         ctx.is_sufficient = sufficiency_status == "SUFFICIENT"
 
         # Warm-up follow-ups stay conversational and use the evaluator's first response.
-        if ctx.current_stage == InterviewStage.WARM_UP and not ctx.is_sufficient:
+        if (
+            ctx.current_stage == InterviewStage.WARM_UP
+            and not ctx.is_sufficient
+            and ctx.clarify_count < MAX_WARMUP_CONTINUATIONS
+        ):
             return Decision("continue_warm_up", {"missing_aspect": str(eval_result.get("missing_aspect") or "")},
                             reason="warm-up answer still missing a point",
                             evidence_refs=["evaluation:missing_aspect"], path=path + ["#10"])
@@ -399,7 +404,11 @@ class InterviewCoreEngine(InterviewResponseMixin):
             return Decision("close_interview", {"reason": "complete"}, reason="no question left",
                             evidence_refs=["queue:empty"], path=path + ["#13b"])
         if ctx.current_stage == InterviewStage.WARM_UP:
-            reason = "warm_up_done"
+            reason = (
+                "warm_up_followup_limit"
+                if not ctx.is_sufficient and ctx.clarify_count >= MAX_WARMUP_CONTINUATIONS
+                else "warm_up_done"
+            )
         elif ctx.is_sufficient:
             reason = "sufficient"
         else:

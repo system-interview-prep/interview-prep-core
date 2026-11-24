@@ -54,6 +54,14 @@ def test_decide_prompt_distinguishes_repeat_from_incomplete_answer(is_vi: bool) 
         assert "do not repeat the original opening question" in prompt
 
 
+@pytest.mark.parametrize("is_vi", [True, False])
+def test_warmup_decide_prompt_caps_followup_length(is_vi: bool) -> None:
+    prompt = decide_prompt(is_vi).casefold()
+    assert "32" in prompt
+    if not is_vi:
+        assert "at most 32 words" in prompt
+
+
 def test_action_tool_descriptions_reinforce_repeat_and_warmup_guidance() -> None:
     repeat = TOOLS["repeat_question"]["description"].casefold()
     warmup = TOOLS["continue_warm_up"]["description"].casefold()

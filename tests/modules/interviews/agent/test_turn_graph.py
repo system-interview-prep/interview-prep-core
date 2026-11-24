@@ -13,7 +13,11 @@ from src.modules.interviews.core.contracts.interview import (
     SessionExitReason,
     TurnAction,
 )
-from src.modules.interviews.core.conversation.turn_context import ACTIONS, Decision
+from src.modules.interviews.core.conversation.turn_context import (
+    ACTIONS,
+    MAX_WARMUP_CONTINUATIONS,
+    Decision,
+)
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 
 
@@ -90,6 +94,30 @@ async def test_t2_1_4_every_rule_path_lands_in_the_closed_action_set(session_sta
         assert rec["rule"]["action"] in ACTIONS
         # Pha 1 validation: the rule never chooses an action the menu would hide.
         assert rec["in_menu"] or rec["rule"]["action"] == "close_interview", (text, rec)
+
+
+@pytest.mark.asyncio
+async def test_incomplete_warmup_moves_on_after_continuation_limit(session_state_factory) -> None:
+    evaluation = {
+        "intent": "ANSWER",
+        "sufficiency_status": "INSUFFICIENT",
+        "missing_aspect": "lý do quan tâm",
+    }
+    state = session_state_factory(
+        stage=InterviewStage.WARM_UP,
+        clarify_used=MAX_WARMUP_CONTINUATIONS,
+        elapsed_ratio=0.05,
+    )
+
+    output = await turn_graph.run_turn(
+        InterviewCoreEngine(llm_client=ScriptedLLM(evaluation=evaluation)),
+        _turn("Em mong muốn thử sức ở vị trí này."),
+        state,
+    )
+
+    assert output.action == TurnAction.NEXT_QUESTION
+    assert output.metadata["decision"]["rule"]["action"] == "move_to_next_question"
+    assert output.metadata["decision"]["rule"]["args"]["reason"] == "warm_up_followup_limit"
 
 
 @pytest.mark.asyncio
