@@ -35,10 +35,8 @@ from src.modules.interviews.core.dialogue import playbook, speech_checks
 from src.modules.interviews.core.dialogue.opening import build_opening, warmup_question
 from src.modules.interviews.core.session_policy.demo_mode import is_demo_duration
 from src.modules.interviews.core.dialogue.policy import (
-    compose_speech,
     first_paragraph,
     last_paragraph,
-    speech_v2_enabled,
 )
 from src.modules.interviews.core.dialogue.topics import generic_transition
 from src.modules.interviews.agent import record as agent_record
@@ -51,7 +49,6 @@ from src.modules.interviews.core.conversation.turn_engine import (
 )
 from src.modules.interviews.core.contracts.interview import (
     CandidateTurnInput,
-    InterviewerTurnOutput,
     InterviewStage,
     SessionExitReason,
     TurnAction,
@@ -228,12 +225,8 @@ _VI_SURNAMES_ASCII = frozenset(
 
 
 def _speakable_names(full_name: str | None, short_name: str | None) -> tuple[str | None, str | None]:
-    """Drop a Vietnamese name written without diacritics (speech v2): call the candidate "bạn".
-
-    Buổi thật 20/10: "Hien muốn dừng ở đây phải không?". A one-word ASCII name, or
-    one starting with a common Vietnamese surname, is treated as Vietnamese.
-    """
-    if not full_name or not speech_v2_enabled() or _VI_DIACRITIC_RE.search(full_name):
+    """Avoid reading ambiguous Vietnamese names written without diacritics."""
+    if not full_name or _VI_DIACRITIC_RE.search(full_name):
         return full_name, short_name
     words = full_name.split()
     if len(words) == 1 or words[0].casefold() in _VI_SURNAMES_ASCII:
@@ -241,47 +234,11 @@ def _speakable_names(full_name: str | None, short_name: str | None) -> tuple[str
     return full_name, short_name
 
 
-def _personalize_candidate_address(text_value: str, short_name: str | None) -> str:
-    """Use the candidate's one-word call name instead of the generic `bạn`.
-
-    Only with ``INTERVIEWER_SPEECH_V2=0``. Replacing every "bạn" named the
-    candidate about twice a turn (up to four times), broke the check against
-    repeating a line just said (stored lines had the name, pooled lines "bạn")
-    and could turn "bạn bè" into "Hiền bè". Speech v2 names the candidate in the
-    greeting and now and then in a stage transition (``_name_in_transition``).
-    """
-    if not short_name or speech_v2_enabled():
-        return text_value
-    return re.sub(r"\b[Bb]ạn\b", short_name, text_value)
+# Number of recent interviewer lines used to avoid immediate repetition.
+RECENT_LINES = 6
 
 
-# Lines the core avoids repeating: 4 until 25/10, 6 since (the neutral pool still
-# repeated three times in 40 turns at round 5 of the naturalness measures).
-RECENT_LINES_V2 = 6
-
-# A transition may use the name when none of the last few interviewer messages
-# did: the greeting names the candidate, so the next stage change does not.
-NAME_GAP_MESSAGES = 3
-
-
-def _name_in_transition(message: str, transition: str, short_name: str | None, recent: list[str]) -> str:
-    """Name the candidate once in a stage transition, now and then (speech v2).
-
-    "Phần cuối, mình hỏi về cách bạn làm việc nhóm." → "… cách Hiền làm việc nhóm."
-    Only the first "bạn" of the transition sentence changes, never the question.
-    """
-    if not (speech_v2_enabled() and short_name and transition and transition in message):
-        return message
-    if any(re.search(rf"(?<!\w){re.escape(short_name)}(?!\w)", line) for line in recent[-NAME_GAP_MESSAGES:]):
-        return message
-    # "bạn bè", "các bạn": not the candidate.
-    named, count = re.subn(r"(?<!\w)(?<!các )bạn(?!\w)(?! bè)", short_name, transition, count=1)
-    return message.replace(transition, named, 1) if count else message
-
-
-def _personalize_opening(
-    text_value: str, full_name: str | None, short_name: str | None
-) -> str:
+def _personalize_opening(text_value: str, full_name: str | None) -> str:
     """Use the full name for the first greeting and the short name afterwards."""
     if not full_name:
         return text_value
@@ -293,11 +250,6 @@ def _personalize_opening(
     )
     if count == 0 and not already_named:
         personalized = f"Chào {full_name}, {personalized}"
-    greeting_end = personalized.find(",") + 1
-    if greeting_end > 0:
-        return personalized[:greeting_end] + _personalize_candidate_address(
-            personalized[greeting_end:], short_name
-        )
     return personalized
 
 
@@ -335,7 +287,7 @@ def _provenance_metadata(core_output: Any) -> dict[str, str]:
     # the progress view counts only gap probes as "needed a follow-up".
     if raw.get("probe_kind"):
         out["probeKind"] = str(raw["probe_kind"])
-    # Where each piece of the turn came from (llm, topic, script, bank…): speech v2.
+    # Where each piece of the turn came from (llm, topic, script, bank…).
     if raw.get("speech_plan"):
         out["speechPlan"] = raw["speech_plan"]
     return out
@@ -359,30 +311,9 @@ async def _displayed_question_text(
         # New sessions ask the warm-up without a greeting (the opening greets);
         # older snapshots still begin "Chào bạn".
         if re.match(r"^\s*Chào\b", question):
-            return _personalize_opening(question, short_name, short_name)
-        return _personalize_candidate_address(question, short_name)
-    return _personalize_candidate_address(question, short_name)
-
-
-async def _recent_interviewer_contents(db: AsyncSession, session_id: str, limit: int) -> list[str]:
-    """The interviewer's last few messages in full, newest last (best effort)."""
-    try:
-        result = await db.execute(
-            text(
-                """
-                SELECT content FROM interview_chat_messages
-                WHERE session_id = :sid AND role = 'assistant'
-                ORDER BY sequence DESC
-                LIMIT :limit
-                """
-            ),
-            {"sid": session_id, "limit": limit},
-        )
-        rows = result.mappings().all()
-    except Exception:
-        return []
-    contents = [row.get("content") if hasattr(row, "get") else None for row in list(rows)[:limit]]
-    return [content for content in reversed(contents) if isinstance(content, str) and content.strip()]
+            return _personalize_opening(question, short_name)
+        return question
+    return question
 
 
 async def _recent_interviewer_lines(
@@ -393,7 +324,7 @@ async def _recent_interviewer_lines(
     Passed to the core so it neither asks the model for, nor falls back to, a
     line it has just said. Best effort: a read failure only loses variety.
     ``call_name`` is put back to "bạn" so a stored "Ừm, mình hiểu ý Hiền." still
-    matches the pooled "Ừm, mình hiểu ý bạn." (messages saved before speech v2).
+    matches the pooled "Ừm, mình hiểu ý bạn." (including older saved messages).
     """
     try:
         result = await db.execute(
@@ -908,9 +839,9 @@ async def start_chat_session(
 
     is_vi = (session_row.get("locale") or "vi").lower().startswith("vi")
     job_title = await _get_job_title(db, session_row.get("job_id"))
-    candidate_full_name, candidate_short_name = await _candidate_names(db, session_id)
+    _, candidate_short_name = await _candidate_names(db, session_id)
 
-    # Single opening message: greeting + first turn question
+    # Keep the opening and the frozen first question in separate messages.
     q_snapshot = first_turn.get("question_snapshot") or {}
     q_text = (
         q_snapshot.get("questionText")
@@ -921,8 +852,9 @@ async def start_chat_session(
     if re.match(r"^\s*(Chào|Hi|Hello)\b", q_text, flags=re.IGNORECASE):
         # A session frozen before the opening script existed: its warm-up
         # snapshot already greets, so only personalise it.
-        opening_text = (
-            _personalize_opening(q_text, candidate_short_name, candidate_short_name) if is_vi else q_text
+        opening_text = ""
+        first_question_text = (
+            _personalize_opening(q_text, candidate_short_name) if is_vi else q_text
         )
     else:
         opening_text = build_opening(
@@ -934,11 +866,33 @@ async def start_chat_session(
             # ("Chào Nguyễn Thị Thanh Hiền") sounded like a roll call.
             call_name=candidate_short_name,
             planned_stages=[(turn.get("question_snapshot") or {}).get("stage") for turn in turns],
-            first_question=q_text,
         )
-        if is_vi:
-            greeting, _, rest = opening_text.partition(". ")
-            opening_text = f"{greeting}. {_personalize_candidate_address(rest, candidate_short_name)}"
+        first_question_text = (
+            q_text if is_vi else q_text
+        )
+
+    question_sequence = 1
+    if opening_text:
+        await db.execute(
+            text(
+                """
+                INSERT INTO interview_chat_messages
+                (id, session_id, role, content, metadata, turn_id, message_type, sequence, created_at)
+                VALUES
+                (:id, :sid, 'assistant', :content, CAST(:metadata AS jsonb), :turn_id, 'ACKNOWLEDGMENT', 1, now())
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "sid": session_id,
+                "content": opening_text,
+                "metadata": json.dumps(
+                    {"opening": True, "turnIndex": first_turn.get("turn_index", 0), "stage": "WARM_UP"}
+                ),
+                "turn_id": first_turn["id"],
+            },
+        )
+        question_sequence = 2
 
     question_id = str(uuid4())
     q_meta = {
@@ -955,15 +909,16 @@ async def start_chat_session(
             INSERT INTO interview_chat_messages
             (id, session_id, role, content, metadata, turn_id, message_type, sequence, created_at)
             VALUES
-            (:id, :sid, 'assistant', :content, CAST(:metadata AS jsonb), :turn_id, 'MAIN_QUESTION', 1, now())
+            (:id, :sid, 'assistant', :content, CAST(:metadata AS jsonb), :turn_id, 'MAIN_QUESTION', :seq, now())
             """
         ),
         {
             "id": question_id,
             "sid": session_id,
-            "content": opening_text,
+            "content": first_question_text,
             "metadata": json.dumps(q_meta),
             "turn_id": first_turn["id"],
+            "seq": question_sequence,
         },
     )
     await db.commit()
@@ -1048,6 +1003,7 @@ def build_session_state_from_db(
             "concept_id": _snapshot_concept_id(t_snap),
             "project_name": t_snap.get("projectName") or None,
             "stage": t_stage,
+            "status": str(t.get("status") or "PLANNED"),
             "main_prompt": prompt,
             "spoken_prompt": t_snap.get("spokenText") or None,
             "rubric_criteria": _format_rubric_criteria((t_snap.get("rubric") or {}).get("criteria", "")),
@@ -1065,6 +1021,30 @@ def build_session_state_from_db(
     # The stage policy frozen on the opening turn (core.session_policy.blueprint);
     # sessions planned before blueprints existed get the default.
     blueprint = session_blueprint(turns)
+    blueprint_record = next(
+        (
+            (turn.get("question_snapshot") or {}).get("blueprint")
+            for turn in turns
+            if isinstance((turn.get("question_snapshot") or {}).get("blueprint"), dict)
+        ),
+        {},
+    )
+    contract_ref = {
+        "blueprint_id": blueprint_record.get("blueprintId"),
+        "version_id": blueprint_record.get("versionId"),
+        "version": blueprint_record.get("version"),
+        "name": blueprint_record.get("name") or blueprint_record.get("blueprintName"),
+    }
+    frozen_stage_set = {
+        str((turn.get("question_snapshot") or {}).get("stage") or "")
+        for turn in turns
+        if str((turn.get("question_snapshot") or {}).get("stage") or "")
+        not in {"", "WARM_UP", "CLOSING", "CLOSED"}
+    }
+    frozen_stages = [
+        stage for stage in ("VALIDATE", "DEEP_DIVE", "CHALLENGE", "BEHAVIORAL")
+        if stage in frozen_stage_set
+    ]
     behavioral_reserve = blueprint.behavioral.reserve_seconds if blueprint.behavioral.enabled else 0
     closing_reserve_seconds = int(
         metadata_json.get("closing_reserve_seconds")
@@ -1151,6 +1131,13 @@ def build_session_state_from_db(
         "closing_reserve_seconds": closing_reserve_seconds,
         "behavioral_reserve_seconds": behavioral_reserve_seconds,
         "blueprint": blueprint.to_payload(),
+        "interview_contract": {
+            "reference": contract_ref,
+            "objective": blueprint.contract.objective,
+            "coverage_target": blueprint.contract.coverage_target,
+            "planned_stages": frozen_stages,
+            "snapshot_policy": blueprint.to_payload(),
+        },
         "working_memory": working_memory,
         "current_question_context": {
             "question_id": str(current_turn.get("question_version_id") or current_turn["id"]) if current_turn else "",
@@ -1614,18 +1601,33 @@ async def process_candidate_message(
         clarify_count=curr_turn_clarifies,
         elapsed_override_seconds=elapsed_override_seconds,
     )
+    locked_plan_result = await db.execute(
+        text("SELECT plan_payload FROM interview_session_plans WHERE session_id = :sid"),
+        {"sid": session_id},
+    )
+    locked_plan_payload = locked_plan_result.scalar_one_or_none() or {}
+    if isinstance(locked_plan_payload, str):
+        try:
+            locked_plan_payload = json.loads(locked_plan_payload)
+        except (TypeError, ValueError):
+            locked_plan_payload = {}
+    if isinstance(locked_plan_payload, dict):
+        session_state["contract_targets"] = list(locked_plan_payload.get("targets") or [])
+        session_state["interview_contract"]["session_plan_fingerprint"] = str(
+            locked_plan_payload.get("fingerprint") or ""
+        )
     session_state["job_title"] = job_title
     current_turn_probe_texts = [
         m.get("content") for m in all_probe_msgs
         if m["turn_id"] == current_turn_id and m["message_type"] == "PROBE" and m.get("content")
     ]
     if current_turn_probe_texts and session_state.get("current_question_context"):
-        # A probe message is "acknowledgement\n\nfollow-up"; the question is the last paragraph.
+        # Probe messages now contain one complete spoken follow-up line.
         session_state["current_question_context"]["follow_up_prompt"] = (
             last_paragraph(current_turn_probe_texts[-1]) or current_turn_probe_texts[-1]
         )
     session_state["recent_interviewer_lines"] = await _recent_interviewer_lines(
-        db, session_id, limit=RECENT_LINES_V2 if speech_v2_enabled() else 4, call_name=candidate_short_name
+        db, session_id, limit=RECENT_LINES, call_name=candidate_short_name
     )
     if _turn_stage(current_turn) == "CLOSING":
         session_state["job_context"] = await _get_job_context(db, session_row.get("job_id"))
@@ -1687,7 +1689,6 @@ async def process_candidate_message(
             metadata={
                 "turn_index": str(current_turn_index),
                 "modality": str(modality or "CHAT"),
-                "speech_v2": str(speech_v2_enabled()),
                 "playbook": playbook.version() or "none",
             },
         )
@@ -1719,19 +1720,6 @@ async def process_candidate_message(
                 error_message=str(exc),
             )
             raise
-
-        if is_vi:
-            core_output.message_text = _personalize_candidate_address(
-                core_output.message_text, candidate_short_name
-            )
-            transition = str((core_output.metadata or {}).get("transition") or "")
-            if transition and speech_v2_enabled():
-                core_output.message_text = _name_in_transition(
-                    core_output.message_text,
-                    transition,
-                    candidate_short_name,
-                    await _recent_interviewer_contents(db, session_id, NAME_GAP_MESSAGES),
-                )
 
         core_ms = round((perf_counter() - core_started) * 1000)
         turn_meta = core_output.metadata or {}
@@ -2267,10 +2255,6 @@ async def process_candidate_message(
             or next_snap.get("question_text")
             or ("Câu hỏi tiếp theo dành cho bạn." if is_vi else "Here is your next question.")
         )
-        if is_vi:
-            # core_output.message_text is already personalised, so compare like with like.
-            next_q_text = _personalize_candidate_address(next_q_text, candidate_short_name)
-
         awaiting_candidate_ack = bool(
             (core_output.metadata or {}).get("awaiting_candidate_ack")
         )
@@ -2280,19 +2264,12 @@ async def process_candidate_message(
             next_content = core_output.message_text or generic_transition(
                 (core_output.metadata or {}).get("transition_topic"), is_vi
             )
-            if is_vi:
-                next_content = _personalize_candidate_address(next_content, candidate_short_name)
         else:
-            # Bridge: the core may say "acknowledgement + transition + question".
-            next_content = core_output.message_text
-            if not next_content:
+            # Send one complete utterance from Core, or the frozen question.
+            # Never append the bank question to an unrelated generated phrase.
+            next_content = core_output.message_text or next_q_text
+            if next_q_text not in next_content:
                 next_content = next_q_text
-            elif next_q_text not in next_content:
-                # Keep the model's acknowledgement and ask the queued question.
-                next_content = compose_speech(first_paragraph(next_content), next_q_text)
-            if is_vi:
-                next_content = _personalize_candidate_address(next_content, candidate_short_name)
-
         q_meta = {
             "questionVersionId": str(next_turn["question_version_id"])
             if next_turn.get("question_version_id")
@@ -2331,6 +2308,32 @@ async def process_candidate_message(
         )
         await db.commit()
         next_stage_val = (next_turn.get("question_snapshot") or {}).get("stage") or (core_output.current_stage.value if hasattr(core_output.current_stage, "value") else str(core_output.current_stage))
+        decision_payload = (core_output.metadata or {}).get("decision") or {}
+        agent_action = (decision_payload.get("agent") or {}).get("action")
+        rule_action = (decision_payload.get("rule") or {}).get("action")
+        selected_action = decision_payload.get(decision_payload.get("executed") or "rule") or {}
+        selected_action = selected_action.get("action")
+        contract_context = session_state.get("interview_contract") or {}
+        trace_event(
+            "interviewer",
+            "stage_transition_committed",
+            session_id=session_id,
+            turn_id=current_turn_id,
+            turn_index=current_turn_index,
+            from_stage=_turn_stage(current_turn),
+            to_stage=next_stage_val,
+            next_turn_id=next_turn["id"],
+            next_turn_index=next_turn["turn_index"],
+            selected_action=selected_action,
+            agent_action=agent_action,
+            rule_action=rule_action,
+            output_action=core_output.action.value if hasattr(core_output.action, "value") else str(core_output.action),
+            decision_source=decision_payload.get("executed"),
+            transition_reason=(decision_payload.get("transition") or {}).get("reason"),
+            contract_reference=contract_context.get("reference"),
+            session_plan_fingerprint=contract_context.get("session_plan_fingerprint"),
+            coverage_target=contract_context.get("coverage_target"),
+        )
         return {
             "sessionId": session_id,
             "currentStage": next_stage_val,
@@ -2432,9 +2435,6 @@ async def process_candidate_message(
             ),
             is_vi=is_vi,
         )
-    if is_vi:
-        wrap_text = _personalize_candidate_address(wrap_text, candidate_short_name)
-
     await db.execute(
         text(
             """
@@ -2457,6 +2457,34 @@ async def process_candidate_message(
         {"sid": session_id, "reason": end_reason},
     )
     await db.commit()
+
+    decision_payload = (core_output.metadata or {}).get("decision") or {}
+    agent_action = (decision_payload.get("agent") or {}).get("action")
+    rule_action = (decision_payload.get("rule") or {}).get("action")
+    selected_action = decision_payload.get(decision_payload.get("executed") or "rule") or {}
+    selected_action = selected_action.get("action")
+    contract_context = session_state.get("interview_contract") or {}
+    trace_event(
+        "interviewer",
+        "stage_transition_committed",
+        session_id=session_id,
+        turn_id=current_turn_id,
+        turn_index=current_turn_index,
+        from_stage=_turn_stage(current_turn),
+        to_stage="CLOSED",
+        next_turn_id=None,
+        next_turn_index=None,
+        selected_action=selected_action,
+        agent_action=agent_action,
+        rule_action=rule_action,
+        output_action=core_output.action.value if hasattr(core_output.action, "value") else str(core_output.action),
+        decision_source=decision_payload.get("executed"),
+        transition_reason=(decision_payload.get("transition") or {}).get("reason") or end_reason,
+        end_reason=end_reason,
+        contract_reference=contract_context.get("reference"),
+        session_plan_fingerprint=contract_context.get("session_plan_fingerprint"),
+        coverage_target=contract_context.get("coverage_target"),
+    )
 
     return {
         "sessionId": session_id,
@@ -2503,7 +2531,6 @@ async def complete_chat_session(
 ) -> dict[str, Any]:
     session_id = session_row["id"]
     is_vi = (session_row.get("locale") or "vi").lower().startswith("vi")
-    _, candidate_short_name = await _candidate_names(db, session_id)
 
     # Check if session is already closed (either in passed dict or in DB)
     if session_row["status"] == "CLOSED":
@@ -2519,11 +2546,11 @@ async def complete_chat_session(
             "sessionStatus": "CLOSED",
             "endReason": existing_reason,
             "endedAt": ended_str,
-            "summary": _personalize_candidate_address((
+            "summary": (
                 "Phiên phỏng vấn đã kết thúc. Bạn có thể xem lại toàn bộ nội dung trò chuyện."
                 if is_vi
                 else "The interview session has ended. You can review the full transcript."
-            ), candidate_short_name if is_vi else None),
+            ),
         }
 
     # Verify directly from DB to prevent race condition / multiple complete calls.
@@ -2542,11 +2569,11 @@ async def complete_chat_session(
             "sessionStatus": "CLOSED",
             "endReason": existing_reason,
             "endedAt": datetime.now(UTC).isoformat(),
-            "summary": _personalize_candidate_address((
+            "summary": (
                 "Phiên phỏng vấn đã kết thúc. Bạn có thể xem lại toàn bộ nội dung trò chuyện."
                 if is_vi
                 else "The interview session has ended. You can review the full transcript."
-            ), candidate_short_name if is_vi else None),
+            ),
         }
 
     # A client may only assert COMPLETED when the frozen agenda really is done.
@@ -2599,8 +2626,6 @@ async def complete_chat_session(
             ),
             is_vi=is_vi,
         )
-        if is_vi:
-            wrap_text = _personalize_candidate_address(wrap_text, candidate_short_name)
         await db.execute(
             text(
                 """
@@ -2645,9 +2670,6 @@ async def complete_chat_session(
         if is_vi
         else "The interview session has ended. You can review the full transcript."
     )
-    if is_vi:
-        summary_text = _personalize_candidate_address(summary_text, candidate_short_name)
-
     return {
         "sessionId": session_id,
         "sessionStatus": "CLOSED",

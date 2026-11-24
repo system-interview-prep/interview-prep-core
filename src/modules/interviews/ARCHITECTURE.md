@@ -85,8 +85,7 @@ interviews/
 
 | Env | Values | Effect |
 |---|---|---|
-| `INTERVIEW_AGENT_MODE` | `off` (default) / `shadow` / `live` | `off`: the rule ladder decides. `shadow`: the model decider also runs and is only recorded (`agreement`). `live`: the model executes the actions listed below when they are in the menu and carry no violation. |
-| `INTERVIEW_AGENT_LIVE_ACTIONS` | comma list of actions | Which actions the model may execute in `live`. |
+| `INTERVIEW_AGENT_MODE` | `rule` (default) / `shadow` / `live` | `rule`: the rule ladder decides. `shadow`: the rule executes and the model choice is recorded. `live`: the model executes any valid action in the code-built menu; invalid, out-of-menu, or failed decisions fall back to the rule path. |
 | `INTERVIEW_CANDIDATE_MEMORY` | `0` (default) / `read` / `readwrite` | `read`: seed from the gap notebook at `open`, load topics into the prompts, offer `search_candidate_memory` to the decider. `readwrite`: also extract after `score` with the `langmem` memory manager (extra `memory`); every model call it makes is an `ai_call_logs` row and the run is one Langfuse generation. |
 
 Every turn carries `metadata["decision"]` (menu, pacing, rule choice, model choice, agreement) and emits the `agent_decision` pipeline event; `scripts/eval/interviews/agent_shadow_report.py` reads them.

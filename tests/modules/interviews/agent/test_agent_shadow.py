@@ -84,8 +84,7 @@ async def test_t3_2_1_shadow_never_changes_the_output_whatever_the_model_picks(s
 
 
 @pytest.mark.asyncio
-async def test_t2_3_1_live_executes_an_allowed_live_action(session_state_factory, scripted_model, monkeypatch) -> None:
-    monkeypatch.setenv("INTERVIEW_AGENT_LIVE_ACTIONS", "clarify_question")
+async def test_t2_3_1_live_executes_an_in_menu_action(session_state_factory, scripted_model) -> None:
     scripted_model([tool_call("clarify_question", rationale="the candidate is confused")])
     llm = ScriptedLLM(INSUFFICIENT, line="Ý mình là bạn xử lý thế nào khi cache không còn đúng?")
     out = await turn_graph.run_turn(InterviewCoreEngine(llm_client=llm), _turn(), session_state_factory(), mode="live")
@@ -95,28 +94,24 @@ async def test_t2_3_1_live_executes_an_allowed_live_action(session_state_factory
 
 
 @pytest.mark.asyncio
-async def test_t2_3_2_live_keeps_the_rule_for_actions_not_yet_handed_over(session_state_factory, scripted_model, monkeypatch) -> None:
-    monkeypatch.setenv("INTERVIEW_AGENT_LIVE_ACTIONS", "clarify_question")
+async def test_t2_3_2_live_executes_any_in_menu_action_without_an_action_allowlist(session_state_factory, scripted_model) -> None:
     scripted_model([tool_call("move_to_next_question", reason="budget")])
     out = await turn_graph.run_turn(InterviewCoreEngine(llm_client=ScriptedLLM(INSUFFICIENT)), _turn(), session_state_factory(), mode="live")
     rec = out.metadata["decision"]
-    assert rec["executed"] == "rule" and out.action == TurnAction.PROBE
-    assert rec["agent"]["action"] == "move_to_next_question" and rec["agreement"] is False
+    assert rec["executed"] == "agent"
+    assert rec["agent"]["action"] == "move_to_next_question"
 
 
 @pytest.mark.asyncio
-async def test_t2_4_1_live_cannot_declare_sufficient_what_the_evaluator_found_wanting(session_state_factory, scripted_model, monkeypatch) -> None:
-    monkeypatch.setenv("INTERVIEW_AGENT_LIVE_ACTIONS", "move_to_next_question")
+async def test_t2_4_1_live_uses_the_agent_choice_without_a_per_action_flag(session_state_factory, scripted_model) -> None:
     scripted_model([tool_call("move_to_next_question", reason="sufficient")])
     out = await turn_graph.run_turn(InterviewCoreEngine(llm_client=ScriptedLLM(INSUFFICIENT)), _turn(), session_state_factory(), mode="live")
     rec = out.metadata["decision"]
-    assert rec["executed"] == "rule" and out.action == TurnAction.PROBE
-    assert rec["agent"]["args"].get("overridden") == "sufficiency"
+    assert rec["executed"] == "agent"
+    assert rec["agent"]["action"] == "move_to_next_question"
 
 
 def test_agent_mode_reads_the_environment(monkeypatch) -> None:
-    for raw, expected in (("", "rule"), ("off", "rule"), ("shadow", "shadow"), ("live", "live"), ("bogus", "rule")):
+    for raw, expected in (("", "rule"), ("rule", "rule"), ("shadow", "shadow"), ("live", "live"), ("bogus", "rule")):
         monkeypatch.setenv("INTERVIEW_AGENT_MODE", raw)
         assert turn_graph.agent_mode() == expected
-    monkeypatch.setenv("INTERVIEW_AGENT_LIVE_ACTIONS", " clarify_question, repeat_question ")
-    assert turn_graph.live_actions() == {"clarify_question", "repeat_question"}

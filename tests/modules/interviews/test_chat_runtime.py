@@ -8,7 +8,6 @@ from src.modules.interviews.application.runtime.chat_runtime import (
     ChatRuntimeError,
     _candidate_name_parts,
     _is_simple_transition_ack,
-    _personalize_candidate_address,
     _validate_probe_text,
     complete_chat_session,
     get_chat_runtime,
@@ -349,18 +348,9 @@ def test_candidate_name_from_cv_text(cv_text, expected) -> None:
     assert candidate_name_from_text(cv_text) == expected
 
 
-def test_subsequent_messages_use_only_the_last_name_word(monkeypatch) -> None:
-    assert _candidate_name_parts("  Nguyễn   Minh Anh  ") == ("Nguyễn Minh Anh", "Anh")
+def test_candidate_name_parts_use_the_last_name_word() -> None:
+    assert _candidate_name_parts("  Nguy\u1ec5n   Minh Anh  ") == ("Nguy\u1ec5n Minh Anh", "Anh")
     assert _candidate_name_parts("Google User") == (None, None)
-    # Speech v2 keeps "bạn": the name only in the greeting and some transitions.
-    assert _personalize_candidate_address("Cảm ơn bạn. Bạn trình bày rõ hơn nhé.", "Anh") == (
-        "Cảm ơn bạn. Bạn trình bày rõ hơn nhé."
-    )
-    monkeypatch.setenv("INTERVIEWER_SPEECH_V2", "0")
-    assert _personalize_candidate_address(
-        "Cảm ơn bạn. Bạn hãy trình bày rõ hơn nhé.", "Anh"
-    ) == "Cảm ơn Anh. Anh hãy trình bày rõ hơn nhé."
-
 
 # INV-2: Idempotency Guarantee
 @pytest.mark.asyncio
@@ -2715,14 +2705,13 @@ async def test_runtime_current_turn_is_the_asked_turn_not_lowest_planned(mock_se
 
 
 @pytest.mark.asyncio
-async def test_pinned_question_uses_the_names_the_interviewer_speaks(monkeypatch):
+async def test_pinned_question_preserves_frozen_question_text(monkeypatch):
     from src.modules.interviews.application.runtime import chat_runtime
 
     async def names(_db, _session_id):
         return "Nguyễn Thị Thanh Hiền", "Hiền"
 
     monkeypatch.setattr(chat_runtime, "_candidate_names", names)
-    monkeypatch.setenv("INTERVIEWER_SPEECH_V2", "0")
     session = {"id": "s1", "locale": "vi-VN"}
     warmup = {"question_snapshot": {"stableKey": "warmup-intro", "stage": "WARM_UP",
                                     "questionText": "Chào bạn, mình là người phỏng vấn. Bạn giới thiệu ngắn nhé?"}}
@@ -2735,47 +2724,21 @@ async def test_pinned_question_uses_the_names_the_interviewer_speaks(monkeypatch
     new_warmup = {"question_snapshot": {"stableKey": "warmup-intro", "stage": "WARM_UP",
                                         "questionText": "Bạn giới thiệu ngắn về mình nhé?"}}
     assert await chat_runtime._displayed_question_text(None, session, new_warmup) == "Hiền giới thiệu ngắn về mình nhé?"
-    assert await chat_runtime._displayed_question_text(None, session, technical) == "Ở dự án X, Hiền làm phần nào?"
+    assert await chat_runtime._displayed_question_text(None, session, technical) == technical["question_snapshot"]["questionText"]
     english = {"id": "s1", "locale": "en-US"}
-    assert await chat_runtime._displayed_question_text(None, english, technical) == "Ở dự án X, bạn làm phần nào?"
-    # Speech v2: the card shows what was said, the greeting named and the rest "bạn".
-    monkeypatch.setenv("INTERVIEWER_SPEECH_V2", "1")
-    assert await chat_runtime._displayed_question_text(None, session, warmup) == (
-        "Chào Hiền, mình là người phỏng vấn. Bạn giới thiệu ngắn nhé?"
-    )
-    assert await chat_runtime._displayed_question_text(None, session, technical) == "Ở dự án X, bạn làm phần nào?"
+    assert await chat_runtime._displayed_question_text(None, english, technical) == technical["question_snapshot"]["questionText"]
 
 
 # --- Gọi tên (25/10): lúc chào và thỉnh thoảng khi chuyển phần -----------------
 
 
-def test_the_name_goes_into_a_stage_transition_only_now_and_then(monkeypatch) -> None:
-    from src.modules.interviews.application.runtime.chat_runtime import _name_in_transition
-
-    transition = "Phần cuối, mình hỏi về cách bạn làm việc nhóm nhé."
-    message = f"Ừm, mình hiểu ý bạn.\n\n{transition} Kể một lần bạn bất đồng với bạn bè trong team?"
-    named = _name_in_transition(message, transition, "Hiền", ["Chào bạn.", "À, vậy là khoá dòng."])
-    assert named == (
-        "Ừm, mình hiểu ý bạn.\n\nPhần cuối, mình hỏi về cách Hiền làm việc nhóm nhé. "
-        "Kể một lần bạn bất đồng với bạn bè trong team?"
-    )
-    # Named in one of the last messages (the greeting): keep "bạn".
-    assert _name_in_transition(message, transition, "Hiền", ["Chào Hiền, mình là…"]) == message
-    assert _name_in_transition(message, "Giờ mình đi vào phần kỹ thuật nhé.", "Hiền", []) == message
-    assert _name_in_transition("Các bạn bè.\n\nx", "Các bạn bè.", "Hiền", []) == "Các bạn bè.\n\nx"
-    monkeypatch.setenv("INTERVIEWER_SPEECH_V2", "0")
-    assert _name_in_transition(message, transition, "Hiền", []) == message
-
-
-def test_a_vietnamese_name_without_diacritics_is_not_used(monkeypatch) -> None:
+def test_a_vietnamese_name_without_diacritics_is_not_used() -> None:
     from src.modules.interviews.application.runtime.chat_runtime import _speakable_names
 
     assert _speakable_names("Hien", "Hien") == (None, None)
     assert _speakable_names("Nguyen Thi Hien", "Hien") == (None, None)
     assert _speakable_names("Nguyễn Thị Hiền", "Hiền") == ("Nguyễn Thị Hiền", "Hiền")
     assert _speakable_names("John Smith", "Smith") == ("John Smith", "Smith")
-    monkeypatch.setenv("INTERVIEWER_SPEECH_V2", "0")
-    assert _speakable_names("Hien", "Hien") == ("Hien", "Hien")
 
 
 class _Rows:

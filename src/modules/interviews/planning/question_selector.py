@@ -1843,7 +1843,7 @@ async def select_and_freeze_questions(
         )
 
     # Thêm câu hỏi BEHAVIORAL theo chuẩn STAR vào cuối Question Queue (trừ khi blueprint tắt)
-    behavioral_enabled = blueprint.behavioral.enabled
+    behavioral_enabled = blueprint.behavioral_required
     behavioral_snap = _behavioral_snapshot(locale=locale, blueprint=blueprint)
     behavioral_turn_index = len(frozen) + first_technical_index
     behavioral_snap["selectionRank"] = behavioral_turn_index

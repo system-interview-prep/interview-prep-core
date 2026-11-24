@@ -16,7 +16,7 @@ thể tạo thêm loại mới. Các phiên demo bỏ qua bản thiết kế
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -118,6 +118,21 @@ class PacingPolicy(_Policy):
     behind_schedule_ratio: float = Field(0.8, alias="behindScheduleRatio", gt=0, le=1)
 
 
+class InterviewContractPolicy(_Policy):
+    """Admin-authored intent and coverage contract for the interview agent."""
+
+    objective: str = Field(
+        "Đánh giá năng lực theo kế hoạch câu hỏi đã khóa.",
+        min_length=1,
+        max_length=500,
+    )
+    coverage_target: Literal["all_frozen_questions", "job_must_haves"] = Field(
+        "all_frozen_questions", alias="coverageTarget"
+    )
+    require_behavioral_when_enabled: bool = Field(True, alias="requireBehavioralWhenEnabled")
+    max_probes_per_question: int = Field(2, alias="maxProbesPerQuestion", ge=0, le=3)
+
+
 class InterviewBlueprint(_Policy):
     """Bản thiết kế phỏng vấn: chính sách giai đoạn do chuyên gia cấu hình và lập phiên bản.
     """
@@ -128,6 +143,11 @@ class InterviewBlueprint(_Policy):
     behavioral: BehavioralPolicy = Field(default_factory=BehavioralPolicy)
     closing: ClosingPolicy = Field(default_factory=ClosingPolicy)
     pacing: PacingPolicy = Field(default_factory=PacingPolicy)
+    contract: InterviewContractPolicy = Field(default_factory=InterviewContractPolicy)
+
+    @property
+    def behavioral_required(self) -> bool:
+        return bool(self.behavioral.enabled and self.contract.require_behavioral_when_enabled)
 
     @model_validator(mode="after")
     def _consistent(self) -> InterviewBlueprint:

@@ -54,9 +54,11 @@ async def decide_by_model(
         candidate_text=ctx.candidate_text,
         stage=ctx.current_stage.value,
         evaluation=ctx.eval_result or None,
+        assessment_criteria=str(ctx.current_question.get("rubric_criteria") or ""),
         recent_lines=ctx.recent_lines,
         pacing=pacing,
         allowed_actions=allowed_actions,
+        interview_contract=ctx.session_state.get("interview_contract"),
         is_vi=ctx.is_vi,
     )
     history: List[Dict[str, Any]] = [{"role": "user", "content": items}]

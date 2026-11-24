@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from src.modules.interviews.core.contracts.interview import InterviewStage
-from src.modules.interviews.core.conversation.turn_context import MAX_PROBES_PER_QUESTION, TurnContext
+from src.modules.interviews.core.conversation.turn_context import TurnContext
 from src.modules.interviews.core.conversation.turn_rules import TIME_THRESHOLDS
 
 # `behind` when the remaining plan needs more than this share over the time left;
@@ -47,12 +47,53 @@ def questions_remaining_by_stage(session_state: Dict[str, Any]) -> Dict[str, int
     return remaining
 
 
+def competency_coverage(session_state: Dict[str, Any]) -> list[Dict[str, Any]]:
+    """Question coverage from the frozen queue; it does not claim answer quality."""
+    pool = session_state.get("questions_pool", {}) or {}
+    target_by_id = {
+        str(t.get("conceptId") or ""): t
+        for t in session_state.get("contract_targets", []) or []
+        if t.get("conceptId")
+    }
+    groups: Dict[str, Dict[str, Any]] = {}
+    settled = {"ANSWERED", "COMPLETED", "EVALUATED"}
+    for stage in ASSESSED_STAGES:
+        for question in pool.get(stage.value, []) or []:
+            key = str(question.get("concept_id") or question.get("competency") or "unknown")
+            entry = groups.setdefault(key, {
+                "competency": question.get("competency") or key,
+                "concept_id": question.get("concept_id") or key,
+                "planned": 0,
+                "asked": 0,
+                "remaining": 0,
+                "status": "NOT_STARTED",
+            })
+            entry["planned"] += 1
+            status = str(question.get("status") or "PLANNED").upper()
+            if status in settled:
+                entry["asked"] += 1
+            elif status == "ASKED":
+                entry["asked"] += 1
+            else:
+                entry["remaining"] += 1
+            target = target_by_id.get(key, {})
+            if target:
+                priorities = target.get("rationale", {}).get("priorities", []) or []
+                priority_text = " ".join(str(value).lower() for value in priorities)
+                entry["priority"] = "MUST" if "must" in priority_text else "PLANNED"
+    for entry in groups.values():
+        if entry["asked"]:
+            entry["status"] = "IN_PROGRESS" if entry["remaining"] else "QUESTIONS_ASKED"
+    return sorted(groups.values(), key=lambda row: (row.get("priority") != "MUST", row["competency"]))
+
+
 def pacing_block(ctx: TurnContext) -> Dict[str, Any]:
     """The block the decider receives every turn; also stored in the decision record."""
     state = ctx.session_state
     pool = state.get("questions_pool", {}) or {}
     planned = sum(len(pool.get(stage.value, []) or []) for stage in ASSESSED_STAGES)
     remaining = questions_remaining_by_stage(state)
+    coverage = competency_coverage(state)
     remaining_total = sum(remaining.values())
     asked = max(0, planned - remaining_total)
     target = max(1, ctx.target_duration_seconds)
@@ -83,9 +124,11 @@ def pacing_block(ctx: TurnContext) -> Dict[str, Any]:
         "questions_asked": asked,
         "questions_planned": planned,
         "questions_remaining_by_stage": remaining,
+        "competency_coverage": coverage,
+        "coverage_target": (state.get("blueprint") or {}).get("contract", {}).get("coverageTarget", "all_frozen_questions"),
         "seconds_per_question_so_far": seconds_per_question,
         "seconds_needed_for_remaining_plan": seconds_needed,
         "pace": pace,
         "probes_used_in_question": probes_used,
-        "probes_left_in_question": max(0, MAX_PROBES_PER_QUESTION - probes_used),
+        "probes_left_in_question": max(0, ctx.blueprint.contract.max_probes_per_question - probes_used),
     }

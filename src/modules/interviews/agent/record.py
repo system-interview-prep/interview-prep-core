@@ -27,6 +27,10 @@ def decision_record(
     agent_decision: Optional[Decision] = None,
     executed: str = "rule",
     decide_error: Optional[str] = None,
+    contract: Optional[Dict[str, Any]] = None,
+    stage_before: Optional[str] = None,
+    stage_after: Optional[str] = None,
+    transition_target: Optional[str] = None,
 ) -> Dict[str, Any]:
     violation = None
     if agent_decision is not None and agent_decision.source == "agent":
@@ -34,6 +38,27 @@ def decision_record(
     agreement = None
     if agent_decision is not None and rule_decision is not None and violation is None:
         agreement = agent_decision.action == rule_decision.action
+    changed_stage = bool(stage_before and stage_after and stage_before != stage_after)
+    decision_source = "agent" if executed == "agent" else "rule"
+    agent_validation = "not_run"
+    if agent_decision is not None:
+        if agent_decision.args.get("violation"):
+            agent_validation = f"rejected:{agent_decision.args['violation']}"
+        elif agent_decision.action not in allowed_actions:
+            agent_validation = "rejected:outside_menu"
+        elif executed == "agent":
+            agent_validation = "accepted_and_executed"
+        else:
+            agent_validation = "accepted_but_not_executed"
+    transition = {
+        "from_stage": stage_before,
+        "to_stage": stage_after if changed_stage else stage_before,
+        "proposed_stage": transition_target,
+        "changed": changed_stage,
+        "reason": decision.reason or decision.args.get("reason") or "no_transition",
+        "selected_by": "code_fsm" if decision.action == "move_to_next_question" else decision_source,
+        "validation": agent_validation if agent_decision is not None else "rule_path",
+    }
     return {
         "mode": mode,
         "executed": executed,
@@ -46,6 +71,10 @@ def decision_record(
         "menu_violation": violation,
         "decide_error": decide_error,
         "pacing": dict(pacing),
+        "contract": dict(contract or {}),
+        "stage_before": stage_before,
+        "stage_after": stage_after,
+        "transition": transition,
         "latency_ms": int((perf_counter() - started_at) * 1000),
     }
 
@@ -65,6 +94,11 @@ def summary(record: Dict[str, Any]) -> Dict[str, Any]:
         "decide_error": record.get("decide_error"),
         "pace": (record.get("pacing") or {}).get("pace"),
         "in_menu": record.get("in_menu"),
+        "contract_ref": (record.get("contract") or {}).get("reference"),
+        "stage_before": record.get("stage_before"),
+        "stage_after": record.get("stage_after"),
+        "transition": record.get("transition"),
+        "agent_validation": record.get("transition", {}).get("validation"),
         "latency_ms": record.get("latency_ms"),
     }
 
@@ -92,4 +126,9 @@ def emit(record: Dict[str, Any], *, session_id: Any, turn_index: int) -> None:
         rule=record.get("rule"),
         agent=record.get("agent"),
         pacing=record.get("pacing"),
+        contract=record.get("contract"),
+        stage_before=record.get("stage_before"),
+        stage_after=record.get("stage_after"),
+        transition=record.get("transition"),
+        agent_validation=record.get("transition", {}).get("validation"),
     )

@@ -7,12 +7,11 @@ the model decider.
 
 Modes (``INTERVIEW_AGENT_MODE``):
 
-- ``off`` / ``rule`` — the rule ladder decides; no model decider (default).
+- ``rule`` (default) — the rule ladder decides; no model decider.
 - ``shadow`` — the rule decides and executes; the model decider also runs and
   its choice is recorded next to the rule's (``agreement``), never executed.
-- ``live`` — the model's choice is executed when it is in the menu, carries no
-  violation and its action is in ``INTERVIEW_AGENT_LIVE_ACTIONS``; otherwise
-  the rule's choice is executed and the record says so.
+- ``live`` — the model's choice executes when it is valid, in the code-built
+  action menu and carries no violation; otherwise the rule path is used.
 
 ``run_turn`` is the entry point for the application runtime. An engine that
 does not expose the steps (a test double with only ``handle_turn``) is run
@@ -36,7 +35,7 @@ from src.modules.interviews.agent.record import decision_record, emit
 from src.modules.interviews.agent.state import TurnGraphState
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput, InterviewerTurnOutput
 from src.modules.interviews.core.conversation.turn_context import build_turn_context
-from src.modules.interviews.core.dialogue.policy import canary_scope
+from src.modules.interviews.core.guardrails.common import canary_scope
 
 logger = logging.getLogger("InterviewAgent")
 
@@ -47,15 +46,8 @@ MODES = (MODE_RULE, MODE_SHADOW, MODE_LIVE)
 
 
 def agent_mode() -> str:
-    value = os.getenv("INTERVIEW_AGENT_MODE", "off").strip().lower()
-    if value in ("", "off", "0", "false", "no"):
-        return MODE_RULE
+    value = os.getenv("INTERVIEW_AGENT_MODE", MODE_RULE).strip().lower()
     return value if value in MODES else MODE_RULE
-
-
-def live_actions() -> set[str]:
-    raw = os.getenv("INTERVIEW_AGENT_LIVE_ACTIONS", "")
-    return {part.strip() for part in raw.split(",") if part.strip()}
 
 
 async def guards_in(state: TurnGraphState) -> dict:
@@ -71,42 +63,96 @@ async def build_menu_node(state: TurnGraphState) -> dict:
 
 
 async def decide(state: TurnGraphState) -> dict:
-    """Rule first (it reads the answer and fills the context); the model after, when asked."""
+    """Use the model as the live decider; run the legacy ladder only as fallback.
+
+    Shadow deliberately evaluates both paths. Rule mode remains the explicit
+    fallback/rollback mode.
+    """
     early = state.get("early_decision")
     if early is not None:
         return {"decision": early, "agent_decision": None, "executed": "rule"}
     ctx = state["ctx"]
-    rule = await state["engine"]._decide_by_rule(ctx)
     mode = state.get("mode", MODE_RULE)
     if mode == MODE_RULE:
+        rule = await state["engine"]._decide_by_rule(ctx)
         return {"decision": rule, "agent_decision": None, "executed": "rule"}
+
     agent = None
     error = None
-    try:
-        agent = await decide_by_model(
-            ctx, allowed_actions=state.get("allowed_actions", []), pacing=state.get("pacing", {}),
-            memory_search=state.get("memory_search"),
-        )
-    except Exception as exc:  # noqa: BLE001 - the model decider must never cost the candidate a turn
-        error = type(exc).__name__
-        logger.warning("agent decide failed: %s", exc)
-        trace_event("interviewer", "agent_decide_error", session_id=str(ctx.session_id), error_type=error)
-    executed = "rule"
-    chosen = rule
-    if (
-        mode == MODE_LIVE
-        and agent is not None
-        and is_violation(agent) is None
-        and agent.action in state.get("allowed_actions", [])
-        and agent.action in live_actions()
-    ):
-        # The model may not declare an answer sufficient the evaluator found wanting.
-        if agent.action == "move_to_next_question" and agent.args.get("reason") == "sufficient" and not ctx.is_sufficient:
-            agent.args["overridden"] = "sufficiency"
-        else:
-            chosen, executed = agent, "agent"
-    return {"decision": chosen, "rule_decision": rule, "agent_decision": agent, "executed": executed,
-            "decide_error": error}
+
+    async def ask_agent() -> None:
+        nonlocal agent, error
+        try:
+            agent = await decide_by_model(
+                ctx,
+                allowed_actions=state.get("allowed_actions", []),
+                pacing=state.get("pacing", {}),
+                memory_search=state.get("memory_search"),
+            )
+        except Exception as exc:  # noqa: BLE001 - the model decider must never cost the candidate a turn
+            error = type(exc).__name__
+            logger.warning("agent decide failed: %s", exc)
+            trace_event("interviewer", "agent_decide_error", session_id=str(ctx.session_id), error_type=error)
+
+    if mode == MODE_SHADOW:
+        rule = await state["engine"]._decide_by_rule(ctx)
+        await ask_agent()
+        return {
+            "decision": rule,
+            "rule_decision": rule,
+            "agent_decision": agent,
+            "executed": "rule",
+            "decide_error": error,
+        }
+
+    # MODE_LIVE: deliberately call the new decider before the legacy rule
+    # ladder, so its evaluation cannot steer or overrule an accepted decision.
+    await ask_agent()
+
+    if mode == MODE_LIVE:
+        if (
+            agent is not None
+            and is_violation(agent) is None
+            and agent.action in state.get("allowed_actions", [])
+        ):
+            # Live decisions do not consume the legacy evaluator's answer,
+            # sufficiency, intent or probe text. Keep only the code-computed
+            # queue/window controls needed by the action handlers.
+            ctx.eval_result = {}
+            ctx.intent = ""
+            ctx.sufficiency_status = ""
+            ctx.is_sufficient = True
+            ctx.is_give_up = False
+            ctx.score_telemetry = 6.0
+            ctx.is_deepening_probe = False
+            return {
+                "decision": agent,
+                "rule_decision": None,
+                "agent_decision": agent,
+                "executed": "agent",
+                "decide_error": error,
+            }
+
+        # A malformed or rejected model action falls back to the rule path.
+        # Its legacy evaluation cannot influence a valid live action.
+        rule = await state["engine"]._decide_by_rule(ctx)
+        return {
+            "decision": rule,
+            "rule_decision": rule,
+            "agent_decision": agent,
+            "executed": "rule",
+            "decide_error": error,
+        }
+
+    # Defensive fallback for unknown modes passed directly by an internal caller.
+    rule = await state["engine"]._decide_by_rule(ctx)
+    return {
+        "decision": rule,
+        "rule_decision": rule,
+        "agent_decision": agent,
+        "executed": "rule",
+        "decide_error": error,
+    }
 
 
 async def act(state: TurnGraphState) -> dict:
@@ -120,6 +166,10 @@ async def guards_out(state: TurnGraphState) -> dict:
 
 
 async def record(state: TurnGraphState) -> dict:
+    ctx = state["ctx"]
+    contract = ctx.session_state.get("interview_contract") or {}
+    next_stage = getattr(ctx, "next_stage", None)
+    stage_after = getattr(state["output"].current_stage, "value", state["output"].current_stage)
     rec = decision_record(
         mode=state.get("mode", MODE_RULE),
         decision=state["decision"],
@@ -131,6 +181,18 @@ async def record(state: TurnGraphState) -> dict:
         agent_decision=state.get("agent_decision"),
         executed=state.get("executed", "rule"),
         decide_error=state.get("decide_error"),
+        contract={
+            "reference": contract.get("reference"),
+            "session_plan_fingerprint": contract.get("session_plan_fingerprint"),
+            "coverage_target": contract.get("coverage_target"),
+        },
+        stage_before=ctx.current_stage.value,
+        stage_after=str(stage_after),
+        transition_target=(
+            getattr(next_stage, "value", next_stage)
+            if state["decision"].action == "move_to_next_question"
+            else None
+        ),
     )
     output: InterviewerTurnOutput = state["output"]
     output = output.model_copy(update={"metadata": {**(output.metadata or {}), "decision": rec}})

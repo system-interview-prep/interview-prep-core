@@ -155,7 +155,14 @@ def build_turn_context(turn_input: CandidateTurnInput, session_state: Dict[str, 
         )
 
     current_question = session_state.get("current_question_context", {}) or {}
-    question_prompt = current_question.get("main_prompt", "")
+    question_prompt = (
+        current_question.get("follow_up_prompt")
+        or current_question.get("spoken_prompt")
+        or current_question.get("spokenPrompt")
+        or current_question.get("main_prompt")
+        or current_question.get("question")
+        or ""
+    )
     # After a probe the candidate is looking at the probe, so "repeat",
     # "explain" and "back to the question" refer to it, not the main question.
     active_prompt = current_question.get("follow_up_prompt") or question_prompt
@@ -249,7 +256,7 @@ def probe_window(ctx: TurnContext) -> ProbeWindow:
         # A demo asks each frozen question once so every stage fits.
         "demo": bool(state.get("is_demo")),
         "give_up": ctx.is_give_up,
-        "probe_budget": ctx.current_turn_in_question >= MAX_PROBES_PER_QUESTION,
+        "probe_budget": ctx.current_turn_in_question >= blueprint.contract.max_probes_per_question,
         "behind_schedule": is_behind_schedule,
         "hard_answer_timeout": is_hard_answer_timeout,
         "behavioral_reserve": is_near_behavioral_reserve and has_pending_behavioral,
