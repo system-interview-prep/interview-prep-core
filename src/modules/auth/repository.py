@@ -36,6 +36,7 @@ class AuthRepository:
                 "phone": phone,
             },
         )
+        await self._create_initial_candidate_settings(user_id)
         await self._create_initial_credits(user_id)
         await self._assign_role(user_id, "CANDIDATE")
         return {
@@ -63,6 +64,7 @@ class AuthRepository:
                 "google_id": google_id,
             },
         )
+        await self._create_initial_candidate_settings(user_id)
         await self._create_initial_credits(user_id)
         await self._assign_role(user_id, "CANDIDATE")
         return {
@@ -93,6 +95,12 @@ class AuthRepository:
                 "VALUES (:id, :user_id, 3, 1, 'FREE')"
             ),
             {"id": str(uuid4()), "user_id": user_id},
+        )
+
+    async def _create_initial_candidate_settings(self, user_id: str) -> None:
+        await self.db.execute(
+            text("INSERT INTO candidate_settings (user_id) VALUES (:user_id)"),
+            {"user_id": user_id},
         )
 
     async def _assign_role(self, user_id: str, role: str) -> None:

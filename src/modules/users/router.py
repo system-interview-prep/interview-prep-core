@@ -9,6 +9,9 @@ from src.infrastructure.database import get_db
 from src.modules.users.password import PasswordChangeError, change_password
 from src.modules.users.repository import UserRepository
 from src.modules.users.schemas import ProfilePatch, ProfileResponse
+from src.modules.users.settings_repository import CandidateSettingsRepository
+from src.modules.users.settings_schemas import CandidateSettingsPayload, CandidateSettingsResponse
+from src.modules.users.settings_service import CandidateSettingsService
 from src.modules.users.service import UserNotFoundError, UserService, profile_response
 
 router = APIRouter(tags=["users"])
@@ -30,6 +33,10 @@ def _profile(row: dict) -> dict:
 
 def _service(db: AsyncSession) -> UserService:
     return UserService(UserRepository(db))
+
+
+def _settings_service(db: AsyncSession) -> CandidateSettingsService:
+    return CandidateSettingsService(CandidateSettingsRepository(db))
 
 
 async def _get_profile(user: dict, db: AsyncSession) -> dict:
@@ -63,6 +70,23 @@ async def update_profile(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy người dùng."
         ) from exc
+
+
+@router.get("/users/me/settings", response_model=CandidateSettingsResponse)
+async def get_candidate_settings(
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return await _settings_service(db).get(user["sub"])
+
+
+@router.put("/users/me/settings", response_model=CandidateSettingsResponse)
+async def update_candidate_settings(
+    payload: CandidateSettingsPayload,
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return await _settings_service(db).update(user["sub"], payload)
 
 
 @router.post("/users/me/picture", response_model=ProfileResponse)
