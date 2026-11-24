@@ -80,7 +80,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "follow_up_text": {
                 "type": "string",
                 "maxLength": 280,
-                "description": "Toàn bộ lời thoại tự nhiên gửi ứng viên, gồm ghi nhận ngắn nếu phù hợp và đúng một câu hỏi tiếp theo; không phải chỉ dẫn hay đoạn câu rời.",
+                "description": "Toàn bộ lời thoại tự nhiên gửi ứng viên, tối đa 70 từ, ba câu và hai câu hỏi liên quan; dưới 280 ký tự. Không phải chỉ dẫn hay đoạn câu rời.",
             },
         },
     ),

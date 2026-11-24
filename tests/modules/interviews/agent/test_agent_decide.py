@@ -126,6 +126,35 @@ async def test_live_warmup_action_returns_agent_authored_line_without_recovery(c
 
 
 @pytest.mark.asyncio
+async def test_live_warmup_accepts_the_longer_related_followup_seen_in_trace(ctx_factory) -> None:
+    agent_line = (
+        "Cảm ơn bạn đã giới thiệu về trường học của mình! Ngoài việc học, bạn có thể chia sẻ thêm về lý do "
+        "bạn quan tâm đến vị trí này không? Mục tiêu nghề nghiệp của bạn trong tương lai là gì?"
+    )
+    context = ctx_factory(
+        text="Em đang học công nghệ thông tin và muốn ứng tuyển vị trí frontend.",
+        stage=InterviewStage.WARM_UP,
+    )
+    caller = FakeToolCaller([
+        tool_call(
+            "continue_warm_up",
+            missing_aspect="lý do ứng tuyển và mục tiêu nghề nghiệp",
+            follow_up_text=agent_line,
+        )
+    ])
+
+    decision = await decide_by_model(
+        context,
+        allowed_actions=["continue_warm_up"],
+        pacing=PACING,
+        generate=caller,
+    )
+
+    assert decision.action == "continue_warm_up"
+    assert decision.args["follow_up_text"] == agent_line
+
+
+@pytest.mark.asyncio
 async def test_t2_2_1_a_tool_outside_the_menu_is_a_violation_not_an_exception(ctx_factory) -> None:
     caller = FakeToolCaller([tool_call("close_interview", reason="complete", rationale="done")])
     d = await decide_by_model(ctx_factory(), allowed_actions=MENU, pacing=PACING, generate=caller)

@@ -76,6 +76,9 @@ _STYLE_BANNED_RE = re.compile(
 )
 _SENTENCE_END_RE = re.compile(r"[.!?…]+(?:\s|$)")
 PROBE_MAX_WORDS = 32
+WARMUP_PROBE_MAX_WORDS = 70
+WARMUP_PROBE_MAX_SENTENCES = 3
+WARMUP_PROBE_MAX_QUESTIONS = 2
 _VERDICT_HINT_RE = re.compile(
     r"(?<!\w)(chưa (nói|nhắc|đề cập|nêu)( gì)? (đến|tới|về)|chưa nhắc|chưa đề cập|bạn (đã )?quên|"
     r"bỏ sót|còn thiếu|thiếu ý|thiếu phần|chưa đúng|sai rồi|hiểu sai|nhầm rồi|"
@@ -278,6 +281,9 @@ def probe_rejection_reason(
     question: str = "",
     answer: str = "",
     rubric: str = "",
+    max_words: int = PROBE_MAX_WORDS,
+    max_sentences: int = 2,
+    max_questions: int = 1,
 ) -> str | None:
     """Why a follow-up question cannot be asked as is, or None.
 
@@ -294,9 +300,9 @@ def probe_rejection_reason(
         return "rubric_leak"
     if "\n" in value:
         return "multi_line"
-    if len(value.split()) > PROBE_MAX_WORDS or sentence_count(value) > 2:
+    if len(value.split()) > max_words or sentence_count(value) > max_sentences:
         return "too_long"
-    if value.count("?") > 1 or _SECOND_QUESTION_RE.search(value):
+    if value.count("?") > max_questions or (max_questions <= 1 and _SECOND_QUESTION_RE.search(value)):
         return "two_questions"
     # "Bạn nên thêm khoá phân tán." is advice, not a follow-up question.
     if not value.rstrip(" \"'”").endswith("?"):
@@ -488,7 +494,14 @@ def probe_is_sayable(probe_text: str) -> bool:
         trace_event("interviewer", "probe_rejected", reason=reason, probe=str(probe_text)[:200])
     return reason is None
 def checked_probe(
-    raw_probe: str, *, question: str = "", answer: str = "", rubric: str = ""
+    raw_probe: str,
+    *,
+    question: str = "",
+    answer: str = "",
+    rubric: str = "",
+    max_words: int = PROBE_MAX_WORDS,
+    max_sentences: int = 2,
+    max_questions: int = 1,
 ) -> str | None:
     """Return the model's follow-up unchanged when it passes guards; otherwise None."""
     raw = str(raw_probe or "").strip()
@@ -501,6 +514,9 @@ def checked_probe(
         question=question,
         answer=answer,
         rubric=rubric,
+        max_words=max_words,
+        max_sentences=max_sentences,
+        max_questions=max_questions,
     )
     if reason:
         trace_event("interviewer", "probe_rejected", reason=reason, probe=probe[:200])

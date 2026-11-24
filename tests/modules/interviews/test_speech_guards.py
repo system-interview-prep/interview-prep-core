@@ -17,6 +17,9 @@ from src.modules.interviews.core.conversation.turn_engine import (
 from src.modules.interviews.core.guardrails.common import candidate_block
 from src.modules.interviews.core.guardrails.input import looks_like_injection
 from src.modules.interviews.core.guardrails.output import (
+    WARMUP_PROBE_MAX_QUESTIONS,
+    WARMUP_PROBE_MAX_SENTENCES,
+    WARMUP_PROBE_MAX_WORDS,
     probe_rejection_reason,
     qna_rejection_reason,
 )
@@ -160,6 +163,23 @@ def test_checked_probe_drops_a_hint_from_the_rubric() -> None:
     assert checked_probe(probe, question=QUESTION, answer=ANSWER, rubric=RUBRIC) is None
     # Without the rubric the same line is a fair question.
     assert checked_probe(probe, question=QUESTION, answer=ANSWER) == probe
+
+
+def test_warmup_allows_a_longer_two_question_followup_without_relaxing_regular_probes() -> None:
+    probe = (
+        "Cảm ơn bạn đã giới thiệu về trường học của mình! Ngoài việc học, bạn có thể chia sẻ thêm về lý do "
+        "bạn quan tâm đến vị trí này không? Mục tiêu nghề nghiệp của bạn trong tương lai là gì?"
+    )
+
+    assert checked_probe(probe, question=QUESTION, answer=ANSWER) is None
+    assert checked_probe(
+        probe,
+        question=QUESTION,
+        answer=ANSWER,
+        max_words=WARMUP_PROBE_MAX_WORDS,
+        max_sentences=WARMUP_PROBE_MAX_SENTENCES,
+        max_questions=WARMUP_PROBE_MAX_QUESTIONS,
+    ) == probe
 
 
 # --- Câu giải thích lại --------------------------------------------------------------

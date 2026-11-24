@@ -39,6 +39,9 @@ from src.modules.interviews.core.guardrails.input import (
     system_probe_decision,
 )
 from src.modules.interviews.core.guardrails.output import (
+    WARMUP_PROBE_MAX_QUESTIONS,
+    WARMUP_PROBE_MAX_SENTENCES,
+    WARMUP_PROBE_MAX_WORDS,
     acknowledgement_rejection_reason,
     checked_probe,
     clarify_rejection_reason,
@@ -632,6 +635,9 @@ class InterviewCoreEngine(InterviewResponseMixin):
                 question=ctx.question_prompt,
                 answer=ctx.candidate_text,
                 rubric="",
+                max_words=WARMUP_PROBE_MAX_WORDS,
+                max_sentences=WARMUP_PROBE_MAX_SENTENCES,
+                max_questions=WARMUP_PROBE_MAX_QUESTIONS,
             )
             if continuation:
                 speech_checks.record("probe", "pass", "warmup_from_evaluation")
