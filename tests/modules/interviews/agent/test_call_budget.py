@@ -191,3 +191,108 @@ async def test_an_input_guard_ends_the_turn_without_any_model_call(session_state
 
     assert output.metadata["decision"]["rule"]["action"] == "decline_system_probe"
     assert llm.calls == []
+
+
+@pytest.mark.asyncio
+async def test_unified_thinker_answers_the_whole_turn_in_one_call(session_state_factory) -> None:
+    """AC-05: the Unified path reaches one provider call on an ordinary turn.
+
+    The deciding call also returns the follow-up, so the action handler has
+    nothing left to generate. Compare with
+    ``test_live_path_spends_a_decider_call_plus_the_speech_call``: same turn,
+    same action, one call instead of two.
+    """
+    from src.modules.interviews.agents.interviewer import decide as decide_module
+
+    probe = "Khi dữ liệu trong database đổi, em xoá key cache theo cách nào?"
+    calls: list[dict] = []
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        return [
+            {
+                "name": "acknowledge_and_probe",
+                "arguments": {
+                    "kind": "gap",
+                    "missing_aspect": "cache invalidation",
+                    "probe_text": probe,
+                    "rationale": "Câu trả lời chưa nói cách xoá key khi dữ liệu đổi.",
+                    "evidence_refs": ["answer:sent:1"],
+                },
+                "call_id": "call-unified",
+            }
+        ]
+
+    llm = CountingLLM()
+    engine = InterviewCoreEngine(llm_client=llm)
+    state = session_state_factory(stage=InterviewStage.DEEP_DIVE)
+
+    async def decider(ctx, **kwargs):
+        kwargs.pop("unified", None)
+        return await decide_module.decide_by_model(ctx, generate=generate, unified=True, **kwargs)
+
+    output = await _run(engine, state, mode=interview_agent.MODE_LIVE, decider=decider)
+
+    assert output.metadata["decision"]["executed"] == "agent"
+    assert len(calls) == 1          # the deciding call
+    assert llm.calls == []          # and nothing after it
+    assert output.message_text == probe
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_unified_probe_falls_back_instead_of_losing_the_turn(session_state_factory) -> None:
+    """§6.2 keeps the existing fallback: a bad utterance costs a call, not a turn.
+
+    The probe below praises the candidate, which the acknowledgement guards
+    reject. The decision still stands; only the text is dropped, and the action
+    handler writes the follow-up as it did before.
+    """
+    from src.modules.interviews.agents.interviewer import decide as decide_module
+
+    calls: list[dict] = []
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        return [
+            {
+                "name": "acknowledge_and_probe",
+                "arguments": {
+                    "kind": "gap",
+                    "missing_aspect": "cache invalidation",
+                    # Not a question, and it hands the candidate the answer.
+                    "probe_text": "Bạn nên dùng write-through cache để tránh dữ liệu cũ.",
+                    "rationale": "Thiếu ý về invalidation.",
+                    "evidence_refs": ["answer:sent:1"],
+                },
+                "call_id": "call-unified-bad",
+            }
+        ]
+
+    llm = CountingLLM(line="Khi database đổi, em xử lý cache thế nào?")
+    engine = InterviewCoreEngine(llm_client=llm)
+    state = session_state_factory(stage=InterviewStage.DEEP_DIVE)
+
+    async def decider(ctx, **kwargs):
+        kwargs.pop("unified", None)
+        return await decide_module.decide_by_model(ctx, generate=generate, unified=True, **kwargs)
+
+    output = await _run(engine, state, mode=interview_agent.MODE_LIVE, decider=decider)
+
+    record = output.metadata["decision"]
+    # An accepted live decision is recorded under "agent"; "rule" stays None
+    # because the rule ladder never ran.
+    assert record["executed"] == "agent"
+    assert record["agent"]["action"] == "acknowledge_and_probe"
+    assert "probe_text_rejected" in record["agent"]["path"]
+    assert len(calls) == 1 and llm.calls == ["speech"]   # fell back to generating
+    assert output.message_text == "Khi database đổi, em xử lý cache thế nào?"
+
+
+def test_the_unified_thinker_is_off_unless_its_flag_is_set(monkeypatch) -> None:
+    """§14: an unproven feature ships disabled."""
+    from src.modules.interviews.agents.interviewer import tools
+
+    monkeypatch.delenv("INTERVIEW_UNIFIED_THINKER", raising=False)
+    assert tools.unified_enabled() is False
+    monkeypatch.setenv("INTERVIEW_UNIFIED_THINKER", "1")
+    assert tools.unified_enabled() is True

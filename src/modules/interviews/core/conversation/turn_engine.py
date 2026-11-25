@@ -674,11 +674,16 @@ class InterviewCoreEngine(InterviewResponseMixin):
         )
         ctx.is_deepening_probe = decision.args.get("kind") == "deepen"
         window = ctx.window or probe_window(ctx)
+        # Unified Thinker (V2 spec §6.2): a live decision may carry the probe it
+        # chose to ask, already through the output guards in ``decide``. That is
+        # the whole turn in one inference. It wins over the evaluator's probe
+        # because it was written against the action the model actually picked.
+        unified_probe = str(decision.args.get("probe_text") or "")
         # The evaluator can return the one allowed probe in the same JSON
         # response. This removes a second sequential model round-trip from
         # the latency-critical voice path while preserving the existing guard.
-        # Generate a fresh probe when the evaluator did not provide a valid one.
-        probe_question = (
+        # Generate a fresh probe when neither path provided a valid one.
+        probe_question = unified_probe or (
             ""
             if ctx.is_deepening_probe  # the evaluator's probe targets a gap; there is none
             else checked_probe(
@@ -689,8 +694,12 @@ class InterviewCoreEngine(InterviewResponseMixin):
             )
             or ""
         )
+        # Kept for the metadata below: "the probe came with the model's answer
+        # rather than from a second call", whichever of the two paths supplied it.
         probe_from_evaluation = bool(probe_question)
-        if probe_from_evaluation:
+        if unified_probe:
+            speech_checks.record("probe", "pass", "from_decision")
+        elif probe_from_evaluation:
             speech_checks.record("probe", "pass", "from_evaluation")
         else:
             probe_question = await self._generate_probe_question(

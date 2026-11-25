@@ -22,14 +22,49 @@ PACING = {"pace": "on_track", "questions_remaining_by_stage": {"DEEP_DIVE": 1}}
 
 
 def test_t1_2_1_every_action_has_one_strict_tool_and_one_act(ctx_factory) -> None:
-    assert set(TOOLS) == set(ACTIONS) | {SEARCH_MEMORY}
+    # A "__unified" key is a second schema for an action it already covers
+    # (V2 spec §6.2), not a new action.
+    variants = {name for name in TOOLS if name.endswith("__unified")}
+    assert set(TOOLS) - variants == set(ACTIONS) | {SEARCH_MEMORY}
     for name, tool in TOOLS.items():
         assert tool["strict"] is True and tool["parameters"]["additionalProperties"] is False
         assert {"rationale", "evidence_refs"} <= set(tool["parameters"]["properties"])
         assert set(tool["parameters"]["required"]) == set(tool["parameters"]["properties"])
-        if name != SEARCH_MEMORY:
-            assert hasattr(InterviewCoreEngine, f"act_{name}"), name
+        action = tool["name"]
+        assert action in ACTIONS or action == SEARCH_MEMORY, name
+        if action != SEARCH_MEMORY:
+            assert hasattr(InterviewCoreEngine, f"act_{action}"), name
     assert [t["name"] for t in tools_for(["clarify_question", "nope", "confirm_abort"])] == ["clarify_question", "confirm_abort"]
+
+
+def test_the_unified_variant_keeps_the_action_name_and_adds_only_the_probe() -> None:
+    """§6.2: one inference carries the decision and the line to say.
+
+    The variant must be indistinguishable from the plain tool to the menu check
+    and the decision record, or every unified turn would be rejected as
+    "outside_menu" and silently fall back.
+    """
+    plain = TOOLS["acknowledge_and_probe"]
+    unified = TOOLS["acknowledge_and_probe__unified"]
+
+    assert unified["name"] == plain["name"] == "acknowledge_and_probe"
+    added = set(unified["parameters"]["properties"]) - set(plain["parameters"]["properties"])
+    assert added == {"probe_text"}
+    assert "probe_text" in unified["parameters"]["required"]
+
+
+def test_tools_for_offers_the_unified_variant_only_when_asked() -> None:
+    menu = ["acknowledge_and_probe", "move_to_next_question"]
+
+    plain = tools_for(menu)
+    unified = tools_for(menu, unified=True)
+
+    # Same actions, same order, either way: the flag changes the schema, not the menu.
+    assert [t["name"] for t in plain] == [t["name"] for t in unified] == menu
+    assert "probe_text" not in plain[0]["parameters"]["properties"]
+    assert "probe_text" in unified[0]["parameters"]["properties"]
+    # An action with no unified variant is unaffected.
+    assert plain[1] is unified[1]
 
 
 @pytest.mark.parametrize("is_vi", [True, False])

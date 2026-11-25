@@ -17,7 +17,11 @@ import json
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 
 from src.modules.ai.facade import generate_tool_calls
-from src.modules.interviews.agents.interviewer.tools import SEARCH_MEMORY, tools_for
+from src.modules.interviews.agents.interviewer.tools import (
+    SEARCH_MEMORY,
+    tools_for,
+    unified_enabled,
+)
 from src.modules.interviews.core.guardrails.output import checked_probe
 from src.modules.interviews.core.conversation.prompt.decide import decide_input, decide_prompt
 from src.modules.interviews.core.conversation.turn_context import Decision, TurnContext
@@ -44,10 +48,12 @@ async def decide_by_model(
     memory_search: Optional[MemorySearch] = None,
     max_steps: int = 2,
     reasoning_effort: str | None = "none",
+    unified: Optional[bool] = None,
 ) -> Decision:
     # Resolved at call time so a test can route the decider through a scripted caller.
     generate = generate or generate_tool_calls
-    tools = tools_for(allowed_actions)
+    unified = unified_enabled() if unified is None else unified
+    tools = tools_for(allowed_actions, unified=unified)
     memory_hits: List[Dict[str, Any]] = []
     notes: List[str] = []
     items: Any = decide_input(
@@ -108,6 +114,23 @@ async def decide_by_model(
             if not follow_up:
                 return _violation("invalid_follow_up", "missing or rejected warm-up utterance", calls)
             args["follow_up_text"] = follow_up
+        if "probe_text" in args:
+            # Unified Thinker (§6.2): the follow-up written in the deciding
+            # call. It passes the same output guards as a separately generated
+            # probe. A rejected one is dropped rather than failing the turn --
+            # the action handler then writes the probe as it always did, which
+            # costs the second call back but never costs the candidate a turn.
+            probe = checked_probe(
+                str(args.get("probe_text") or ""),
+                question=ctx.active_prompt or ctx.question_prompt,
+                answer=ctx.candidate_text,
+                rubric=str(ctx.current_question.get("rubric_criteria") or ""),
+            )
+            if probe:
+                args["probe_text"] = probe
+            else:
+                args.pop("probe_text", None)
+                notes.append("probe_text_rejected")
         decision = Decision(
             name,
             args,
