@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.modules.interviews.agent.interviewer.pacing import DEFAULT_SECONDS_PER_QUESTION, pacing_block
+from src.modules.interviews.agents.interviewer.pacing import DEFAULT_SECONDS_PER_QUESTION, pacing_block
 from src.modules.interviews.core.contracts.interview import InterviewStage
 
 

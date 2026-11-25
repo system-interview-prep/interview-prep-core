@@ -1,4 +1,4 @@
-from src.modules.interviews.evaluation.evaluation_service import _format_expected_points
+from src.modules.interviews.agents.evaluator.evaluation_service import _format_expected_points
 from src.seeds.question_bank_expected_points_vi import EXPECTED_POINTS_VI
 
 

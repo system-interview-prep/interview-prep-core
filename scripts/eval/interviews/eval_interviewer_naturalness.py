@@ -45,7 +45,8 @@ from src.modules.interviews.core.dialogue.policy import (
     is_grader_style,
     is_parroting,
 )
-from src.modules.interviews.planning.spoken_questions import _rewrite_prompt, validate_spoken_question
+from src.modules.interviews.agents.interviewer.spoken_questions import _prompt as _rewrite_prompt
+from src.modules.interviews.agents.interviewer.spoken_questions import validate_spoken_question
 
 # Rào chắn ngôn ngữ của phiên bản CŨ (trước 17/10).
 #

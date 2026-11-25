@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from src.modules.interviews.agent.planner.planner_config import (
+from src.modules.interviews.agents.planner.planner_config import (
     PlannerPolicyConfig,
     resolve_strict_hands_on_precedence,
 )

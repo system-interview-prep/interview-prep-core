@@ -1,4 +1,4 @@
-from src.modules.interviews.agent.planner.plan_structure import (
+from src.modules.interviews.agents.planner.plan_structure import (
     build_evaluation_targets,
     build_sections,
     derive_difficulty,

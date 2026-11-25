@@ -1,4 +1,4 @@
-from src.modules.interviews.evaluation.question_quality import summarize_question_quality
+from src.modules.interviews.question_bank.quality import summarize_question_quality
 
 
 def _turn(**overrides):

@@ -7,8 +7,8 @@ import importlib
 import pytest
 from fastapi import HTTPException
 
-from src.modules.interviews.agent.planner import planner as planner_module
-from src.modules.interviews.planning.entry_gate import (
+from src.modules.interviews.agents.planner import planner as planner_module
+from src.modules.interviews.agents.planner.entry_gate import (
     DEFAULT_MIN_MATCH_PERCENT,
     EntryPolicy,
     InterviewEntryBlocked,

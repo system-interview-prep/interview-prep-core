@@ -4,7 +4,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.modules.interviews.application.runtime.agent_runtime import database_operations, run_interview_command
+from src.modules.interviews.graph.runtime import database_operations, run_interview_command
 from src.modules.interviews.application.runtime.chat_runtime import ChatRuntimeError
 
 

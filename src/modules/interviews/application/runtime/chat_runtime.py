@@ -28,7 +28,8 @@ from src.infrastructure import langfuse
 from src.core.pipeline_events import current_session_id
 from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
-from src.modules.interviews.application.quality_admin import interviewer_playbook, llm_checks
+from src.modules.interviews.admin import interviewer_playbook
+from src.modules.interviews.core.guardrails import llm_checks
 from src.modules.interviews.application.runtime.session_deadline import chat_deadline
 from src.modules.interviews.core.session_policy.blueprint import InterviewBlueprint, blueprint_from_payload
 from src.modules.interviews.core.dialogue import playbook, speech_checks
@@ -39,9 +40,9 @@ from src.modules.interviews.core.dialogue.policy import (
     last_paragraph,
 )
 from src.modules.interviews.core.dialogue.topics import generic_transition
-from src.modules.interviews.agent.interviewer import record as agent_record
-from src.modules.interviews.application.runtime import candidate_memory
-from src.modules.interviews.agent.interviewer.interview_agent import run_turn
+from src.modules.interviews.agents.interviewer import record as agent_record
+from src.modules.interviews.memory import candidate_memory
+from src.modules.interviews.agents.interviewer.interview_agent import run_turn
 from src.modules.interviews.core.conversation.turn_engine import (
     InterviewCoreEngine,
     pacing_seconds,

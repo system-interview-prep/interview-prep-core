@@ -36,7 +36,7 @@ from src.modules.interviews.core.dialogue import policy as voice
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine, candidate_question_response
 from src.modules.interviews.core.contracts.interview import InterviewStage
 from src.modules.interviews.core.dialogue.opening import build_opening, warmup_question
-from src.modules.interviews.planning.spoken_questions import _rewrite_prompt
+from src.modules.interviews.agents.interviewer.spoken_questions import _prompt as _rewrite_prompt
 
 QUESTION = "Trong dự án quản lý đơn hàng, bạn trực tiếp làm phần nào?"
 
@@ -225,7 +225,7 @@ def build() -> str:
     lines += [
         "### Viết bản nói của câu hỏi trong kho (lúc khoá câu hỏi)",
         "",
-        "`planning/spoken_questions.py` → `_rewrite_prompt`",
+        "`agents/interviewer/spoken_questions.py` → `_prompt`",
         "",
         *_block(_rewrite_prompt(True)),
     ]

@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.modules.interviews.planning import question_coverage, question_generation
+from src.modules.interviews.question_bank import coverage as question_coverage
+from src.modules.interviews.question_bank import generation as question_generation
 
 
 def _question(text: str, objective: str = "Assess the skill.") -> dict:
@@ -158,7 +159,7 @@ async def test_pregeneration_may_file_three_variants(monkeypatch) -> None:
 async def test_ensure_generates_only_what_selection_cannot_reach(
     monkeypatch, reachable, expected_count
 ) -> None:
-    from src.modules.interviews.agent.planner import question_selector
+    from src.modules.interviews.agents.planner import question_selector
 
     monkeypatch.setattr(
         question_selector, "reachable_candidates", AsyncMock(return_value=[object()] * reachable)

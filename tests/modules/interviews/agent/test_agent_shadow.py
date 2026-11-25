@@ -6,8 +6,8 @@ import copy
 
 import pytest
 
-from src.modules.interviews.agent.interviewer import decide as decide_module
-from src.modules.interviews.agent.interviewer import interview_agent as turn_graph
+from src.modules.interviews.agents.interviewer import decide as decide_module
+from src.modules.interviews.agents.interviewer import interview_agent as turn_graph
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput, TurnAction
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 from tests.modules.interviews.agent.conftest import FakeToolCaller, tool_call

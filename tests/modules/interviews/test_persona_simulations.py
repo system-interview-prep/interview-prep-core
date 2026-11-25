@@ -22,8 +22,8 @@ from src.modules.interviews.core.contracts.interview import (
     SessionExitReason,
     TurnAction,
 )
-from src.modules.interviews.evaluation.evaluation_engine import InterviewEvaluationEngine
-from src.modules.interviews.evaluation.evaluation_types import TurnEvaluationInput
+from src.modules.interviews.agents.evaluator.evaluation_engine import InterviewEvaluationEngine
+from src.modules.interviews.agents.evaluator.evaluation_types import TurnEvaluationInput
 
 
 class MockLLM:

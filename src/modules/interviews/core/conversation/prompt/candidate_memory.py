@@ -3,7 +3,7 @@
 Khối ``block`` chỉ gọi tên chủ đề ("còn hở phần invalidation"), không bao giờ
 trích lời ứng viên; trống thì prompt y như cũ (giống ``playbook.block``).
 ``extract_instructions`` là phần chỉ dẫn mà memory manager của ``langmem``
-(``application/runtime/candidate_memory.py``) đưa cho model ở lệnh ``score``
+(``memory/candidate_memory.py``) đưa cho model ở lệnh ``score``
 — đầu vào là kết luận của grader, không phải câu trả lời. Thao tác (thêm /
 vá / xoá) và schema do ``langmem`` + ``trustcall`` quy định, không phải ở đây.
 """

@@ -14,7 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.infrastructure.database import engine
-from src.modules.interviews.agent.planner.question_selector import _load_candidates
+from src.modules.interviews.agents.planner.question_selector import _load_candidates
 from src.modules.question_bank.router import get_question, list_rubrics
 from src.modules.question_bank.schemas import (
     DEFAULT_TAXONOMY_VERSION,

@@ -3,7 +3,7 @@ from src.modules.interviews.application.background.question_suggestions import (
     SUGGEST_TASK_NAME,
     suggest_questions_for_closed_session,
 )
-from src.modules.interviews.planning.question_coverage import (
+from src.modules.interviews.question_bank.coverage import (
     PREPARE_TASK_NAME,
     prepare_job_question_coverage,
 )

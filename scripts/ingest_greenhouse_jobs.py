@@ -37,7 +37,7 @@ try:
 except Exception:  # pragma: no cover
     SessionFactory = None
 
-from src.modules.interviews.planning.question_coverage import enqueue_question_coverage  # noqa: E402
+from src.modules.interviews.question_bank.coverage import enqueue_question_coverage  # noqa: E402
 from src.modules.job_descriptions.ingestion.adapters.greenhouse import GreenhouseJobBoardAdapter
 from src.modules.job_descriptions.ingestion.models import IngestionConfig
 from src.modules.job_descriptions.ingestion.repository import JobIngestionRepository

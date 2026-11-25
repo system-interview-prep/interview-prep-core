@@ -6,7 +6,7 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from src.modules.interviews.agent.interviewer import interview_agent as turn_graph
+from src.modules.interviews.agents.interviewer import interview_agent as turn_graph
 from src.modules.interviews.core.contracts.interview import (
     CandidateTurnInput,
     InterviewStage,

@@ -3,7 +3,7 @@
 import asyncio
 from types import SimpleNamespace
 
-from src.modules.interviews.application import interview_blueprints
+from src.modules.interviews.blueprint import service as interview_blueprints
 from src.modules.question_bank.notifications import decision_message, notify_question_author
 
 

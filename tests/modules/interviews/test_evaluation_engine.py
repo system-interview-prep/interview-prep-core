@@ -3,11 +3,11 @@ import json
 import unittest
 from unittest.mock import AsyncMock
 
-from src.modules.interviews.evaluation.evaluation_engine import (
+from src.modules.interviews.agents.evaluator.evaluation_engine import (
     EvaluationGradingError,
     InterviewEvaluationEngine,
 )
-from src.modules.interviews.evaluation.evaluation_types import (
+from src.modules.interviews.agents.evaluator.evaluation_types import (
     CompetencyScore,
     DecisionRecommendation,
     StarAnalysis,

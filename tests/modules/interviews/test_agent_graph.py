@@ -8,9 +8,9 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from psycopg_pool import AsyncConnectionPool
 
-from src.modules.interviews.agent.shared import checkpoints
-from src.modules.interviews.agent.session_workflow.graph import COMMANDS, build_interview_graph
-from src.modules.interviews.application.runtime.agent_runtime import run_interview_command
+from src.modules.interviews.graph import checkpoints
+from src.modules.interviews.graph.graph import COMMANDS, build_interview_graph
+from src.modules.interviews.graph.runtime import run_interview_command
 
 
 @pytest.mark.asyncio

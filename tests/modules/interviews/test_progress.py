@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from src.modules.interviews.application.progress import (
+from src.modules.interviews.progress import (
     SessionRow,
     TurnRow,
     build_progress,
@@ -22,7 +22,7 @@ from src.modules.interviews.application.progress import (
     reask_after_days,
     weekly_streak,
 )
-from src.modules.interviews.application.progress.progress_calibration import (
+from src.modules.interviews.progress.progress_calibration import (
     Calibration,
     SkillSessionPoint,
     between_person_sd,
@@ -150,7 +150,7 @@ def test_compare_across_tiers_marks_overall_not_comparable() -> None:
 
 @pytest.mark.asyncio
 async def test_weekly_goal_is_validated(monkeypatch) -> None:
-    from src.modules.interviews.application import progress as progress_module
+    from src.modules.interviews import progress as progress_module
 
     with pytest.raises(ValueError):
         await progress_module.set_weekly_goal(None, "u1", 0)
@@ -327,7 +327,7 @@ def test_calibration_measurements() -> None:
 
 @pytest.mark.xfail(strict=True, reason="SCOPE: pre-existing failure outside the agent work; tests/TRIAGE_2026-11-24.md")
 def test_skills_use_candidate_names_areas_and_hide_the_greeting() -> None:
-    from src.modules.interviews.application.progress.skill_display import GENERAL_NAME
+    from src.modules.interviews.progress.skill_display import GENERAL_NAME
 
     sessions = [_session(1)]
     turns = [
@@ -635,7 +635,7 @@ def _answered(session: str, concept: str, score: float, n: int = 3) -> list[Turn
 
 
 def test_overview_compares_groups_that_never_share_a_session() -> None:
-    from src.modules.interviews.application.progress import score_overview
+    from src.modules.interviews.progress import score_overview
 
     def items(scores, valid=None):
         valid = valid or [True] * len(scores)

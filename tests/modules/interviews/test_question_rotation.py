@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.modules.interviews.agent.planner.question_selector import _candidate_rank, _question_exposure
+from src.modules.interviews.agents.planner.question_selector import _candidate_rank, _question_exposure
 from tests.modules.interviews.test_question_selector import candidate
 
 

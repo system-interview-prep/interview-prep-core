@@ -18,7 +18,7 @@ from src.modules.interviews.core.guardrails.output import is_evaluative
 from src.modules.interviews.core.dialogue.policy import pick_variant
 from src.modules.interviews.core.dialogue.opening import build_opening, warmup_question
 from src.modules.interviews.application.runtime.spoken_questions import add_spoken_versions
-from src.modules.interviews.agent.interviewer.spoken_questions import validate_spoken_question
+from src.modules.interviews.agents.interviewer.spoken_questions import validate_spoken_question
 
 LONG_ANSWER = (
     "Mình dùng Redis làm cache cho kết quả query nặng, đặt TTL năm phút cho từng key "

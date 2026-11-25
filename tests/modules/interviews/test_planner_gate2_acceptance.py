@@ -17,8 +17,8 @@ from typing import Any
 
 import pytest
 
-from src.modules.interviews.agent.planner import planner
-from src.modules.interviews.agent.planner.planner import (
+from src.modules.interviews.agents.planner import planner
+from src.modules.interviews.agents.planner.planner import (
     PLANNER_POLICY_VERSION,
     PLANNER_POLICY_VERSION_DYNAMIC,
     derive_competency_plan,

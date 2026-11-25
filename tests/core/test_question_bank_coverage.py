@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from src.modules.interviews.agent.planner.planner import _MAX_QUESTIONS_PER_TARGET
+from src.modules.interviews.agents.planner.planner import _MAX_QUESTIONS_PER_TARGET
 from src.modules.taxonomy.career import _RULES
 from src.seeds.question_bank_seed import _CONCEPT_FIXTURES
 

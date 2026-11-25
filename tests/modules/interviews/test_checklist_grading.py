@@ -3,9 +3,9 @@
 
 import pytest
 
-from src.modules.interviews.evaluation.evaluation_engine import InterviewEvaluationEngine
-from src.modules.interviews.evaluation.evaluation_types import TurnEvaluationInput
-from src.modules.interviews.evaluation.rubric_grading import (
+from src.modules.interviews.agents.evaluator.evaluation_engine import InterviewEvaluationEngine
+from src.modules.interviews.agents.evaluator.evaluation_types import TurnEvaluationInput
+from src.modules.interviews.agents.evaluator.rubric_grading import (
     BONUS,
     CORE,
     COVERED,

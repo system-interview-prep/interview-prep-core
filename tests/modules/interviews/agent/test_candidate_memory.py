@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 from langgraph.store.memory import InMemoryStore
 
-from src.modules.interviews.agent.interviewer import interview_agent as turn_graph
-from src.modules.interviews.application.runtime import candidate_memory as cm
+from src.modules.interviews.agents.interviewer import interview_agent as turn_graph
+from src.modules.interviews.memory import candidate_memory as cm
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput, TurnAction
 from src.modules.interviews.core.conversation.prompt.candidate_memory import MAX_BLOCK_CHARS, MAX_ITEMS, block
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
@@ -153,17 +153,17 @@ def _record_rows(monkeypatch) -> list:
 def extraction(monkeypatch):
     """``extract_after_session`` with the db replaced: grader conclusions + the user of the session."""
 
-    async def fake_eval(db, session_id):
-        return EVALUATION
-
     async def fake_user(db, session_id):
         return USER
 
-    monkeypatch.setattr(cm, "get_session_evaluation", fake_eval)
     monkeypatch.setattr(cm, "_user_id_of_session", fake_user)
 
     async def run(store, model, session_id="sess-1"):
-        return await cm.extract_after_session(None, session_id, store=store, model=model)
+        # The report is handed in by whoever ran ``score``; memory does not
+        # reach into agents.evaluator for it (V2 spec §10).
+        return await cm.extract_after_session(
+            None, session_id, evaluation=EVALUATION, store=store, model=model
+        )
 
     return run
 
@@ -300,15 +300,23 @@ async def test_extraction_failures_never_raise(monkeypatch) -> None:
     async def boom(db, session_id):
         raise RuntimeError("db down")
 
-    monkeypatch.setattr(cm, "get_session_evaluation", boom)
-    assert await cm.extract_after_session(None, "s", store=InMemoryStore()) == {}
+    monkeypatch.setattr(cm, "_user_id_of_session", boom)
+    assert await cm.extract_after_session(
+        None, "s", evaluation=EVALUATION, store=InMemoryStore()
+    ) == {}
+
+
+@pytest.mark.asyncio
+async def test_no_report_means_no_extraction() -> None:
+    """``score`` hands in the stored report; without one there is nothing to learn."""
+    assert await cm.extract_after_session(None, "s", evaluation=None, store=InMemoryStore()) == {}
 
 
 @pytest.mark.asyncio
 async def test_the_default_chat_model_is_blocked_in_tests(extraction) -> None:
     """Without ``model=`` the extractor would build ChatOpenAI: tests/conftest.py blocks it, so {} and no call."""
     store = InMemoryStore()
-    assert await cm.extract_after_session(None, "s", store=store) == {}
+    assert await cm.extract_after_session(None, "s", evaluation=EVALUATION, store=store) == {}
 
 
 def test_a_flat_value_from_before_the_envelope_still_reads() -> None:
@@ -318,7 +326,7 @@ def test_a_flat_value_from_before_the_envelope_still_reads() -> None:
 
 def test_t2_6_3_the_playbook_reflector_cannot_see_candidate_memory() -> None:
     root = Path(__file__).resolve().parents[4] / "src" / "modules" / "interviews"
-    playbook = root / "application" / "quality_admin" / "interviewer_playbook.py"
+    playbook = root / "admin" / "interviewer_playbook.py"
     source = playbook.read_text(encoding="utf-8-sig")  # the file starts with a BOM
     tree = ast.parse(source)
     names = [n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module]
@@ -331,7 +339,7 @@ def test_t2_6_3_the_playbook_reflector_cannot_see_candidate_memory() -> None:
 
 @pytest.mark.asyncio
 async def test_t3_5_1_memory_reaches_the_prompts_and_the_decider_but_is_never_recited(session_state_factory, monkeypatch) -> None:
-    from src.modules.interviews.agent.interviewer import decide as decide_module
+    from src.modules.interviews.agents.interviewer import decide as decide_module
 
     store = InMemoryStore()
     await store.aput(cm.namespace(USER), "k1", {

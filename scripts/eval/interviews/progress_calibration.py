@@ -48,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # chạy được 
 from sqlalchemy import text  # noqa: E402
 
 from src.infrastructure.database import StandaloneSessionFactory  # noqa: E402
-from src.modules.interviews.application.progress.progress_calibration import (  # noqa: E402
+from src.modules.interviews.progress.progress_calibration import (  # noqa: E402
     Calibration,
     SkillSessionPoint,
     between_person_sd,
@@ -57,11 +57,11 @@ from src.modules.interviews.application.progress.progress_calibration import (  
     tier_offsets,
     typical_error,
 )
-from src.modules.interviews.evaluation.evaluation_engine import (  # noqa: E402
+from src.modules.interviews.agents.evaluator.evaluation_engine import (  # noqa: E402
     InterviewEvaluationEngine,
     grader_version,
 )
-from src.modules.interviews.evaluation.evaluation_types import TurnEvaluationInput  # noqa: E402
+from src.modules.interviews.agents.evaluator.evaluation_types import TurnEvaluationInput  # noqa: E402
 
 ANCHORS_FILE = Path("trace-logs/grading_anchors.json")
 # Mean anchor shift (points) above which a model or prompt change needs attention.

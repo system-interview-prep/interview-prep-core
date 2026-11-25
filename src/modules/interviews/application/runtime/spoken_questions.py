@@ -12,7 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.trace_logging import trace_event
-from src.modules.interviews.agent.interviewer.spoken_questions import rewrite_spoken_questions
+from src.modules.interviews.agents.interviewer.spoken_questions import rewrite_spoken_questions
 
 logger = logging.getLogger(__name__)
 GenerateFn = Callable[..., Awaitable[Any]]

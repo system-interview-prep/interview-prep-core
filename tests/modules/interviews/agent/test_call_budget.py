@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from src.modules.interviews.agent.interviewer import interview_agent
+from src.modules.interviews.agents.interviewer import interview_agent
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput, InterviewStage
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 

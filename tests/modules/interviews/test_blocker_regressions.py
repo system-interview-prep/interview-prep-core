@@ -8,16 +8,16 @@ from pydantic import ValidationError
 
 import src.modules.interviews.api.router  # noqa: F401  (ensures the submodule is imported)
 from src.modules.interviews.adapters.voice.api.lab import _load_voice_session
-from src.modules.interviews.evaluation.evaluation_service import (
+from src.modules.interviews.agents.evaluator.evaluation_service import (
     EvaluationServiceError,
     evaluate_closed_session,
 )
-from src.modules.interviews.evaluation.evaluation_types import (
+from src.modules.interviews.agents.evaluator.evaluation_types import (
     DecisionRecommendation,
     SessionEvaluationResult,
 )
-from src.modules.interviews.agent.planner import planner
-from src.modules.interviews.agent.planner.planner import PlannerPolicyConfigurationError
+from src.modules.interviews.agents.planner import planner
+from src.modules.interviews.agents.planner.planner import PlannerPolicyConfigurationError
 
 # `api/__init__.py` re-exports the APIRouter as `router`, which shadows the
 # submodule attribute, so reach the module through sys.modules instead.
@@ -414,8 +414,8 @@ async def test_closing_qna_and_unanswered_turn_are_not_graded() -> None:
 @pytest.mark.asyncio
 async def test_grading_failure_surfaces_as_503_through_the_agent_graph() -> None:
     """H6: an ungradable session is a retryable 503, not a 500 or a fake report."""
-    from src.modules.interviews.application.runtime import agent_runtime
-    from src.modules.interviews.evaluation.evaluation_engine import EvaluationGradingError
+    from src.modules.interviews.graph import runtime as agent_runtime
+    from src.modules.interviews.agents.evaluator.evaluation_engine import EvaluationGradingError
 
     session = {"id": "sess-grade", "plan_id": "plan-grade", "status": "CLOSED"}
 

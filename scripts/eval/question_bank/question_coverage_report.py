@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from src.infrastructure.database import SessionFactory  # noqa: E402
-from src.modules.interviews.planning.question_coverage import (  # noqa: E402
+from src.modules.interviews.question_bank.coverage import (  # noqa: E402
     prepare_job_question_coverage,
     question_coverage_report,
 )

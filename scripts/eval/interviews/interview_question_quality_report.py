@@ -29,7 +29,7 @@ if hasattr(sys.stdout, "reconfigure"):
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from src.infrastructure.database import SessionFactory  # noqa: E402
-from src.modules.interviews.evaluation.question_quality import question_quality_report  # noqa: E402
+from src.modules.interviews.question_bank.quality import question_quality_report  # noqa: E402
 
 _COLUMNS = (
     ("stage", "stage", 11, "{}"),

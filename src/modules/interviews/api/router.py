@@ -15,15 +15,15 @@ from src.core.security import current_user
 from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
 from src.modules.interviews.api.rate_limit import interview_rate_limiter
-from src.modules.interviews.application.runtime.agent_runtime import database_operations, run_interview_command
+from src.modules.interviews.graph.runtime import database_operations, run_interview_command
 from src.modules.interviews.application.runtime.chat_runtime import (
     ChatRuntimeError,
     get_chat_runtime,
 )
-from src.modules.interviews.application.interview_blueprints import BlueprintError, resolve_blueprint
+from src.modules.interviews.blueprint.service import BlueprintError, resolve_blueprint
 from src.modules.interviews.core.session_policy.demo_mode import is_demo_duration
-from src.modules.interviews.application.progress import compare_with_previous, load_progress, set_weekly_goal
-from src.modules.interviews.application.progress.real_interviews import (
+from src.modules.interviews.progress import compare_with_previous, load_progress, set_weekly_goal
+from src.modules.interviews.progress.real_interviews import (
     delete_report,
     list_reports,
     readiness_snapshot,
@@ -37,18 +37,18 @@ from src.modules.interviews.application.runtime.text_runtime import (
     complete_text_runtime,
     read_text_runtime,
 )
-from src.modules.interviews.evaluation.evaluation_engine import EvaluationGradingError
-from src.modules.interviews.evaluation.evaluation_service import (
+from src.modules.interviews.agents.evaluator.evaluation_engine import EvaluationGradingError
+from src.modules.interviews.agents.evaluator.evaluation_service import (
     EvaluationServiceError,
     get_session_evaluation,
 )
-from src.modules.interviews.planning.entry_gate import InterviewEntryBlocked, entry_policy, evaluate_entry
-from src.modules.interviews.agent.planner.planner import (
+from src.modules.interviews.agents.planner.entry_gate import InterviewEntryBlocked, entry_policy, evaluate_entry
+from src.modules.interviews.agents.planner.planner import (
     PlannerPolicyConfigurationError,
     evaluate_session_match,
     read_session_plan,
 )
-from src.modules.interviews.agent.planner.question_selector import (
+from src.modules.interviews.agents.planner.question_selector import (
     QuestionUnavailableError,
     read_frozen_turns,
 )

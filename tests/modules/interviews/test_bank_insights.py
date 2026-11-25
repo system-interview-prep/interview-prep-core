@@ -2,7 +2,7 @@
 
 import asyncio
 
-from src.modules.interviews.evaluation import bank_insights as bi
+from src.modules.interviews.question_bank import insights as bi
 
 
 def _row(

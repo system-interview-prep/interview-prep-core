@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from src.modules.interviews.agent import InterviewAgent, InterviewCommandRunner
-from src.modules.interviews.agent.session_workflow import graph as agent_graph
+from src.modules.interviews.agents import InterviewAgent, InterviewCommandRunner
+from src.modules.interviews.graph import graph as agent_graph
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput
 
 SRC = Path(__file__).resolve().parents[3] / "src" / "modules" / "interviews"
@@ -51,7 +51,7 @@ async def test_the_compiled_graph_is_built_once_per_checkpointer(monkeypatch) ->
 
     monkeypatch.setattr(agent_graph, "build_interview_graph", counting)
     saver = InMemorySaver()
-    monkeypatch.setattr(importlib.import_module("src.modules.interviews.agent.shared.checkpoints"), "_checkpointer", saver)
+    monkeypatch.setattr(importlib.import_module("src.modules.interviews.graph.checkpoints"), "_checkpointer", saver)
 
     async def operation(payload):
         return {"echo": payload}
@@ -73,7 +73,7 @@ async def test_the_compiled_graph_is_built_once_per_checkpointer(monkeypatch) ->
 async def test_operations_are_scoped_to_the_call_not_the_graph(monkeypatch) -> None:
     """Two requests with different closures share the compiled graph but never each other's operations."""
     agent_graph.reset_compiled_graphs()
-    monkeypatch.setattr(importlib.import_module("src.modules.interviews.agent.shared.checkpoints"), "_checkpointer", None)
+    monkeypatch.setattr(importlib.import_module("src.modules.interviews.graph.checkpoints"), "_checkpointer", None)
 
     def ops_for(tag):
         async def operation(payload):

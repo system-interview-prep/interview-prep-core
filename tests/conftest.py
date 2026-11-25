@@ -9,7 +9,7 @@ def _no_live_question_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     """Settings read `.env`, which may hold a real OPENAI_API_KEY: never let the
     selector's question generator reach the provider from a test. Tests that
     exercise generation monkeypatch `generate_question_payloads` themselves."""
-    from src.modules.interviews.planning import question_generation
+    from src.modules.interviews.question_bank import generation as question_generation
 
     async def _no_payloads(**_: object) -> list[dict]:
         return []
@@ -95,7 +95,7 @@ def _no_live_interview_model(monkeypatch: pytest.MonkeyPatch) -> None:
     # The candidate-memory extractor (langmem) calls the provider through
     # LangChain, not the facade: block its chat model the same way. Tests pass
     # a scripted ``model=``.
-    from src.modules.interviews.application.runtime import candidate_memory
+    from src.modules.interviews.memory import candidate_memory
 
     monkeypatch.setattr(candidate_memory, "_chat_model", _blocked)
 

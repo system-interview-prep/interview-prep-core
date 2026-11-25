@@ -1,4 +1,4 @@
-"""API for interview types and their versioned blueprints (application/interview_blueprints.py).
+"""API for interview types and their versioned blueprints (blueprint/service.py).
 
 Admin console: interview experts (QUESTION_AUTHOR) list types, create a type
 or a draft, edit and submit their drafts; an admin other than the author
@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.roles import QUESTION_AUTHOR
 from src.core.security import current_user, require_admin, require_roles
 from src.infrastructure.database import get_db
-from src.modules.interviews.application import interview_blueprints as blueprints
+from src.modules.interviews.blueprint import service as blueprints
 from src.modules.interviews.core.session_policy.blueprint import InterviewBlueprint
 
 router = APIRouter(prefix="/admin/interview-blueprints", tags=["interview-blueprints"])

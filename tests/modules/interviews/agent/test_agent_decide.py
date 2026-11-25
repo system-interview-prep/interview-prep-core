@@ -6,9 +6,9 @@ import re
 
 import pytest
 
-from src.modules.interviews.agent.interviewer import decide as decide_module
-from src.modules.interviews.agent.interviewer.decide import decide_by_model, is_violation
-from src.modules.interviews.agent.interviewer.tools import SEARCH_MEMORY, TOOLS, tools_for
+from src.modules.interviews.agents.interviewer import decide as decide_module
+from src.modules.interviews.agents.interviewer.decide import decide_by_model, is_violation
+from src.modules.interviews.agents.interviewer.tools import SEARCH_MEMORY, TOOLS, tools_for
 from src.modules.interviews.core.conversation.prompt.decide import decide_input, decide_prompt
 from src.modules.interviews.core.conversation.turn_context import ACTIONS
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine

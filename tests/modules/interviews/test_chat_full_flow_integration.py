@@ -21,8 +21,9 @@ from sqlalchemy import text
 from src.core.security import current_user
 from src.infrastructure.database import SessionFactory, engine, get_db
 from src.main import create_app
-from src.modules.interviews.application.runtime import agent_runtime, chat_runtime
-from src.modules.interviews.evaluation.evaluation_types import (
+from src.modules.interviews.application.runtime import chat_runtime
+from src.modules.interviews.graph import runtime as agent_runtime
+from src.modules.interviews.agents.evaluator.evaluation_types import (
     CompetencyScore,
     DecisionRecommendation,
     SessionEvaluationResult,
@@ -269,6 +270,6 @@ async def test_chat_interview_runs_from_opening_through_persisted_report(monkeyp
 
 
 async def _evaluate_with_fake_grader(db, session_id: str, _engine=None):
-    from src.modules.interviews.evaluation.evaluation_service import evaluate_closed_session
+    from src.modules.interviews.agents.evaluator.evaluation_service import evaluate_closed_session
 
     return await evaluate_closed_session(db, session_id, engine=_DeterministicGrader())

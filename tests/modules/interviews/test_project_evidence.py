@@ -14,7 +14,7 @@ Covers:
 import pytest
 
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
-from src.modules.interviews.agent.planner.project_evidence import (
+from src.modules.interviews.agents.planner.project_evidence import (
     StructuredProjectEvidence,
     extract_project_evidences,
     select_best_project,
@@ -261,7 +261,7 @@ def test_missing_cv_fields_prompts_verification_not_assertion(monkeypatch):
 
 @pytest.mark.skip(reason="fixed script pools / helpers removed in 75d3520 (speech v2); see INTERVIEW_AGENT_TEST_PLAN_V1 §6")
 def test_a_description_is_not_read_out_as_the_project_name():
-    from src.modules.interviews.agent.planner.project_evidence import spoken_project_name, spoken_project_question
+    from src.modules.interviews.agents.planner.project_evidence import spoken_project_name, spoken_project_question
 
     # Buổi thật 20/10.
     assert spoken_project_name("operating with real users and generating revenue.") is None

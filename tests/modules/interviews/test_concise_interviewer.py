@@ -4,9 +4,9 @@ import pytest
 
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 from src.modules.interviews.core.contracts.interview import InterviewStage
-from src.modules.interviews.evaluation.evaluation_engine import InterviewEvaluationEngine
-from src.modules.interviews.evaluation.evaluation_types import TurnEvaluationInput
-from src.modules.interviews.agent.planner.question_selector import _behavioral_snapshot
+from src.modules.interviews.agents.evaluator.evaluation_engine import InterviewEvaluationEngine
+from src.modules.interviews.agents.evaluator.evaluation_types import TurnEvaluationInput
+from src.modules.interviews.agents.planner.question_selector import _behavioral_snapshot
 
 
 class CapturingLLM:

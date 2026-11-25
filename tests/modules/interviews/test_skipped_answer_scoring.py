@@ -4,13 +4,13 @@
 import pytest
 
 from src.modules.interviews.core.conversation.turn_engine import is_skip_request
-from src.modules.interviews.evaluation.answer_outcome import (
+from src.modules.interviews.agents.evaluator.answer_outcome import (
     SKIPPED,
     is_non_answer,
     split_answer_messages,
 )
-from src.modules.interviews.evaluation.evaluation_engine import InterviewEvaluationEngine
-from src.modules.interviews.evaluation.evaluation_types import TurnEvaluationInput
+from src.modules.interviews.agents.evaluator.evaluation_engine import InterviewEvaluationEngine
+from src.modules.interviews.agents.evaluator.evaluation_types import TurnEvaluationInput
 
 QUESTION = "Lỗi lan truyền thế nào qua promise chain và async/await?"
 YES_NO_QUESTION = "Hiền đã từng dùng Kafka chưa?"
@@ -148,7 +148,7 @@ async def test_grader_no_attempt_is_forced_to_zero_without_strengths():
 
 # ── Turns that cannot be graded (audio or system failure) ────────────────────
 
-from src.modules.interviews.evaluation.answer_outcome import (  # noqa: E402
+from src.modules.interviews.agents.evaluator.answer_outcome import (  # noqa: E402
     ANSWERED,
     NOT_GRADABLE,
     turn_outcome,

@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.modules.interviews.application.runtime.chat_runtime import session_blueprint
-from src.modules.interviews.application.interview_blueprints import _view
+from src.modules.interviews.blueprint.service import _view
 from src.modules.interviews.core.session_policy.blueprint import (
     InterviewBlueprint,
     blueprint_from_payload,
@@ -13,8 +13,8 @@ from src.modules.interviews.core.session_policy.blueprint import (
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 from src.modules.interviews.core.conversation.turn_rules import MAX_QNA_QUESTIONS, QNA_BUDGET_SECONDS, TIME_THRESHOLDS
 from src.modules.interviews.core.contracts.interview import InterviewStage
-from src.modules.interviews.agent.planner.planner import _question_budget
-from src.modules.interviews.agent.planner.question_selector import _behavioral_snapshot, _technical_stage
+from src.modules.interviews.agents.planner.planner import _question_budget
+from src.modules.interviews.agents.planner.question_selector import _behavioral_snapshot, _technical_stage
 
 
 def test_default_blueprint_keeps_every_previous_constant() -> None:
@@ -204,7 +204,7 @@ def test_blueprint_api_requires_an_internal_role(client) -> None:
 
 
 def test_preview_endpoint_logic_reports_overflow() -> None:
-    from src.modules.interviews.application.interview_blueprints import BlueprintError, _parse
+    from src.modules.interviews.blueprint.service import BlueprintError, _parse
 
     with pytest.raises(BlueprintError) as excinfo:
         _parse({"warmUp": {"softAnswerSeconds": 300, "hardAnswerSeconds": 100}})
