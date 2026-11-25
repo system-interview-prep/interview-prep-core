@@ -23,42 +23,58 @@ from livekit.agents import Agent, AgentServer, AgentSession, inference
 from livekit.agents.voice.turn import InterruptionOptions
 from livekit.plugins import elevenlabs
 
-from src.modules.interviews.adapters.voice.conversation.answer_window import (
+from src.modules.interviews.realtime.conversation.answer_window import (
     ANSWER_PAUSE_NUDGE_SECONDS, PROCESSING_FILLER_SECONDS, AnswerWindow,
     backchannel_continue_text, core_error_text, localize_particles, not_heard_lines,
     pick_answer_pause_nudge, pick_processing_filler,
     processing_filler_enabled, processing_fillers, reprompt_after_seconds,
     silence_reprompt, turn_taking_tip, unclear_transcript_text,
 )
-from src.modules.interviews.adapters.voice.conversation.health import (
+from src.modules.interviews.realtime.conversation.health import (
     provider_error_payload,
     provider_recovered_payload,
 )
-from src.modules.interviews.adapters.voice.conversation.interruption import (
+from src.modules.interviews.realtime.conversation.interruption import (
     capture_interruption, classify_interruption, hold_acknowledgement, is_greeting_backchannel,
     is_repeat_request, is_resume_request, remaining_after_interruption, resolve_interruption,
 )
-from src.modules.interviews.adapters.voice.conversation.voice_events import VoiceEventReporter
-from src.modules.interviews.adapters.voice.config.tuning import voice_tuning
-from src.modules.interviews.adapters.voice.speech.language import (
+from src.modules.interviews.realtime.conversation.voice_events import VoiceEventReporter
+from src.modules.interviews.realtime.config.tuning import voice_tuning
+from src.modules.interviews.realtime.speech.language import (
     normalize_transcript_for_locale,
     speakable_text,
 )
-from src.modules.interviews.adapters.voice.stt.recognition import (
+from src.modules.interviews.realtime.stt.recognition import (
     create_stt,
     recognition_language,
     recognition_options,
     recognition_room_options,
 )
-from src.modules.interviews.adapters.voice.stt.stt_provider import stt_provider_settings
-from src.modules.interviews.adapters.voice.stt.transcript_quality import process_transcript
-from src.modules.interviews.adapters.voice.tts.provider_config import tts_provider_config
-from src.modules.interviews.adapters.voice.tts.tts_cache import SpeechAudioCache, SpeechClip
-from src.modules.interviews.adapters.voice.tts.vieneu_tts import VieNeuTTS
+from src.modules.interviews.realtime.stt.stt_provider import stt_provider_settings
+from src.modules.interviews.realtime.stt.transcript_quality import process_transcript
+from src.modules.interviews.realtime.tts.provider_config import tts_provider_config
+from src.modules.interviews.realtime.tts.tts_cache import SpeechAudioCache, SpeechClip
+from src.modules.interviews.realtime.tts.vieneu_tts import VieNeuTTS
+
+def _project_root() -> Path:
+    """The directory that holds ``src/``, found by walking up from this file.
+
+    A fixed ``parents[N]`` broke when this module moved from
+    ``adapters/voice/runtime/`` to ``realtime/runtime/`` in the V2 package
+    migration: the index still resolved, one directory too high, so the worker
+    would have started with no ``.env`` and no error. Walking up is immune to
+    the next move.
+    """
+    here = Path(__file__).resolve()
+    for candidate in here.parents:
+        if (candidate / "src").is_dir() and (candidate / "pyproject.toml").is_file():
+            return candidate
+    return here.parents[5]
+
 
 # Prefer variables supplied by Docker/the backend environment. The project-root
 # .env file only fills values that are not already present.
-load_dotenv(Path(__file__).resolve().parents[6] / ".env", override=False)
+load_dotenv(_project_root() / ".env", override=False)
 
 # The ElevenLabs plugin uses ELEVEN_API_KEY, while the existing Voice Lab uses
 # the more explicit ELEVENLABS_API_KEY name.
@@ -974,7 +990,7 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
     )
     if runtime_token.startswith("stt-test:"):
         runtime_client.headers["Authorization"] = f"Bearer {runtime_token.removeprefix('stt-test:')}"
-        from src.modules.interviews.adapters.voice.stt.livekit_stt_test import run_stt_test
+        from src.modules.interviews.realtime.stt.livekit_stt_test import run_stt_test
         try:
             await run_stt_test(ctx, runtime_client)
         finally:

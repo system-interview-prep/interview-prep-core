@@ -34,7 +34,7 @@ from pathlib import Path
 
 import httpx
 
-from src.modules.interviews.adapters.voice.speech.language import speakable_text
+from src.modules.interviews.realtime.speech.language import speakable_text
 from src.modules.interviews.core.dialogue import phrases as script
 
 POOLS = (

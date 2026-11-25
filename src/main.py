@@ -24,7 +24,7 @@ from src.modules.interviews import build_module as build_interviews_module
 from src.modules.interviews.graph.checkpoints import interview_checkpoint_lifespan
 from src.modules.interviews.admin.admin_notifier import notifier as admin_notifier
 from src.modules.interviews.admin.pipeline_live import bridge as pipeline_live_bridge
-from src.modules.interviews.application.runtime.session_reaper import session_reaper_loop
+from src.modules.interviews.session.session_reaper import session_reaper_loop
 from src.modules.interviews.agents.planner.planner import configured_planner_policy
 from src.modules.job_descriptions import build_module as build_job_descriptions_module
 from src.modules.matching import build_module as build_matching_module
@@ -77,7 +77,7 @@ async def _start_livekit_agent(settings: object) -> asyncio.subprocess.Process |
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
-            "src.modules.interviews.adapters.voice.runtime.livekit_agent",
+            "src.modules.interviews.realtime.runtime.livekit_agent",
             run_mode,
             cwd=str(project_root),
         )

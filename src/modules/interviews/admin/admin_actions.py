@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.trace_logging import trace_event
 from src.infrastructure.database import SessionFactory
-from src.modules.interviews.application.background.question_suggestions import enqueue_session_question_suggestions
+from src.modules.interviews.question_bank.suggestions import enqueue_session_question_suggestions
 from src.modules.interviews.agents.evaluator import evaluate_closed_session
 
 logger = logging.getLogger(__name__)

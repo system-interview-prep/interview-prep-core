@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from src.modules.interviews.application.runtime.session_deadline import chat_deadline
+from src.modules.interviews.session.session_deadline import chat_deadline
 
 
 def session(**extra):

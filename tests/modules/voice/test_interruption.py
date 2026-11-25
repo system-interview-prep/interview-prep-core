@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from src.modules.interviews.adapters.voice.conversation.interruption import (
+from src.modules.interviews.realtime.conversation.interruption import (
     InterruptionSnapshot,
     capture_interruption,
     classify_interruption,

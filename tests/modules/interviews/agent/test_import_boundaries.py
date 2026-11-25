@@ -2,7 +2,7 @@
 
 INTERVIA_INTERVIEW_AGENT_V2_SPEC §10 "Dependency rules":
 
-    api, adapters ─► graph (runtime) ─► agents ─► core, domain services ─► ai.facade
+    api, adapters ─► session, graph ─► agents ─► core, domain services ─► ai.facade
 
 - Agents decide; they must not import LiveKit, STT or TTS, nor reach back up
   into transport, the runtime or the admin/progress read models.
@@ -36,14 +36,14 @@ RULES = {
         "src.modules.interviews.adapters",
         "src.modules.interviews.api",
         "src.modules.interviews.admin",
-        "src.modules.interviews.application",
+        "src.modules.interviews.session",
     ),
     "core": (
         "langgraph", "langmem", "sqlalchemy",
         "livekit",
         "src.modules.interviews.agents",
         "src.modules.interviews.graph",
-        "src.modules.interviews.application",
+        "src.modules.interviews.session",
         "src.modules.interviews.adapters",
     ),
     "core/conversation/prompt": (
@@ -77,10 +77,8 @@ RULES = {
 # workflows talk to persistence by design. Other modules keep the boundary.
 EXEMPT = {
     "graph/checkpoints.py": ("psycopg",),
-    "agents/planner/planner.py": (
-        "sqlalchemy",
-        "src.modules.interviews.application",
-    ),
+    # The Planner's bounded P1/P2 tools own their preparation persistence.
+    "agents/planner/planner.py": ("sqlalchemy",),
     "agents/planner/question_selector.py": ("sqlalchemy",),
     "agents/planner/entry_gate.py": ("sqlalchemy",),
     "agents/evaluator/evaluation_service.py": ("sqlalchemy",),

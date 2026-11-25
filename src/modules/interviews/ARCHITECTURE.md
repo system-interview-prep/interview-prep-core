@@ -8,7 +8,7 @@ flowchart LR
     V[Voice adapter: STT and TTS] --> API
     W[Video adapter: transcript and optional observations] --> API
     API --> A[agent: one checkpointed command per request]
-    A --> R[application/runtime: read session state, persist the turn]
+    A --> R[session: read session state, persist the turn]
     R --> E[core: intent, turn control, evaluation, response]
     E --> R
     R --> C
@@ -20,24 +20,24 @@ The path of one candidate turn, as the code runs it (verified 2026-11-24):
 
 ```text
 router / voice_facade
-  → application/runtime/agent_runtime.run_interview_command("respond")
-    → agent.session_workflow.InterviewCommandRunner.execute
+  → graph/runtime.run_interview_command("respond")
+    → graph.InterviewCommandRunner.execute
                                              thread = (session, command, client_message_id); replay if completed
       → operations["respond"]              closure bound to the request's db session
-        → chat_runtime.process_candidate_message
+        → session/chat_runtime.process_candidate_message
             build_session_state_from_db → CandidateTurnInput
-            → agent.interviewer.interview_agent.run_turn (turn graph and model decision)
+            → agents.interviewer.interview_agent.run_turn (turn graph and model decision)
               → core InterviewCoreEngine                  (guards, action handlers, output checks)
             persist messages, turn status, stage
 ```
 
 Every modality submits the same ``core.contracts.interview.CandidateTurnInput``; there is
 no second turn contract. The per-turn Interviewer Agent is separate from the durable
-session-command workflow. ``agent/planner/PlannerAgent`` now owns prepare/freeze
+session-command workflow. ``agents/planner/PlannerAgent`` now owns prepare/freeze
 orchestration and drafts the CV-grounded verification question. P1 planning,
 CV project evidence, P2 selection, validation, and freeze modules now live in
-``agent/planner/``. The deterministic entry gate and job-level Question Bank
-coverage/generation workflows remain in ``planning/``. P2 no longer generates
+``agents/planner/``. The deterministic entry gate is ``agents/planner/entry_gate.py``; job-level Question
+Bank coverage/generation workflows live in ``question_bank/``. P2 no longer generates
 Question Bank entries. A worker proposes review-only drafts from recorded gaps
 after the session has closed and been scored.
 
@@ -67,51 +67,67 @@ the SQL plan and frozen queue are the durable state.
 - `core/contracts/` defines the shared interview input, output, stage, and action types.
 - `core/session_policy/` defines the shared stage, timing, and demo-session rules.
 - `core/dialogue/` owns shared dialogue policy, phrases, opening, language checks, playbook lessons, and speech-check diagnostics. It contains no STT, TTS, camera behavior, pronunciation, or audio recovery.
-- `planning/` provides the deterministic entry gate and Question Bank coverage/generation workflows.
-- `agent/session_workflow/` runs the six session commands (`prepare`, `freeze`, `open`, `respond`, `finish`, `score`) on one compiled graph with a Postgres checkpoint per `(session, command, event)`. `InterviewCommandRunner` is workflow infrastructure, not an AI agent; operations arrive per call from `application/runtime/agent_runtime.py`.
-- `agent/interviewer/` owns per-turn agent decision, menu, pacing, turn graph, decision record, and spoken-question drafting. `interview_agent.py` is the graph entry point for one candidate turn; Core owns shared guards, action handlers, and output checks.
-- `agent/planner/` owns P1 plan construction, CV project evidence, P2 selection/validation/freeze, prepare/freeze orchestration, and CV-grounded question drafting.
-- `application/runtime/spoken_questions.py` persists validated spoken variants produced by the Interviewer Agent before the session opens.
-- `application/background/question_suggestions.py` queues Question Bank drafts for uncovered targets after close/score; drafts still require admin review.
-- `agent/shared/` contains infrastructure shared across the workflows, currently the Postgres checkpointer/store lifecycle.
+- `question_bank/` provides Question Bank coverage, generation, suggestions, insights and quality reporting; the deterministic entry gate is `agents/planner/entry_gate.py`.
+- `graph/` runs the six session commands (`prepare`, `freeze`, `open`, `respond`, `finish`, `score`) on one compiled graph with a Postgres checkpoint per `(session, command, event)`. `InterviewCommandRunner` is workflow infrastructure, not an AI agent; operations arrive per call from `graph/runtime.py`.
+- `agents/interviewer/` owns per-turn agent decision, menu, pacing, turn graph, decision record, and spoken-question drafting. `interview_agent.py` is the graph entry point for one candidate turn; Core owns shared guards, action handlers, and output checks.
+- `agents/planner/` owns P1 plan construction, CV project evidence, P2 selection/validation/freeze, prepare/freeze orchestration, and CV-grounded question drafting.
+- `session/spoken_questions.py` persists validated spoken variants produced by the Interviewer Agent before the session opens.
+- `question_bank/suggestions.py` queues Question Bank drafts for uncovered targets after close/score; drafts still require admin review.
+- `graph/checkpoints.py` owns the Postgres checkpointer and the candidate-memory store lifecycle.
 - Adapters normalise their input into `CandidateTurnInput` where they call the runtime. Voice accepts only a final transcript; partial STT is not an answer.
 - Each modality package keeps `api/` transport. Voice additionally groups `api/` endpoints, `runtime/` LiveKit worker, `stt/`, `tts/`, `speech/`, `conversation/`, and `config/`. Voice owns transcription, transcript cleanup, answer buffering, audio turn taking, pronunciation, synthesis, and voice-only recovery phrases. Video observations remain telemetry unless an explicit assessment rule is added to Core.
-- `application/runtime/` persists sessions and coordinates Core calls. `chat_runtime.py` is historically named; Voice and Video use this same runtime path.
-- `application/quality_admin/` reports settings, traces, and reviewed quality data.
+- `session/` persists sessions and coordinates Core calls. `chat_runtime.py` is historically named; Voice and Video use this same runtime path.
+- `admin/` reports settings, traces, and reviewed quality data. `progress/` owns candidate progress, calibration and skill summaries.
+- `realtime/` owns the audio lifecycle: STT and TTS clients, the answer window, interruption, voice events and tuning. `adapters/voice/api/` keeps only transport.
+- `memory/` owns LangMem retrieval and extraction; `blueprint/` owns the interview contract.
 
 ## Layout
 
 ```text
 interviews/
-|-- adapters/
-|   |-- chat/                  # api/router.py
-|   |-- video_calls/           # api/router.py, api/signaling.py
-|   `-- voice/
-|       |-- api/               # router.py, Voice Lab endpoints
-|       |-- runtime/           # LiveKit agent worker
-|       |-- conversation/      # answer window, interruptions, events, phrases
-|       |-- stt/               # providers, recognition, transcript cleanup/evaluation
-|       |-- tts/               # providers, cache, pronunciation dictionaries
-|       |-- speech/            # language normalization and speech formatting
-|       `-- config/            # voice tuning
-|-- agent/
+|-- adapters/                  # transport only
+|   |-- chat/api/              # router.py
+|   |-- video_calls/api/       # router.py, signaling.py
+|   `-- voice/api/             # router.py, Voice Lab endpoints
+|-- realtime/                  # audio lifecycle (V2 spec §8)
+|   |-- runtime/               # LiveKit agent worker (the docker-compose entry point)
+|   |-- conversation/          # answer window, interruptions, events, phrases
+|   |-- stt/                   # providers, recognition, transcript cleanup/evaluation
+|   |-- tts/                   # providers, cache, pronunciation dictionaries
+|   |-- speech/                # language normalization and speech formatting
+|   `-- config/                # voice tuning
+|-- graph/                     # Main graph: the six commands
+|   |-- graph.py               # command -> node dispatch, one compiled graph
+|   |-- command_runner.py      # durable thread per (session, command, event)
+|   |-- runtime.py             # run_interview_command: the entry point callers use
+|   |-- ports.py, state.py
+|   `-- checkpoints.py         # Postgres checkpointer + candidate-memory store
+|-- agents/
 |   |-- interviewer/           # interview_agent.py (one-turn graph), decide.py, menu.py,
-|   |                          # pacing.py, tools.py, record.py, state.py
-|   |-- planner/               # P1/P2 tools + PlannerAgent orchestration + CV question capability
-|   |-- session_workflow/      # command_runner.py, graph.py, ports.py, state.py
-|   `-- shared/                # checkpoints.py (Postgres checkpointer + candidate-memory store)
-|                              # candidate memory itself: application/runtime/candidate_memory.py
-|                              # (store rows in langmem's {kind, content} envelope; extractor = langmem)
-|-- application/
-|   |-- quality_admin/
-|   `-- runtime/               # shared persistence/runtime path
+|   |                          # pacing.py, tools.py, record.py, state.py, spoken_questions.py
+|   |-- planner/               # P1/P2 tools + PlannerAgent orchestration + CV question
+|   |                          # capability + entry_gate.py
+|   `-- evaluator/             # rubric grading, report, answer outcome, grading cache
+|-- session/                   # business state and lifecycle
+|   |-- chat_runtime.py        # shared persistence/runtime path for all three modalities
+|   |-- text_runtime.py        # practice mode
+|   |-- voice_facade.py, session_deadline.py, session_reaper.py, spoken_questions.py
+|-- memory/                    # candidate_memory.py: store, seed, search tool, prompt
+|                              # block, guard, langmem extractor
+|                              # (rows in langmem's {kind, content} envelope)
+|-- question_bank/             # coverage.py, generation.py, suggestions.py,
+|                              # insights.py, quality.py
+|-- blueprint/                 # service.py: interview types and versioned contracts
+|-- progress/                  # candidate progress, calibration, skill summaries
+|-- admin/                     # settings, traces, reviewed quality data, pipeline views
 |-- core/
 |   |-- conversation/          # turn_engine.py, response_generation.py, turn_rules.py
 |   |-- contracts/             # interview.py
-|   |-- session_policy/       # blueprint.py, demo_mode.py
-|   `-- dialogue/              # policy.py, phrases.py, opening.py, language.py, playbook.py, speech_checks.py
-|-- evaluation/
-`-- planning/                  # entry gate + Question Bank coverage/generation workflows
+|   |-- session_policy/        # blueprint.py, demo_mode.py
+|   |-- guardrails/            # input.py, output.py, common.py, llm_checks.py
+|   `-- dialogue/              # policy.py, phrases.py, opening.py, playbook.py, speech_checks.py
+|-- api/                       # router.py, blueprint_router.py, rate_limit.py
+`-- facade.py                  # the public boundary for other modules
 ```
 
 ## Agent modes and flags (INTERVIEW_AGENT_DECISION_PLAN_V1)
@@ -136,7 +152,7 @@ requires. These are facts about this HEAD, not targets.
 | Qwen STT | `STTCapabilities(streaming=True, interim_results=True)`; 1.0 s chunks, 0.8 s endpoint silence. Partial transcripts exist. |
 | VieNeu TTS | `TTSCapabilities(streaming=False)`. No text-streaming API; audio arrives as an SSE byte stream per sentence, so progressive playback works and AC-12 needs no new API. |
 | Endpointing | Fixed `COMMIT_SILENCE_SECONDS=1.8` / `SHORT_COMMIT_SILENCE_SECONDS=2.2`, env-tunable. Not adaptive. |
-| Main graph | Already exists: `agent/session_workflow/graph.py` dispatches the six commands on one compiled graph with a Postgres checkpoint. |
+| Main graph | Already exists: `graph/graph.py` dispatches the six commands on one compiled graph with a Postgres checkpoint. |
 | Video path | `adapters/video_calls/api/router.py::chat_voice_on_call` bypasses Core entirely (a bare `generate_text`). It and the chat/voice `chat` endpoints sit behind `legacy_interview_api_enabled`, **false** by default. |
 | Luna / Talker | Not a separate service: an OpenAI model id (`gpt-5.6-luna`). `src/modules/ai/facade.py` now takes a per-call `model=`, so the Talker uses the existing provider (spec §1.1). Settings: `interview_talker_model` (empty = use `llm_model`) and `interview_talker_enabled` (**false**). |
 | Broker for background work | RabbitMQ + Celery already configured; no new infrastructure is needed for §9. |

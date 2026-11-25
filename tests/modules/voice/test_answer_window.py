@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from src.modules.interviews.adapters.voice.conversation.answer_window import (
+from src.modules.interviews.realtime.conversation.answer_window import (
     PROCESSING_FILLERS_EN,
     PROCESSING_FILLERS_VI,
     SHORT_ANSWER_WORDS,
@@ -66,7 +66,7 @@ def test_voice_guidance_is_hands_free(locale: str) -> None:
 
 def test_processing_filler_is_opt_in_and_silent_by_default(monkeypatch) -> None:
     """No "Ừm, chờ mình một chút nhé" while Core works (removed 31/10)."""
-    from src.modules.interviews.adapters.voice.conversation import answer_window, voice_phrases
+    from src.modules.interviews.realtime.conversation import answer_window, voice_phrases
     from src.modules.interviews.core.dialogue import phrases as script
 
     # The index-based ``processing_filler`` helper went with the legacy speech
@@ -86,7 +86,7 @@ def test_processing_filler_is_opt_in_and_silent_by_default(monkeypatch) -> None:
 
 
 def test_answer_pause_nudges_vary_by_turn_and_do_not_repeat_back_to_back() -> None:
-    from src.modules.interviews.adapters.voice.conversation.answer_window import (
+    from src.modules.interviews.realtime.conversation.answer_window import (
         ANSWER_PAUSE_NUDGES_VI,
         pick_answer_pause_nudge,
     )
@@ -105,7 +105,7 @@ def test_answer_pause_nudges_vary_by_turn_and_do_not_repeat_back_to_back() -> No
 
 @pytest.mark.xfail(strict=True, reason="SCOPE: pre-existing failure outside the agent work; tests/TRIAGE_2026-11-24.md")
 def test_filler_varies_by_session_and_the_reply_does_not_repeat_its_interjection() -> None:
-    from src.modules.interviews.adapters.voice.conversation.answer_window import (
+    from src.modules.interviews.realtime.conversation.answer_window import (
         PROCESSING_FILLERS_VI,
         pick_processing_filler,
         without_leading_interjection,
@@ -124,7 +124,7 @@ def test_filler_varies_by_session_and_the_reply_does_not_repeat_its_interjection
 
 @pytest.mark.xfail(strict=True, reason="SCOPE: pre-existing failure outside the agent work; tests/TRIAGE_2026-11-24.md")
 def test_room_lines_follow_the_voice_dialect_and_acknowledgements_are_cached(monkeypatch) -> None:
-    from src.modules.interviews.adapters.voice.conversation.answer_window import localize_particles, scripted_reply_lines
+    from src.modules.interviews.realtime.conversation.answer_window import localize_particles, scripted_reply_lines
     from src.modules.interviews.core.dialogue import phrases as script
 
     assert set(script.ACK_FALLBACK_VI) <= set(scripted_reply_lines("vi-VN"))

@@ -29,7 +29,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # chạy được cả khi không đặt PYTHONPATH
 
-from src.modules.interviews.adapters.voice.conversation import answer_window
+from src.modules.interviews.realtime.conversation import answer_window
 from src.modules.interviews.core.conversation import turn_engine as engine_module
 from src.modules.interviews.core.dialogue import phrases as script
 from src.modules.interviews.core.dialogue import policy as voice

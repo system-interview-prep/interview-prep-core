@@ -10,13 +10,13 @@ from src.modules.interviews.graph.command_runner import InterviewCommandRunner
 from src.modules.interviews.graph.ports import InterviewOperations
 from src.modules.interviews.graph.state import InterviewCommand
 from src.modules.interviews.memory import candidate_memory
-from src.modules.interviews.application.runtime.chat_runtime import (
+from src.modules.interviews.session.chat_runtime import (
     complete_chat_session,
     process_candidate_message,
     start_chat_session,
 )
-from src.modules.interviews.application.background.question_suggestions import enqueue_session_question_suggestions
-from src.modules.interviews.application.runtime.spoken_questions import add_spoken_versions
+from src.modules.interviews.question_bank.suggestions import enqueue_session_question_suggestions
+from src.modules.interviews.session.spoken_questions import add_spoken_versions
 from src.modules.interviews.agents.evaluator.evaluation_service import (
     evaluate_closed_session,
     get_session_evaluation,

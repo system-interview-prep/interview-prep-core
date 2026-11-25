@@ -1,5 +1,5 @@
 from src.infrastructure.database import SessionFactory
-from src.modules.interviews.application.background.question_suggestions import (
+from src.modules.interviews.question_bank.suggestions import (
     SUGGEST_TASK_NAME,
     suggest_questions_for_closed_session,
 )

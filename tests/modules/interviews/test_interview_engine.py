@@ -1099,7 +1099,7 @@ def test_closing_invitation_has_no_bracketed_aside():
 
 @pytest.mark.skip(reason="fixed script pools / helpers removed in 75d3520 (speech v2); see INTERVIEW_AGENT_TEST_PLAN_V1 §6")
 def test_probe_provenance_marks_fixed_fallbacks():
-    from src.modules.interviews.application.runtime.chat_runtime import _provenance_metadata
+    from src.modules.interviews.session.chat_runtime import _provenance_metadata
     from src.modules.interviews.core.conversation.turn_engine import (
         _FIXED_PROBES,
         SAFE_FALLBACK_PROBE_VI,

@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from src.modules.interviews.application.runtime.chat_runtime import session_blueprint
+from src.modules.interviews.session.chat_runtime import session_blueprint
 from src.modules.interviews.blueprint.service import _view
 from src.modules.interviews.core.session_policy.blueprint import (
     InterviewBlueprint,

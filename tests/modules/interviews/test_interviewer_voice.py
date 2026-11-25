@@ -11,13 +11,13 @@ from typing import Any
 
 import pytest
 
-from src.modules.interviews.application.runtime.chat_runtime import build_session_state_from_db
+from src.modules.interviews.session.chat_runtime import build_session_state_from_db
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput, InterviewStage, TurnAction
 from src.modules.interviews.core.guardrails.output import is_evaluative
 from src.modules.interviews.core.dialogue.policy import pick_variant
 from src.modules.interviews.core.dialogue.opening import build_opening, warmup_question
-from src.modules.interviews.application.runtime.spoken_questions import add_spoken_versions
+from src.modules.interviews.session.spoken_questions import add_spoken_versions
 from src.modules.interviews.agents.interviewer.spoken_questions import validate_spoken_question
 
 LONG_ANSWER = (
@@ -121,7 +121,7 @@ def test_dialogue_style_helpers_do_not_rewrite_generated_lines() -> None:
 
 
 def test_southern_voice_gets_southern_particles(monkeypatch) -> None:
-    from src.modules.interviews.adapters.voice.conversation.answer_window import localize_particles
+    from src.modules.interviews.realtime.conversation.answer_window import localize_particles
 
     assert localize_particles("Mình bắt đầu nhé.") == "Mình bắt đầu nhé."
     monkeypatch.setenv("INTERVIEWER_VOICE_DIALECT", "nam")
@@ -280,7 +280,7 @@ async def test_rejected_acknowledgement_draft_is_recorded() -> None:
 
 
 def test_spoken_turn_trace_carries_speech_control(monkeypatch) -> None:
-    from src.modules.interviews.application.runtime import chat_runtime
+    from src.modules.interviews.session import chat_runtime
     from src.modules.interviews.core.dialogue import speech_checks
     from src.modules.interviews.core.contracts.interview import InterviewerTurnOutput
 

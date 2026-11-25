@@ -541,3 +541,43 @@ async def test_dropped_targets_and_generated_questions_reach_the_report() -> Non
     assert any("1 câu hỏi do AI sinh" in flag for flag in result.red_flags)
     # Half the agenda uncovered: the PASS is capped.
     assert result.decision_recommendation is DecisionRecommendation.CONSIDER
+
+
+def test_the_livekit_worker_finds_the_project_root_whatever_its_depth() -> None:
+    """The worker's .env lookup must not depend on how deep its module sits.
+
+    ``livekit_agent.py`` used ``parents[6]``, correct while it lived at
+    ``adapters/voice/runtime/``. The V2 package migration moved it to
+    ``realtime/runtime/``, two levels shallower, where ``parents[6]`` still
+    resolved -- to the directory *above* the repository. ``load_dotenv`` on a
+    missing path does nothing and raises nothing, so the worker would have
+    started with none of its configuration and no error to show for it.
+    """
+    pytest.importorskip("livekit.agents")
+    from pathlib import Path
+
+    from src.modules.interviews.realtime.runtime import livekit_agent
+
+    root = livekit_agent._project_root()
+    assert (root / "src" / "modules" / "interviews").is_dir(), root
+    assert (root / "pyproject.toml").is_file(), root
+    # The module really is under that root, not beside it.
+    assert Path(livekit_agent.__file__).resolve().is_relative_to(root)
+
+
+def test_docker_compose_starts_the_worker_at_its_real_module_path() -> None:
+    """The compose entry point is a string; a package move cannot update it.
+
+    If this drifts, `docker compose up` fails with ModuleNotFoundError at
+    deploy time rather than in any test.
+    """
+    import importlib.util
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+    modules = re.findall(r'"python",\s*"-m",\s*"([\w.]+)"', compose)
+    assert modules, "no `python -m <module>` command found in docker-compose.yml"
+    for module in modules:
+        assert importlib.util.find_spec(module) is not None, f"docker-compose runs a missing module: {module}"

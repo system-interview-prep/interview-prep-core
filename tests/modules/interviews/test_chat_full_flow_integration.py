@@ -21,7 +21,7 @@ from sqlalchemy import text
 from src.core.security import current_user
 from src.infrastructure.database import SessionFactory, engine, get_db
 from src.main import create_app
-from src.modules.interviews.application.runtime import chat_runtime
+from src.modules.interviews.session import chat_runtime
 from src.modules.interviews.graph import runtime as agent_runtime
 from src.modules.interviews.agents.evaluator.evaluation_types import (
     CompetencyScore,

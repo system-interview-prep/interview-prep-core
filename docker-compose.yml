@@ -63,7 +63,7 @@ services:
   voice-agent:
     # LiveKit voice interview agent. Separate from the API so a backend reload
     # does not drop live calls. It does not hot-reload: restart this service
-    # after changing src/modules/interviews/adapters/voice/*.
+    # after changing src/modules/interviews/realtime/* or adapters/voice/*.
     # Reuses the backend image (same api target) instead of building a second one.
     image: interview-prep-core-backend:latest
     env_file:
@@ -86,7 +86,7 @@ services:
       # Audio of fixed interviewer lines, reused by every session.
       VOICE_LAB_TTS_CACHE_DIR: /var/cache/intervia-tts
     working_dir: /app
-    command: ["python", "-m", "src.modules.interviews.adapters.voice.runtime.livekit_agent", "start"]
+    command: ["python", "-m", "src.modules.interviews.realtime.runtime.livekit_agent", "start"]
     volumes: ["./src:/app/src", "voice-tts-cache:/var/cache/intervia-tts"]
     extra_hosts:
       - "host.docker.internal:host-gateway"

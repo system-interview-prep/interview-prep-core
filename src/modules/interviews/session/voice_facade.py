@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.modules.interviews.graph.runtime import database_operations, run_interview_command
-from src.modules.interviews.application.runtime.chat_runtime import ChatRuntimeError
+from src.modules.interviews.session.chat_runtime import ChatRuntimeError
 
 
 async def start_voice_interview(db: AsyncSession, session_row: dict[str, Any]) -> dict[str, Any]:

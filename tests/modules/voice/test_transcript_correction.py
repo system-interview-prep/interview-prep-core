@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from src.modules.interviews.adapters.voice.speech.language import normalize_transcript_for_locale
-from src.modules.interviews.adapters.voice.stt.transcript_correction import correct_technical_transcript
+from src.modules.interviews.realtime.speech.language import normalize_transcript_for_locale
+from src.modules.interviews.realtime.stt.transcript_correction import correct_technical_transcript
 
 # context, candidate ASR, approved repaired sentence
 REPAIRS = [
@@ -310,7 +310,7 @@ def test_voice_package_import_uses_the_same_filter() -> None:
     project_root = Path(__file__).resolve().parents[3]
     script = (
         "import sys; sys.path.insert(0, sys.argv[1]); "
-        "from src.modules.interviews.adapters.voice.speech import language; "
+        "from src.modules.interviews.realtime.speech import language; "
         "assert language.normalize_transcript_for_locale("
         "'Em d\\u00f9ng use state.', locale='vi-VN', context='useState') == 'Em d\\u00f9ng useState.'; "
         "assert language.normalize_transcript_for_locale("

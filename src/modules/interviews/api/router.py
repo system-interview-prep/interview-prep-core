@@ -16,7 +16,7 @@ from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
 from src.modules.interviews.api.rate_limit import interview_rate_limiter
 from src.modules.interviews.graph.runtime import database_operations, run_interview_command
-from src.modules.interviews.application.runtime.chat_runtime import (
+from src.modules.interviews.session.chat_runtime import (
     ChatRuntimeError,
     get_chat_runtime,
 )
@@ -29,8 +29,8 @@ from src.modules.interviews.progress.real_interviews import (
     readiness_snapshot,
     save_report,
 )
-from src.modules.interviews.application.runtime.session_reaper import CANDIDATE_LEFT_GRACE_MINUTES
-from src.modules.interviews.application.runtime.text_runtime import (
+from src.modules.interviews.session.session_reaper import CANDIDATE_LEFT_GRACE_MINUTES
+from src.modules.interviews.session.text_runtime import (
     TurnStateError,
     answer_turn,
     ask_turn,
