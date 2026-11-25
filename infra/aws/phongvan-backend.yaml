@@ -1053,6 +1053,10 @@ Resources:
                 token.actions.githubusercontent.com:sub:
                   - !Sub 'repo:${GitHubOwner}/${GitHubRepo}:ref:refs/heads/${GitHubDeployBranch}'
                   - !Sub 'repo:${GitHubOwner}/${GitHubRepo}:environment:${GitHubEnvironment}'
+                  # Since 2026 GitHub adds the immutable owner and repository IDs
+                  # to the subject: repo:<owner>@<id>/<repo>@<id>:...
+                  - !Sub 'repo:${GitHubOwner}@*/${GitHubRepo}@*:ref:refs/heads/${GitHubDeployBranch}'
+                  - !Sub 'repo:${GitHubOwner}@*/${GitHubRepo}@*:environment:${GitHubEnvironment}'
       Policies:
         - PolicyName: PushCoreImage
           PolicyDocument:
