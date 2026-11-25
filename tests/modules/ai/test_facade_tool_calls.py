@@ -106,3 +106,40 @@ async def test_provider_errors_are_logged_as_errors_and_re_raised(monkeypatch, r
     with pytest.raises(ConnectionError):
         await facade.generate_tool_calls(instructions="d", input_items="x", tools=TOOLS, purpose="p")
     assert recorded[0]["status"] == "error" and recorded[0]["error_type"] == "ConnectionError"
+
+
+@pytest.mark.asyncio
+async def test_a_per_call_model_overrides_the_configured_one(monkeypatch, recorded) -> None:
+    """INTERVIA_INTERVIEW_AGENT_V2_SPEC §1.1: the Talker reaches its model
+    through the existing provider, not a new model server.
+
+    The override applies to one call, is what the provider is asked for, and is
+    the model written to ``ai_call_logs`` so cost stays attributable per model.
+    """
+    item = SimpleNamespace(type="function_call", name="move_to_next_question",
+                           arguments=json.dumps({"reason": "sufficient"}), call_id="call_1")
+    fake = _FakeResponses([item])
+    monkeypatch.setattr(facade, "_client", _client_with(fake))
+
+    await facade.generate_tool_calls(
+        instructions="predict", input_items="answer", tools=TOOLS,
+        purpose="interviews.agent.talker", model="gpt-5.6-luna",
+    )
+
+    assert fake.calls[0]["model"] == "gpt-5.6-luna"
+    assert recorded[0]["model"] == "gpt-5.6-luna"
+
+
+@pytest.mark.asyncio
+async def test_without_an_override_the_configured_model_is_used(monkeypatch, recorded) -> None:
+    """The default path is unchanged: no caller has to pass a model."""
+    from src.core.config import get_settings
+
+    item = SimpleNamespace(type="function_call", name="move_to_next_question",
+                           arguments=json.dumps({"reason": "sufficient"}), call_id="call_1")
+    fake = _FakeResponses([item])
+    monkeypatch.setattr(facade, "_client", _client_with(fake))
+
+    await facade.generate_tool_calls(instructions="decide", input_items="answer", tools=TOOLS)
+
+    assert fake.calls[0]["model"] == get_settings().llm_model

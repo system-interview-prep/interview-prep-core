@@ -142,6 +142,12 @@ class Settings(BaseSettings):
     llm_provider: str = "openai"
     # Pin the snapshot so an alias update cannot silently change eval behavior.
     llm_model: str = "gpt-5.4-mini-2026-03-17"
+    # The Talker model of INTERVIA_INTERVIEW_AGENT_V2_SPEC §6.3, reached through
+    # the same OpenAI provider as `llm_model` -- no second model server (§1.1).
+    # Empty means "use llm_model"; the Hybrid path stays off until
+    # `interview_talker_enabled` is set, so this value alone changes nothing.
+    interview_talker_model: str = ""
+    interview_talker_enabled: bool = False
     # Dynamic interview planning is opt-in because its time-allocation values
     # are Product policy. When enabled, the JSON must satisfy PlannerPolicyConfig.
     interview_dynamic_planner_enabled: bool = False

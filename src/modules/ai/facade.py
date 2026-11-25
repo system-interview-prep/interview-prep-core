@@ -92,6 +92,7 @@ async def generate_tool_calls(
     max_output_tokens: int = 600,
     purpose: str | None = None,
     reasoning_effort: str | None = None,
+    model: str | None = None,
 ) -> list[ToolCall]:
     """One model call that answers with tool calls instead of text.
 
@@ -103,12 +104,17 @@ async def generate_tool_calls(
     of items of a tool loop (earlier ``function_call`` and
     ``function_call_output`` items included). Returns the ``function_call``
     items in order; ``[]`` when the model answered with text only.
+
+    ``model`` overrides ``settings.llm_model`` for this call only, so a caller
+    that needs a different model on the same provider (the Talker of
+    INTERVIA_INTERVIEW_AGENT_V2_SPEC §6.3) goes through this same door and keeps
+    its ``ai_call_logs`` row and Langfuse generation.
     """
     import json
 
     settings = get_settings()
     purpose = purpose or caller_purpose()
-    model = settings.llm_model
+    model = model or settings.llm_model
     input_text = input_items if isinstance(input_items, str) else json.dumps(input_items, ensure_ascii=False)
 
     generation = langfuse.Generation(
@@ -176,16 +182,18 @@ async def generate_text(
     purpose: str | None = None,
     reasoning_effort: str | None = None,
     json_schema: dict | None = None,
+    model: str | None = None,
 ) -> str:
     """One model call. Logged to ai_call_logs (purpose defaults to the caller).
 
     ``reasoning_effort`` ("none", "low"…) and ``json_schema`` (Structured
     Outputs: ``{"name": …, "schema": …}``) are optional; a model or endpoint that
     refuses either is called again without it, and later calls skip it.
+    ``model`` overrides ``settings.llm_model`` for this call only.
     """
     settings = get_settings()
     purpose = purpose or caller_purpose()
-    model = settings.llm_model
+    model = model or settings.llm_model
 
     # Langfuse generation inside the current interview turn or grading run (no-op otherwise).
     generation = langfuse.Generation(
