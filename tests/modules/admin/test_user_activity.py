@@ -163,9 +163,11 @@ def test_settings_view_never_returns_secrets(monkeypatch) -> None:
         "default": 0,
         "changed": True,
     }
-    # Fixed in code: no variable, never "changed".
-    assert groups["speech"]["probeMaxWords"]["env"] is None
-    assert groups["speech"]["probeMaxWords"]["changed"] is False
+    # Fixed in code: no variable, never "changed". 3bf4591 replaced the
+    # probeMaxWords number with the policy line that reports there is no cap.
+    assert groups["speech"]["utteranceLengthPolicy"]["env"] is None
+    assert groups["speech"]["utteranceLengthPolicy"]["changed"] is False
+    assert "no fixed" in groups["speech"]["utteranceLengthPolicy"]["value"]
 
 
 def test_summary_falls_back_to_the_listed_sessions() -> None:

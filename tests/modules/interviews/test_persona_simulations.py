@@ -299,7 +299,8 @@ class TestPersonaBasedSimulations(unittest.IsolatedAsyncioTestCase):
     # =========================================================================
     # PERSONA 4: THE JAILBREAKER (Tấn công Prompt Injection)
     # =========================================================================
-    @pytest.mark.xfail(strict=True, reason="REAL: guard rejection raises out of the turn instead of a safe fallback (agent plan Pha 1 guards_out); tests/TRIAGE_2026-11-24.md")
+    # e746feb (recover failed turns) gave guards_out a safe fallback instead of
+    # raising out of the turn; the 2026-11-24 triage xfail no longer applies.
     async def test_persona_4_the_jailbreaker_prompt_injection_containment(self):
         """Kịch bản 4: Tấn công Prompt Injection -> Guardrail ngăn lộ barem, không bypass điểm số."""
         mock_llm = MockLLM(

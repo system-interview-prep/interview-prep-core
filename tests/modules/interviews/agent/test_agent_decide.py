@@ -55,11 +55,22 @@ def test_decide_prompt_distinguishes_repeat_from_incomplete_answer(is_vi: bool) 
 
 
 @pytest.mark.parametrize("is_vi", [True, False])
-def test_warmup_decide_prompt_caps_followup_length(is_vi: bool) -> None:
+def test_warmup_followup_asks_for_a_complete_utterance(is_vi: bool) -> None:
+    """3bf4591 removed the fixed word cap; the completeness demand is the contract.
+
+    The follow-up used to be capped at 32 words. Rigid dialogue limits were
+    dropped deliberately, so what the prompt must still guarantee is that the
+    model writes a whole candidate-facing line, not a note or a fragment.
+    """
     prompt = decide_prompt(is_vi).casefold()
-    assert "32" in prompt
-    if not is_vi:
-        assert "at most 32 words" in prompt
+    assert "continue_warm_up".casefold() in prompt
+    assert "follow_up_text" in prompt
+    if is_vi:
+        assert "lời hoàn chỉnh gửi nguyên văn" in prompt
+    else:
+        assert "write the complete line to send verbatim" in prompt
+    # No fixed numeric cap is prescribed any more.
+    assert "32" not in prompt
 
 
 def test_action_tool_descriptions_reinforce_repeat_and_warmup_guidance() -> None:
@@ -70,7 +81,10 @@ def test_action_tool_descriptions_reinforce_repeat_and_warmup_guidance() -> None
     assert "không lặp câu mở đầu" in warmup
     schema = TOOLS["continue_warm_up"]["parameters"]
     assert "follow_up_text" in schema["required"]
-    assert schema["properties"]["follow_up_text"]["maxLength"] == 280
+    # 3bf4591 dropped the 280-character cap with the other rigid dialogue
+    # limits; the field must still be a free-text whole utterance.
+    assert schema["properties"]["follow_up_text"]["type"] == "string"
+    assert "maxLength" not in schema["properties"]["follow_up_text"]
 
 
 def test_t1_2_3_the_decide_input_carries_no_rubric_score_or_other_session(ctx_factory) -> None:

@@ -22,6 +22,38 @@ from src.modules.interviews.core.contracts.interview import (
 )
 
 
+def _chat_message_literals(sql: str) -> tuple[str, int] | None:
+    """``('ACKNOWLEDGMENT', 1, now())`` → ``("ACKNOWLEDGMENT", 1)``.
+
+    ``start_chat_session`` writes the opening message with its message_type and
+    sequence inlined in the statement rather than bound as parameters.
+    """
+    import re
+
+    match = re.search(r"'([A-Z_]+)',\s*(\d+),\s*now\(\)", sql)
+    return (match.group(1), int(match.group(2))) if match else None
+
+
+def _literal_message_type(sql: str) -> str:
+    found = _chat_message_literals(sql)
+    if found:
+        return found[0]
+    if "GREETING" in sql:
+        return "GREETING"
+    if "MAIN_QUESTION" in sql:
+        return "MAIN_QUESTION"
+    if "WRAP_UP" in sql:
+        return "WRAP_UP"
+    return "CANDIDATE_ANSWER"
+
+
+def _literal_sequence(sql: str) -> int:
+    found = _chat_message_literals(sql)
+    if found:
+        return found[1]
+    return 1 if "'MAIN_QUESTION', 1" in sql or "GREETING" in sql else 2
+
+
 class MockResult:
     def __init__(self, rows: list[dict[str, Any]]):
         self._rows = rows
@@ -199,8 +231,12 @@ class MockChatSession:
                     else params.get("metadata", {})
                 ),
                 "turn_id": params.get("turn_id"),
-                "message_type": params.get("msg_type") or ("GREETING" if "GREETING" in sql else "MAIN_QUESTION" if "MAIN_QUESTION" in sql else "WRAP_UP" if "WRAP_UP" in sql else "CANDIDATE_ANSWER"),
-                "sequence": params["seq"] if "seq" in params else (1 if "'MAIN_QUESTION', 1" in sql or "GREETING" in sql else 2),
+                # 1f8f0f5 made the opening its own INSERT, which writes its
+                # message_type and sequence as SQL literals ('ACKNOWLEDGMENT', 1)
+                # instead of binding :msg_type/:seq. Read the literals when the
+                # statement has them so the mock keeps the real sequence.
+                "message_type": params.get("msg_type") or _literal_message_type(sql),
+                "sequence": params["seq"] if "seq" in params else _literal_sequence(sql),
                 "client_message_id": params.get("cid"),
                 "created_at": datetime.now(UTC),
             }
@@ -290,15 +326,18 @@ async def test_inv1_and_inv5_start_chat_session_success(mock_session_data):
     runtime = await start_chat_session(db, session_row)
     assert runtime["sessionId"] == "sess-123"
     assert runtime["sessionStatus"] == "OPEN"
-    assert len(runtime["messages"]) == 1
+    # 1f8f0f5: build_opening no longer glues the first question onto the
+    # greeting; the opening and the question are two separate messages.
+    assert len(runtime["messages"]) == 2
+    assert "người phỏng vấn" in runtime["messages"][0]["content"]
 
     # Check Sequence Monotonicity
-    assert runtime["messages"][0]["sequence"] == 1
-    assert runtime["messages"][0]["messageType"] == "MAIN_QUESTION"
+    assert [m["sequence"] for m in runtime["messages"]] == [1, 2]
+    assert runtime["messages"][1]["messageType"] == "MAIN_QUESTION"
 
     # Check Provenance
-    assert runtime["messages"][0]["turnId"] == "turn-1"
-    assert "RAG architecture" in runtime["messages"][0]["content"]
+    assert runtime["messages"][1]["turnId"] == "turn-1"
+    assert "RAG architecture" in runtime["messages"][1]["content"]
     assert db.turns["turn-1"]["status"] == "ASKED"
 
 
@@ -379,8 +418,10 @@ async def test_inv2_idempotency_duplicate_client_message(mock_session_data):
             client_message_id="msg-client-duplicate",
             content="Tôi dùng FAISS index và rerank bằng cross-encoder.",
         )
-        assert res1["userMessage"]["sequence"] == 2
-        assert res1["assistantResponse"]["sequence"] == 3
+        # The opening and the first question are two messages (1f8f0f5), so the
+        # candidate's first answer is the third.
+        assert res1["userMessage"]["sequence"] == 3
+        assert res1["assistantResponse"]["sequence"] == 4
 
         # Duplicate call with exact same client_message_id
         res2 = await process_candidate_message(
@@ -390,9 +431,9 @@ async def test_inv2_idempotency_duplicate_client_message(mock_session_data):
             content="Tôi dùng FAISS index và rerank bằng cross-encoder.",
         )
         # Should return existing messages, no new messages created
-        assert res2["userMessage"]["sequence"] == 2
-        assert res2["assistantResponse"]["sequence"] == 3
-        assert len(db.messages) == 3
+        assert res2["userMessage"]["sequence"] == 3
+        assert res2["assistantResponse"]["sequence"] == 4
+        assert len(db.messages) == 4
 
 
 @pytest.mark.asyncio
@@ -441,7 +482,8 @@ async def test_failed_unanswered_message_can_be_retried_without_duplicate_candid
     assert candidate_rows[0]["metadata"]["processingStatus"] == "PROCESSING"
 
 
-@pytest.mark.xfail(strict=True, reason="REAL: guard rejection raises out of the turn instead of a safe fallback (agent plan Pha 1 guards_out); tests/TRIAGE_2026-11-24.md")
+# e746feb (recover failed turns) gave guards_out a safe fallback instead of
+# raising out of the turn; the 2026-11-24 triage xfail no longer applies.
 @pytest.mark.asyncio
 async def test_voice_interruption_telemetry_is_persisted(mock_session_data):
     session_row, turns = mock_session_data
@@ -515,8 +557,11 @@ async def test_inv3_probe_budget_cap(mock_session_data):
 def test_probe_post_validator():
     # Valid probe
     assert _validate_probe_text("Bạn có thể giải thích rõ hơn về cách chia chunk không?") is True
-    # Too long
-    assert _validate_probe_text("A" * 300) is False
+    # 3bf4591 dropped the 280-character cap with the other rigid dialogue
+    # limits: length alone no longer rejects a follow-up.
+    assert _validate_probe_text("A" * 300) is True
+    # Empty is still rejected.
+    assert _validate_probe_text("   ") is False
     # Score / rubric leak prohibited
     assert _validate_probe_text("Câu này bạn đạt 8/10 điểm, tiêu chí tiếp theo là gì?") is False
     assert _validate_probe_text("Theo rubric đánh giá của chúng tôi...") is False
@@ -2456,7 +2501,8 @@ async def test_regression_retry_without_reply_resumes_same_event():
     assert len([m for m in stale_db.messages if m["role"] == "user"]) == 1
 
 
-@pytest.mark.xfail(strict=True, reason="REAL: guard rejection raises out of the turn instead of a safe fallback (agent plan Pha 1 guards_out); tests/TRIAGE_2026-11-24.md")
+# e746feb (recover failed turns) gave guards_out a safe fallback instead of
+# raising out of the turn; the 2026-11-24 triage xfail no longer applies.
 @pytest.mark.asyncio
 async def test_regression_reply_is_not_written_after_session_closed_mid_llm():
     """H2: ending the session while the reply is generated must not reopen or overwrite it."""
@@ -2714,7 +2760,8 @@ async def test_closing_qna_stops_when_its_time_budget_is_spent():
     assert res["endReason"] == "COMPLETED"
 
 
-@pytest.mark.xfail(strict=True, reason="STALE: expectation predates 75d3520 / warm-up redesign; re-examined at Pha 1 snapshot; tests/TRIAGE_2026-11-24.md")
+# The warm-up redesign (37ee1f4, 8576e4e) made this pass again; the
+# 2026-11-24 triage xfail no longer applies.
 @pytest.mark.asyncio
 async def test_closing_qna_answers_only_from_the_job_posting():
     """Answers used to describe a fictional company ("INTERVIA") with an invented stack."""
@@ -2772,13 +2819,17 @@ async def test_pinned_question_preserves_frozen_question_text(monkeypatch):
                                     "questionText": "Chào bạn, mình là người phỏng vấn. Bạn giới thiệu ngắn nhé?"}}
     technical = {"question_snapshot": {"stage": "DEEP_DIVE", "questionText": "Ở dự án X, bạn làm phần nào?"}}
 
-    # An older snapshot that still greets.
+    # An older snapshot that still greets. 1f8f0f5 removed
+    # ``_personalize_candidate_address`` with the legacy speech mode, so only
+    # the greeting is personalised; "Bạn" inside the question stays.
     assert await chat_runtime._displayed_question_text(None, session, warmup) == (
-        "Chào Hiền, mình là người phỏng vấn. Hiền giới thiệu ngắn nhé?"
+        "Chào Hiền, mình là người phỏng vấn. Bạn giới thiệu ngắn nhé?"
     )
+    # A snapshot without a greeting is shown verbatim: there is no longer any
+    # pass that swaps "bạn" for the call name inside a question.
     new_warmup = {"question_snapshot": {"stableKey": "warmup-intro", "stage": "WARM_UP",
                                         "questionText": "Bạn giới thiệu ngắn về mình nhé?"}}
-    assert await chat_runtime._displayed_question_text(None, session, new_warmup) == "Hiền giới thiệu ngắn về mình nhé?"
+    assert await chat_runtime._displayed_question_text(None, session, new_warmup) == "Bạn giới thiệu ngắn về mình nhé?"
     assert await chat_runtime._displayed_question_text(None, session, technical) == technical["question_snapshot"]["questionText"]
     english = {"id": "s1", "locale": "en-US"}
     assert await chat_runtime._displayed_question_text(None, english, technical) == technical["question_snapshot"]["questionText"]

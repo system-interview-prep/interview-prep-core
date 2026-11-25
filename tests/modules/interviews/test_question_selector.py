@@ -8,6 +8,17 @@ from src.modules.interviews.agent.planner.question_selector import (
 )
 
 
+def frozen_contract() -> dict:
+    """The Admin contract snapshot a READY plan must carry (acf4ccf).
+
+    ``question_selector`` validates ``plan_payload["blueprint"]["policy"]``
+    before it asks the Planner Agent to select, and raises when it is absent.
+    """
+    from src.modules.interviews.core.session_policy.blueprint import default_blueprint
+
+    return {"policy": default_blueprint().to_payload()}
+
+
 def test_generated_project_question_must_have_one_focus():
     assert _is_single_focus_question("Trong dự án HamTech, bạn trực tiếp phụ trách phần nào?")
     assert not _is_single_focus_question(
@@ -218,6 +229,7 @@ async def test_tc_pack_02_insufficient_floor_fail_closed():
         "status": "READY",
         "plan_payload": {
             "policyVersion": "interview-planner-v2-dynamic",
+            "blueprint": frozen_contract(),
             "targets": [
                 {
                     "conceptId": "concept-kafka",
@@ -811,6 +823,7 @@ async def test_tc_pack_09_cross_target_allocation_correctness():
         "status": "READY",
         "plan_payload": {
             "policyVersion": "interview-planner-v2-dynamic",
+            "blueprint": frozen_contract(),
             "targets": [
                 {
                     "conceptId": "target-t1",
@@ -971,6 +984,7 @@ async def test_tc_pack_10_unsatisfiable_global_assignment():
         "status": "READY",
         "plan_payload": {
             "policyVersion": "interview-planner-v2-dynamic",
+            "blueprint": frozen_contract(),
             "targets": [
                 {
                     "conceptId": "target-t1",

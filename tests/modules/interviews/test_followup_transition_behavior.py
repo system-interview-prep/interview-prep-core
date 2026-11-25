@@ -331,19 +331,19 @@ async def test_warmup_followup_opens_with_a_short_receipt() -> None:
     )
 
     assert result.action == TurnAction.CLARIFY
-    # Một lượt nói liền mạch, không tách đoạn như câu ghi nhận giữa buổi.
-    assert result.message_text == "Ừm, mình hiểu rồi. Bạn đang quan tâm vị trí này vì điều gì vậy?"
+    # ac91bd3 removed scripted speech rewriting: the evaluator's probe_question
+    # is the whole utterance now, and the acknowledgement field is tracking-only,
+    # so code no longer prepends a receipt to it.
+    assert result.message_text == "Bạn đang quan tâm vị trí này vì điều gì vậy?"
     assert "\n" not in result.message_text
-    assert result.metadata["speech_plan"] == [
-        {"act": "ACK", "source": "warmup_receipt"},
-        {"act": "QUESTION", "source": "llm_evaluation"},
-    ]
+    assert result.metadata["speech_plan"] == [{"act": "QUESTION", "source": "llm_evaluation"}]
 
 
 @pytest.mark.asyncio
 async def test_warmup_receipt_that_repeats_the_answer_is_dropped() -> None:
-    # Nhắc lại lời ứng viên ở phần mở đầu nghe như đọc checklist; lượt vẫn chạy,
-    # chỉ còn lại câu hỏi.
+    # Nhắc lại lời ứng viên ở phần mở đầu nghe như đọc checklist. Sau ac91bd3
+    # code không còn ghép câu tiếp nhận nào vào lời thoại, kể cả khi model trả
+    # về acknowledgement lặp lại câu trả lời.
     llm = WarmupReceiptLLM("À, vậy là bạn đang học năm cuối.")
     engine = InterviewCoreEngine(llm_client=llm)
 
@@ -357,4 +357,5 @@ async def test_warmup_receipt_that_repeats_the_answer_is_dropped() -> None:
     )
 
     assert result.message_text == "Bạn đang quan tâm vị trí này vì điều gì vậy?"
-    assert result.metadata["ack_source"] == "warmup_receipt_rejected"
+    # No receipt step runs any more, so there is nothing to reject.
+    assert result.metadata["ack_source"] == "none"

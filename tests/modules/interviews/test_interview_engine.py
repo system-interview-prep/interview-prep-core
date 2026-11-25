@@ -131,7 +131,9 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(actual, expected)
         self.assertEqual(llm.evaluation_calls, 0)
 
-    @pytest.mark.xfail(strict=True, reason="STALE: expectation predates 75d3520 / warm-up redesign; re-examined at Pha 1 snapshot; tests/TRIAGE_2026-11-24.md")
+    # The warm-up redesign (37ee1f4, 8576e4e: advance directly after warm-up)
+    # made this pass again; the 2026-11-24 triage xfail was removed with the
+    # baseline repair.
     async def test_normal_transition_next_question(self):
         """1. Trả lời đạt và đủ ý -> Core chuyển ngay sang câu hỏi tiếp theo (NEXT_QUESTION)."""
         llm = MockLLM(eval_result={"score": 8.5, "is_sufficient": True, "acknowledgement": "Rất tốt."})
@@ -329,8 +331,12 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output.action, TurnAction.CLARIFY)
         self.assertEqual(output.message_text, probe)
 
-    async def test_no_probe_when_two_followups_have_already_been_used(self):
-        """Sau hai lượt hỏi phụ, câu trả lời thiếu vẫn phải khép câu và chuyển tiếp."""
+    async def test_insufficient_answer_still_probes_after_two_followups(self):
+        """3bf4591 bỏ trần hai lượt hỏi phụ: còn thiếu ý cốt lõi thì vẫn đào sâu.
+
+        Trước đây lượt thứ ba luôn bị ép chuyển câu bất kể câu trả lời. Giới hạn
+        cứng đó đã được gỡ; nhịp độ do pacing và quỹ thời gian quyết định.
+        """
         llm = MockLLM(eval_result={"score": 5.0, "is_sufficient": False, "acknowledgement": "Ghi nhận ý kiến."})
         engine = InterviewCoreEngine(llm_client=llm)
 
@@ -351,9 +357,9 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
 
         output = await engine.handle_turn(turn_input, session_state)
 
-        self.assertEqual(output.action, TurnAction.NEXT_QUESTION)
-        self.assertEqual(output.metadata.get("turn_in_question"), 0)
-        self.assertIn("Microservices", output.message_text)
+        self.assertEqual(output.action, TurnAction.PROBE)
+        # The probe stays inside the same question instead of advancing.
+        self.assertEqual(output.metadata.get("turn_in_question"), 3)
 
     async def test_low_score_and_insufficient_do_not_fast_fail_validation(self):
         """Low score/insufficiency in Validate may probe but cannot terminate the session."""
@@ -693,10 +699,24 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("thang điểm 10", output.message_text)
 
     async def test_coding_turn_triggers_tech_lead_probe_on_passed_tests(self):
-        """9. Ứng viên nộp giải pháp coding qua test -> Kích hoạt Tech Lead probe phản biện kiến trúc."""
+        """9. Ứng viên nộp giải pháp coding qua test -> Kích hoạt Tech Lead probe phản biện kiến trúc.
+
+        ac91bd3 bỏ heuristic cứng cho lượt coding (trước đây luôn gán
+        ``INSUFFICIENT`` và ``score 8.5`` khi test đạt, không gọi model). Nay
+        code diff và kết quả test được đưa vào prompt làm bằng chứng, còn phán
+        quyết là của evaluator; test phải kịch bản hoá phán quyết đó.
+        """
         # 25/10: naming Semaphore (in the rubric, never said by the candidate) gives the answer away.
         tech_lead_probe = "Vì sao bạn chọn asyncio.Lock cho critical section trong hàm này?"
         llm = MockLLM(
+            eval_result={
+                "intent": "ANSWER",
+                "sufficiency_status": "INSUFFICIENT",
+                "is_sufficient": False,
+                "missing_aspect": "Deep dive into implementation choices",
+                "acknowledgement": "Ok, test đã chạy qua.",
+                "score": 8.5,
+            },
             probe_text=tech_lead_probe,
         )
         engine = InterviewCoreEngine(llm_client=llm)

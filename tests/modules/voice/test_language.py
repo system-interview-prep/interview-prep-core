@@ -234,7 +234,9 @@ def test_notation_heard_in_the_20_10_sessions_is_read_as_words(monkeypatch) -> N
     assert speakable_text("Bạn nói don't repeat yourself.", locale="vi-VN") == (
         "Bạn nói don't repeat yourself."
     )
-    assert "(Not Found)" in speakable_text("HTTP 404 (Not Found).", locale="vi-VN")
+    # 1f8f0f5 removed the INTERVIEWER_SPEECH_V2 switch, so the Vietnamese
+    # detail pass always runs: brackets are never spoken aloud.
+    assert "(Not Found)" not in speakable_text("HTTP 404 (Not Found).", locale="vi-VN")
 
 
 def test_pronunciation_file_applies_to_speech_only() -> None:

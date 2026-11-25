@@ -10,11 +10,9 @@ from src.modules.interviews.adapters.voice.conversation.answer_window import (
     SHORT_ANSWER_WORDS,
     AnswerWindow,
     pick_processing_filler,
-    processing_filler,
     processing_fillers,
     silence_reprompt,
     turn_taking_tip,
-    without_leading_interjection,
 )
 
 
@@ -71,10 +69,13 @@ def test_processing_filler_is_opt_in_and_silent_by_default(monkeypatch) -> None:
     from src.modules.interviews.adapters.voice.conversation import answer_window, voice_phrases
     from src.modules.interviews.core.dialogue import phrases as script
 
-    lines = [processing_filler("vi-VN", i) for i in range(len(processing_fillers("vi-VN")))]
-    assert len(set(lines)) == len(lines) >= 3
-    assert processing_filler("vi-VN") == "Ừm, chờ mình một chút nhé."
-    assert processing_filler("en-US", 1) != processing_filler("en-US", 0)
+    # The index-based ``processing_filler`` helper went with the legacy speech
+    # mode (1f8f0f5); ``pick_processing_filler`` is the one picker left.
+    pool = processing_fillers("vi-VN")
+    assert len(set(pool)) == len(pool) >= 3
+    assert "Ừm, chờ mình một chút nhé." in pool
+    assert pick_processing_filler("vi-VN", "s:1") in pool
+    assert pick_processing_filler("en-US", "s:1") in processing_fillers("en-US")
     monkeypatch.delenv("VOICE_PROCESSING_FILLER_ENABLED", raising=False)
     assert not answer_window.processing_filler_enabled()
     monkeypatch.setenv("VOICE_PROCESSING_FILLER_ENABLED", "true")

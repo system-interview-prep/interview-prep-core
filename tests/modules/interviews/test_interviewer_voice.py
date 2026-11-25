@@ -100,8 +100,12 @@ async def test_evaluator_prompt_separates_grader_and_interviewer_roles() -> None
     assert "NHÂN VẬT VÀ VĂN PHONG" in prompt
     # The copied example "Ok, mình hiểu rồi." is gone; the ack must name a detail.
     assert "Ok, mình hiểu rồi." not in prompt
-    assert "khi phù hợp, một câu ngắn ghi nhận tự nhiên" in prompt
-    assert "không tóm tắt toàn bộ câu trả lời" in prompt
+    # ac91bd3 stopped splicing a scripted acknowledgement into the spoken line:
+    # the field is kept for quality tracking only.
+    assert "không được dựa vào đây để ghép thêm lời thoại" in prompt
+    # Role 2 must not speak like a grader; the "no full summary" wording went
+    # with the scripted acknowledgement in ac91bd3.
+    assert "KHÔNG dùng giọng chấm bài" in prompt
     # Recent lines are passed so the model does not repeat them.
     assert "Ok, bạn dùng Docker Compose là chính." in llm.user_contents[0]
 
@@ -138,7 +142,11 @@ def test_prompts_share_one_layout_and_ask_for_the_candidate_words() -> None:
     prompt = speech_prompt(is_vi=True, role="R", task="T", rules=("X",), examples=("E",), output="O")
     for head in ("# Vai trò", "# Giọng văn", "# Nhiệm vụ", "# Luật bắt buộc", "# Câu mẫu", "# Đầu ra"):
         assert head in prompt
-    assert "dùng đúng từ ứng viên đã dùng" in prompt
+    # 1f8f0f5 dropped the "reuse the candidate's own words" rule with the other
+    # scripted-speech constraints; the shared hard rules are what every spoken
+    # prompt must still carry.
+    assert "không nhắc điểm số, rubric hay tiêu chí đánh giá nội bộ" in prompt
+    assert "không bịa dữ kiện" in prompt
 
 
 class _PromptLLM:
@@ -175,8 +183,11 @@ async def test_turn_metadata_carries_the_speech_plan() -> None:
         CandidateTurnInput(session_id="sess-voice", turn_index=3, text_content=LONG_ANSWER), _state()
     )
     plan = output.metadata["speech_plan"]
-    assert [p["act"] for p in plan] == ["ACK", "TRANSITION", "QUESTION"]
-    assert plan[0]["source"] == "llm" and plan[2]["source"] == "pregenerated"
+    # ac91bd3 removed scripted speech rewriting: the turn no longer splices a
+    # separate ACK and TRANSITION beat in front of the question, so the plan is
+    # the one utterance that is actually spoken, with its provenance.
+    assert [p["act"] for p in plan] == ["QUESTION"]
+    assert plan[0]["source"] in {"pregenerated", "bank"}
 
 
 def test_closing_answer_names_only_what_the_posting_or_question_has() -> None:

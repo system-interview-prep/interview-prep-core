@@ -44,6 +44,17 @@ from src.seeds.question_bank_seed import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
+def frozen_contract() -> dict:
+    """The Admin contract snapshot a READY plan must carry (acf4ccf).
+
+    ``question_selector`` validates ``plan_payload["blueprint"]["policy"]``
+    before selecting and raises when it is absent.
+    """
+    from src.modules.interviews.core.session_policy.blueprint import default_blueprint
+
+    return {"policy": default_blueprint().to_payload()}
+
 def _candidate(**overrides: Any) -> _Candidate:
     rv_id = overrides.get("rubric_version_id", str(uuid.uuid4()))
     defaults: dict[str, Any] = {
@@ -300,7 +311,10 @@ class TestSelectorEligibilityRules:
 
         # Simulate plan row returned from DB
         plan_mappings = MagicMock()
-        plan_mappings.one_or_none.return_value = {"status": "READY", "plan_payload": {}}
+        plan_mappings.one_or_none.return_value = {
+            "status": "READY",
+            "plan_payload": {"blueprint": frozen_contract()},
+        }
         db.execute.return_value.mappings.return_value = plan_mappings
 
         # Simulate targets with 1 competency requiring 3 questions
@@ -324,7 +338,7 @@ class TestSelectorEligibilityRules:
             if "interview_session_plans" in q_str:
                 result.mappings.return_value.one_or_none.return_value = {
                     "status": "READY",
-                    "plan_payload": {},
+                    "plan_payload": {"blueprint": frozen_contract()},
                 }
             elif "session_competency_targets" in q_str:
                 result.mappings.return_value.all.return_value = [
@@ -536,7 +550,7 @@ class TestSelectorEligibilityRules:
             if "interview_session_plans" in q_str:
                 result.mappings.return_value.one_or_none.return_value = {
                     "status": "READY",
-                    "plan_payload": {},
+                    "plan_payload": {"blueprint": frozen_contract()},
                 }
             elif "session_competency_targets" in q_str:
                 result.mappings.return_value.all.return_value = [

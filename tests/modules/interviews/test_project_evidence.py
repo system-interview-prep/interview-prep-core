@@ -23,6 +23,27 @@ from src.modules.user_cvs.parsing.domain.artifacts import DocumentArtifacts
 from src.modules.user_cvs.parsing.domain.deterministic import ResumeDraft
 from src.modules.user_cvs.parsing.domain.source import EvidenceMapper, build_source_document
 from src.modules.user_cvs.parsing.domain.structured import ProjectExtractor
+
+
+def _scripted_project_evidence(arguments: dict):
+    """A ``generate_tool_calls`` stand-in that answers one submit_project_evidence call.
+
+    ``extract_project_evidences`` became an async Planner Agent call; tests must
+    script the proposal instead of relying on the removed regex extractor.
+    """
+
+    async def generate(**_kwargs):
+        return [
+            {
+                "name": "submit_project_evidence",
+                "arguments": arguments,
+                "call_id": "call-project-evidence",
+            }
+        ]
+
+    return generate
+
+
 # ============================================================================
 # 1. Multiple projects extraction & retention
 # ============================================================================
@@ -61,7 +82,8 @@ def test_cv_with_multiple_projects_retains_all():
 # 2. Project 2 preferred when more relevant to JD
 # ============================================================================
 
-def test_second_project_preferred_when_more_relevant_to_jd():
+@pytest.mark.asyncio
+async def test_second_project_preferred_when_more_relevant_to_jd():
     """Requirement 2: Project 2 is selected over Project 1 when Project 2 better matches JD."""
     cv_projects = [
         {
@@ -92,9 +114,36 @@ def test_second_project_preferred_when_more_relevant_to_jd():
         },
     ]
 
-    evidences = extract_project_evidences(
+    # The regex extractor is gone: the Planner Agent proposes claims and code
+    # accepts only those whose quote is an exact span of the CV project.
+    evidences = await extract_project_evidences(
         projects_data=cv_projects,
         job_requirements=jd_requirements,
+        generate=_scripted_project_evidence(
+            {
+                "projects": [
+                    {
+                        "projectId": "proj-1",
+                        "technologies": [
+                            {"value": "React", "quote": "Tech: React, Node.js, Tailwind CSS, PostgreSQL."},
+                            {"value": "PostgreSQL", "quote": "Tech: React, Node.js, Tailwind CSS, PostgreSQL."},
+                        ],
+                        "relevantRequirementIds": [],
+                    },
+                    {
+                        "projectId": "proj-2",
+                        "role": {"value": "Core Builder", "quote": "Role: Core Builder."},
+                        "technologies": [
+                            {"value": "Python", "quote": "Tech: Python, FastAPI, LangGraph, Gemini, LLM, RAG."},
+                            {"value": "FastAPI", "quote": "Tech: Python, FastAPI, LangGraph, Gemini, LLM, RAG."},
+                            {"value": "RAG", "quote": "Tech: Python, FastAPI, LangGraph, Gemini, LLM, RAG."},
+                        ],
+                        "outcomes": [{"value": "90+ users", "quote": "Impact: 90+ users."}],
+                        "relevantRequirementIds": ["req-ai-llm", "req-python"],
+                    },
+                ]
+            }
+        ),
     )
 
     assert len(evidences) == 2
@@ -246,7 +295,8 @@ def test_validation_question_is_one_short_spoken_question():
 # 6. No repeated project validation in runtime
 # ============================================================================
 
-@pytest.mark.xfail(strict=True, reason="STALE: expectation predates 75d3520 / warm-up redesign; re-examined at Pha 1 snapshot; tests/TRIAGE_2026-11-24.md")
+# The warm-up redesign (37ee1f4, 8576e4e) made this pass again; the triage
+# xfail from 2026-11-24 was removed when the baseline was repaired.
 @pytest.mark.asyncio
 async def test_no_repeated_project_validation_in_runtime():
     """Requirement 6: Once Turn 1 (project validation) is completed, it is never asked again."""
@@ -350,17 +400,31 @@ def test_project_validation_preserves_lifecycle_and_stage_order():
 # 8. Single and zero project backward compatibility
 # ============================================================================
 
-def test_single_and_zero_project_backward_compatibility():
+@pytest.mark.asyncio
+async def test_single_and_zero_project_backward_compatibility():
     """Requirement 8: Single-project CV and zero-project CV behave safely without errors."""
     # Single project
     single_list = [{"projectId": "p1", "name": "Only Project", "description": "Single project desc"}]
-    evs_single = extract_project_evidences(single_list)
+    evs_single = await extract_project_evidences(
+        single_list,
+        generate=_scripted_project_evidence(
+            {
+                "projects": [
+                    {
+                        "projectId": "p1",
+                        "problemDomain": {"value": "Single project", "quote": "Single project desc"},
+                        "relevantRequirementIds": [],
+                    }
+                ]
+            }
+        ),
+    )
     assert len(evs_single) == 1
     selected_single = select_best_project(evs_single)
     assert selected_single is not None
     assert selected_single.name == "Only Project"
 
-    # Zero projects
-    evs_empty = extract_project_evidences([])
+    # Zero projects: short-circuits before any model call.
+    evs_empty = await extract_project_evidences([])
     assert evs_empty == []
     assert select_best_project(evs_empty) is None

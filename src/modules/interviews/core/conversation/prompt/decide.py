@@ -53,7 +53,9 @@ def decide_prompt(is_vi: bool) -> str:
         "# Choose the action that fits the candidate's message\n"
         "- Choose `repeat_question` only when the candidate explicitly says they could not hear the question or asks you to repeat it. This action repeats the exact prompt and does not address their answer.\n"
         "- Do not choose `repeat_question` just because an answer is short, incomplete, a greeting, or an acknowledgment such as yes/okay. Those are not requests to repeat.\n"
-        "- In WARM_UP, when the introduction is incomplete, choose `continue_warm_up` and write the complete candidate-facing utterance in `follow_up_text`. Read the accumulated answer and recent interviewer lines; do not ask again about a point already asked or answered, and do not repeat the opening question. Acknowledge useful details and ask related missing points. Write the complete line to send verbatim.\n\n"
+        # "points" is in PROHIBITED_LEAK_PATTERNS (see this module's docstring);
+        # the wording below stays clear of every pattern on that list.
+        "- In WARM_UP, when the introduction is incomplete, choose `continue_warm_up` and write the complete candidate-facing utterance in `follow_up_text`. Read the accumulated answer and recent interviewer lines; do not ask again about something already asked or answered, and do not repeat the original opening question. Acknowledge a useful detail and ask about the related details still missing. Write the complete line to send verbatim.\n\n"
         "# Soft pacing rules (pacing.pace)\n"
         "- behind: prefer move_to_next_question; acknowledge_and_probe only when the missing point is core to the "
         "question, and say so in rationale.\n"

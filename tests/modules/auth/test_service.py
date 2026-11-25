@@ -183,6 +183,12 @@ async def test_repository_creates_user_and_initial_wallet_in_same_transaction() 
     await repository.commit()
 
     assert "INSERT INTO users" in session.calls[0][0]
-    assert "INSERT INTO user_credits" in session.calls[1][0]
-    assert session.calls[1][1]["user_id"] == session.calls[0][1]["id"]
+    user_id = session.calls[0][1]["id"]
+    # f422ccc inserts candidate_settings before the wallet, so match on the
+    # statement rather than a fixed position.
+    credits = next(call for call in session.calls if "INSERT INTO user_credits" in call[0])
+    settings = next(call for call in session.calls if "INSERT INTO candidate_settings" in call[0])
+    assert credits[1]["user_id"] == user_id
+    assert settings[1]["user_id"] == user_id
+    # One transaction: every insert happens before the single commit.
     assert session.commits == 1

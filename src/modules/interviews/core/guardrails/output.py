@@ -33,7 +33,24 @@ ACK_EVALUATIVE_PATTERNS: tuple[str, ...] = (
     r"great (job|point|work)|"
     r"nice (one|job|answer))(?!\w)",
 )
+# Ch\u1ec9 d\u00f9ng cho c\u00e2u ghi nh\u1eadn: t\u00ednh t\u1eeb k\u1ebft lu\u1eadn ch\u1ea5t l\u01b0\u1ee3ng ("an to\u00e0n", "r\u00f5 r\u1ec7t") v\u00e0
+# ki\u1ec3u khen n\u0103ng l\u1ef1c "b\u1ea1n \u2026 \u0111\u01b0\u1ee3c". \u0110o v\u00f2ng 4 cho th\u1ea5y c\u00e2u n\u00f3i v\u1ec1 "m\u1ee5c \u0111\u00edch, k\u1ebft
+# qu\u1ea3" d\u1ec5 tr\u01b0\u1ee3t sang c\u00e1c t\u1eeb n\u00e0y. Kh\u00f4ng \u00e1p cho c\u00e2u h\u1ecfi ("l\u01b0u m\u1eadt kh\u1ea9u an to\u00e0n th\u1ebf
+# n\u00e0o?" l\u00e0 c\u00e2u h\u1ecfi h\u1ee3p l\u1ec7).
+#
+# ac91bd3 t\u00e1ch guardrails sang module n\u00e0y nh\u01b0ng ch\u1ec9 gi\u1eef l\u1ea1i hai pattern h\u1eb9p
+# neo theo ch\u1ee7 ng\u1eef, n\u00ean m\u1ecdi c\u00e2u khen trong
+# ``test_praise_and_verdicts_in_acknowledgements_are_rejected`` l\u1ecdt qua. B\u1ed1n
+# pattern r\u1ed9ng d\u01b0\u1edbi \u0111\u00e2y \u0111\u01b0\u1ee3c kh\u00f4i ph\u1ee5c t\u1eeb ``core/dialogue/policy.py`` @ 4baa855.
 ACK_JUDGMENT_PATTERNS: tuple[str, ...] = (
+    r"\b(an to\u00e0n|r\u00f5 r\u1ec7t|hi\u1ec7u qu\u1ea3|\u1ed5n \u0111\u1ecbnh|h\u1ee3p l\u00fd|ch\u1eb7t ch\u1ebd|b\u00e0i b\u1ea3n|xuy\u00ean su\u1ed1t|\u0111\u1ea7y \u0111\u1ee7|t\u1ed1i \u01b0u|chuy\u00ean nghi\u1ec7p|"
+    r"th\u00f4ng minh|g\u1ecdn g\u00e0ng|m\u1ea1nh m\u1ebd|r\u1ea5t r\u00f5|kh\u00e1 r\u00f5|r\u00f5 r\u00e0ng|chu\u1ea9n)\b",
+    r"\bb\u1ea1n\b(?:\s+\S+){0,4}?\s+\u0111\u01b0\u1ee3c\b",
+    r"\b(secure|efficient|effective|solid|robust|clean|smart|thorough|clearly|well[- ]designed)\b",
+    # 25/10: praise the first lists let through ("h\u01b0\u1edbng n\u00e0y kh\u00e1 \u1ed5n \u0111\u1ea5y", "b\u1ea1n n\u1eafm v\u1ea5n \u0111\u1ec1 kh\u00e1 ch\u1eafc",
+    # "nghe r\u1ea5t hay", "b\u1ea1n l\u00e0m t\u1ed1t", "m\u00ecnh th\u00edch c\u00e1ch n\u00e0y", "Nice"). "hay" alone also means "or".
+    r"(?<!\w)(\u1ed5n(?!\s*\u0111\u1ecbnh)|kh\u00e1 ch\u1eafc|n\u1eafm ch\u1eafc|ch\u1eafc tay|thuy\u1ebft ph\u1ee5c|l\u00e0m t\u1ed1t|kh\u00e1 t\u1ed1t|t\u1ed1t (\u0111\u1ea5y|\u0111\u00f3|r\u1ed3i)|"
+    r"(r\u1ea5t|kh\u00e1|nghe|th\u1eadt|c\u0169ng) hay|hay (\u0111\u1ea5y|\u0111\u00f3|gh\u00ea)|th\u00edch c\u00e1ch|nice|good|great|cool|awesome|amazing)(?!\w)",
     r"\b(candidate|your answer|your approach|this solution)\b.{0,40}\b(great|excellent|effective|robust|solid|well[- ]designed)\b",
     r"\b(b\u1ea1n|c\u00e1ch l\u00e0m|h\u01b0\u1edbng \u0111i|gi\u1ea3i ph\u00e1p)\b.{0,40}\b(l\u00e0m t\u1ed1t|kh\u00e1 t\u1ed1t|r\u1ea5t t\u1ed1t|hi\u1ec7u qu\u1ea3|t\u1ed1i \u01b0u|thuy\u1ebft ph\u1ee5c)\b",
 )

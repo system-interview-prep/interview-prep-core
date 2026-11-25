@@ -60,6 +60,20 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 @pytest.fixture(autouse=True)
+def _interview_agent_mode_from_code_not_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A test must not inherit the developer's ``INTERVIEW_AGENT_MODE``.
+
+    ``adapters/voice/runtime/livekit_agent.py`` calls ``load_dotenv`` at import
+    time, so as soon as any test imports the LiveKit worker the project ``.env``
+    lands in ``os.environ`` for the rest of the session. With
+    ``INTERVIEW_AGENT_MODE=live`` there, ``agent_mode()`` stopped returning the
+    ``rule`` default and ``test_t2_1_5_the_record_has_every_field_and_a_reason``
+    failed only in a full run. Tests that exercise a mode set it themselves.
+    """
+    monkeypatch.delenv("INTERVIEW_AGENT_MODE", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_live_interview_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """The interview facade (``src.modules.ai.facade``) must never reach the
     provider from a test either. On 2026-11-24 ``test_closing_reverse_qna_flow``

@@ -18,13 +18,17 @@ class CapturingLLM:
         return {"intent": "ANSWER", "sufficiency_status": "SUFFICIENT", "acknowledgement": "Ok.", "score": 7}
 
 
-@pytest.mark.asyncio
-async def test_stage_change_has_no_filler_sentence() -> None:
+def test_the_engine_no_longer_splices_speech_around_a_question() -> None:
+    """ac91bd3 removed scripted speech rewriting.
+
+    ``_synthesize_interviewer_speech`` used to glue an acknowledgement, a
+    transition and the question into one string with blank lines between them.
+    The model now writes the whole utterance, so no such assembler may come
+    back: a reintroduced one would put code-written filler in front of every
+    question again.
+    """
     engine = InterviewCoreEngine(llm_client=CapturingLLM())
-    speech = await engine._synthesize_interviewer_speech(
-        "Ok, mình hiểu rồi.", "WHERE khác HAVING thế nào?", is_stage_transition=True, is_vi=True
-    )
-    assert speech == "Ok, mình hiểu rồi.\n\nWHERE khác HAVING thế nào?"
+    assert not hasattr(engine, "_synthesize_interviewer_speech")
 
 
 @pytest.mark.asyncio
