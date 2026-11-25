@@ -11,10 +11,10 @@ from time import perf_counter
 from livekit.agents import Agent, AgentSession, stt
 
 from ..config.tuning import voice_tuning
-from ..speech.language import normalize_transcript_for_locale
 from .recognition import create_stt, recognition_language, recognition_options, recognition_room_options
 from .stt_provider import stt_provider_settings
 from .transcript_correction import correct_technical_transcript
+from .transcript_quality import process_transcript
 
 logger = logging.getLogger(__name__)
 TOPIC = "intervia.stt-test"
@@ -114,9 +114,20 @@ async def run_stt_test(ctx, client) -> None:
                         if event.alternatives and event.alternatives[0].text.strip():
                             raw = event.alternatives[0].text
                             final = event.type == stt.SpeechEventType.FINAL_TRANSCRIPT
-                            text = normalize_transcript_for_locale(
-                                raw, locale=locale, context=context, is_final=final
+                            confidence = (
+                                None
+                                if settings.provider == "qwen"
+                                else event.alternatives[0].confidence
                             )
+                            processed = process_transcript(
+                                raw,
+                                confidence=confidence,
+                                locale=locale,
+                                context=context,
+                                provider=settings.provider,
+                                is_final=final,
+                            )
+                            text = processed.text
                             if final:
                                 raw_finals.append(raw)
                                 finals.append(text)
@@ -137,11 +148,17 @@ async def run_stt_test(ctx, client) -> None:
                                 ],
                                 audio_received_ms=round(audio_seconds * 1000),
                                 audio_frame_sequence=frame_sequence,
-                                confidence=None
-                                if settings.provider == "qwen"
-                                else event.alternatives[0].confidence,
+                                confidence=processed.quality.confidence,
+                                quality_accepted=processed.quality.accepted if final else None,
+                                quality_reason=processed.quality.reason if final else None,
+                                quality_word_count=processed.quality.word_count if final else None,
                             )
-                            await publish({"type": "final" if final else "interim", "text": text})
+                            await publish({
+                                "type": "final" if final else "interim",
+                                "text": text,
+                                "qualityAccepted": processed.quality.accepted if final else None,
+                                "qualityReason": processed.quality.reason if final else None,
+                            })
                     yield event
                 await feeder
             except Exception:

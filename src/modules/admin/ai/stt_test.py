@@ -16,11 +16,9 @@ from pydantic import BaseModel, Field
 
 from src.core.config import get_settings
 from src.core.trace_logging import trace_event
-from src.modules.interviews.adapters.voice.speech.language import (
-    normalize_transcript_for_locale,
-)
 from src.modules.interviews.adapters.voice.stt.stt_provider import stt_provider_settings
 from src.modules.interviews.adapters.voice.stt.transcript_correction import correct_technical_transcript
+from src.modules.interviews.adapters.voice.stt.transcript_quality import process_transcript
 
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
 
@@ -45,6 +43,7 @@ class SttTestTrace:
         self.interim_count = 0
         self.raw_finals: list[str] = []
         self.finals: list[str] = []
+        self.final_quality = []
         self.finished = False
         settings = get_settings()
         self.enabled = settings.trace_logs_enabled
@@ -81,9 +80,15 @@ class SttTestTrace:
         self.emit("stt_test_input_ended", reason=reason, audio_received_ms=round(self.audio_samples / 16))
 
     def transcript(self, raw: str, *, final: bool, confidence: float | None = None) -> dict:
-        text = normalize_transcript_for_locale(
-            raw, locale=self.locale, context=self.options.context, is_final=final
+        processed = process_transcript(
+            raw,
+            confidence=confidence,
+            locale=self.locale,
+            context=self.options.context,
+            provider=self.provider,
+            is_final=final,
         )
+        text = processed.text
         decisions = correct_technical_transcript(
             raw, locale=self.locale, context=self.options.context, is_final=final
         ).decisions
@@ -95,6 +100,7 @@ class SttTestTrace:
                 self.first_final_ms = self.elapsed()
             self.raw_finals.append(raw)
             self.finals.append(text)
+            self.final_quality.append(processed.quality)
         else:
             self.interim_count += 1
         self.emit(
@@ -105,7 +111,10 @@ class SttTestTrace:
             text=text,
             changed=raw != text,
             decisions=[asdict(item) for item in decisions],
-            confidence=None if self.provider == "qwen" else confidence,
+            confidence=processed.quality.confidence,
+            quality_accepted=processed.quality.accepted if final else None,
+            quality_reason=processed.quality.reason if final else None,
+            quality_word_count=processed.quality.word_count if final else None,
             audio_received_ms=round(self.audio_samples / 16),
             after_last_audio_ms=round((now - self.last_audio_at) * 1000) if self.last_audio_at else None,
             speech_end_to_result_ms=(
@@ -117,7 +126,13 @@ class SttTestTrace:
         )
         if final:
             self.speech_end_at = None
-        return {"type": "final" if final else "interim", "text": text, "testId": self.test_id}
+        return {
+            "type": "final" if final else "interim",
+            "text": text,
+            "testId": self.test_id,
+            "qualityAccepted": processed.quality.accepted if final else None,
+            "qualityReason": processed.quality.reason if final else None,
+        }
 
     def finish(self, status: str) -> None:
         if self.finished:
@@ -239,6 +254,11 @@ async def transcribe_file(audio: UploadFile, options: SttTestOptions) -> dict:
         trace.finish(status)
     return {
         "text": " ".join(trace.finals),
+        "qualityAccepted": bool(trace.final_quality) and all(item.accepted for item in trace.final_quality),
+        "qualityReason": next(
+            (item.reason for item in trace.final_quality if not item.accepted),
+            trace.final_quality[-1].reason if trace.final_quality else "empty",
+        ),
         "elapsedMs": trace.elapsed(),
         "provider": settings.provider,
         "model": settings.model,

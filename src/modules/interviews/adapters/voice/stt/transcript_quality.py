@@ -7,6 +7,8 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
+from ..speech.language import normalize_transcript_for_locale
+
 
 def _confidence_threshold() -> float:
     try:
@@ -68,6 +70,38 @@ class TranscriptQuality:
     reason: str
     confidence: float | None
     word_count: int
+
+
+@dataclass(frozen=True)
+class ProcessedTranscript:
+    text: str
+    quality: TranscriptQuality
+
+
+def process_transcript(
+    text: str,
+    *,
+    confidence: float | None,
+    locale: str,
+    context: str = "",
+    provider: str | None = None,
+    is_final: bool = True,
+) -> ProcessedTranscript:
+    """Apply the interview's transcript normalization and quality policy.
+
+    Admin STT checks call this same function so their accepted/rejected result
+    matches the decision made before an interview answer reaches Core.
+    """
+    normalized = normalize_transcript_for_locale(
+        text, locale=locale, context=context, is_final=is_final
+    )
+    measured_confidence = None if provider == "qwen" else confidence
+    quality = assess_transcript(
+        normalized,
+        confidence=measured_confidence,
+        locale=locale,
+    )
+    return ProcessedTranscript(normalized, quality)
 
 
 def assess_transcript(

@@ -51,7 +51,7 @@ from src.modules.interviews.adapters.voice.stt.recognition import (
     recognition_room_options,
 )
 from src.modules.interviews.adapters.voice.stt.stt_provider import stt_provider_settings
-from src.modules.interviews.adapters.voice.stt.transcript_quality import assess_transcript
+from src.modules.interviews.adapters.voice.stt.transcript_quality import process_transcript
 from src.modules.interviews.adapters.voice.tts.provider_config import tts_provider_config
 from src.modules.interviews.adapters.voice.tts.tts_cache import SpeechAudioCache, SpeechClip
 from src.modules.interviews.adapters.voice.tts.vieneu_tts import VieNeuTTS
@@ -716,15 +716,6 @@ class VoiceLabAgent(Agent):
                 "transcript_words": len(raw_transcript.split()) if isinstance(raw_transcript, str) else 0,
             },
         )
-        transcript = (
-            normalize_transcript_for_locale(
-                raw_transcript,
-                locale=self._locale,
-                context=f"{getattr(self, '_session_context', '')} {self._last_interview_speech_text}".strip(),
-            )
-            if isinstance(raw_transcript, str)
-            else raw_transcript
-        )
         interruption = capture_interruption(
             self._active_speech_handle,
             self._active_speech_text,
@@ -735,6 +726,18 @@ class VoiceLabAgent(Agent):
             # Its adapter uses a neutral numeric placeholder for LiveKit internals;
             # do not treat that placeholder as a measured score in quality gating.
             confidence = None
+        processed = (
+            process_transcript(
+                raw_transcript,
+                confidence=confidence,
+                locale=self._locale,
+                context=f"{getattr(self, '_session_context', '')} {self._last_interview_speech_text}".strip(),
+                provider=self._stt_provider,
+            )
+            if isinstance(raw_transcript, str)
+            else None
+        )
+        transcript = processed.text if processed else raw_transcript
         if not isinstance(transcript, str) or not transcript.strip():
             if not self._answer.is_empty:
                 # A silent/blank fragment inside an answer: keep waiting.
@@ -778,7 +781,7 @@ class VoiceLabAgent(Agent):
             self.report("voice_question_replay_deferred", reason="core_processing")
             return
 
-        quality = assess_transcript(transcript, confidence=confidence, locale=self._locale)
+        quality = processed.quality
         logger.info(
             "Final candidate transcript assessed",
             extra={
