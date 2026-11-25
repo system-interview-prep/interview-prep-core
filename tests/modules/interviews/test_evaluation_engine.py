@@ -3,7 +3,7 @@ import json
 import unittest
 from unittest.mock import AsyncMock
 
-from src.modules.interviews.agents.evaluator.evaluation_engine import (
+from src.modules.interviews.agents.evaluator.grading import (
     EvaluationGradingError,
     InterviewEvaluationEngine,
 )

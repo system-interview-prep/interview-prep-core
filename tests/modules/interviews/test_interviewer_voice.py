@@ -121,7 +121,7 @@ def test_dialogue_style_helpers_do_not_rewrite_generated_lines() -> None:
 
 
 def test_southern_voice_gets_southern_particles(monkeypatch) -> None:
-    from src.modules.interviews.realtime.conversation.answer_window import localize_particles
+    from src.modules.interviews.realtime.endpointing import localize_particles
 
     assert localize_particles("Mình bắt đầu nhé.") == "Mình bắt đầu nhé."
     monkeypatch.setenv("INTERVIEWER_VOICE_DIALECT", "nam")

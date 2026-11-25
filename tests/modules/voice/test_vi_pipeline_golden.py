@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from src.modules.interviews.realtime.conversation.interruption import (
+from src.modules.interviews.realtime.interruption import (
     classify_interruption,
     is_repeat_request,
     remaining_after_interruption,
@@ -12,7 +12,7 @@ from src.modules.interviews.realtime.speech.language import (
     assemblyai_session_options,
     normalize_transcript_for_locale,
 )
-from src.modules.interviews.realtime.tts.provider_config import tts_provider_config
+from src.modules.interviews.realtime.tts.provider import tts_provider_config
 
 GOLDEN = json.loads(
     (Path(__file__).parents[2] / "fixtures" / "voice" / "vi_pipeline_golden.json").read_text(

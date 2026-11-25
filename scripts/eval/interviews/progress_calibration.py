@@ -57,7 +57,7 @@ from src.modules.interviews.progress.progress_calibration import (  # noqa: E402
     tier_offsets,
     typical_error,
 )
-from src.modules.interviews.agents.evaluator.evaluation_engine import (  # noqa: E402
+from src.modules.interviews.agents.evaluator.grading import (  # noqa: E402
     InterviewEvaluationEngine,
     grader_version,
 )

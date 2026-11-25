@@ -28,7 +28,7 @@ from src.core.trace_logging import trace_event
 from src.modules.interviews.core.session_policy.demo_mode import DEMO_TECHNICAL_QUESTIONS, is_demo_duration
 from src.modules.interviews.core.session_policy.blueprint import InterviewBlueprint
 from src.modules.interviews.core.dialogue.opening import warmup_question
-from src.modules.interviews.agents.planner.project_evidence import (
+from src.modules.interviews.agents.planner.evidence import (
     project_evidence_from_dict,
     select_best_project,
 )

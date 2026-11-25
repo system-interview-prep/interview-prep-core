@@ -4,7 +4,7 @@ from unittest.mock import Mock
 import pytest
 
 from src.modules.interviews.realtime.stt import recognition
-from src.modules.interviews.realtime.stt.stt_provider import stt_provider_settings
+from src.modules.interviews.realtime.stt.provider import stt_provider_settings
 from src.modules.interviews.realtime.config.tuning import voice_tuning
 
 

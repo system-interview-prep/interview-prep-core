@@ -26,7 +26,7 @@ router / voice_facade
       → operations["respond"]              closure bound to the request's db session
         → session/chat_runtime.process_candidate_message
             build_session_state_from_db → CandidateTurnInput
-            → agents.interviewer.interview_agent.run_turn (turn graph and model decision)
+            → agents.interviewer.graph.run_turn (turn graph and model decision)
               → core InterviewCoreEngine                  (guards, action handlers, output checks)
             persist messages, turn status, stage
 ```
@@ -69,13 +69,13 @@ the SQL plan and frozen queue are the durable state.
 - `core/dialogue/` owns shared dialogue policy, phrases, opening, language checks, playbook lessons, and speech-check diagnostics. It contains no STT, TTS, camera behavior, pronunciation, or audio recovery.
 - `question_bank/` provides Question Bank coverage, generation, suggestions, insights and quality reporting; the deterministic entry gate is `agents/planner/entry_gate.py`.
 - `graph/` runs the six session commands (`prepare`, `freeze`, `open`, `respond`, `finish`, `score`) on one compiled graph with a Postgres checkpoint per `(session, command, event)`. `InterviewCommandRunner` is workflow infrastructure, not an AI agent; operations arrive per call from `graph/runtime.py`.
-- `agents/interviewer/` owns per-turn agent decision, menu, pacing, turn graph, decision record, and spoken-question drafting. `interview_agent.py` is the graph entry point for one candidate turn; Core owns shared guards, action handlers, and output checks.
+- `agents/interviewer/` owns per-turn agent decision, menu, pacing, turn graph, decision record, and spoken-question drafting. `graph.py` is the graph entry point for one candidate turn; Core owns shared guards, action handlers, and output checks.
 - `agents/planner/` owns P1 plan construction, CV project evidence, P2 selection/validation/freeze, prepare/freeze orchestration, and CV-grounded question drafting.
 - `session/spoken_questions.py` persists validated spoken variants produced by the Interviewer Agent before the session opens.
 - `question_bank/suggestions.py` queues Question Bank drafts for uncovered targets after close/score; drafts still require admin review.
 - `graph/checkpoints.py` owns the Postgres checkpointer and the candidate-memory store lifecycle.
 - Adapters normalise their input into `CandidateTurnInput` where they call the runtime. Voice accepts only a final transcript; partial STT is not an answer.
-- Each modality package keeps `api/` transport. Voice additionally groups `api/` endpoints, `runtime/` LiveKit worker, `stt/`, `tts/`, `speech/`, `conversation/`, and `config/`. Voice owns transcription, transcript cleanup, answer buffering, audio turn taking, pronunciation, synthesis, and voice-only recovery phrases. Video observations remain telemetry unless an explicit assessment rule is added to Core.
+- Each modality package keeps `api/` transport only. The audio lifecycle lives in `realtime/`: the LiveKit worker, endpointing, interruption, `stt/`, `tts/`, `speech/` and `config/`. It owns transcription, transcript cleanup, answer buffering, audio turn taking, pronunciation, synthesis, and voice-only recovery phrases. Video observations remain telemetry unless an explicit assessment rule is added to Core.
 - `session/` persists sessions and coordinates Core calls. `chat_runtime.py` is historically named; Voice and Video use this same runtime path.
 - `admin/` reports settings, traces, and reviewed quality data. `progress/` owns candidate progress, calibration and skill summaries.
 - `realtime/` owns the audio lifecycle: STT and TTS clients, the answer window, interruption, voice events and tuning. `adapters/voice/api/` keeps only transport.
@@ -90,10 +90,12 @@ interviews/
 |   |-- video_calls/api/       # router.py, signaling.py
 |   `-- voice/api/             # router.py, Voice Lab endpoints
 |-- realtime/                  # audio lifecycle (V2 spec §8)
-|   |-- runtime/               # LiveKit agent worker (the docker-compose entry point)
-|   |-- conversation/          # answer window, interruptions, events, phrases
-|   |-- stt/                   # providers, recognition, transcript cleanup/evaluation
-|   |-- tts/                   # providers, cache, pronunciation dictionaries
+|   |-- runtime.py             # LiveKit agent worker (the docker-compose entry point)
+|   |-- endpointing.py         # when the candidate has finished speaking
+|   |-- interruption.py        # barge-in
+|   |-- events.py, health.py, voice_phrases.py
+|   |-- stt/                   # provider.py, qwen.py, transcript.py, recognition.py
+|   |-- tts/                   # provider.py, vieneu.py, cache.py, pronunciations_vi.py
 |   |-- speech/                # language normalization and speech formatting
 |   `-- config/                # voice tuning
 |-- graph/                     # Main graph: the six commands
@@ -103,11 +105,12 @@ interviews/
 |   |-- ports.py, state.py
 |   `-- checkpoints.py         # Postgres checkpointer + candidate-memory store
 |-- agents/
-|   |-- interviewer/           # interview_agent.py (one-turn graph), decide.py, menu.py,
-|   |                          # pacing.py, tools.py, record.py, state.py, spoken_questions.py
-|   |-- planner/               # P1/P2 tools + PlannerAgent orchestration + CV question
-|   |                          # capability + entry_gate.py
-|   `-- evaluator/             # rubric grading, report, answer outcome, grading cache
+|   |-- interviewer/           # graph.py (one-turn graph), thinker.py (the decider),
+|   |                          # context.py, menu.py, pacing.py, tools.py, record.py,
+|   |                          # state.py, spoken_questions.py
+|   |-- planner/               # graph.py, prepare.py (P1), freeze.py (P2), selection.py,
+|   |                          # evidence.py, entry_gate.py, planner.py, plan_structure.py
+|   `-- evaluator/             # grading.py, report.py, rubric_grading.py, answer_outcome.py
 |-- session/                   # business state and lifecycle
 |   |-- chat_runtime.py        # shared persistence/runtime path for all three modalities
 |   |-- text_runtime.py        # practice mode

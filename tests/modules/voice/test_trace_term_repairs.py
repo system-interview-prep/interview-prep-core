@@ -5,7 +5,7 @@ import unicodedata
 import pytest
 
 from src.modules.interviews.realtime.speech.language import normalize_transcript_for_locale
-from src.modules.interviews.realtime.stt.transcript_correction import correct_technical_transcript
+from src.modules.interviews.realtime.stt.transcript import correct_technical_transcript
 
 REPAIRS = [
     ("NestJS Next.js", "Em dùng netJS để viết controller.", "Em dùng NestJS để viết controller."),

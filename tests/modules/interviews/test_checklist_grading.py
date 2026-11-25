@@ -3,7 +3,7 @@
 
 import pytest
 
-from src.modules.interviews.agents.evaluator.evaluation_engine import InterviewEvaluationEngine
+from src.modules.interviews.agents.evaluator.grading import InterviewEvaluationEngine
 from src.modules.interviews.agents.evaluator.evaluation_types import TurnEvaluationInput
 from src.modules.interviews.agents.evaluator.rubric_grading import (
     BONUS,

@@ -13,12 +13,12 @@ from typing import Any, Literal, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from src.modules.interviews.agents.planner.contract_snapshot import PlannerContractSnapshot
-from src.modules.interviews.agents.planner.p1_proposal import propose_p1_target_order
-from src.modules.interviews.agents.planner.p2_selection import propose_question_bank_selection
+from src.modules.interviews.agents.planner.prepare import propose_p1_target_order
+from src.modules.interviews.agents.planner.freeze import propose_question_bank_selection
 from src.modules.interviews.agents.planner.planner import build_and_persist_session_plan
-from src.modules.interviews.agents.planner.project_evidence import extract_project_evidences
+from src.modules.interviews.agents.planner.evidence import extract_project_evidences
 from src.modules.interviews.agents.planner.project_question import draft_project_question
-from src.modules.interviews.agents.planner.question_selector import read_frozen_turns, select_and_freeze_questions
+from src.modules.interviews.agents.planner.selection import read_frozen_turns, select_and_freeze_questions
 
 PlannerCommand = Literal["prepare", "freeze", "read_frozen_turns"]
 

@@ -19,7 +19,7 @@ from src.modules.interviews.agents.evaluator.answer_outcome import (
     NOT_GRADABLE,
     turn_outcome,
 )
-from src.modules.interviews.agents.evaluator.evaluation_engine import (
+from src.modules.interviews.agents.evaluator.grading import (
     EvaluationGradingError,
     InterviewEvaluationEngine,
     NoGradableTurnsError,

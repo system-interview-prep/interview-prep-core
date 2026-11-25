@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 import src.modules.interviews.api.router  # noqa: F401  (ensures the submodule is imported)
 from src.modules.interviews.adapters.voice.api.lab import _load_voice_session
-from src.modules.interviews.agents.evaluator.evaluation_service import (
+from src.modules.interviews.agents.evaluator.report import (
     EvaluationServiceError,
     evaluate_closed_session,
 )
@@ -415,7 +415,7 @@ async def test_closing_qna_and_unanswered_turn_are_not_graded() -> None:
 async def test_grading_failure_surfaces_as_503_through_the_agent_graph() -> None:
     """H6: an ungradable session is a retryable 503, not a 500 or a fake report."""
     from src.modules.interviews.graph import runtime as agent_runtime
-    from src.modules.interviews.agents.evaluator.evaluation_engine import EvaluationGradingError
+    from src.modules.interviews.agents.evaluator.grading import EvaluationGradingError
 
     session = {"id": "sess-grade", "plan_id": "plan-grade", "status": "CLOSED"}
 
@@ -556,7 +556,7 @@ def test_the_livekit_worker_finds_the_project_root_whatever_its_depth() -> None:
     pytest.importorskip("livekit.agents")
     from pathlib import Path
 
-    from src.modules.interviews.realtime.runtime import livekit_agent
+    from src.modules.interviews.realtime import runtime as livekit_agent
 
     root = livekit_agent._project_root()
     assert (root / "src" / "modules" / "interviews").is_dir(), root

@@ -75,7 +75,8 @@ def test_acknowledgements_do_not_praise_or_judge_the_candidate() -> None:
 
 @pytest.mark.skip(reason="SCRIPT: fixed-phrase script pools removed in 75d3520 (speech v2); tests/TRIAGE_2026-11-24.md")
 def test_voice_only_feedback_is_kept_in_the_voice_adapter() -> None:
-    from src.modules.interviews.realtime.conversation import answer_window, interruption, voice_phrases
+    from src.modules.interviews.realtime import endpointing as answer_window
+    from src.modules.interviews.realtime import interruption, voice_phrases
     from src.modules.interviews.core.dialogue import policy as interviewer_dialogue
 
     assert answer_window.PROCESSING_FILLERS_VI == voice_phrases.PROCESSING_FILLERS_VI
@@ -95,7 +96,8 @@ def test_voice_agent_packages_load_without_livekit_runtime_imports() -> None:
     code = (
         "import sys\n"
         "sys.path.insert(0, sys.argv[1])\n"
-        "from src.modules.interviews.realtime.conversation import answer_window, interruption\n"
+        "from src.modules.interviews.realtime import endpointing as answer_window\n"
+        "from src.modules.interviews.realtime import interruption\n"
         "assert answer_window.silence_reprompt('vi-VN')\n"
         "assert interruption.hold_acknowledgement('vi-VN')\n"
     )

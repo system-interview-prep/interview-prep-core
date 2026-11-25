@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.modules.interviews.agents.planner import question_selector
+from src.modules.interviews.agents.planner import selection as question_selector
 from src.seeds.question_bank_seed import _CONCEPT_FIXTURES
 from src.seeds.question_bank_seed_vi import QUESTION_TEXT_VI
 from tests.modules.interviews.test_question_fallback import _db, rollback_db  # noqa: F401

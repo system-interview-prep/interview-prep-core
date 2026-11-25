@@ -37,8 +37,8 @@ from src.modules.interviews.session.text_runtime import (
     complete_text_runtime,
     read_text_runtime,
 )
-from src.modules.interviews.agents.evaluator.evaluation_engine import EvaluationGradingError
-from src.modules.interviews.agents.evaluator.evaluation_service import (
+from src.modules.interviews.agents.evaluator.grading import EvaluationGradingError
+from src.modules.interviews.agents.evaluator.report import (
     EvaluationServiceError,
     get_session_evaluation,
 )
@@ -48,7 +48,7 @@ from src.modules.interviews.agents.planner.planner import (
     evaluate_session_match,
     read_session_plan,
 )
-from src.modules.interviews.agents.planner.question_selector import (
+from src.modules.interviews.agents.planner.selection import (
     QuestionUnavailableError,
     read_frozen_turns,
 )

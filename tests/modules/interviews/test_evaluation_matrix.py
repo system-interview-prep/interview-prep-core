@@ -26,7 +26,7 @@ import pytest
 import unittest
 from unittest.mock import AsyncMock
 
-from src.modules.interviews.agents.evaluator.evaluation_engine import InterviewEvaluationEngine
+from src.modules.interviews.agents.evaluator.grading import InterviewEvaluationEngine
 from src.modules.interviews.agents.evaluator.evaluation_types import (
     CompetencyScore,
     DecisionRecommendation,
@@ -35,7 +35,7 @@ from src.modules.interviews.agents.evaluator.evaluation_types import (
     TurnEvaluationInput,
     TurnEvaluationResult,
 )
-from src.modules.interviews.agents.planner.project_evidence import (
+from src.modules.interviews.agents.planner.evidence import (
     StructuredProjectEvidence,
     extract_project_evidences,
     select_best_project,

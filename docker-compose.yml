@@ -86,7 +86,7 @@ services:
       # Audio of fixed interviewer lines, reused by every session.
       VOICE_LAB_TTS_CACHE_DIR: /var/cache/intervia-tts
     working_dir: /app
-    command: ["python", "-m", "src.modules.interviews.realtime.runtime.livekit_agent", "start"]
+    command: ["python", "-m", "src.modules.interviews.realtime.runtime", "start"]
     volumes: ["./src:/app/src", "voice-tts-cache:/var/cache/intervia-tts"]
     extra_hosts:
       - "host.docker.internal:host-gateway"

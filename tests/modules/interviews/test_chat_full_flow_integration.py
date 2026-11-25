@@ -270,6 +270,6 @@ async def test_chat_interview_runs_from_opening_through_persisted_report(monkeyp
 
 
 async def _evaluate_with_fake_grader(db, session_id: str, _engine=None):
-    from src.modules.interviews.agents.evaluator.evaluation_service import evaluate_closed_session
+    from src.modules.interviews.agents.evaluator.report import evaluate_closed_session
 
     return await evaluate_closed_session(db, session_id, engine=_DeterministicGrader())

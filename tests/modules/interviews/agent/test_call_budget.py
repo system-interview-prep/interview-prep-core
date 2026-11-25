@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from src.modules.interviews.agents.interviewer import interview_agent
+from src.modules.interviews.agents.interviewer import graph as interview_agent
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput, InterviewStage
 from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
 
@@ -202,7 +202,7 @@ async def test_unified_thinker_answers_the_whole_turn_in_one_call(session_state_
     ``test_live_path_spends_a_decider_call_plus_the_speech_call``: same turn,
     same action, one call instead of two.
     """
-    from src.modules.interviews.agents.interviewer import decide as decide_module
+    from src.modules.interviews.agents.interviewer import thinker as decide_module
 
     probe = "Khi dữ liệu trong database đổi, em xoá key cache theo cách nào?"
     calls: list[dict] = []
@@ -247,7 +247,7 @@ async def test_a_rejected_unified_probe_falls_back_instead_of_losing_the_turn(se
     reject. The decision still stands; only the text is dropped, and the action
     handler writes the follow-up as it did before.
     """
-    from src.modules.interviews.agents.interviewer import decide as decide_module
+    from src.modules.interviews.agents.interviewer import thinker as decide_module
 
     calls: list[dict] = []
 

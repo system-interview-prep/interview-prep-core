@@ -17,7 +17,7 @@ from src.modules.interviews.session.chat_runtime import (
 )
 from src.modules.interviews.question_bank.suggestions import enqueue_session_question_suggestions
 from src.modules.interviews.session.spoken_questions import add_spoken_versions
-from src.modules.interviews.agents.evaluator.evaluation_service import (
+from src.modules.interviews.agents.evaluator.report import (
     evaluate_closed_session,
     get_session_evaluation,
 )

@@ -31,7 +31,7 @@ from src.modules.interviews.question_bank.generation import (
     MAX_PREGENERATED_PER_TARGET,
     ensure_generated_questions,
 )
-from src.modules.interviews.agents.planner.question_selector import _job_taxonomy, reachable_candidates
+from src.modules.interviews.agents.planner.selection import _job_taxonomy, reachable_candidates
 from src.modules.job_descriptions.schemas import CanonicalJobDescription
 from src.modules.matching.facade import canonical_job_from_description
 from src.modules.matching.schemas import CanonicalJob

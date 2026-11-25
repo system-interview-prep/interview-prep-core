@@ -9,7 +9,7 @@ from src.modules.interviews.agents.evaluator.answer_outcome import (
     is_non_answer,
     split_answer_messages,
 )
-from src.modules.interviews.agents.evaluator.evaluation_engine import InterviewEvaluationEngine
+from src.modules.interviews.agents.evaluator.grading import InterviewEvaluationEngine
 from src.modules.interviews.agents.evaluator.evaluation_types import TurnEvaluationInput
 
 QUESTION = "Lỗi lan truyền thế nào qua promise chain và async/await?"

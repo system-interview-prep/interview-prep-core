@@ -17,7 +17,7 @@ from uuid import uuid4
 import pytest
 
 from src.modules.interviews.agents.planner.planner import derive_competency_plan
-from src.modules.interviews.agents.planner.question_selector import select_and_freeze_questions
+from src.modules.interviews.agents.planner.selection import select_and_freeze_questions
 from src.modules.matching.domain.schemas import (
     CanonicalJob,
     ConceptResult,

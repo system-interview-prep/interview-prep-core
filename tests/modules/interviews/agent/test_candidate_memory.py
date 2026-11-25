@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from langgraph.store.memory import InMemoryStore
 
-from src.modules.interviews.agents.interviewer import interview_agent as turn_graph
+from src.modules.interviews.agents.interviewer import graph as turn_graph
 from src.modules.interviews.memory import candidate_memory as cm
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput, TurnAction
 from src.modules.interviews.core.conversation.prompt.candidate_memory import MAX_BLOCK_CHARS, MAX_ITEMS, block
@@ -339,7 +339,7 @@ def test_t2_6_3_the_playbook_reflector_cannot_see_candidate_memory() -> None:
 
 @pytest.mark.asyncio
 async def test_t3_5_1_memory_reaches_the_prompts_and_the_decider_but_is_never_recited(session_state_factory, monkeypatch) -> None:
-    from src.modules.interviews.agents.interviewer import decide as decide_module
+    from src.modules.interviews.agents.interviewer import thinker as decide_module
 
     store = InMemoryStore()
     await store.aput(cm.namespace(USER), "k1", {

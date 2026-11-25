@@ -6,7 +6,7 @@ import json
 
 import httpx
 
-from src.modules.interviews.realtime.tts.vieneu_tts import VieNeuTTS
+from src.modules.interviews.realtime.tts.vieneu import VieNeuTTS
 
 
 def test_vieneu_sse_audio_is_forwarded_as_pcm_frames() -> None:

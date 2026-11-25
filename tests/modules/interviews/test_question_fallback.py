@@ -12,7 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.modules.interviews.question_bank import generation as question_generation
-from src.modules.interviews.agents.planner import question_selector
+from src.modules.interviews.agents.planner import selection as question_selector
 from tests.modules.interviews.test_question_selector import candidate
 
 

@@ -79,9 +79,9 @@ EXEMPT = {
     "graph/checkpoints.py": ("psycopg",),
     # The Planner's bounded P1/P2 tools own their preparation persistence.
     "agents/planner/planner.py": ("sqlalchemy",),
-    "agents/planner/question_selector.py": ("sqlalchemy",),
+    "agents/planner/selection.py": ("sqlalchemy",),
     "agents/planner/entry_gate.py": ("sqlalchemy",),
-    "agents/evaluator/evaluation_service.py": ("sqlalchemy",),
+    "agents/evaluator/report.py": ("sqlalchemy",),
     "agents/evaluator/grading_cache.py": ("sqlalchemy",),
     "agents/evaluator/answer_outcome.py": ("sqlalchemy",),
     "memory/candidate_memory.py": ("sqlalchemy",),

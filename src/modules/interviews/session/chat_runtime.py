@@ -49,7 +49,7 @@ from src.modules.interviews.agents.interviewer.context import (  # noqa: F401
     session_blueprint,
 )
 from src.modules.interviews.memory import candidate_memory
-from src.modules.interviews.agents.interviewer.interview_agent import run_turn
+from src.modules.interviews.agents.interviewer.graph import run_turn
 from src.modules.interviews.core.conversation.turn_engine import (
     InterviewCoreEngine,
     pacing_seconds,

@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from src.modules.interviews.realtime.speech.language import normalize_transcript_for_locale
-from src.modules.interviews.realtime.stt.transcript_correction import correct_technical_transcript
+from src.modules.interviews.realtime.stt.transcript import correct_technical_transcript
 
 # context, candidate ASR, approved repaired sentence
 REPAIRS = [

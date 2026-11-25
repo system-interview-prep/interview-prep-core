@@ -77,7 +77,7 @@ async def _start_livekit_agent(settings: object) -> asyncio.subprocess.Process |
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
-            "src.modules.interviews.realtime.runtime.livekit_agent",
+            "src.modules.interviews.realtime.runtime",
             run_mode,
             cwd=str(project_root),
         )

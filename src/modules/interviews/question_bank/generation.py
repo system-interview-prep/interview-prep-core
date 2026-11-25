@@ -417,7 +417,7 @@ async def ensure_generated_questions(
     reach the same skill at once, and without the lock each would generate its
     own batch. The transaction ends (commit) before returning, releasing it.
     """
-    from src.modules.interviews.agents.planner.question_selector import reachable_candidates
+    from src.modules.interviews.agents.planner.selection import reachable_candidates
 
     if not get_settings().question_generation_enabled or desired <= 0:
         return 0

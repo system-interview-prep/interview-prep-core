@@ -1,4 +1,4 @@
-from src.modules.interviews.agents.planner.question_selector import (
+from src.modules.interviews.agents.planner.selection import (
     _allowed_purposes,
     _Candidate,
     _candidate_rank,
@@ -132,7 +132,7 @@ def test_rank_salt_creates_session_level_diversity():
 import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from src.modules.interviews.agents.planner.question_selector import (
+from src.modules.interviews.agents.planner.selection import (
     QuestionUnavailableError,
     _estimated_cost,
     _matches_archetype,
@@ -562,7 +562,7 @@ async def test_tc_pack_08_legacy_branch_invariance(monkeypatch):
 
     session_row = {"id": "sess-tc-08", "plan_id": "plan-tc-08", "locale": "en-US"}
 
-    from src.modules.interviews.agents.planner import question_selector
+    from src.modules.interviews.agents.planner import selection as question_selector
 
     # Stronger than spying on the old fallback helper: the module must offer no
     # way at all to synthesise an unreviewed prompt.
@@ -588,7 +588,7 @@ async def test_tc_pack_08_legacy_branch_invariance(monkeypatch):
 @pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
 @pytest.mark.asyncio
 async def test_legacy_plan_with_enough_candidates_freezes_without_fallback(monkeypatch):
-    from src.modules.interviews.agents.planner import question_selector
+    from src.modules.interviews.agents.planner import selection as question_selector
 
     plan_result = MagicMock()
     plan_result.mappings.return_value.one_or_none.return_value = {
@@ -656,7 +656,7 @@ async def test_legacy_plan_with_enough_candidates_freezes_without_fallback(monke
 @pytest.mark.live_llm(reason="LIVE: passed only through the real OPENAI_API_KEY in .env; needs a scripted LLM (tests/TRIAGE_2026-11-24.md)")
 @pytest.mark.asyncio
 async def test_legacy_missing_later_target_is_dropped_and_reported(monkeypatch):
-    from src.modules.interviews.agents.planner import question_selector
+    from src.modules.interviews.agents.planner import selection as question_selector
 
     plan_result = MagicMock()
     plan_result.mappings.return_value.one_or_none.return_value = {
@@ -1902,7 +1902,7 @@ async def test_dynamic_plan_without_targets_locks_preset_only_queue():
 
 
 def test_unreviewed_budget_is_zero_in_challenge_and_one_otherwise():
-    from src.modules.interviews.agents.planner.question_selector import unreviewed_budget
+    from src.modules.interviews.agents.planner.selection import unreviewed_budget
 
     assert unreviewed_budget({"practiceTier": "challenge"}) == 0
     assert unreviewed_budget({"practiceTier": "standard"}) == 1
@@ -1915,7 +1915,7 @@ def test_demo_session_may_fill_every_technical_slot_with_generated_drafts(monkey
     """Any IT CV-JD pair picked live must run even when the bank has no question for it."""
     from src.core.config import get_settings
     from src.modules.interviews.core.session_policy.demo_mode import DEMO_TECHNICAL_QUESTIONS
-    from src.modules.interviews.agents.planner.question_selector import unreviewed_budget
+    from src.modules.interviews.agents.planner.selection import unreviewed_budget
 
     assert unreviewed_budget({"practiceTier": "challenge"}, demo=True) == DEMO_TECHNICAL_QUESTIONS
     assert unreviewed_budget({"practiceTier": "standard"}, demo=True) == DEMO_TECHNICAL_QUESTIONS
@@ -1926,7 +1926,7 @@ def test_demo_session_may_fill_every_technical_slot_with_generated_drafts(monkey
 
 
 def test_limit_unreviewed_keeps_reviewed_and_order():
-    from src.modules.interviews.agents.planner.question_selector import limit_unreviewed
+    from src.modules.interviews.agents.planner.selection import limit_unreviewed
 
     pool = [
         candidate(question_version_id="broad", source="broader_skill"),
@@ -1981,7 +1981,7 @@ def _draft_only_selector_db(tier, concepts):
 
 
 def _patch_bank(monkeypatch, approved):
-    from src.modules.interviews.agents.planner import question_selector
+    from src.modules.interviews.agents.planner import selection as question_selector
 
     async def load_candidates(db, *, target, **kwargs):
         if target["conceptId"] in approved:

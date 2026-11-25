@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.modules.interviews.agents.planner.planner_graph import PlannerCommand, build_planner_graph
+from src.modules.interviews.agents.planner.graph import PlannerCommand, build_planner_graph
 
 
 class PlannerAgent:

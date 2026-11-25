@@ -23,22 +23,22 @@ from livekit.agents import Agent, AgentServer, AgentSession, inference
 from livekit.agents.voice.turn import InterruptionOptions
 from livekit.plugins import elevenlabs
 
-from src.modules.interviews.realtime.conversation.answer_window import (
+from src.modules.interviews.realtime.endpointing import (
     ANSWER_PAUSE_NUDGE_SECONDS, PROCESSING_FILLER_SECONDS, AnswerWindow,
     backchannel_continue_text, core_error_text, localize_particles, not_heard_lines,
     pick_answer_pause_nudge, pick_processing_filler,
     processing_filler_enabled, processing_fillers, reprompt_after_seconds,
     silence_reprompt, turn_taking_tip, unclear_transcript_text,
 )
-from src.modules.interviews.realtime.conversation.health import (
+from src.modules.interviews.realtime.health import (
     provider_error_payload,
     provider_recovered_payload,
 )
-from src.modules.interviews.realtime.conversation.interruption import (
+from src.modules.interviews.realtime.interruption import (
     capture_interruption, classify_interruption, hold_acknowledgement, is_greeting_backchannel,
     is_repeat_request, is_resume_request, remaining_after_interruption, resolve_interruption,
 )
-from src.modules.interviews.realtime.conversation.voice_events import VoiceEventReporter
+from src.modules.interviews.realtime.events import VoiceEventReporter
 from src.modules.interviews.realtime.config.tuning import voice_tuning
 from src.modules.interviews.realtime.speech.language import (
     normalize_transcript_for_locale,
@@ -50,11 +50,11 @@ from src.modules.interviews.realtime.stt.recognition import (
     recognition_options,
     recognition_room_options,
 )
-from src.modules.interviews.realtime.stt.stt_provider import stt_provider_settings
+from src.modules.interviews.realtime.stt.provider import stt_provider_settings
 from src.modules.interviews.realtime.stt.transcript_quality import process_transcript
-from src.modules.interviews.realtime.tts.provider_config import tts_provider_config
-from src.modules.interviews.realtime.tts.tts_cache import SpeechAudioCache, SpeechClip
-from src.modules.interviews.realtime.tts.vieneu_tts import VieNeuTTS
+from src.modules.interviews.realtime.tts.provider import tts_provider_config
+from src.modules.interviews.realtime.tts.cache import SpeechAudioCache, SpeechClip
+from src.modules.interviews.realtime.tts.vieneu import VieNeuTTS
 
 def _project_root() -> Path:
     """The directory that holds ``src/``, found by walking up from this file.

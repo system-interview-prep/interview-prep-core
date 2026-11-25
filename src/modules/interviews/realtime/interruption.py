@@ -11,7 +11,7 @@ import unicodedata
 from dataclasses import asdict, dataclass
 from typing import Literal
 
-from .answer_window import VOICE_SCRIPT
+from .endpointing import VOICE_SCRIPT
 
 InterruptionIntent = Literal["backchannel", "hold", "content"]
 InterruptionAction = Literal["resume", "hold", "forward"]

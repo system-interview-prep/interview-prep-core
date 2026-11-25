@@ -43,7 +43,7 @@ def _phrase_key(value: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w-]+", " ", value.casefold())).strip()
 
 
-from ..stt.transcript_correction import correct_technical_transcript
+from ..stt.transcript import correct_technical_transcript
 
 
 def correct_contextual_technical_terms(text: str, *, context: str = "", is_final: bool = True) -> str:

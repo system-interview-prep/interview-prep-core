@@ -16,8 +16,8 @@ from pydantic import BaseModel, Field
 
 from src.core.config import get_settings
 from src.core.trace_logging import trace_event
-from src.modules.interviews.realtime.stt.stt_provider import stt_provider_settings
-from src.modules.interviews.realtime.stt.transcript_correction import correct_technical_transcript
+from src.modules.interviews.realtime.stt.provider import stt_provider_settings
+from src.modules.interviews.realtime.stt.transcript import correct_technical_transcript
 from src.modules.interviews.realtime.stt.transcript_quality import process_transcript
 
 MAX_AUDIO_BYTES = 10 * 1024 * 1024

@@ -28,7 +28,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from src.core.trace_logging import trace_event
-from src.modules.interviews.agents.interviewer.decide import decide_by_model, is_violation
+from src.modules.interviews.agents.interviewer.thinker import decide_by_model, is_violation
 from src.modules.interviews.agents.interviewer.menu import build_menu
 from src.modules.interviews.agents.interviewer.pacing import pacing_block
 from src.modules.interviews.agents.interviewer.record import decision_record, emit

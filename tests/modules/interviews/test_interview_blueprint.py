@@ -14,7 +14,7 @@ from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEn
 from src.modules.interviews.core.conversation.turn_rules import MAX_QNA_QUESTIONS, QNA_BUDGET_SECONDS, TIME_THRESHOLDS
 from src.modules.interviews.core.contracts.interview import InterviewStage
 from src.modules.interviews.agents.planner.planner import _question_budget
-from src.modules.interviews.agents.planner.question_selector import _behavioral_snapshot, _technical_stage
+from src.modules.interviews.agents.planner.selection import _behavioral_snapshot, _technical_stage
 
 
 def test_default_blueprint_keeps_every_previous_constant() -> None:

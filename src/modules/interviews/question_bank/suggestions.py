@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.config import get_settings
 from src.modules.interviews.core.session_policy.demo_mode import is_demo_duration
 from src.modules.interviews.question_bank.generation import ensure_generated_questions
-from src.modules.interviews.agents.planner.question_selector import _job_taxonomy
+from src.modules.interviews.agents.planner.selection import _job_taxonomy
 
 logger = logging.getLogger(__name__)
 SUGGEST_TASK_NAME = "question_bank.suggest_session_gaps"

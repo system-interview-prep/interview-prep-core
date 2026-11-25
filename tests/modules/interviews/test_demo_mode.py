@@ -14,7 +14,7 @@ from src.modules.interviews.core.contracts.interview import (
     TurnAction,
 )
 from src.modules.interviews.agents.planner.planner import _CandidateTarget, _demo_targets, _question_budget
-from src.modules.interviews.agents.planner.question_selector import _technical_stage
+from src.modules.interviews.agents.planner.selection import _technical_stage
 from src.modules.user_cvs.schemas import TaxonomyRef
 
 

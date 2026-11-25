@@ -12,8 +12,8 @@ from livekit.agents import Agent, AgentSession, stt
 
 from ..config.tuning import voice_tuning
 from .recognition import create_stt, recognition_language, recognition_options, recognition_room_options
-from .stt_provider import stt_provider_settings
-from .transcript_correction import correct_technical_transcript
+from .provider import stt_provider_settings
+from .transcript import correct_technical_transcript
 from .transcript_quality import process_transcript
 
 logger = logging.getLogger(__name__)

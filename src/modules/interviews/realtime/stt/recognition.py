@@ -7,7 +7,7 @@ from livekit.agents import TurnHandlingOptions, inference, room_io
 from livekit.agents.voice.turn import EndpointingOptions
 
 from ..speech.language import assemblyai_stream_options
-from .qwen_streaming_stt import QwenStreamingSTT
+from .qwen import QwenStreamingSTT
 
 
 def recognition_language(locale: str) -> str:
