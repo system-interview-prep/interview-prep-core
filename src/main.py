@@ -25,6 +25,8 @@ from src.modules.interviews.graph.checkpoints import interview_checkpoint_lifesp
 from src.modules.interviews.admin.admin_notifier import notifier as admin_notifier
 from src.modules.interviews.admin.pipeline_live import bridge as pipeline_live_bridge
 from src.modules.interviews.session.session_reaper import session_reaper_loop
+from src.modules.interviews.memory import candidate_memory as _candidate_memory
+from src.modules.interviews.memory.extraction_job import reconcile_loop as _memory_reconcile_loop
 from src.modules.interviews.agents.planner.planner import configured_planner_policy
 from src.modules.job_descriptions import build_module as build_job_descriptions_module
 from src.modules.matching import build_module as build_matching_module
@@ -121,6 +123,7 @@ async def bootstrap_question_bank_schema(engine: object) -> None:
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     livekit_agent: asyncio.subprocess.Process | None = None
     session_reaper: asyncio.Task[None] | None = None
+    memory_reconciler: asyncio.Task[None] | None = None
     settings = get_settings()
     # Validate the opt-in interview planner policy before serving traffic. A bad
     # value used to surface only when a candidate called POST /plan, and the
@@ -139,6 +142,12 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             session_reaper = asyncio.create_task(
                 session_reaper_loop(SessionFactory), name="interview-session-reaper"
             )
+            if _candidate_memory.enabled() == "readwrite":
+                # V2 spec §9: re-dispatch graded sessions whose memory extraction
+                # was never dispatched or never finished (memory/extraction_job.py).
+                memory_reconciler = asyncio.create_task(
+                    _memory_reconcile_loop(SessionFactory), name="interview-memory-reconciler"
+                )
             # Pushes pipeline activity to open admin pages (socket.io /admin-pipeline).
             await pipeline_live_bridge.start()
             # Turns new AI pipeline problems into admin notifications.
@@ -151,6 +160,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                 if session_reaper is not None:
                     session_reaper.cancel()
                     await asyncio.gather(session_reaper, return_exceptions=True)
+                if memory_reconciler is not None:
+                    memory_reconciler.cancel()
+                    await asyncio.gather(memory_reconciler, return_exceptions=True)
                 await _stop_livekit_agent(livekit_agent)
 
 

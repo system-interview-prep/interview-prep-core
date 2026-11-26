@@ -27,6 +27,7 @@ async def submit_voice_answer(
     modality: str = "VOICE",
     precomputed_evaluation: dict[str, Any] | None = None,
     precomputed_decision: dict[str, Any] | None = None,
+    preview_key: dict[str, Any] | None = None,
     on_early_speech: Any = None,
 ) -> dict[str, Any]:
     """Submit a final media transcript to the modality-neutral Interview Core."""
@@ -37,7 +38,8 @@ async def submit_voice_answer(
                  "telemetry": telemetry or {}, "modality": modality,
                  "duration_seconds": duration_seconds,
                  "precomputed_evaluation": precomputed_evaluation,
-                 "precomputed_decision": precomputed_decision},
+                 "precomputed_decision": precomputed_decision,
+                 "preview_key": preview_key},
     )
 
 

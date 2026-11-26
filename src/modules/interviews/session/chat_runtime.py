@@ -63,6 +63,8 @@ from src.modules.interviews.core.contracts.interview import (
     TurnAction,
 )
 from src.modules.user_cvs.facade import candidate_name_from_text
+from src.modules.interviews.realtime.anticipation.validator import PreviewKey, validate_preview
+from src.modules.interviews.session.preview_authority import authoritative_preview_key
 
 _validate_probe_text = validate_probe_text
 
@@ -997,6 +999,9 @@ class MessageClaim:
     telemetry: dict[str, Any] | None = None
     recovered: bool = False
     reply: dict[str, Any] | None = None
+    #: None when no preview key was offered; otherwise whether it still matched
+    #: the authoritative state under the row lock.
+    preview_valid: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -1140,6 +1145,19 @@ def _decision_trace_fields(core_output: Any, session_state: dict[str, Any]) -> d
 # ------------------------------------------------------------ context
 
 
+_TURNS_SELECT = """
+            SELECT id, turn_index, status, question_version_id, question_snapshot, answer_text, started_at
+            FROM interview_turns
+            WHERE session_id = :session_id
+            ORDER BY turn_index ASC
+            """
+
+
+async def _load_turns(db: AsyncSession, session_id: Any) -> list[dict[str, Any]]:
+    turns_res = await db.execute(text(_TURNS_SELECT), {"session_id": session_id})
+    return [dict(r) for r in turns_res.mappings().all()]
+
+
 async def _load_turn_context(
     db: AsyncSession,
     session_row: dict[str, Any],
@@ -1172,18 +1190,7 @@ async def _load_turn_context(
         raise ValueError("Nội dung tin nhắn không được để trống.")
 
     # Fetch turns
-    turns_res = await db.execute(
-        text(
-            """
-            SELECT id, turn_index, status, question_version_id, question_snapshot, answer_text, started_at
-            FROM interview_turns
-            WHERE session_id = :session_id
-            ORDER BY turn_index ASC
-            """
-        ),
-        {"session_id": session_id},
-    )
-    turns = [dict(r) for r in turns_res.mappings().all()]
+    turns = await _load_turns(db, session_id)
     if not turns:
         raise ChatRuntimeError("TURN_NOT_FOUND: Không tìm thấy lượt câu hỏi nào.")
 
@@ -1258,6 +1265,7 @@ async def _claim_candidate_message(
     *,
     client_message_id: str | None,
     telemetry: dict[str, Any] | None,
+    preview_key: dict[str, Any] | None = None,
 ) -> MessageClaim:
     """Lock the session, settle idempotency, write the candidate message, commit.
 
@@ -1280,6 +1288,35 @@ async def _claim_candidate_message(
         text("SELECT id FROM interview_sessions WHERE id = :sid FOR UPDATE"),
         {"sid": session_id},
     )
+
+    # The context was read before this lock. A turn that moved meanwhile -- a
+    # concurrent message committing its Phase 3, a replan, the reaper -- must
+    # not receive this answer: re-read under the lock and refuse if the ASKED
+    # turn is no longer the one the context was built from.
+    turns_now = await _load_turns(db, session_id)
+    asked_now = [t for t in turns_now if t.get("status") == "ASKED"]
+    if len(asked_now) != 1 or str(asked_now[0]["id"]) != str(current_turn_id):
+        raise ChatRuntimeError(
+            "INVALID_TURN_STATE: Lượt câu hỏi đã thay đổi trong lúc xử lý. Vui lòng gửi lại câu trả lời."
+        )
+    if preview_key is not None:
+        # V2 spec §7: the preview was validated at redemption, but that was
+        # another transaction. Rebuild the authoritative key from the rows
+        # read under this lock and compare strictly; a moved field means the
+        # decision belongs to a turn that no longer exists as it was.
+        final_key = authoritative_preview_key(
+            session=ctx.session_row, turns=turns_now, transcript=cleaned_content
+        )
+        rejection = validate_preview(
+            preview=preview_key, computed_for=PreviewKey.from_dict(preview_key), final=final_key, strict=True
+        )
+        claim.preview_valid = rejection is None
+        if rejection is not None:
+            trace_event(
+                "interviewer", "preview_rejected_at_claim",
+                session_id=session_id, turn_id=current_turn_id,
+                reason=rejection.reason, fields=",".join(rejection.fields),
+            )
 
     # Check the event id before the generic in-flight guard. Once Phase 1 has
     # committed, retrying this exact event is the only safe way to finish it.
@@ -2502,6 +2539,7 @@ async def process_candidate_message(
     on_early_speech: Any = None,
     elapsed_override_seconds: float | None = None,
     core_engine: InterviewCoreEngine | None = None,
+    preview_key: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Process one final candidate turn.
 
@@ -2520,10 +2558,16 @@ async def process_candidate_message(
         db, session_row, content, elapsed_override_seconds=elapsed_override_seconds
     )
     claim = await _claim_candidate_message(
-        db, ctx, client_message_id=client_message_id, telemetry=telemetry
+        db, ctx, client_message_id=client_message_id, telemetry=telemetry, preview_key=preview_key
     )
     if claim.reply is not None:
         return claim.reply
+    if preview_key is not None and not claim.preview_valid:
+        # The preview's identity moved between redemption and the claim: run
+        # the canonical inference instead of executing a decision made for a
+        # turn that is no longer in that state.
+        precomputed_evaluation = None
+        precomputed_decision = None
 
     # =========================================================================
     # PHASE 2: Controller & Decision Engine (Outside DB lock)

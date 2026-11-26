@@ -22,7 +22,8 @@ from src.core.config import get_settings
 from src.core.security import bearer_scheme, current_user
 from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
-from src.modules.interviews.realtime.anticipation.validator import PreviewKey, preview_key, validate_preview
+from src.modules.interviews.realtime.anticipation.validator import PreviewKey, validate_preview
+from src.modules.interviews.session import preview_authority
 from src.modules.interviews.realtime.events import VOICE_EVENTS, sanitize_fields
 from src.modules.interviews.api.rate_limit import interview_rate_limiter
 from src.modules.interviews.session.chat_runtime import build_session_state_from_db
@@ -329,10 +330,12 @@ async def start_livekit_runtime(
     }
 
 
-_TURNS_SQL = (
-    "SELECT id, turn_index, status, question_version_id, question_snapshot, answer_text, started_at "
-    "FROM interview_turns WHERE session_id = :sid ORDER BY turn_index ASC"
-)
+# The preview's authoritative identity is built by one shared module, used
+# here at issuance and redemption and again by the runtime under the session
+# row lock (session/preview_authority.py). These names stay for callers.
+_TURNS_SQL = preview_authority.TURNS_SQL
+_only_asked_turn = preview_authority.only_asked_turn
+_stable_hash = preview_authority.stable_hash
 
 
 async def _load_turns(db: AsyncSession, session_id: str) -> list[dict]:
@@ -340,62 +343,12 @@ async def _load_turns(db: AsyncSession, session_id: str) -> list[dict]:
     return [dict(row) for row in result.mappings().all()]
 
 
-def _only_asked_turn(turns: list[dict]) -> dict | None:
-    asked = [turn for turn in turns if turn.get("status") == "ASKED"]
-    return asked[0] if len(asked) == 1 else None
-
-
-def _stable_hash(value: Any) -> str:
-    return sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()[:16]
-
-
 def _authoritative_preview_key(
     *, session: dict, current_turn: dict, session_state: dict, transcript: str
 ) -> PreviewKey:
-    """The seven fields of V2 spec §7, read from the server's own state.
-
-    Built the same way at issuance (sealed into the token) and at redemption
-    (recomputed from the database), then compared strictly. Nothing here comes
-    from the worker: the worker knows the session and what it heard, and the
-    rest is whatever the database says *now*.
-
-    * turn_id / question_id: the ASKED turn's row id and its question version.
-    * state_version: a hash of the session fields a decision depends on --
-      stage, which turns were asked and answered, how many probes and
-      clarifications this question has used, the session's plan status. If any
-      of those moved between preview and commit, the preview was reasoning
-      about a different turn.
-    * rubric_version: the frozen rubric of this question (from the turn's
-      snapshot) with its question version -- a changed rubric is a different
-      assessment.
-    * policy_version: the frozen interview contract (blueprint payload and
-      version id) -- a changed policy is a different interview.
-    """
-    snapshot = current_turn.get("question_snapshot") or {}
-    contract = session_state.get("interview_contract") or {}
-    reference = contract.get("reference") or {}
-    return preview_key(
-        session_id=session["id"],
-        turn_id=current_turn.get("id"),
-        question_id=current_turn.get("question_version_id") or current_turn.get("id"),
-        transcript=transcript,
-        state_version=_stable_hash(
-            {
-                "stage": session_state.get("current_stage"),
-                "asked": sorted(map(str, session_state.get("asked_question_ids") or [])),
-                "turn_index": current_turn.get("turn_index"),
-                "turn_in_question": session_state.get("current_turn_in_question"),
-                "clarify_count": session_state.get("clarify_count"),
-                "plan_status": session.get("plan_status"),
-                "status": session.get("status"),
-            }
-        ),
-        rubric_version=_stable_hash(
-            {"rubric": snapshot.get("rubric"), "question_version": current_turn.get("question_version_id")}
-        ),
-        policy_version=_stable_hash(
-            {"version_id": reference.get("version_id"), "policy": contract.get("snapshot_policy")}
-        ),
+    """The seven fields of V2 spec §7 -- see ``session/preview_authority.py``."""
+    return preview_authority.authoritative_preview_key(
+        session=session, current_turn=current_turn, session_state=session_state, transcript=transcript
     )
 
 
@@ -540,6 +493,9 @@ async def send_livekit_runtime_message(
     telemetry = {**payload.telemetry, "transport": "livekit", "modality": modality}
     precomputed_evaluation = None
     precomputed_decision = None
+    # The sealed key travels with the preview so the runtime can validate it
+    # once more under the session row lock (session/preview_authority.py).
+    preview_key_claims: dict | None = None
     if payload.preview_token:
         settings = get_settings()
         try:
@@ -578,6 +534,7 @@ async def send_livekit_runtime_message(
                     )
                     if rejection is None:
                         precomputed_evaluation = preview["evaluation"]
+                        preview_key_claims = dict(preview.get("key") or {})
                         if isinstance(preview.get("decision"), dict):
                             precomputed_decision = preview["decision"]
                     else:
@@ -604,6 +561,7 @@ async def send_livekit_runtime_message(
                 modality=modality,
                 precomputed_evaluation=precomputed_evaluation,
                 precomputed_decision=precomputed_decision,
+                preview_key=preview_key_claims,
             )
         except ValueError as exc:
             await db.rollback()
@@ -638,6 +596,7 @@ async def send_livekit_runtime_message(
                 modality=modality,
                 precomputed_evaluation=precomputed_evaluation,
                 precomputed_decision=precomputed_decision,
+                preview_key=preview_key_claims,
                 on_early_speech=on_early_speech,
             )
         except ValueError as exc:

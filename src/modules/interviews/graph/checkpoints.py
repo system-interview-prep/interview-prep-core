@@ -11,6 +11,20 @@ _checkpointer: Any = None
 _store: Any = None
 
 
+class MemoryStoreUnavailable(RuntimeError):
+    """The candidate-memory store could not be opened for a background job.
+
+    ``permanent`` is true when no retry will help (the ``memory`` /
+    checkpoint-postgres dependencies are not installed in this process);
+    false for a connection problem that a later attempt may not see.
+    """
+
+    def __init__(self, reason: str, *, permanent: bool) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.permanent = permanent
+
+
 def get_interview_checkpointer() -> Any:
     return _checkpointer
 
@@ -44,19 +58,28 @@ async def interview_memory_store() -> AsyncIterator[Any]:
         from psycopg.rows import dict_row
         from psycopg_pool import AsyncConnectionPool
     except ImportError as exc:
-        logging.getLogger(__name__).warning("candidate memory store unavailable: %s", exc)
-        yield None
-        return
-    async with AsyncConnectionPool(
-        _psycopg_url(),
-        min_size=1,
-        max_size=2,
-        open=False,
-        kwargs={"autocommit": True, "row_factory": dict_row, "prepare_threshold": 0},
-    ) as pool:
+        # Permanent for this process: the dependency is not installed.
+        raise MemoryStoreUnavailable(f"missing dependency: {exc}", permanent=True) from exc
+    try:
+        pool = AsyncConnectionPool(
+            _psycopg_url(),
+            min_size=1,
+            max_size=2,
+            open=False,
+            kwargs={"autocommit": True, "row_factory": dict_row, "prepare_threshold": 0},
+        )
+        await pool.open()
+    except Exception as exc:  # noqa: BLE001 - any failure to connect is transient from here
+        raise MemoryStoreUnavailable(f"cannot connect: {type(exc).__name__}: {exc}"[:300], permanent=False) from exc
+    try:
         store = AsyncPostgresStore(pool)
-        await store.setup()
+        try:
+            await store.setup()
+        except Exception as exc:  # noqa: BLE001
+            raise MemoryStoreUnavailable(f"setup failed: {type(exc).__name__}: {exc}"[:300], permanent=False) from exc
         yield store
+    finally:
+        await pool.close()
 
 
 @asynccontextmanager

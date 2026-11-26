@@ -1,8 +1,23 @@
 import asyncio
+import sys
 from collections.abc import Coroutine
 from typing import Any, TypeVar
 
 ResultT = TypeVar("ResultT")
+
+
+def _new_loop() -> asyncio.AbstractEventLoop:
+    """A loop every driver in this worker can use.
+
+    psycopg's async connections (the candidate-memory store, the LangGraph
+    checkpointer) register socket readers with ``loop.add_reader``, which the
+    Windows Proactor loop does not implement: on a Windows host the store pool
+    never connected and every memory job timed out after 30 s. The selector
+    loop supports it; Linux (production) is unaffected either way.
+    """
+    if sys.platform == "win32":
+        return asyncio.SelectorEventLoop()
+    return asyncio.new_event_loop()
 
 
 class WorkerEventLoopRunner:
@@ -18,7 +33,7 @@ class WorkerEventLoopRunner:
 
     def run(self, coroutine: Coroutine[Any, Any, ResultT]) -> ResultT:
         if self._loop is None or self._loop.is_closed():
-            self._loop = asyncio.new_event_loop()
+            self._loop = _new_loop()
             asyncio.set_event_loop(self._loop)
         else:
             try:

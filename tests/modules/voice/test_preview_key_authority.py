@@ -241,6 +241,8 @@ def test_an_unchanged_session_redeems_both_evaluation_and_decision(runtime_app, 
     seen = _redeem(runtime_app, monkeypatch, token=_token(_turns()), now=_turns())
     assert seen["precomputed_evaluation"]["intent"] == "ANSWER"
     assert seen["precomputed_decision"]["action"] == "acknowledge_and_probe"
+    # The sealed key goes with it, for the runtime to check again under the lock.
+    assert seen["preview_key"] == _key(turns=_turns()).as_dict()
 
 
 @pytest.mark.parametrize(
@@ -258,6 +260,7 @@ def test_a_moved_authoritative_version_rejects_the_whole_preview(runtime_app, mo
     seen = _redeem(runtime_app, monkeypatch, token=_token(_turns()), now=now)
     assert seen["precomputed_decision"] is None
     assert seen["precomputed_evaluation"] is None
+    assert seen["preview_key"] is None
 
 
 def test_an_old_token_without_a_key_is_rejected(runtime_app, monkeypatch) -> None:

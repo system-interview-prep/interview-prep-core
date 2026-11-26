@@ -99,6 +99,7 @@ def database_operations(
             duration_seconds=payload.get("duration_seconds", 0.0),
             precomputed_evaluation=payload.get("precomputed_evaluation"),
             precomputed_decision=payload.get("precomputed_decision"),
+            preview_key=payload.get("preview_key"),
             on_early_speech=on_early_speech,
         )
 
@@ -120,11 +121,14 @@ def database_operations(
         if not existing and candidate_memory.enabled() == "readwrite":
             # V2 spec §9: the report is persisted and committed above; extraction
             # is a durable, idempotent background job on the existing Celery/
-            # RabbitMQ worker (memory/extraction_job.py). If the broker refuses
-            # the dispatch, keep the pre-§9 inline run so the memory is not
-            # silently lost. Neither path can undo a finished grade.
-            if not extraction_job.enqueue_memory_extraction(session_id):
-                await candidate_memory.extract_after_session(db, session_id, evaluation=result)
+            # RabbitMQ worker (memory/extraction_job.py). The dispatch is
+            # recorded in PostgreSQL *before* send_task, so a crash in between
+            # is found by the reconciler; if the broker refuses, keep the
+            # pre-§9 inline run so the memory is not silently lost. Neither
+            # path can undo a finished grade.
+            if await extraction_job.mark_queued(db, session_id) is not None:
+                if not extraction_job.enqueue_memory_extraction(session_id):
+                    await candidate_memory.extract_after_session(db, session_id, evaluation=result)
         return result
 
     return {

@@ -2878,3 +2878,121 @@ async def test_a_line_said_with_the_name_still_counts_as_just_said() -> None:
     assert lines == ["Ừm, mình hiểu ý bạn."]
     for i in range(50):
         assert pick_variant(ACK_FALLBACK_VI, f"s:{i}", lines) != "Ừm, mình hiểu ý bạn."
+
+
+# ---------------------------------------------------------------------------
+# V2 stabilization review, part 4: the claim revalidates under the row lock.
+# ---------------------------------------------------------------------------
+
+from src.modules.interviews.session import chat_runtime as _chat_runtime  # noqa: E402
+from src.modules.interviews.session import preview_authority as _preview_authority  # noqa: E402
+
+
+class _RacingMockSession(MockChatSession):
+    """A session whose state changes between the context read and the row lock."""
+
+    def __init__(self, *args, on_lock=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_lock = on_lock
+        self.armed = False  # start_chat_session locks too; arm after the key is sealed
+        self.locks = 0
+
+    async def execute(self, statement, params=None):
+        sql = str(statement)
+        if "FOR UPDATE" in sql and "SELECT id FROM interview_sessions" in sql and self.armed:
+            self.locks += 1
+            if self.locks == 1 and self._on_lock is not None:
+                self._on_lock(self)
+        return await super().execute(statement, params)
+
+
+def _sealed_key(db: MockChatSession, session_row: dict, content: str) -> dict:
+    """The key as redemption sealed it: from the state *before* the lock."""
+    turns = sorted(db.turns.values(), key=lambda t: t["turn_index"])
+    key = _preview_authority.authoritative_preview_key(session=session_row, turns=turns, transcript=content).as_dict()
+    db.armed = True
+    return key
+
+
+class _ReachedTheEngine(Exception):
+    """Raised by the spy once it has seen what the claim handed the engine.
+
+    These tests are about the claim, not the model: what matters is whether
+    the preview reached the inference, so the turn stops right there."""
+
+
+def _spy_run_turn(monkeypatch) -> list:
+    seen: list = []
+
+    async def spy(engine, turn_input, state, **kwargs):
+        seen.append((turn_input.precomputed_evaluation, turn_input.precomputed_decision))
+        raise _ReachedTheEngine()
+
+    monkeypatch.setattr(_chat_runtime, "run_turn", spy)
+    return seen
+
+
+_PREVIEW_EVALUATION = {"intent": "ANSWER", "sufficiency_status": "INSUFFICIENT", "missing_aspect": "chunking"}
+_PREVIEW_DECISION = {"action": "acknowledge_and_probe", "args": {"kind": "gap", "missing_aspect": "chunking"}, "reason": "preview"}
+
+
+@pytest.mark.asyncio
+async def test_a_preview_whose_rubric_moved_between_redemption_and_claim_is_not_executed(mock_session_data, monkeypatch):
+    session_row, turns = mock_session_data
+
+    def rubric_changes_under_us(db: MockChatSession) -> None:
+        db.turns["turn-1"]["question_snapshot"]["rubric"] = {"criteria": "đã đổi sau khi redemption"}
+
+    db = _RacingMockSession(session_row, turns, on_lock=rubric_changes_under_us)
+    await start_chat_session(db, session_row)
+    content = "Em chỉ dùng thư viện có sẵn thôi, không nhớ rõ cấu trúc bên trong."
+    key = _sealed_key(db, session_row, content)
+    seen = _spy_run_turn(monkeypatch)
+
+    with pytest.raises(_ReachedTheEngine):
+        await process_candidate_message(
+            db, session_row, client_message_id="race-rubric", content=content,
+            precomputed_evaluation=_PREVIEW_EVALUATION, precomputed_decision=_PREVIEW_DECISION, preview_key=key,
+        )
+    assert seen == [(None, None)], "the stale preview must not reach the engine"
+    assert db.locks == 1 and any(m.get("client_message_id") == "race-rubric" for m in db.messages), "the answer itself was claimed"
+
+
+@pytest.mark.asyncio
+async def test_a_preview_whose_identity_still_holds_under_the_lock_reaches_the_engine(mock_session_data, monkeypatch):
+    session_row, turns = mock_session_data
+    db = _RacingMockSession(session_row, turns)
+    await start_chat_session(db, session_row)
+    content = "Em chỉ dùng thư viện có sẵn thôi, không nhớ rõ cấu trúc bên trong."
+    key = _sealed_key(db, session_row, content)
+    seen = _spy_run_turn(monkeypatch)
+
+    with pytest.raises(_ReachedTheEngine):
+        await process_candidate_message(
+            db, session_row, client_message_id="race-none", content=content,
+            precomputed_evaluation=_PREVIEW_EVALUATION, precomputed_decision=_PREVIEW_DECISION, preview_key=key,
+        )
+    assert seen == [(_PREVIEW_EVALUATION, _PREVIEW_DECISION)]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_advanced_between_the_read_and_the_lock_is_refused(mock_session_data, monkeypatch):
+    """A concurrent message committed its Phase 3 after we read the turns but
+    before we locked: this answer must not be written to the old turn."""
+    session_row, turns = mock_session_data
+
+    def other_message_advanced_the_turn(db: MockChatSession) -> None:
+        db.turns["turn-1"]["status"] = "ANSWERED"
+        db.turns["turn-2"]["status"] = "ASKED"
+
+    db = _RacingMockSession(session_row, turns, on_lock=other_message_advanced_the_turn)
+    await start_chat_session(db, session_row)
+    db.armed = True
+    before = len(db.messages)
+    seen = _spy_run_turn(monkeypatch)
+
+    with pytest.raises(ChatRuntimeError, match="INVALID_TURN_STATE"):
+        await process_candidate_message(db, session_row, client_message_id="race-advance", content="Em trả lời câu cũ.")
+    assert len(db.messages) == before, "nothing was written"
+    assert seen == [], "no inference ran"
+
