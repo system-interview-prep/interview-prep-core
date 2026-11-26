@@ -134,6 +134,10 @@ TTS_KEEPALIVE_SECONDS = 3.0
 #: worth waiting for: the synthesis is cancelled and the line, if it is
 #: still wanted at the pause, is synthesized at playback.
 PREPARE_FIRST_PCM_TIMEOUT_SECONDS = 2.5
+#: After the first PCM, a gap this long between two pieces is a stalled
+#: stream (the VieNeu adapter sets no read timeout): the synthesis is ended
+#: as failed, so a clip being played finishes instead of waiting forever.
+PREPARE_IDLE_TIMEOUT_SECONDS = 2.0
 
 
 def _delta_ms(start: float | None, end: float | None) -> int | None:
@@ -366,9 +370,12 @@ class VoiceLabAgent(Agent):
 
     async def _drain_prepare(self) -> None:
         """Wait for cancelled syntheses to unwind (their TTS streams to close)."""
-        closing = [t for t in getattr(self, "_prepare_closing", set()) if not t.done()]
+        pool = getattr(self, "_prepare_closing", set())
+        closing = [t for t in pool if not t.done()]
         if closing:
             await asyncio.gather(*closing, return_exceptions=True)
+        # Done callbacks run a tick later; the set must be empty when this returns.
+        pool.difference_update({t for t in pool if t.done()})
 
     def _prepared_audio_usable(self, text: str) -> bool:
         """Is there cached audio for this line that may be played right now?
@@ -386,12 +393,21 @@ class VoiceLabAgent(Agent):
         return clip.usable if isinstance(clip, GrowingClip) else bool(clip.pcm)
 
     async def shutdown_backchannel(self) -> None:
-        """Session end: no synthesis task and no Talker inference survive it."""
-        self._cancel_prepare("shutdown")
-        await self._drain_prepare()
+        """Session end: no synthesis task and no Talker inference survive it.
+
+        Order matters: first refuse new work (the flag below, and the
+        coordinator disables itself at the top of ``aclose``), then cancel,
+        then drain -- so nothing started while the drain was in progress.
+        """
+        self._backchannel_shutting_down = True
         coordinator = getattr(self, "_backchannel", None)
         if coordinator is not None:
+            coordinator.enabled = False
+        self._cancel_prepare("shutdown")
+        if coordinator is not None:
             await coordinator.aclose()
+        self._cancel_prepare("shutdown")  # anything a racing deliver started before the flag landed
+        await self._drain_prepare()
 
     async def _prepare_backchannel_audio(self, text: str) -> bool:
         """Synthesize a validated backchannel into the speech cache, progressively.
@@ -413,7 +429,7 @@ class VoiceLabAgent(Agent):
         """
         cache = getattr(self, "_speech_cache", None)
         tts = getattr(self, "_prepare_tts", None)
-        if cache is None or tts is None:
+        if cache is None or tts is None or getattr(self, "_backchannel_shutting_down", False):
             return False
         key = localize_particles(text)
         existing = cache.get(key)
@@ -435,8 +451,19 @@ class VoiceLabAgent(Agent):
         async def pump() -> None:
             nonlocal clip
             outcome = "complete"
+            iterator = stream.__aiter__()
             try:
-                async for event in stream:
+                while True:
+                    # Bounded between pieces once audio has started: a stalled
+                    # provider must not leave a playing clip waiting forever.
+                    idle = PREPARE_IDLE_TIMEOUT_SECONDS if (clip is not None and clip.has_pcm) else None
+                    try:
+                        event = await (asyncio.wait_for(iterator.__anext__(), idle) if idle else iterator.__anext__())
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError:
+                        outcome = "stalled"
+                        break
                     frame = getattr(event, "frame", None)
                     if frame is None:
                         continue

@@ -54,6 +54,9 @@ class GrowingClip:
 
     #: Hard bound on what one growing clip may hold (30 s of 16 kHz mono 16-bit).
     MAX_BYTES = 30 * 16000 * 2
+    #: A consumer waiting this long for the next piece gives up: the producer
+    #: is gone without finishing. Playback ends with what arrived.
+    STREAM_WAIT_TIMEOUT_SECONDS = 3.0
 
     def __init__(self, *, sample_rate: int, channels: int, max_bytes: int | None = None) -> None:
         self.sample_rate = sample_rate
@@ -153,7 +156,11 @@ class GrowingClip:
             if index >= len(self._pieces):
                 self.underruns += 1
                 started = asyncio.get_running_loop().time()
-                await self._event.wait()
+                try:
+                    await asyncio.wait_for(self._event.wait(), self.STREAM_WAIT_TIMEOUT_SECONDS)
+                except asyncio.TimeoutError:
+                    # Producer gone without finish(): never block playback on it.
+                    self.finish(failed=True, now=started)
                 waited = round((asyncio.get_running_loop().time() - started) * 1000)
                 self.wait_ms_total += waited
                 self.wait_ms_max = max(self.wait_ms_max, waited)

@@ -338,10 +338,115 @@ async def test_speech_end_counts_usable_pcm_not_merely_available_pcm() -> None:
     usable["value"] = False  # the synthesis failed after the first PCM
     coordinator.on_user_stopped()
     speech_end = [f for e, f in events if e == "backchannel_speech_end"][0]
-    assert speech_end == {"pcm_available": True, "pcm_usable": False, "pending": True}
+    assert speech_end == {"pcm_available": True, "pcm_usable": False, "pending": True, "rejection": None}
     assert coordinator.stats.speech_ends_with_audio == 0
     assert played == ["Ừ."], "still spoken -- synthesized at playback"
     assert [f for e, f in events if e == "backchannel_spoken"][0]["prepared_audio"] is False
+
+
+@pytest.mark.asyncio
+async def test_pcm_usable_is_the_playback_eligibility_check_itself() -> None:
+    """Run-7 item 1: a pending line with valid PCM whose transcript was revised,
+    whose turn ended, or whose reply exists is not usable -- and not played."""
+    async def talker(request):
+        yield {"type": "unit", "text": "Ừ.", "kind": "minimal", "index": 1, "ttft_ms": 300, "at_ms": 400}
+        yield {"type": "done", "kind": "minimal", "ttft_ms": 300, "total_ms": 500, "units": 0, "rejected": [], "reason": None}
+
+    async def prepare(_text: str) -> bool:
+        return True
+
+    for case in ("revised", "new_turn", "reply_ready"):
+        events: list[tuple[str, dict]] = []
+        played: list[str] = []
+        coordinator = bc.BackchannelCoordinator(
+            talker, lambda text, kind: played.append(text) or SimpleNamespace(done=lambda: False), enabled=True,
+            min_gap_seconds=0.0, prepare=prepare, audio_usable=lambda text: True,
+            on_event=lambda e, **f: events.append((e, f)),
+        )
+        coordinator.on_user_speaking()
+        written_for = "em dùng redis làm cache và đặt ttl năm phút cho từng key"
+        coordinator.observe(written_for, phase="listening")
+        await coordinator._task
+        if case == "revised":
+            coordinator.note_transcript("em dùng kafka làm cache và đặt ttl năm phút cho từng key")
+        elif case == "new_turn":
+            coordinator._generation += 1
+        else:
+            coordinator._reply_ready = True
+        coordinator.on_user_stopped()
+        end = [f for e, f in events if e == "backchannel_speech_end"][0]
+        assert end["pcm_available"] is True and end["pcm_usable"] is False, case
+        assert end["rejection"] in ("transcript_revised", "new_turn", "reply_ready"), case
+        assert played == [], case
+        assert coordinator.stats.speech_ends_with_audio == 0, case
+
+
+@pytest.mark.asyncio
+async def test_a_stream_that_stalls_after_the_first_pcm_is_ended_and_playback_finishes(monkeypatch) -> None:
+    """Run-7 item 2: VieNeu sets no read timeout; a stall after audio began must
+    not leave a playing clip waiting forever."""
+    from src.modules.interviews.realtime import runtime as livekit_agent
+    from tests.modules.voice.test_backchannel_runtime import _agent
+
+    monkeypatch.setattr(livekit_agent, "PREPARE_IDLE_TIMEOUT_SECONDS", 0.05)
+    agent, events, _client, _spoken = _agent()
+    agent._speech_cache = SpeechAudioCache(voice_signature="vieneu|test", directory=None)
+    log: list[str] = []
+    closed: list[str] = []
+    agent._prepare_tts = SimpleNamespace(synthesize=lambda text: _ForeverStream(log, pieces_before_hang=2, closed=closed))
+    assert await agent._prepare_backchannel_audio("Bị kẹt giữa chừng.") is True
+    clip = agent._speech_cache.get("Bị kẹt giữa chừng.")
+    assert isinstance(clip, GrowingClip)
+
+    async def text_stream():
+        yield "Bị kẹt giữa chừng."
+
+    frames = await asyncio.wait_for(_collect(agent.tts_node(text_stream(), None)), 2.0)
+    assert len(frames) == 2, "played what had arrived, then ended instead of waiting"
+    await agent._prepare_task
+    assert clip.failed and clip.to_clip() is None and closed == ["closed"]
+    assert events.of("voice_backchannel_synthesized")[-1]["outcome"] == "stalled"
+    assert agent._speech_cache.get("Bị kẹt giữa chừng.") is None, "a stalled clip is not replayed"
+    playout = events.of("voice_backchannel_playout")[-1]
+    assert playout["complete"] is False and playout["waits"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_a_consumer_whose_producer_vanished_gives_up_after_the_bound(monkeypatch) -> None:
+    monkeypatch.setattr(GrowingClip, "STREAM_WAIT_TIMEOUT_SECONDS", 0.05)
+    clip = GrowingClip(sample_rate=16000, channels=1)
+    clip.append(b"\x01\x00" * 320)
+    pieces = await asyncio.wait_for(_collect(clip.stream()), 1.0)
+    assert len(pieces) == 1 and clip.failed and clip.finished
+
+
+@pytest.mark.asyncio
+async def test_shutdown_refuses_new_preparation_while_draining(monkeypatch) -> None:
+    """Run-7 item 3: a deliver that races the shutdown starts no synthesis and no inference."""
+    from tests.modules.voice.test_backchannel_runtime import _agent
+
+    agent, _events, client, _spoken = _agent()
+    agent._speech_cache = SpeechAudioCache(voice_signature="vieneu|test", directory=None)
+    log: list[str] = []
+    agent._prepare_tts = SimpleNamespace(synthesize=lambda text: _ForeverStream(log, pieces_before_hang=1))
+    assert await agent._prepare_backchannel_audio("Một.") is True
+    first = agent._prepare_task
+
+    async def race() -> None:
+        # Lands while shutdown is awaiting the drain of `first`.
+        await asyncio.sleep(0)
+        assert agent._backchannel.observe("Em dùng Redis làm cache và đặt TTL năm phút cho từng key", phase="listening") is False
+        assert await agent._prepare_backchannel_audio("Hai.") is False
+
+    await asyncio.gather(agent.shutdown_backchannel(), race())
+    assert first.done() and agent._prepare_task is None and agent._prepare_closing == set()
+    assert log == ["start"], "no second synthesis was ever started"
+    assert agent._backchannel._task is None and agent._backchannel.enabled is False
+    assert client.streams == []
+
+
+async def _collect(aiter):
+    return [x async for x in aiter]
 
 
 @pytest.mark.asyncio

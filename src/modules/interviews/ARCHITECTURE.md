@@ -801,6 +801,37 @@ hang still costs the 2.5 s bound once per line; generator waits are
 reported but audible underruns are not observable from the agent; none of
 this has run in a room since `18b9adc` — run 7 is the measurement.
 
+### Run-7 final corrections (2026-11-26; zero paid calls)
+
+The independent review of `1ac235f` left four items:
+
+1. **One eligibility check for metrics and playback.** `pcm_usable` at a
+   speech end is now the playback check itself: `_pending_rejection`
+   (turn, reply readiness, expiry, transcript revision) plus cached-PCM
+   validity; `_play_pending` uses the same function, so a line counted as
+   prepared audio is a line that would have played, and the event carries
+   the rejection reason (`test_pcm_usable_is_the_playback_eligibility_check_itself`).
+2. **Stalls after the first PCM are bounded.** VieNeu's adapter sets no read
+   timeout (`read=None`); the pump now waits at most
+   `PREPARE_IDLE_TIMEOUT_SECONDS` (2 s) between pieces once audio has
+   started, ends the synthesis as `stalled` (failed, forgotten, never
+   frozen), and a playing clip finishes with what arrived instead of
+   waiting; a consumer whose producer vanished without `finish()` gives up
+   after `GrowingClip.STREAM_WAIT_TIMEOUT_SECONDS` (3 s)
+   (`…stalls_after_the_first_pcm…`, `…producer_vanished…`).
+3. **Shutdown ordering.** `shutdown_backchannel` first refuses new work (a
+   flag in the runtime; the coordinator disables itself at the top of
+   `aclose`), then cancels, then drains, and cancels once more for anything a
+   racing deliver started before the flag landed; the drains leave their
+   task sets empty (`test_shutdown_refuses_new_preparation_while_draining`,
+   deterministic: the race is a task scheduled on the same loop tick).
+4. **Sample alignment of VieNeu frames — verified, no defect.** The adapter
+   pushes raw PCM into LiveKit's `AudioEmitter`, whose `AudioByteStream`
+   frames it into exactly `samples_per_channel` samples and buffers the
+   remainder (SDK docstring), so every `AudioFrame` the pump sees is
+   sample-aligned. PCM handling was not changed; the defensive trim from
+   the audit stays as a no-op guard.
+
 ### Remaining migration work
 
 | Brief | Outstanding |

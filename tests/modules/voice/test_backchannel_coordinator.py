@@ -163,7 +163,7 @@ async def test_a_line_that_arrives_while_the_candidate_talks_is_prepared_and_pla
     spoken = [f for e, f in events if e == "backchannel_spoken"][0]
     assert spoken["prepared_audio"] is True and spoken["trigger"] == "vad_stop"
     speech_end = [f for e, f in events if e == "backchannel_speech_end"][0]
-    assert speech_end == {"pcm_available": True, "pcm_usable": True, "pending": True}
+    assert speech_end == {"pcm_available": True, "pcm_usable": True, "pending": True, "rejection": None}
     stats = coordinator.stats.as_dict()
     assert stats["prepared"] == 1 and stats["spoken_prepared"] == 1 and stats["wasted"] == 0
     assert stats["speech_ends"] == 1 and stats["speech_ends_with_audio"] == 1
@@ -194,9 +194,13 @@ async def test_a_prepared_line_is_dropped_as_wasted_when_the_turn_moves_on_or_it
     coordinator2.on_user_stopped()
     assert played2 == [] and [f for e, f in events2 if e == "backchannel_discarded"][-1]["reason"] == "expired"
     # A speech end with nothing prepared is counted too: coverage, not just hits.
-    assert [f for e, f in events2 if e == "backchannel_speech_end"][-1]["pcm_usable"] is True
+    # The expired line had PCM but was not eligible: metrics and playback agree.
+    expired_end = [f for e, f in events2 if e == "backchannel_speech_end"][-1]
+    assert expired_end["pcm_available"] is True and expired_end["pcm_usable"] is False and expired_end["rejection"] == "expired"
     coordinator2.on_user_stopped()
-    assert [f for e, f in events2 if e == "backchannel_speech_end"][-1] == {"pcm_available": False, "pcm_usable": False, "pending": False}
+    assert [f for e, f in events2 if e == "backchannel_speech_end"][-1] == {
+        "pcm_available": False, "pcm_usable": False, "pending": False, "rejection": None,
+    }
 
 
 @pytest.mark.asyncio

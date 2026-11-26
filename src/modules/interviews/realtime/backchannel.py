@@ -264,16 +264,30 @@ class BackchannelCoordinator:
         if self.enabled:
             self.stats.speech_ends += 1
             pending = self._pending
-            # "available": PCM arrived for the pending line; "usable": it is
-            # still valid audio (not failed, not cancelled). Only the second
-            # counts as prepared audio at this speech end.
+            # "pcm_available": PCM arrived for the pending line. "pcm_usable":
+            # the line would be played *right now* -- the same check playback
+            # makes (turn, reply, expiry, transcript revision) plus cached
+            # PCM that is still valid. Only the second counts as prepared
+            # audio at this speech end, so metrics and playback agree.
             available = pending is not None and bool(pending.get("audio_ready"))
-            usable = available and self._usable(pending)
+            rejection = self._pending_rejection(pending) if pending is not None else "none_pending"
+            usable = available and rejection is None and self._usable(pending)
             if usable:
                 self.stats.speech_ends_with_audio += 1
             self._emit("backchannel_speech_end", pcm_available=available, pcm_usable=usable,
-                       pending=pending is not None)
+                       pending=pending is not None, rejection=rejection if pending is not None else None)
         self._play_pending(trigger="vad_stop")
+
+    def _pending_rejection(self, pending: dict[str, Any]) -> str | None:
+        """Why the pending line may not be played now, or None. Used by playback and metrics alike."""
+        if pending["generation"] != self._generation:
+            return "new_turn"
+        if self._reply_ready:
+            return "reply_ready"
+        if perf_counter() - pending["ready_at"] > self._lifetime:
+            return "expired"
+        return transcript_revised(str(pending.get("prepared_for_text") or ""), self._current_transcript,
+                                  max_drift_words=MAX_DRIFT_WORDS)
 
     def _usable(self, pending: dict[str, Any]) -> bool:
         if not pending.get("audio_ready"):
@@ -317,19 +331,9 @@ class BackchannelCoordinator:
             return False
         if self._speaking:
             return False
-        if pending["generation"] != self._generation:
-            self._drop_pending("new_turn")
-            return False
-        if self._reply_ready:
-            self._drop_pending("reply_ready")
-            return False
-        if perf_counter() - pending["ready_at"] > self._lifetime:
-            self._drop_pending("expired")
-            return False
-        revised = transcript_revised(str(pending.get("prepared_for_text") or ""), self._current_transcript,
-                                     max_drift_words=MAX_DRIFT_WORDS)
-        if revised:
-            self._drop_pending(revised)
+        rejection = self._pending_rejection(pending)
+        if rejection:
+            self._drop_pending(rejection)
             return False
         self._pending = None
         self._speak(pending["unit"], pending["phase"], held=perf_counter() - pending["ready_at"],
@@ -381,6 +385,7 @@ class BackchannelCoordinator:
         closing = [t for t in self._closing if not t.done()]
         if closing:
             await asyncio.gather(*closing, return_exceptions=True)
+        self._closing.difference_update({t for t in self._closing if t.done()})
 
     def grew_enough(self, transcript: str) -> bool:
         """Has the candidate said enough new words since the last request to ask again?"""
@@ -557,7 +562,8 @@ class BackchannelCoordinator:
             self._on_event(event, **fields)
 
     async def aclose(self) -> None:
-        """Shutdown: cancel the inference, drop the pending line (and its synthesis), wait."""
+        """Shutdown: refuse new work first, then cancel the inference, drop the pending line, wait."""
+        self.enabled = False  # observe() starts nothing from here on
         task = self._task
         self._cancel("close")
         self._drop_pending("close")
