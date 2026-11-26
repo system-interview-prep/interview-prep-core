@@ -87,6 +87,10 @@ VOICE_EVENTS = frozenset(
         # at every VAD end of speech, whether prepared audio was available.
         "voice_backchannel_prepared",
         "voice_backchannel_speech_end",
+        # Progressive PCM: first byte / full synthesis of a prepared line, and
+        # how its playout went (underruns).
+        "voice_backchannel_synthesized",
+        "voice_backchannel_playout",
         "voice_stt_diagnostic",
         "voice_tts_fallback",
         "voice_provider_degraded",

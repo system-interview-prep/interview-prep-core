@@ -188,11 +188,14 @@ async def test_a_stable_partial_lets_the_talker_prepare_while_the_candidate_spea
     agent._enable_speculative_preview = False
     agent.on_user_speaking()
     partial = "Em dùng Redis làm cache và đặt TTL năm phút cho từng key còn khi"
-    agent.on_interim_transcript("Em dùng Redis")   # too little to ask about
+    agent.on_interim_transcript(partial)   # first interim: nothing to agree with yet
     assert client.streams == []
-    agent.on_interim_transcript(partial)   # grew by enough words: asked while still talking (run 6)
+    # The next interim agrees on the first 13 words and revises the tail: the
+    # Talker is given the agreed prefix, while the candidate is still talking.
+    agent.on_interim_transcript(partial + " dữ liệu")
     await asyncio.sleep(0.01)              # the coordinator's task reaches the API
     assert len(client.streams) == 1 and client.streams[0][1]["speaking"] is True
+    assert client.streams[0][1]["transcript"] == partial, "the stable prefix, not the moving tail"
     await asyncio.sleep(0.05)
     assert spoken == [], "nothing plays while the candidate is talking"
     agent.on_user_stopped()

@@ -13,11 +13,13 @@ Plain PCM bytes, no LiveKit types, so this stays testable without the SDK.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
 import wave
 from collections import OrderedDict
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +40,86 @@ class SpeechClip:
         return [self.pcm[i : i + step] for i in range(0, len(self.pcm), step)]
 
 
+class GrowingClip:
+    """A clip still being synthesized: playback may start on what has arrived.
+
+    Progressive PCM for a prepared backchannel (brief 2026-11-26): VieNeu
+    streams PCM over SSE, so the first bytes are there ~0.45 s in while the
+    whole line takes 2-3 s. ``append`` is called by the synthesizer as pieces
+    arrive, ``finish`` when it is done (or failed); ``stream`` yields
+    playout-sized pieces as they become available and waits for more --
+    counting every wait as an underrun -- until ``finish``. Same sample
+    format as :class:`SpeechClip`; ``to_clip`` freezes it once complete.
+    """
+
+    def __init__(self, *, sample_rate: int, channels: int) -> None:
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self._pieces: list[bytes] = []
+        self._bytes = 0
+        self._finished = False
+        self._failed = False
+        self._event = asyncio.Event()
+        self.underruns = 0
+        self.first_pcm_at: float | None = None
+        self.finished_at: float | None = None
+
+    @property
+    def audio_ms(self) -> int:
+        return self._bytes * 1000 // (self.sample_rate * self.channels * _SAMPLE_WIDTH) if self.sample_rate else 0
+
+    @property
+    def finished(self) -> bool:
+        return self._finished
+
+    @property
+    def failed(self) -> bool:
+        return self._failed
+
+    def append(self, pcm: bytes, *, now: float | None = None) -> None:
+        if not pcm or self._finished:
+            return
+        if self.first_pcm_at is None:
+            self.first_pcm_at = now
+        self._pieces.append(pcm)
+        self._bytes += len(pcm)
+        self._event.set()
+
+    def finish(self, *, failed: bool = False, now: float | None = None) -> None:
+        self._finished = True
+        self._failed = failed
+        self.finished_at = now
+        self._event.set()
+
+    def chunks(self, frame_ms: int = 20) -> list[bytes]:
+        """What has arrived so far, in playout-sized pieces (complete clips only, normally)."""
+        return SpeechClip(pcm=b"".join(self._pieces), sample_rate=self.sample_rate, channels=self.channels).chunks(frame_ms)
+
+    def to_clip(self) -> SpeechClip:
+        return SpeechClip(pcm=b"".join(self._pieces), sample_rate=self.sample_rate, channels=self.channels)
+
+    async def stream(self, frame_ms: int = 20) -> AsyncIterator[bytes]:
+        """Playout pieces as they become available; ends when synthesis has finished."""
+        step = max(1, self.sample_rate * frame_ms // 1000) * self.channels * _SAMPLE_WIDTH
+        buffer = b""
+        index = 0
+        while True:
+            while index < len(self._pieces):
+                buffer += self._pieces[index]
+                index += 1
+                while len(buffer) >= step:
+                    yield buffer[:step]
+                    buffer = buffer[step:]
+            if self._finished:
+                break
+            self._event.clear()
+            if index >= len(self._pieces):
+                self.underruns += 1
+                await self._event.wait()
+        if buffer:
+            yield buffer
+
+
 class SpeechAudioCache:
     def __init__(self, *, voice_signature: str, directory: Path | None, memory_size: int = 12) -> None:
         # Audio from one voice must never be replayed for another one.
@@ -54,9 +136,12 @@ class SpeechAudioCache:
     def _path(self, key: str) -> Path | None:
         return self._directory / f"{key}.wav" if self._directory else None
 
-    def get(self, text: str) -> SpeechClip | None:
+    def get(self, text: str) -> "SpeechClip | GrowingClip | None":
         key = self._key(text)
         clip = self._memory.get(key)
+        if isinstance(clip, GrowingClip) and clip.failed:
+            self._memory.pop(key, None)
+            return None
         if clip is None:
             clip = self._read(key)
             if clip is not None:
@@ -68,7 +153,12 @@ class SpeechAudioCache:
             self.saved_characters += len(text)
         return clip
 
-    def put(self, text: str, clip: SpeechClip, *, persist: bool) -> None:
+    def put(self, text: str, clip: "SpeechClip | GrowingClip", *, persist: bool) -> None:
+        if isinstance(clip, GrowingClip):
+            # A clip still arriving: in memory only, replaced by its frozen
+            # form by whoever finishes it.
+            self._remember(self._key(text), clip)
+            return
         if not clip.pcm:
             return
         key = self._key(text)
@@ -76,7 +166,7 @@ class SpeechAudioCache:
         if persist:
             self._write(key, clip)
 
-    def _remember(self, key: str, clip: SpeechClip) -> None:
+    def _remember(self, key: str, clip: "SpeechClip | GrowingClip") -> None:
         self._memory[key] = clip
         self._memory.move_to_end(key)
         while len(self._memory) > self._memory_size:

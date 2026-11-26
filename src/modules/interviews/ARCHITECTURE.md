@@ -713,6 +713,54 @@ talking; the model is told the transcript is partial and the drift check
 still guards playback. Not yet measured: one more B session (~17 calls)
 would show whether availability at speech end rises from 6 %.
 
+### Speech-end responsiveness (brief 2026-11-26; built and measured offline, not yet in a room)
+
+Objective: the silence between the candidate's last voiced PCM and the
+first audible contextual backchannel, reported with coverage. The Thinker
+is untouched.
+
+**Stable prefixes from Qwen interims, measured** (real server, real-time
+paced, three pilot answers, no LLM): the tail Qwen revises is short —
+median 1 word, max 7–10 — so the words two successive interims agree on
+are nearly the whole interim (median 13 / 14, 5 / 8, 16 / 16 words), and
+**39 of 71 interims (55 %) carried ≥ 8 words that survived unchanged into
+the final transcript** while the candidate was still talking. That is the
+content the Talker is now given mid-speech: `stable_prefix(previous,
+current)` in `realtime/backchannel.py`, instead of either the whole moving
+interim (run 6's growing-partial trigger) or a transcript that must repeat
+unchanged (run 5's, which fired only in pauses).
+
+**Revision checks before playback** (`transcript_revised`): the current
+transcript must still start with the stretch the line was written for
+(one re-recognized token tolerated, two are a revision), a negation must
+not have appeared in or vanished from that stretch, and drift stays ≤ 12
+words — a replacement or a flipped meaning is caught whatever the word
+count. Deterministic; a scheduling check, not a judgement of the line.
+
+**Progressive PCM in the existing cache** (`tts/cache.py::GrowingClip`):
+`_prepare_backchannel_audio` puts a growing clip into the speech cache on
+the **first PCM** VieNeu streams (~0.45 s warm) and returns ready then; the
+rest of the synthesis continues in its own task, also while the clip is
+already playing through `tts_node`, which yields pieces as they arrive and
+counts each wait as an underrun (`voice_backchannel_playout`); the clip is
+frozen into a `SpeechClip` when complete (`voice_backchannel_synthesized`
+with first-PCM and total ms). Readiness no longer waits for the whole line
+(run 6: 3 090 ms for the one prepared line). No new TTS, no new service.
+
+**Speech-end chain, instrumented end to end:** last voiced PCM (Qwen's
+diagnostic) → VAD stop (agent) → playback scheduling (`voice_backchannel_spoken`
+with `trigger=vad_stop`) → first client-received frame (driver,
+`client_first_frame_ms`) → first client-audible frame (driver TTFA). On the
+synthetic speaker the first leg alone is ~1.4 s (run 4/6); a person's is
+expected near the 0.45 s VAD `min_silence` and must be measured on a
+person. VAD thresholds were not changed.
+
+**Not yet measured:** the rerun of session B (~17 calls) that shows prepared
+audio coverage with the stable-prefix trigger and progressive PCM, and the
+human-speaker sessions (actual speech-end latency, VAD latency on a person,
+interruptions, false cuts, relevance, naturalness). Both need paid calls
+and are not authorized by this brief.
+
 ### Remaining migration work
 
 | Brief | Outstanding |

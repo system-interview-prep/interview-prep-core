@@ -35,7 +35,58 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["BackchannelCoordinator", "BackchannelStats"]
+__all__ = ["BackchannelCoordinator", "BackchannelStats", "stable_prefix", "transcript_revised"]
+
+#: Words that flip the meaning of what was said; a prepared line written
+#: before one appeared (or disappeared) in the part it covered is stale.
+_NEGATIONS = frozenset({"không", "chưa", "chẳng", "đâu", "ko", "not", "never", "no", "n't"})
+
+
+def stable_prefix(previous: str, current: str) -> str:
+    """The words two successive interims agree on, from the start.
+
+    Qwen revises the tail of most interims while the candidate talks; the
+    part before the first differing word is what a reader could trust at
+    that moment, and it is what the Talker is given mid-speech.
+    """
+    a, b = str(previous or "").split(), str(current or "").split()
+    n = 0
+    for x, y in zip(a, b):
+        if x.casefold() != y.casefold():
+            break
+        n += 1
+    return " ".join(b[:n])
+
+
+def transcript_revised(prepared_for: str, current: str, *, max_drift_words: int = 12) -> str | None:
+    """Why a line written for ``prepared_for`` no longer fits ``current``, or None.
+
+    Checks, in order: the current transcript still *starts with* what the
+    line was written for (a replacement or re-recognition of those words is
+    a revision, whatever the word count); a negation did not appear in, or
+    vanish from, that stretch; and the candidate has not gone on for more
+    than ``max_drift_words`` since. Deterministic -- a scheduling check, not
+    a judgement of the line.
+    """
+    before = str(prepared_for or "").split()
+    now = str(current or "").split()
+    if not before:
+        return None
+    if len(now) < len(before):
+        return "transcript_shrank"
+    covered = now[: len(before)]
+    if [w.casefold() for w in covered] != [w.casefold() for w in before]:
+        # Allow a single differing word (Qwen re-recognizing one token) unless it is a negation.
+        diffs = [i for i, (x, y) in enumerate(zip(before, covered)) if x.casefold() != y.casefold()]
+        if len(diffs) > 1 or any(before[i].casefold() in _NEGATIONS or covered[i].casefold() in _NEGATIONS for i in diffs):
+            return "transcript_revised"
+    neg_before = sum(1 for w in before if w.casefold() in _NEGATIONS)
+    neg_now = sum(1 for w in covered if w.casefold() in _NEGATIONS)
+    if neg_before != neg_now:
+        return "negation_changed"
+    if len(now) - len(before) > max_drift_words:
+        return "context_moved"
+    return None
 
 PHASE_LISTENING = "listening"
 PHASE_PROCESSING = "processing"
@@ -217,9 +268,10 @@ class BackchannelCoordinator:
         if perf_counter() - pending["ready_at"] > self._lifetime:
             self._drop_pending("expired")
             return False
-        drift = len(self._current_transcript.split()) - int(pending.get("prepared_for") or 0)
-        if pending.get("prepared_for") and drift > MAX_DRIFT_WORDS:
-            self._drop_pending("context_moved")
+        revised = transcript_revised(str(pending.get("prepared_for_text") or ""), self._current_transcript,
+                                     max_drift_words=MAX_DRIFT_WORDS)
+        if revised:
+            self._drop_pending(revised)
             return False
         self._pending = None
         self._speak(pending["unit"], pending["phase"], held=perf_counter() - pending["ready_at"],
@@ -356,7 +408,8 @@ class BackchannelCoordinator:
                         break
                     if kind != "unit":
                         continue
-                    if await self._deliver(item, generation, phase, prepared_for=int(request.get("prepared_for_words") or 0)):
+                    if await self._deliver(item, generation, phase, prepared_for=int(request.get("prepared_for_words") or 0),
+                                           request_text=str(request.get("transcript") or "")):
                         spoken += 1
             finally:
                 # Leaving the loop early (done, cancelled) must close the
@@ -389,7 +442,8 @@ class BackchannelCoordinator:
             spoken=spoken,
         )
 
-    async def _deliver(self, unit: dict[str, Any], generation: int, phase: str, *, prepared_for: int = 0) -> bool:
+    async def _deliver(self, unit: dict[str, Any], generation: int, phase: str, *, prepared_for: int = 0,
+                       request_text: str = "") -> bool:
         text = str(unit.get("text") or "").strip()
         if not text:
             return False
@@ -397,12 +451,13 @@ class BackchannelCoordinator:
             return self._discard("new_turn", unit, 0.0)
         if self._reply_ready:
             return self._discard("reply_ready", unit, 0.0)
+        prepared_for_text = str(request_text or "")
         if not self._speaking:
             # A pause is already here: say it now (TTS on the critical path of
             # this line only, never of the turn).
-            drift = len(self._current_transcript.split()) - prepared_for
-            if prepared_for and drift > MAX_DRIFT_WORDS:
-                return self._discard("context_moved", unit, 0.0)
+            revised = transcript_revised(prepared_for_text, self._current_transcript, max_drift_words=MAX_DRIFT_WORDS)
+            if revised:
+                return self._discard(revised, unit, 0.0)
             self._speak(unit, phase, held=0.0, prepared_audio=False, trigger="ready")
             return True
         # The candidate is still talking: prepare the audio *now* and keep the
@@ -425,7 +480,8 @@ class BackchannelCoordinator:
         self.stats.prepared += 1
         self._pending = {
             "unit": unit, "text": text, "kind": unit.get("kind"), "phase": phase, "generation": generation,
-            "prepared_for": prepared_for, "ready_at": perf_counter(), "audio_ready": audio_ready, "prepare_ms": prepare_ms,
+            "prepared_for": prepared_for, "prepared_for_text": prepared_for_text, "ready_at": perf_counter(),
+            "audio_ready": audio_ready, "prepare_ms": prepare_ms,
         }
         self._emit("backchannel_prepared", phase=phase, kind=unit.get("kind"), words=len(text.split()),
                    audio_ready=audio_ready, prepare_ms=prepare_ms, ttft_ms=unit.get("ttft_ms"))

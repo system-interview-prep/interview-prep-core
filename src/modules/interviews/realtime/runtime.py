@@ -26,7 +26,9 @@ from livekit.plugins import elevenlabs
 
 from src.core.config import get_settings
 from src.modules.interviews.realtime.anticipation import AnticipationEngine, PreviewKey, preview_key
-from src.modules.interviews.realtime.backchannel import PHASE_LISTENING, PHASE_PROCESSING, BackchannelCoordinator
+from src.modules.interviews.realtime.backchannel import (
+    PHASE_LISTENING, PHASE_PROCESSING, BackchannelCoordinator, stable_prefix,
+)
 from src.modules.interviews.realtime.endpointing import (
     ANSWER_PAUSE_NUDGE_SECONDS, PROCESSING_FILLER_SECONDS, AnswerWindow,
     answer_pause_nudge_enabled, answer_pause_nudges,
@@ -58,7 +60,7 @@ from src.modules.interviews.realtime.stt.recognition import (
 from src.modules.interviews.realtime.stt.provider import stt_provider_settings
 from src.modules.interviews.realtime.stt.transcript_quality import process_transcript
 from src.modules.interviews.realtime.tts.provider import tts_provider_config
-from src.modules.interviews.realtime.tts.cache import SpeechAudioCache, SpeechClip
+from src.modules.interviews.realtime.tts.cache import GrowingClip, SpeechAudioCache, SpeechClip
 from src.modules.interviews.realtime.tts.vieneu import VieNeuTTS
 
 def _project_root() -> Path:
@@ -332,13 +334,19 @@ class VoiceLabAgent(Agent):
                     yield json.loads(raw)
 
     async def _prepare_backchannel_audio(self, text: str) -> bool:
-        """Synthesize a validated backchannel into the speech cache now.
+        """Synthesize a validated backchannel into the speech cache, progressively.
 
         Same adapter, same voice, same cache ``tts_node`` reads: the later
         ``speak()`` of this exact text replays the clip instead of calling
         VieNeu. In memory only (never on disk: the line is this answer's).
-        Returns False when there is nothing to prepare with, so the caller
-        knows the audio will be synthesized at playback instead.
+
+        Progressive (brief 2026-11-26): a :class:`GrowingClip` goes into the
+        cache as soon as the **first PCM** arrives (~0.45 s on a warm
+        connection) and this returns True then; the rest of the synthesis
+        continues in its own task and keeps appending, also while the clip is
+        already playing. Readiness therefore no longer waits for the whole
+        line (2-3 s). Returns False when there is nothing to prepare with or
+        no audio came, so the caller synthesizes at playback instead.
         """
         cache = getattr(self, "_speech_cache", None)
         tts = getattr(self, "_prepare_tts", None)
@@ -347,25 +355,48 @@ class VoiceLabAgent(Agent):
         key = localize_particles(text)
         if cache.get(key) is not None:
             return True
-        pieces: list[bytes] = []
-        sample_rate = channels = 0
         stream = tts.synthesize(speakable_text(key, locale=self._locale))
-        try:
-            async for event in stream:
-                frame = getattr(event, "frame", None)
-                if frame is None:
-                    continue
-                pieces.append(bytes(frame.data))
-                sample_rate, channels = frame.sample_rate, frame.num_channels
-        finally:
-            aclose = getattr(stream, "aclose", None)
-            if callable(aclose):
-                with contextlib.suppress(Exception):
-                    await aclose()
-        if not pieces:
-            return False
-        cache.put(key, SpeechClip(pcm=b"".join(pieces), sample_rate=sample_rate, channels=channels), persist=False)
-        return True
+        started = perf_counter()
+        clip: GrowingClip | None = None
+        first_pcm = asyncio.get_running_loop().create_future()
+
+        async def pump() -> None:
+            nonlocal clip
+            try:
+                async for event in stream:
+                    frame = getattr(event, "frame", None)
+                    if frame is None:
+                        continue
+                    if clip is None:
+                        clip = GrowingClip(sample_rate=frame.sample_rate, channels=frame.num_channels)
+                        cache.put(key, clip, persist=False)
+                    clip.append(bytes(frame.data), now=perf_counter())
+                    if not first_pcm.done():
+                        first_pcm.set_result(True)
+            except Exception:  # noqa: BLE001 - a failed prepare means synthesis at playback
+                logger.debug("progressive backchannel synthesis failed", exc_info=True)
+                if clip is not None:
+                    clip.finish(failed=True, now=perf_counter())
+            finally:
+                aclose = getattr(stream, "aclose", None)
+                if callable(aclose):
+                    with contextlib.suppress(Exception):
+                        await aclose()
+                if clip is not None and not clip.finished:
+                    clip.finish(now=perf_counter())
+                    with contextlib.suppress(Exception):
+                        cache.put(key, clip.to_clip(), persist=False)
+                    self.report(
+                        "voice_backchannel_synthesized",
+                        first_pcm_ms=round(((clip.first_pcm_at or started) - started) * 1000),
+                        total_ms=round((perf_counter() - started) * 1000),
+                        audio_ms=clip.audio_ms,
+                    )
+                if not first_pcm.done():
+                    first_pcm.set_result(False)
+
+        self._prepare_task = asyncio.create_task(pump())
+        return bool(await first_pcm)
 
     def _speak_backchannel(self, text: str, kind: str):
         """Play one validated unit: interruptible, outside the chat context,
@@ -548,8 +579,17 @@ class VoiceLabAgent(Agent):
         # for the next pause; the coordinator bounds how often, and playback
         # still waits for the pause (audit 2026-11-26, item 1-2).
         if self._bc().enabled:
-            partial = " ".join(part for part in (self._answer.text, " ".join(str(text or "").split())) if part)
+            interim = " ".join(str(text or "").split())
+            partial = " ".join(part for part in (self._answer.text, interim) if part)
             self._bc().note_transcript(partial)
+            # What the Talker is given while the candidate talks is the
+            # *stable prefix* of the interim -- the words two successive
+            # interims agree on -- not the tail Qwen is still revising
+            # (measured: the tail of 18 of 21 interims changes later).
+            previous = getattr(self, "_previous_interim", "")
+            self._previous_interim = interim
+            stable = stable_prefix(previous, interim) if previous else ""
+            partial = " ".join(part for part in (self._answer.text, stable) if part)
         # Run 6 (2026-11-26) measured the stable-partial trigger as a pause
         # trigger in disguise: Qwen revises the tail of 18 of 21 interims while
         # the candidate talks, so an interim repeats only in a pause -- and
@@ -1017,8 +1057,22 @@ class VoiceLabAgent(Agent):
                     "room_name": self._room_name,
                     "characters_not_synthesized": len(full_text),
                     "session_characters_not_synthesized": cache.saved_characters,
+                    "progressive": isinstance(clip, GrowingClip),
                 },
             )
+            if isinstance(clip, GrowingClip):
+                # Still being synthesized: play what has arrived, wait for the
+                # rest (progressive PCM). Underruns are counted on the clip.
+                async for piece in clip.stream():
+                    yield rtc.AudioFrame(
+                        data=piece,
+                        sample_rate=clip.sample_rate,
+                        num_channels=clip.channels,
+                        samples_per_channel=len(piece) // (2 * clip.channels),
+                    )
+                self.report("voice_backchannel_playout", underruns=clip.underruns, audio_ms=clip.audio_ms,
+                            complete=clip.finished and not clip.failed)
+                return
             for piece in clip.chunks():
                 yield rtc.AudioFrame(
                     data=piece,
