@@ -63,6 +63,26 @@ class VieNeuTTS(tts.TTS):
     def model(self) -> str:
         return self._model or "vieneu-tts"
 
+    async def warm(self, *, timeout_seconds: float = 3.0) -> bool:
+        """Keep the pooled HTTPS connection open with one cheap request.
+
+        Measured 2026-11-26 on the self-hosted server: first audio byte is
+        ~450 ms on a warm connection whatever the text length, and ~1.1 s
+        when the pooled connection has gone idle (a new TLS handshake and
+        server-side wake-up). A nudge served from the audio cache makes no
+        request, so the question that follows a 25-second answer paid the
+        cold start on every turn. The agent calls this while the candidate
+        speaks and while Core thinks; failures are ignored, nothing is
+        synthesized.
+        """
+        try:
+            response = await self._client.get(
+                f"{self._base_url}/health", timeout=httpx.Timeout(timeout_seconds), headers={"Accept": "*/*"}
+            )
+            return response.status_code < 500
+        except httpx.HTTPError:
+            return False
+
     @property
     def provider(self) -> str:
         return "VieNeu"

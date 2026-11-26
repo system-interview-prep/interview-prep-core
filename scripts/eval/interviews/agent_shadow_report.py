@@ -19,8 +19,33 @@ from collections import Counter, defaultdict
 from typing import Any, Iterable
 
 
+def _live(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """LIVE turns: the model decided and no rule ran next to it, so there is no
+    agreement to report -- only what the decider did: how often its action
+    was executed, refused (menu violation, error → rule fallback), which
+    actions it chose, and the Unified Thinker gate on those turns. Parity
+    with the rule needs a SHADOW run; until then this is what live says."""
+    rows = [r for r in records if str(r.get("mode")) == "live" and r.get("agent_action")]
+    if not rows:
+        return {"turns": 0}
+    executed = [r for r in rows if r.get("executed") == "agent"]
+    return {
+        "turns": len(rows),
+        "sessions": len({str(r.get("session_id")) for r in rows}),
+        "executed_by_agent_rate": round(len(executed) / len(rows), 3),
+        "fell_back_to_rule": len(rows) - len(executed),
+        "menu_violation_rate": round(sum(1 for r in rows if r.get("menu_violation")) / len(rows), 4),
+        "decide_error_rate": round(sum(1 for r in rows if r.get("decide_error")) / len(rows), 4),
+        "by_agent_action": dict(Counter(str(r.get("agent_action")) for r in rows).most_common()),
+        "by_execution_path": dict(Counter(str(r.get("execution_path") or "-") for r in rows).most_common()),
+        "latency_ms_p50": sorted(int(r.get("latency_ms") or 0) for r in rows)[len(rows) // 2],
+        "unified": _unified(rows),
+    }
+
+
 def summarize(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """Pure: the numbers of the report from decision summaries (payload of agent_decision)."""
+    records = list(records)
     rows = [r for r in records if r.get("rule_action")]
     total = len(rows)
     with_agent = [r for r in rows if r.get("agent_action")]
@@ -64,6 +89,7 @@ def summarize(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "by_mode": dict(Counter(str(r.get("mode")) for r in rows)),
         "unified": _unified(with_agent),
         "disagreements": disagreements,
+        "live": _live(records),
     }
 
 
@@ -113,6 +139,23 @@ def render(report: dict[str, Any]) -> str:
             f"guard rejected={unified['rejected_rate']}  {unified['rejected_by'] or ''}"
         )
         lines.append("")
+    live = report.get("live") or {}
+    if live.get("turns"):
+        lines.append(
+            f"live turns (no rule ran beside the model; parity needs a shadow run): n={live['turns']} "
+            f"sessions={live['sessions']}  executed by agent={live['executed_by_agent_rate']}  "
+            f"fell back to rule={live['fell_back_to_rule']}  violations={live['menu_violation_rate']}  "
+            f"errors={live['decide_error_rate']}  graph p50={live['latency_ms_p50']} ms"
+        )
+        lines.append(f"  actions: {live['by_agent_action']}")
+        lines.append(f"  paths: {live['by_execution_path']}")
+        lu = live.get("unified") or {}
+        if lu.get("turns"):
+            lines.append(
+                f"  unified thinker on live turns: n={lu['turns']}  carried its own line={lu['carried_text_rate']}  "
+                f"guard rejected={lu['rejected_rate']}  {lu['rejected_by'] or ''}"
+            )
+        lines.append("")
     lines.append(f"disagreements ({len(report['disagreements'])}) — for the reviewer:")
     for d in report["disagreements"][:200]:
         lines.append(f"  {d['session_id']} #{d['turn_index']} [{d['stage']}/{d['pace']}] rule={d['rule']} agent={d['agent']} :: {d['reason']}")
@@ -135,9 +178,16 @@ async def _load_from_db(days: int) -> list[dict[str, Any]]:
                 {"d": days},
             )
         ).mappings().all()
+    from src.modules.interviews.agents.interviewer import record as agent_record
+
     out = []
     for row in rows:
         payload = row["payload"] if isinstance(row["payload"], dict) else json.loads(row["payload"] or "{}")
+        if "rule_action" not in payload and ("rule" in payload or "agent" in payload):
+            # The event stores the full decision record (record.py); this
+            # report reads its summary form. Before this mapping every LIVE
+            # turn counted as "no agent decision" (2026-11-26).
+            payload = agent_record.summary(payload)
         out.append({"session_id": str(row["session_id"]), "turn_index": row["turn_index"], **payload})
     return out
 

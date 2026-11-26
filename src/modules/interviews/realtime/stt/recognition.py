@@ -37,13 +37,29 @@ def create_stt(settings, language: str, context: str = "", *, telemetry=None):
     )
 
 
+#: With Qwen the final transcript arrives 1.25-1.7 s after VAD end of speech
+#: (0.8 s of audio silence, up to 0.8 s of chunk backlog, a 0.3 s chunk and a
+#: 0.45 s finish request; measured 2026-11-26). LiveKit's max endpointing delay
+#: is how long it waits for that final before committing an empty turn, so it
+#: must be above that, whatever the shared tuning says.
+QWEN_ENDPOINT_MAX_DELAY_SECONDS = 3.0
+
+
 def recognition_options(settings, tuning, *, interruption=None) -> dict:
+    qwen = settings.provider != "assemblyai"
     turn = dict(
         turn_detection="stt" if settings.provider == "assemblyai" else "vad",
         endpointing=EndpointingOptions(
             mode="fixed",
-            min_delay=0.0 if settings.provider == "assemblyai" else 0.8,
-            max_delay=tuning.endpoint_max_delay,
+            # No fixed delay after the final transcript for either provider.
+            # Qwen used to get 0.8 s here, measured as a full 0.8 s on every
+            # turn *after* its final had arrived: a duplicate of the answer
+            # window's own silence wait (endpointing.py), which is the one
+            # that merges fragments and the one the candidate's silence is
+            # supposed to be measured by. The final transcript itself is what
+            # LiveKit waits for; max_delay below bounds that wait.
+            min_delay=0.0,
+            max_delay=max(tuning.endpoint_max_delay, QWEN_ENDPOINT_MAX_DELAY_SECONDS) if qwen else tuning.endpoint_max_delay,
         ),
     )
     if interruption is not None:

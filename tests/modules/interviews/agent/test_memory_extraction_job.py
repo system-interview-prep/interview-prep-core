@@ -255,6 +255,61 @@ async def test_a_failure_recorded_after_rollback_never_overwrites_a_done_written
 
 
 @pytest.mark.asyncio
+async def test_a_failure_recorded_after_rollback_never_revives_a_permanent_failure_written_meanwhile(
+    readwrite, monkeypatch
+) -> None:
+    """The extraction raised; its rollback released the lock; the reconciler
+    (or another delivery) marked the job permanently failed. The transient
+    FAILED must be refused -- it would have made the job eligible again."""
+
+    async def boom(db, *a, **k):
+        db.log.append("extract")
+        raise ConnectionError("provider down")
+
+    monkeypatch.setattr(job, "extract_after_session", boom)
+    exhausted = {"status": "FAILED", "permanent": True, "reason": "dispatch_exhausted",
+                 "dispatches": 5, "updated_at": "2026-11-26T01:00:00+00:00"}
+
+    def reconciler_exhausts(db: _DB) -> None:
+        db.states["s1"] = dict(exhausted)
+
+    db = _DB(on_rollback=reconciler_exhausts)
+    result = await _run(db, attempt=1, max_attempts=3)
+    assert result["status"] == "FAILED" and result["permanent"] is True and result["skipped"] is True
+    assert result["reason"] == "dispatch_exhausted"
+    assert db.states["s1"] == exhausted, "the permanent record is untouched"
+    assert ("refused", "permanent") in db.log
+    assert not any(name == "candidate_memory_job_failed" for name, _ in readwrite)
+    assert any(name == "candidate_memory_job_failure_refused" and kw["settled_as"] == "FAILED" for name, kw in readwrite)
+
+
+@pytest.mark.asyncio
+async def test_a_failure_write_refused_by_something_else_asks_for_a_retry_without_writing(readwrite, monkeypatch) -> None:
+    """Refused for a reason that is neither DONE nor permanent: the state that
+    moved under us is left alone and the delivery is retried later."""
+
+    async def boom(db, *a, **k):
+        raise ConnectionError("provider down")
+
+    monkeypatch.setattr(job, "extract_after_session", boom)
+
+    class _RefusingDB(_DB):
+        async def scalar(self, statement, params=None):
+            sql = str(statement)
+            if "UPDATE interview_sessions" in sql and '"status": "FAILED"' in str((params or {}).get("job", "")):
+                self.log.append(("refused", "other"))
+                self.states["s1"] = {"status": "QUEUED", "reason": "reconciled", "updated_at": "later"}
+                return None
+            return await super().scalar(statement, params)
+
+    db = _RefusingDB()
+    with pytest.raises(job.TransientExtractionError):
+        await _run(db, attempt=1, max_attempts=3)
+    assert db.states["s1"]["status"] == "QUEUED", "nothing of ours was written over it"
+    assert not any(name == "candidate_memory_job_failed" for name, _ in readwrite)
+
+
+@pytest.mark.asyncio
 async def test_queued_never_overwrites_done_or_revives_a_permanent_failure() -> None:
     done = _DB(states={"s1": dict(DONE)})
     assert await job.mark_queued(done, "s1") is None and done.states["s1"]["status"] == "DONE"

@@ -48,6 +48,32 @@ def test_t4_2_1_agreement_by_action_stage_pace_and_the_disagreement_list() -> No
     assert "agreement:" in text and "disagreements (" in text
 
 
+def test_live_turns_are_reported_on_their_own_not_dropped() -> None:
+    """A LIVE turn has no rule decision beside it (rule_action is None), so the
+    agreement section cannot use it. Before 2026-11-26 it vanished from the
+    report entirely; now it has its own section, with the Unified gate."""
+    rows = [
+        {"session_id": "s1", "mode": "live", "executed": "agent", "rule_action": None,
+         "agent_action": "acknowledge_and_probe", "menu_violation": None, "decide_error": None,
+         "execution_path": "unified", "latency_ms": 3200, "unified_carried_text": True, "unified_rejected": None},
+        {"session_id": "s1", "mode": "live", "executed": "rule", "rule_action": "acknowledge_and_probe",
+         "agent_action": "acknowledge_and_probe", "menu_violation": "outside_menu", "decide_error": None,
+         "execution_path": "unified", "latency_ms": 4100, "unified_carried_text": False, "unified_rejected": ["probe_text_rejected"]},
+        {"session_id": "s2", "mode": "live", "executed": "agent", "rule_action": None,
+         "agent_action": "move_to_next_question", "menu_violation": None, "decide_error": None,
+         "execution_path": "unified", "latency_ms": 2900, "unified_carried_text": None, "unified_rejected": None},
+    ]
+    live = report_module.summarize(rows)["live"]
+    assert live["turns"] == 3 and live["sessions"] == 2
+    assert live["executed_by_agent_rate"] == round(2 / 3, 3) and live["fell_back_to_rule"] == 1
+    assert live["menu_violation_rate"] == round(1 / 3, 4)
+    assert live["by_agent_action"] == {"acknowledge_and_probe": 2, "move_to_next_question": 1}
+    assert live["latency_ms_p50"] == 3200
+    assert live["unified"] == {"turns": 2, "carried_text_rate": 0.5, "rejected_rate": 0.5, "rejected_by": {"probe_text_rejected": 1}}
+    text = report_module.render(report_module.summarize(rows))
+    assert "live turns" in text and "parity needs a shadow run" in text
+
+
 def test_the_report_tolerates_turns_without_an_agent_decision() -> None:
     rows = [{"rule_action": "clarify_question", "agent_action": None, "agreement": None, "mode": "rule", "executed": "rule"}]
     report = report_module.summarize(rows)

@@ -67,6 +67,14 @@ VOICE_EVENTS = frozenset(
         # V2 spec §13: an utterance started playing; TTFA/TTMR are read off
         # its since_speech_end_ms by kind (livekit_turn_metrics.py).
         "voice_reply_started",
+        # Critical-path profile (§8): the chain VAD end → final → LiveKit turn
+        # → commit → submit, once per submit, with the anchor the wait used.
+        "voice_endpointing",
+        # A nudge or filler still playing was cut for the authoritative reply.
+        "voice_filler_interrupted",
+        # The deterministic context warm-up made while the candidate speaks
+        # (no provider call); its round trip.
+        "voice_prefetch",
         "voice_stt_diagnostic",
         "voice_tts_fallback",
         "voice_provider_degraded",

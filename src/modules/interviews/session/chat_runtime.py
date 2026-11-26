@@ -2553,13 +2553,22 @@ async def process_candidate_message(
     1. load the context, claim the message (lock → idempotency → write → commit);
     2. prepare the state and run the authoritative inference, outside any lock;
     3. re-take the lock, apply exactly one domain transition, commit, respond.
+
+    Each phase is timed and the turn ends with one ``turn_phases`` trace
+    event (critical-path profile, 2026-11-26): ``inference_ms`` includes the
+    provider calls, the other phases are the database and the code around
+    them. The pilot measured everything outside the provider at ~80 ms per
+    turn; this event is how that number stays visible.
     """
+    marks: dict[str, float] = {"start": perf_counter()}
     ctx = await _load_turn_context(
         db, session_row, content, elapsed_override_seconds=elapsed_override_seconds
     )
+    marks["load"] = perf_counter()
     claim = await _claim_candidate_message(
         db, ctx, client_message_id=client_message_id, telemetry=telemetry, preview_key=preview_key
     )
+    marks["claim"] = perf_counter()
     if claim.reply is not None:
         return claim.reply
     if preview_key is not None and not claim.preview_valid:
@@ -2582,12 +2591,51 @@ async def process_candidate_message(
         precomputed_decision=precomputed_decision,
         core_engine=core_engine,
     )
+    marks["prepare"] = perf_counter()
     asst_msg_id = str(uuid4())
     core_output = await _run_authoritative_inference(
         db, ctx, prepared, modality=modality, on_early_speech=on_early_speech
     )
+    marks["inference"] = perf_counter()
     await _persist_turn_counters(db, ctx, core_output, prepared.session_state)
+    marks["persist"] = perf_counter()
 
+    response = await _commit_turn(db, session_row, ctx, claim, prepared, core_output, asst_msg_id)
+    marks["commit"] = perf_counter()
+    _trace_turn_phases(ctx, marks)
+    return response
+
+
+def _trace_turn_phases(ctx: TurnContext, marks: dict[str, float]) -> None:
+    """One event with the wall time of each phase of the turn, in order."""
+    order = ("load", "claim", "prepare", "inference", "persist", "commit")
+    fields: dict[str, Any] = {}
+    previous = marks["start"]
+    for name in order:
+        at = marks.get(name)
+        if at is None:
+            continue
+        fields[f"{name}_ms"] = round((at - previous) * 1000)
+        previous = at
+    fields["total_ms"] = round((previous - marks["start"]) * 1000)
+    trace_event("interviewer", "turn_phases", session_id=str(ctx.session_id), turn_index=ctx.turn_index, **fields)
+
+
+async def _commit_turn(
+    db: AsyncSession,
+    session_row: dict[str, Any],
+    ctx: TurnContext,
+    claim: MessageClaim,
+    prepared: PreparedTurn,
+    core_output: Any,
+    asst_msg_id: str,
+) -> dict[str, Any]:
+    """Phase 3: re-take the lock, apply exactly one transition, commit, respond.
+
+    Split out of ``process_candidate_message`` only to be timed as one phase;
+    the SQL, the lock placement, the commit order and the event order are
+    the ones the orchestrator always had.
+    """
     # =========================================================================
     # PHASE 3: Commit Assistant Response & Advance Turn
     # =========================================================================

@@ -112,6 +112,22 @@ def _is_anticipation(event: dict[str, Any]) -> bool:
     return str(event.get("event") or "").startswith("voice_anticipation_")
 
 
+#: Events that happen *before* the submit they belong to: while the candidate
+#: is still speaking or pausing. Carried forward to that submit's turn.
+_PRE_SUBMIT_EVENTS = frozenset({"voice_stt_diagnostic", "voice_answer_pause_nudge", "voice_prefetch"})
+
+
+def _belongs_to_next_turn(event: dict[str, Any]) -> bool:
+    name = str(event.get("event") or "")
+    if _is_anticipation(event) or name in _PRE_SUBMIT_EVENTS:
+        return True
+    # The pause nudge's audio (kind=filler) also plays before the submit; the
+    # pilot's "TTFA" was read off it, so it must sit in the turn it preceded.
+    if name in ("voice_reply_started", "voice_tts_metrics"):
+        return str(_payload(event).get("kind") or "") == "filler"
+    return False
+
+
 def split_turns(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """One record per answer: a submit, what followed it, and the speculation
     that preceded it.
@@ -134,7 +150,7 @@ def split_turns(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             carried = []
             answered = False
             turns.append(current)
-        elif _is_anticipation(event) and (current is None or answered):
+        elif _belongs_to_next_turn(event) and (current is None or answered):
             carried.append(event)
         elif current is not None:
             current["events"].append(event)
@@ -164,6 +180,18 @@ def measure_turn(turn: dict[str, Any]) -> dict[str, Any]:
     core = _first(turn, "voice_core_completed")
     failed = _first(turn, "voice_core_failed")
     early = _first(turn, "voice_early_acknowledgment")
+    chain = _first(turn, "voice_endpointing")
+    chain_payload = _payload(chain) if chain else {}
+    # Qwen's own clock: last voiced PCM → final transcript, from the finish
+    # diagnostic that preceded this submit (carried into the turn).
+    submitted_at = _when(turn["submitted"])
+    finishes = [
+        e for e in turn["events"]
+        if e.get("event") == "voice_stt_diagnostic" and _payload(e).get("phase") == "finish"
+        and (submitted_at is None or (_when(e) or submitted_at) <= submitted_at)
+    ]
+    qwen_final = _payload(finishes[-1]).get("pcm_speech_end_to_final_ms") if finishes else None
+    prefetch = _first(turn, "voice_prefetch")
     tts_by_kind: dict[str, list[float]] = {}
     for event in turn["events"]:
         if event.get("event") == "voice_tts_metrics":
@@ -183,6 +211,18 @@ def measure_turn(turn: dict[str, Any]) -> dict[str, Any]:
         "speech_end_to_submit_ms": submitted.get("since_speech_end_ms"),
         "transcription_delay_ms": submitted.get("transcription_delay_ms"),
         "end_of_turn_delay_ms": submitted.get("end_of_turn_delay_ms"),
+        # The chain the agent reports per submit (critical-path profile, 2026-11-26).
+        "vad_to_final_ms": chain_payload.get("vad_to_final_ms"),
+        "final_to_turn_ms": chain_payload.get("final_to_turn_ms"),
+        "turn_to_submit_ms": chain_payload.get("turn_to_submit_ms"),
+        "commit_delay_ms": chain_payload.get("commit_delay_ms"),
+        "effective_delay_ms": chain_payload.get("effective_delay_ms"),
+        "commit_anchor": chain_payload.get("anchor"),
+        "nudged": chain_payload.get("nudged"),
+        "qwen_pcm_end_to_final_ms": qwen_final,
+        "filler_interrupted": _count(turn, "voice_filler_interrupted"),
+        "prefetch_ms": _payload(prefetch).get("ms") if prefetch else None,
+        "prefetch_ok": _payload(prefetch).get("ok") if prefetch else None,
         "words": submitted.get("words"),
         "fragments": submitted.get("fragments"),
         "late_speech": _count(turn, "voice_late_speech_captured") > 0,
@@ -274,6 +314,18 @@ def summarize(events: list[dict[str, Any]], calls: list[dict[str, Any]]) -> dict
         "speech_end_to_submit_ms": summary([t["speech_end_to_submit_ms"] for t in measured]),
         "transcription_delay_ms": summary([t["transcription_delay_ms"] for t in measured]),
         "end_of_turn_delay_ms": summary([t["end_of_turn_delay_ms"] for t in measured]),
+        "endpointing": {
+            "vad_to_final_ms": summary([t["vad_to_final_ms"] for t in measured]),
+            "final_to_turn_ms": summary([t["final_to_turn_ms"] for t in measured]),
+            "turn_to_submit_ms": summary([t["turn_to_submit_ms"] for t in measured]),
+            "effective_delay_ms": summary([t["effective_delay_ms"] for t in measured]),
+            "qwen_pcm_end_to_final_ms": summary([t["qwen_pcm_end_to_final_ms"] for t in measured]),
+            "anchors": dict(Counter(str(t["commit_anchor"]) for t in measured if t["commit_anchor"])),
+            "nudged_turns": sum(1 for t in measured if t["nudged"]),
+        },
+        "filler_interrupted": sum(t["filler_interrupted"] for t in measured),
+        "prefetch_ms": summary([t["prefetch_ms"] for t in measured if t["prefetch_ok"]]),
+        "prefetch_failed": sum(1 for t in measured if t["prefetch_ok"] is False),
         "early_ack_ms": summary([t["early_ack_ms"] for t in measured]),
         "early_ack_available": sum(1 for t in measured if t["early_ack_ms"] is not None),
         "ttfa_by_kind": dict(Counter(str(t["ttfa_kind"]) for t in measured if t["ttfa_kind"])),
@@ -324,9 +376,15 @@ def render(report: dict[str, Any]) -> str:
         ("speech end → submit (endpointing)", report["speech_end_to_submit_ms"]),
         ("end-of-turn delay (LiveKit)", report["end_of_turn_delay_ms"]),
         ("Qwen finalization", report["transcription_delay_ms"]),
+        ("  VAD end → final transcript", report["endpointing"]["vad_to_final_ms"]),
+        ("  final → LiveKit turn end", report["endpointing"]["final_to_turn_ms"]),
+        ("  turn end → submit (window)", report["endpointing"]["turn_to_submit_ms"]),
+        ("  window wait scheduled", report["endpointing"]["effective_delay_ms"]),
+        ("  Qwen pcm end → final (STT diag)", report["endpointing"]["qwen_pcm_end_to_final_ms"]),
         ("Core (submit → answer)", report["core_ms"]),
         ("reply playback after Core", report["reply_after_core_ms"]),
         ("early ack after submit", report["early_ack_ms"]),
+        ("prefetch round trip", report["prefetch_ms"]),
     ]
     lines.append(f"{'metric':38} {'n':>3} {'p50':>7} {'p95':>7} {'p99':>7}")
     for label, s in rows:
@@ -345,6 +403,11 @@ def render(report: dict[str, Any]) -> str:
     lines.append(
         f"early ack available: {report['early_ack_available']}/{report['turns']}  "
         f"first audio by kind: {report['ttfa_by_kind']}"
+    )
+    ep = report["endpointing"]
+    lines.append(
+        f"commit anchor: {ep['anchors'] or '—'}  nudged turns: {ep['nudged_turns']}/{report['turns']}  "
+        f"fillers cut by the reply: {report['filler_interrupted']}  prefetch failures: {report['prefetch_failed']}"
     )
     fc = report["false_cut_proxy"]
     lines.append(

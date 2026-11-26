@@ -148,6 +148,16 @@ class Settings(BaseSettings):
     # `interview_talker_enabled` is set, so this value alone changes nothing.
     interview_talker_model: str = ""
     interview_talker_enabled: bool = False
+    # Hard provider-call budgets, charged at dispatch (src/modules/ai/budget.py)
+    # before each request leaves: one candidate turn, one speculative preview,
+    # and the whole session in this process. Retries, dropped-option retries,
+    # fallback speech calls and speculation all count. A refused call fails
+    # like a provider error and the turn falls back the same way. The §13
+    # pilot measured 1-2 calls per turn and 2 per preview; the caps leave room
+    # for one fallback and one retry, not for a loop.
+    interview_turn_call_budget: int = Field(default=6, ge=1, le=50)
+    interview_preview_call_budget: int = Field(default=2, ge=1, le=10)
+    interview_session_call_budget: int = Field(default=120, ge=1, le=5000)
     # Dynamic interview planning is opt-in because its time-allocation values
     # are Product policy. When enabled, the JSON must satisfy PlannerPolicyConfig.
     interview_dynamic_planner_enabled: bool = False

@@ -231,6 +231,46 @@ def test_anticipation_hit_rate_wasted_speculation_and_false_cut_proxy() -> None:
     assert report["false_cut_proxy"] == {"turns": 1, "rate": 0.5}
 
 
+def test_the_endpointing_chain_and_pre_submit_events_belong_to_the_answer_they_preceded() -> None:
+    """The nudge's audio, the STT finish and the prefetch all happen before the
+    submit; the pilot's report attributed them to the previous turn."""
+    events = [
+        _ev(0, "voice_session_started", 0),
+        _ev(1, "voice_reply_started", 0, kind="question", since_speech_end_ms=None),
+        _ev(2, "voice_prefetch", 0, ok=True, ms=12),
+        _ev(3, "voice_stt_diagnostic", 0, phase="chunk", processing_ms=430),
+        _ev(4, "voice_stt_diagnostic", 0, phase="finish", processing_ms=430, pcm_speech_end_to_final_ms=1709),
+        _ev(5, "voice_answer_pause_nudge", 0, after_s=1.25),
+        _ev(6, "voice_reply_started", 0, kind="filler", since_speech_end_ms=2600),
+        _ev(7, "voice_tts_metrics", 0, kind="filler", ttfb_ms=12),
+        _ev(8, "voice_answer_submitted", 0, since_speech_end_ms=2860, words=40, fragments=2),
+        _ev(9, "voice_endpointing", 0, anchor="transcript", commit_delay_ms=1800, effective_delay_ms=1800,
+            vad_to_final_ms=276, final_to_turn_ms=804, turn_to_submit_ms=1801, since_speech_end_ms=2860,
+            fragments=2, nudged=True),
+        _ev(10, "voice_core_completed", 0, core_ms=3700, action="PROBE"),
+        _ev(11, "voice_filler_interrupted", 0),
+        _ev(12, "voice_reply_started", 1, kind="question", since_speech_end_ms=7000, since_submit_ms=4100, since_core_ms=450),
+    ]
+    turns = metrics.split_turns(events)
+    assert len(turns) == 1
+    assert [e["event"] for e in turns[0]["events"]][:6] == [
+        "voice_prefetch", "voice_stt_diagnostic", "voice_stt_diagnostic", "voice_answer_pause_nudge",
+        "voice_reply_started", "voice_tts_metrics",
+    ]
+    report = metrics.summarize(events, [])
+    turn = report["per_turn"][0]
+    assert turn["ttfa_ms"] == 2600 and turn["ttfa_kind"] == "filler", "the nudge is the first audio of this answer"
+    assert turn["ttmr_ms"] == 7000
+    assert (turn["vad_to_final_ms"], turn["final_to_turn_ms"], turn["turn_to_submit_ms"]) == (276, 804, 1801)
+    assert turn["qwen_pcm_end_to_final_ms"] == 1709 and turn["nudged"] is True
+    assert turn["filler_interrupted"] == 1 and turn["prefetch_ms"] == 12
+    assert report["endpointing"]["anchors"] == {"transcript": 1} and report["endpointing"]["nudged_turns"] == 1
+    assert report["endpointing"]["qwen_pcm_end_to_final_ms"]["p50"] == 1709
+    assert report["filler_interrupted"] == 1 and report["prefetch_ms"]["p50"] == 12
+    text = metrics.render(report)
+    assert "VAD end → final transcript" in text and "commit anchor" in text
+
+
 def test_percentiles_are_nearest_rank_and_empty_is_none() -> None:
     assert metrics.percentile([], 50) is None
     assert metrics.percentile([5.0], 99) == 5.0

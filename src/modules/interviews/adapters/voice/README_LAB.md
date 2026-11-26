@@ -65,7 +65,27 @@ VIENEU_TTS_TIMEOUT_SECONDS=180
 VOICE_RUNTIME_API_BASE_URL=http://127.0.0.1:5000
 VOICE_AGENT_DNS_PRIMARY=1.1.1.1
 VOICE_AGENT_DNS_SECONDARY=8.8.8.8
+# Answer window (realtime/endpointing.py). The nominal waits are 1.8 s (2.2 s
+# for a short buffer); VOICE_ANSWER_COMMIT_ANCHOR says which clock they count
+# from: `transcript` (default: from the final transcript) or `speech_end`
+# (from VAD end of speech, so STT latency is not waited for twice). Keep
+# `transcript` until the human-speaker benchmark has labelled false cuts.
+VOICE_ANSWER_COMMIT_SILENCE=1.8
+VOICE_ANSWER_SHORT_COMMIT_SILENCE=2.2
+VOICE_ANSWER_COMMIT_ANCHOR=transcript
+# The mid-answer "mình đang nghe" nudge; 0 for the filler-off arm of the audit.
+VOICE_ANSWER_PAUSE_NUDGE_ENABLED=1
+# Hard provider-call caps, charged before each request leaves (ai/budget.py).
+INTERVIEW_TURN_CALL_BUDGET=6
+INTERVIEW_PREVIEW_CALL_BUDGET=2
+INTERVIEW_SESSION_CALL_BUDGET=120
 ```
+
+Internal worker → API endpoints under `/ai/voice-lab/livekit/runtime/`:
+`start`, `message` (the canonical turn), `preview` (speculation: provider
+calls, under the preview budget), `prefetch` (deterministic warm-up while the
+candidate speaks: candidate memory, interviewer playbook; **zero** call
+budget), `events`, `left`.
 
 When the LiveKit worker runs in a separate container or service, set `VOICE_RUNTIME_API_BASE_URL` to an address it can use, such as `http://backend:5000`. The interview voice path does not require an OpenAI LLM in the LiveKit worker. `OPENAI_API_KEY` is still used by the separate `/transcribe`, `/speak`, and Realtime configuration endpoints.
 

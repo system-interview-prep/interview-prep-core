@@ -5,6 +5,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
+from src.modules.ai.budget import budget_scope
 from src.modules.interviews.agents.planner import PlannerAgent
 from src.modules.interviews.graph.command_runner import InterviewCommandRunner
 from src.modules.interviews.graph.ports import InterviewOperations
@@ -87,21 +89,31 @@ def database_operations(
 
     async def respond(payload: dict) -> dict:
         await load_candidate_settings()
+        settings = get_settings()
         # Only final transcripts are passed here; video observations are not
         # included in the competency-scoring telemetry.
-        return await process_candidate_message(
-            db=db,
-            session_row=session_row,
-            client_message_id=payload.get("client_message_id"),
-            content=payload["content"],
-            telemetry={k: v for k, v in payload.get("telemetry", {}).items() if k != "video_observations"},
-            modality=payload.get("modality", "CHAT"),
-            duration_seconds=payload.get("duration_seconds", 0.0),
-            precomputed_evaluation=payload.get("precomputed_evaluation"),
-            precomputed_decision=payload.get("precomputed_decision"),
-            preview_key=payload.get("preview_key"),
-            on_early_speech=on_early_speech,
-        )
+        # The turn's hard call budget (ai/budget.py): the decider, its memory
+        # step, a fallback speech call, the output guards' regeneration and
+        # any transport retry all draw on it; nothing past the cap is sent.
+        with budget_scope(
+            f"turn:{session_id}:{payload.get('client_message_id') or '-'}",
+            limit=settings.interview_turn_call_budget,
+            session_id=session_id,
+            session_limit=settings.interview_session_call_budget,
+        ):
+            return await process_candidate_message(
+                db=db,
+                session_row=session_row,
+                client_message_id=payload.get("client_message_id"),
+                content=payload["content"],
+                telemetry={k: v for k, v in payload.get("telemetry", {}).items() if k != "video_observations"},
+                modality=payload.get("modality", "CHAT"),
+                duration_seconds=payload.get("duration_seconds", 0.0),
+                precomputed_evaluation=payload.get("precomputed_evaluation"),
+                precomputed_decision=payload.get("precomputed_decision"),
+                preview_key=payload.get("preview_key"),
+                on_early_speech=on_early_speech,
+            )
 
     async def finish(payload: dict) -> dict:
         return await complete_chat_session(db=db, session_row=session_row, reason=payload["reason"])

@@ -28,9 +28,10 @@ from src.core.config import get_settings
 from src.modules.interviews.realtime.anticipation import AnticipationEngine, PreviewKey, preview_key
 from src.modules.interviews.realtime.endpointing import (
     ANSWER_PAUSE_NUDGE_SECONDS, PROCESSING_FILLER_SECONDS, AnswerWindow,
-    backchannel_continue_text, core_error_text, localize_particles, not_heard_lines,
+    answer_pause_nudge_enabled, answer_pause_nudges,
+    backchannel_continue_text, commit_anchor, core_error_text, localize_particles, not_heard_lines,
     pick_answer_pause_nudge, pick_processing_filler,
-    processing_filler_enabled, processing_fillers, reprompt_after_seconds,
+    processing_filler_enabled, processing_fillers, remaining_commit_delay, reprompt_after_seconds,
     silence_reprompt, turn_taking_tip, unclear_transcript_text,
 )
 from src.modules.interviews.realtime.health import (
@@ -122,6 +123,18 @@ def _session_stt_language(locale: str) -> str:
     return recognition_language(locale)
 
 
+#: While Core thinks, the TTS connection is pinged this often so the reply's
+#: first byte is not a cold start (tts/vieneu.py ``warm``). Measured
+#: 2026-11-26: warm at 4 s idle (0.46 s), cold at 6 s (1.07 s).
+TTS_KEEPALIVE_SECONDS = 3.0
+
+
+def _delta_ms(start: float | None, end: float | None) -> int | None:
+    if start is None or end is None:
+        return None
+    return round((end - start) * 1000)
+
+
 def _message_metrics(message: object) -> dict[str, float]:
     raw = getattr(message, "metrics", None)
     if not isinstance(raw, dict):
@@ -158,8 +171,12 @@ class VoiceLabAgent(Agent):
         speech_cache: SpeechAudioCache | None = None,
         on_interview_closed=None,
         events: VoiceEventReporter | None = None,
+        warm_tts=None,
     ) -> None:
         super().__init__(instructions=AGENT_INSTRUCTIONS)
+        # ``await warm_tts()`` keeps the TTS connection open (VieNeu); None for
+        # providers that do not need it.
+        self._warm_tts = warm_tts
         # Voice-room state and incidents for the admin view (voice_events.py).
         self._events = events
         # Called once Core has closed the interview, to release the session.
@@ -185,6 +202,19 @@ class VoiceLabAgent(Agent):
         self._speech_ended_at: float | None = None
         self._submitted_at: float | None = None
         self._core_completed_at: float | None = None
+        # The endpointing chain of the current answer (critical-path profile):
+        # the last final transcript, LiveKit's turn end, the wait the window
+        # scheduled. Reported once per submit as ``voice_endpointing``.
+        self._last_final_at: float | None = None
+        self._turn_completed_at: float | None = None
+        self._commit_delay_s: float | None = None
+        self._commit_effective_s: float | None = None
+        # The nudge or filler being played, so the real reply can cut it.
+        self._filler_handle: object | None = None
+        # Deterministic warm-up of the next turn (no provider call), once per answer.
+        self._prefetch_task: asyncio.Task | None = None
+        self._prefetched_generation = -1
+        self._tts_keepalive_task: asyncio.Task | None = None
         self._last_interview_speech_text = ""
         self._held_speech_text = ""
         self._held_resume_text = ""
@@ -259,6 +289,10 @@ class VoiceLabAgent(Agent):
         self._speech_ended_at = perf_counter()
         self.report_state(self._resting_state())
 
+    def on_final_transcript(self) -> None:
+        """A final transcript arrived from STT (before LiveKit ends the turn)."""
+        self._last_final_at = perf_counter()
+
     def on_user_away(self) -> None:
         self.report_state("candidate_away")
 
@@ -281,7 +315,13 @@ class VoiceLabAgent(Agent):
 
     def _schedule_commit(self, delay: float) -> None:
         self._cancel_task(self._commit_task)
-        self._commit_task = asyncio.create_task(self._commit_after(delay))
+        # ``delay`` is the window's silence allowance; where that silence is
+        # counted from is the anchor's business (endpointing.py).
+        effective = remaining_commit_delay(
+            delay, speech_ended_at=getattr(self, "_speech_ended_at", None), now=perf_counter(), anchor=commit_anchor()
+        )
+        self._commit_delay_s, self._commit_effective_s = delay, effective
+        self._commit_task = asyncio.create_task(self._commit_after(effective))
 
     async def _commit_after(self, delay: float) -> None:
         try:
@@ -307,15 +347,78 @@ class VoiceLabAgent(Agent):
             # and give this turn a fresh budget.
             self._turn_generation += 1
             self._anticipation.reset_turn()
+        self._start_prefetch()
+
+    # ── Deterministic warm-up while the candidate speaks ─────────────────────
+
+    def _start_prefetch(self) -> None:
+        """Warm what the next turn will read, with no provider call, once per answer.
+
+        Brief §4: the deterministic part of the turn -- candidate memory, the
+        interviewer playbook, the TTS connection -- is prepared while the
+        candidate is still talking, and only that part; the endpoint runs
+        under a zero call budget, so a provider call there is an error, not
+        a cost. Best effort, never awaited by the turn, and the authoritative
+        turn state is still read under the claim's row lock when the answer
+        is submitted.
+        """
+        if self._core_in_flight or getattr(self, "_prefetched_generation", -1) == self._turn_generation:
+            return
+        self._prefetched_generation = self._turn_generation
+        self._cancel_task(getattr(self, "_prefetch_task", None))
+        self._prefetch_task = asyncio.create_task(self._prefetch())
+
+    async def _prefetch(self) -> None:
+        started = perf_counter()
+        warm_tts = getattr(self, "_warm_tts", None)
+        warm = warm_tts() if warm_tts is not None else None
+        try:
+            response = await self._runtime_client.post("/ai/voice-lab/livekit/runtime/prefetch", json={})
+            response.raise_for_status()
+            body = response.json() if hasattr(response, "json") else {}
+            warmed = body.get("warmed") if isinstance(body, dict) else None
+            self.report(
+                "voice_prefetch",
+                ok=True,
+                ms=round((perf_counter() - started) * 1000),
+                server_ms=body.get("ms") if isinstance(body, dict) else None,
+                warmed=",".join(str(w) for w in (warmed or []))[:60] or None,
+            )
+        except Exception as exc:  # noqa: BLE001 - a warm-up must never cost the candidate anything
+            self.report(
+                "voice_prefetch", ok=False, ms=round((perf_counter() - started) * 1000),
+                error_type=type(exc).__name__,
+            )
+        if warm is not None:
+            with contextlib.suppress(Exception):
+                await warm
+
+    async def _tts_keepalive(self) -> None:
+        """Ping the TTS connection every few seconds while Core thinks."""
+        warm_tts = getattr(self, "_warm_tts", None)
+        if warm_tts is None:
+            return
+        while True:
+            with contextlib.suppress(Exception):
+                await warm_tts()
+            await asyncio.sleep(TTS_KEEPALIVE_SECONDS)
 
     def _schedule_answer_pause_nudge(self) -> None:
         if self._answer_pause_nudged or self._core_in_flight or self._answer.is_empty:
             return
+        if not answer_pause_nudge_enabled():
+            return
         self._cancel_task(self._answer_pause_nudge_task)
+        # Same clock as the commit: a nudge is "you paused", so it is counted
+        # from the same moment the pause is.
+        nudge_delay = remaining_commit_delay(
+            ANSWER_PAUSE_NUDGE_SECONDS, speech_ended_at=getattr(self, "_speech_ended_at", None),
+            now=perf_counter(), anchor=commit_anchor(),
+        )
 
         async def nudge_after_pause() -> None:
             try:
-                await asyncio.sleep(ANSWER_PAUSE_NUDGE_SECONDS)
+                await asyncio.sleep(nudge_delay)
             except asyncio.CancelledError:
                 return
             if self._answer.is_empty or self._core_in_flight or self._answer_pause_nudged:
@@ -335,6 +438,7 @@ class VoiceLabAgent(Agent):
                 add_to_chat_ctx=False,
                 kind="filler",
             )
+            self._filler_handle = speech
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await speech.wait_for_playout()
 
@@ -521,6 +625,7 @@ class VoiceLabAgent(Agent):
         answer = self._answer.take()
         if answer is None:
             return
+        nudged = self._answer_pause_nudged
         self._answer_pause_nudged = False
         self._cancel_task(self._answer_pause_nudge_task)
         # Synchronous by contract: a preview still in flight is simply absent
@@ -546,7 +651,31 @@ class VoiceLabAgent(Agent):
             if "end_of_turn_delay" in self._last_answer_metrics
             else None,
         )
+        # The chain this answer travelled: VAD end → final transcript →
+        # LiveKit turn end → the window's wait → submit. One event per submit;
+        # livekit_turn_metrics.py reads it, the §8 calibration depends on it.
+        commit_delay_s = getattr(self, "_commit_delay_s", None)
+        commit_effective_s = getattr(self, "_commit_effective_s", None)
+        speech_ended_at = getattr(self, "_speech_ended_at", None)
+        last_final_at = getattr(self, "_last_final_at", None)
+        turn_completed_at = getattr(self, "_turn_completed_at", None)
+        self.report(
+            "voice_endpointing",
+            anchor=commit_anchor(),
+            commit_delay_ms=round(commit_delay_s * 1000) if commit_delay_s is not None else None,
+            effective_delay_ms=round(commit_effective_s * 1000) if commit_effective_s is not None else None,
+            vad_to_final_ms=_delta_ms(speech_ended_at, last_final_at),
+            final_to_turn_ms=_delta_ms(last_final_at, turn_completed_at),
+            turn_to_submit_ms=_delta_ms(turn_completed_at, self._submitted_at),
+            since_speech_end_ms=self._ms_since("_speech_ended_at"),
+            fragments=answer.fragment_count,
+            nudged=nudged,
+        )
         self._publish_turn_state("processing")
+        # The reply's TTS must not pay a cold connection after a long answer.
+        self._cancel_task(getattr(self, "_tts_keepalive_task", None))
+        if getattr(self, "_warm_tts", None) is not None:
+            self._tts_keepalive_task = asyncio.create_task(self._tts_keepalive())
 
         # Keep the local processing filler opt-in; default remains silent while
         # Core works, as the pulled branch specified.
@@ -565,7 +694,7 @@ class VoiceLabAgent(Agent):
                 )
                 self._last_filler = line
                 filler_spoken = True
-                self.speak(line, allow_interruptions=True, add_to_chat_ctx=False, kind="filler")
+                self._filler_handle = self.speak(line, allow_interruptions=True, add_to_chat_ctx=False, kind="filler")
 
             filler_task = asyncio.create_task(filler())
         core_started = perf_counter()
@@ -577,11 +706,13 @@ class VoiceLabAgent(Agent):
                 raise RuntimeError("Interview Core returned no voice response")
         except asyncio.CancelledError:
             self._cancel_task(filler_task)
+            self._cancel_task(getattr(self, "_tts_keepalive_task", None))
             self._core_in_flight = False
             self._repeat_after_core = False
             raise
         except Exception as exc:
             self._cancel_task(filler_task)
+            self._cancel_task(getattr(self, "_tts_keepalive_task", None))
             self._core_in_flight = False
             self._repeat_after_core = False
             self.report(
@@ -597,6 +728,7 @@ class VoiceLabAgent(Agent):
             self.speak(self._core_error_text(), allow_interruptions=True, add_to_chat_ctx=False)
             return
         self._cancel_task(filler_task)
+        self._cancel_task(getattr(self, "_tts_keepalive_task", None))
         logger.info(
             "Interview Core voice turn completed",
             extra={
@@ -659,6 +791,8 @@ class VoiceLabAgent(Agent):
                     reliable=True,
                     topic="intervia.session",
                 )
+        # A nudge or filler still playing must not delay the interviewer.
+        self._interrupt_filler()
         speech = self.speak(
             content,
             allow_interruptions=not is_terminal,
@@ -685,10 +819,35 @@ class VoiceLabAgent(Agent):
             if self._on_interview_closed is not None:
                 self._on_interview_closed("interview closed by Core")
 
+    def _interrupt_filler(self) -> None:
+        """Cut a nudge or filler still playing: the authoritative reply is ready.
+
+        §13 voice-output audit (2026-11-26): in the pilot a nudge was still
+        playing when Core answered on 3 of 22 turns, holding the question
+        back by up to 0.48 s, because LiveKit plays queued speech in order.
+        An interruptible filler is cut; a finished one is left alone.
+        """
+        handle = getattr(self, "_filler_handle", None)
+        self._filler_handle = None
+        if handle is None:
+            return
+        done = getattr(handle, "done", None)
+        interrupt = getattr(handle, "interrupt", None)
+        if not callable(done) or not callable(interrupt):
+            return
+        try:
+            if done():
+                return
+            interrupt()
+        except Exception:  # noqa: BLE001 - never let the cut fail the reply
+            return
+        self.report("voice_filler_interrupted")
+
     def _fixed_lines(self) -> frozenset[str]:
         """Lines identical in every session: their audio is shared on disk."""
         return frozenset(
             {
+                *answer_pause_nudges(self._locale),
                 silence_reprompt(self._locale),
                 hold_acknowledgement(self._locale),
                 self._unclear_transcript_text(),
@@ -781,6 +940,7 @@ class VoiceLabAgent(Agent):
         return handle
 
     async def on_user_turn_completed(self, _turn_ctx, new_message) -> None:
+        self._turn_completed_at = perf_counter()
         raw_transcript = new_message.text_content
         logger.info(
             "LiveKit user turn completed",
@@ -1458,6 +1618,7 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
         speech_cache=speech_cache,
         on_interview_closed=release_session,
         events=voice_events,
+        warm_tts=primary_tts.warm if use_vieneu else None,
     )
 
     abandon_grace = _float_env("VOICE_LAB_ABANDON_GRACE_SECONDS", 20.0)
@@ -1519,7 +1680,9 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
                     "transcript_characters": len(event.transcript),
                 },
             )
-            if not event.is_final:
+            if event.is_final:
+                agent.on_final_transcript()
+            else:
                 agent.on_interim_transcript(event.transcript)
 
     @session.on("agent_state_changed")

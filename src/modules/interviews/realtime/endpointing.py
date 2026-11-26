@@ -27,6 +27,30 @@ from types import ModuleType
 COMMIT_SILENCE_SECONDS = 1.8
 SHORT_COMMIT_SILENCE_SECONDS = 2.2
 SHORT_ANSWER_WORDS = 8
+
+# --------------------------------------------------------------------------- #
+# Where the commit wait is measured from (critical-path profile, 2026-11-26)
+# --------------------------------------------------------------------------- #
+# The §13 pilot measured speech end → submit at 2.87 s and the profile of its
+# stored events explains every millisecond of it: VAD end of speech → Qwen
+# final transcript 0.27 s, → LiveKit's fixed endpointing delay 0.80 s, → this
+# window's 1.80 s. Three silence timers in series, two of them duplicates:
+# LiveKit's delay exists to let a late final arrive (the window already merges
+# fragments), and the window's 1.8 s started only when the final transcript
+# arrived, so the candidate's silence was counted from the *recognizer's*
+# clock, not from the moment they stopped talking. With a human speaker, whose
+# Qwen final arrives ~1.25 s after VAD end (pcm end → final 1.7 s), the same
+# chain is ~3.9 s.
+#
+# ``commit_anchor()`` chooses the clock: ``transcript`` (default: the wait
+# starts at the final transcript, as it always has) or ``speech_end`` (the
+# wait starts at VAD end of speech; the recognizer's latency no longer adds
+# to it). The nominal 1.8 / 2.2 s are unchanged either way. The default stays
+# ``transcript`` because the pilot material contains intra-answer pauses up
+# to 2.6 s that the 1.8 s window measured from speech end would cut; the
+# human-speaker benchmark with labelled false cuts is what decides the switch.
+COMMIT_ANCHOR_TRANSCRIPT = "transcript"
+COMMIT_ANCHOR_SPEECH_END = "speech_end"
 # Speak a short filler only when Interview Core takes longer than this.
 PROCESSING_FILLER_SECONDS = 1.2
 # A brief pause inside an answer is common; acknowledge it before the answer
@@ -166,6 +190,41 @@ def adaptive_commit_delay(
         ),
     }[verdict]
     return seconds, verdict
+
+def commit_anchor() -> str:
+    """``VOICE_ANSWER_COMMIT_ANCHOR``: ``transcript`` (default) or ``speech_end``."""
+    value = os.getenv("VOICE_ANSWER_COMMIT_ANCHOR", COMMIT_ANCHOR_TRANSCRIPT).strip().lower()
+    return COMMIT_ANCHOR_SPEECH_END if value == COMMIT_ANCHOR_SPEECH_END else COMMIT_ANCHOR_TRANSCRIPT
+
+
+def remaining_commit_delay(
+    delay: float, *, speech_ended_at: float | None, now: float, anchor: str = COMMIT_ANCHOR_TRANSCRIPT
+) -> float:
+    """How long to still wait before committing, given where the clock started.
+
+    ``transcript``: the full ``delay`` from now (the final transcript just
+    arrived). ``speech_end``: ``delay`` counted from the candidate's VAD end
+    of speech; whatever the recognizer and LiveKit already spent of it is not
+    waited for again. Never negative; with no speech-end mark it is the
+    transcript behaviour.
+    """
+    if anchor != COMMIT_ANCHOR_SPEECH_END or speech_ended_at is None:
+        return max(0.0, float(delay))
+    return max(0.0, float(delay) - max(0.0, now - speech_ended_at))
+
+
+def answer_pause_nudge_enabled() -> bool:
+    """``VOICE_ANSWER_PAUSE_NUDGE_ENABLED=0`` silences the mid-answer "mình đang nghe" line.
+
+    On by default, as it always was. Off is the filler-disabled arm of the
+    §13 voice-output audit: in the pilot the nudge was the first audio after
+    every answer (it fires 1.25 s after a fragment, the commit 1.8 s after),
+    so "TTFA" measured the nudge, not the interviewer. See
+    ``runtime.VoiceLabAgent._interrupt_filler`` for the other half: a nudge
+    still playing is cut the moment the real reply is ready.
+    """
+    return os.getenv("VOICE_ANSWER_PAUSE_NUDGE_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+
 
 def _env_seconds(name: str, default: float, *, minimum: float, maximum: float) -> float:
     try:
@@ -365,6 +424,11 @@ def pick_processing_filler(locale: str, seed: str, avoid: str | None = None) -> 
         if line != avoid:
             return line
     return pool[start]
+
+
+def answer_pause_nudges(locale: str) -> tuple[str, ...]:
+    """The pool of mid-answer nudges: fixed lines, so their audio is cached on disk."""
+    return ANSWER_PAUSE_NUDGES_VI if _is_vi(locale) else ANSWER_PAUSE_NUDGES_EN
 
 
 def pick_answer_pause_nudge(locale: str, seed: str, avoid: str | None = None) -> str:

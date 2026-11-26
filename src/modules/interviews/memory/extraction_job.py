@@ -398,7 +398,17 @@ async def _record_failure(
     attempt: int,
     limit: int,
 ) -> dict[str, Any]:
-    """Write FAILED durably (never over DONE); raise for a retry or return a permanent failure."""
+    """Write FAILED durably; raise for a retry or return a permanent failure.
+
+    The write is guarded twice: never over ``DONE``, and never over a
+    *permanent* failure. The second guard matters on the error path: the
+    extraction's rollback released the advisory lock, so between it and this
+    write another delivery may have classified the same job as permanent, or
+    the reconciler may have exhausted its dispatches. A transient ``FAILED``
+    written over that would make the job eligible again -- the retry loop
+    the permanent mark exists to end. A refused write re-reads and reports
+    the state that won instead.
+    """
     kind = classify(exc)
     permanent = kind == "permanent" or attempt >= limit
     if isinstance(exc, (ImportError, ModuleNotFoundError)) or (isinstance(exc, MemoryStoreUnavailable) and exc.permanent):
@@ -412,15 +422,27 @@ async def _record_failure(
     error = f"{type(exc).__name__}: {exc}"[:500]
     state = await _transition(
         db, session_id, status="FAILED", attempt=attempt, permanent=permanent, reason=reason, error=error,
-        failed_at=_now_iso(),
+        failed_at=_now_iso(), unless_permanent=True,
     )
     await db.commit()
     if state is None:
-        # Another delivery finished the job while this one was failing: its
-        # DONE stands, and this failure is not recorded over it.
+        # Another delivery settled the job while this one was failing: its
+        # DONE, or its permanent failure, stands and this one is not
+        # recorded over it. Anything else moved under us (a re-dispatch, a
+        # worker that took the lock after our rollback): leave its state
+        # alone and ask for a retry, which will find the final state.
         current = await job_state(db, session_id)
-        if _is_done(current):
+        if _is_done(current) or _is_permanent_failure(current):
+            trace_event(
+                "interviewer", "candidate_memory_job_failure_refused", session_id=session_id,
+                attempt=attempt, settled_as=str((current or {}).get("status")),
+            )
             return _settled(session_id, current, after_lock=True)
+        trace_event(
+            "interviewer", "candidate_memory_job_failure_refused", session_id=session_id,
+            attempt=attempt, settled_as=None,
+        )
+        raise TransientExtractionError(f"failure record refused; job moved to {(current or {}).get('status')}") from exc
     trace_event(
         "interviewer", "candidate_memory_job_failed", session_id=session_id,
         attempt=attempt, permanent=permanent, reason=reason, error_type=type(exc).__name__,

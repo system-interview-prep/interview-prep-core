@@ -155,7 +155,7 @@ requires. These are facts about this HEAD, not targets.
 | Per-call latency | Already recorded: every call writes an `ai_call_logs` row with `duration_ms`, `purpose` and `model`. Percentiles come from that table. |
 | Qwen STT | `STTCapabilities(streaming=True, interim_results=True)`; 1.0 s chunks, 0.8 s endpoint silence. Partial transcripts exist. |
 | VieNeu TTS | `TTSCapabilities(streaming=False)`. No text-streaming API; audio arrives as an SSE byte stream per sentence, so progressive playback works and AC-12 needs no new API. |
-| Endpointing | Fixed `COMMIT_SILENCE_SECONDS=1.8` / `SHORT_COMMIT_SILENCE_SECONDS=2.2` by default; `VOICE_ADAPTIVE_ENDPOINTING=1` switches to the three-band adaptive wait of §8 (`realtime/endpointing.py`), not yet calibrated on real Qwen finalization. |
+| Endpointing | Fixed `COMMIT_SILENCE_SECONDS=1.8` / `SHORT_COMMIT_SILENCE_SECONDS=2.2` by default; `VOICE_ADAPTIVE_ENDPOINTING=1` switches to the three-band adaptive wait of §8 (`realtime/endpointing.py`), not yet calibrated on real Qwen finalization. **Profiled (run 4):** the wait was one of three silence timers in series; see "Critical path" below. |
 | Main graph | Already exists: `graph/graph.py` dispatches the six commands on one compiled graph with a Postgres checkpoint. |
 | Video path | `adapters/video_calls/api/router.py::chat_voice_on_call` bypasses Core entirely (a bare `generate_text`). It and the chat/voice `chat` endpoints sit behind `legacy_interview_api_enabled`, **false** by default. |
 | Luna / Talker | Not a separate service: an OpenAI model id (`gpt-5.6-luna`). `src/modules/ai/facade.py` now takes a per-call `model=`, so the Talker uses the existing provider (spec §1.1). Settings: `interview_talker_model` (empty = use `llm_model`) and `interview_talker_enabled` (**false**). |
@@ -186,8 +186,8 @@ Thinker + Anticipation is the accepted direction (benchmark decision, 2026-11-26
 | Hybrid Parallel (§6.4, brief §7) | `talker.py` (Luna via the existing provider's `model=`), `arbiter.py` (deterministic, no third call). Thinker and Talker run concurrently; the guarded early acknowledgment reaches the worker before fan-in over an opt-in NDJSON stream of the internal message endpoint (`response.early` → `response.final`); Luna is not waited for once the Thinker answers. **Off by default** (`interview_talker_enabled`). | `test_execution_paths.py`, `test_runtime_message_stream.py`, `test_core_in_flight_flow.py` |
 | Talker model reachable (§7) | `gpt-5.6-luna` resolves through the existing OpenAI provider. | live probe, 2026-11-26 |
 | Session runtime in phases (brief §8) | `process_candidate_message` is an orchestrator over typed phases: `_load_turn_context` → `_claim_candidate_message` (row lock, idempotency, Phase 1 write, commit) → `_prepare_inference` → `_run_authoritative_inference` (the only provider call, outside any lock) → re-lock → exactly one transition (`_commit_abort` / `_commit_clarify` / `_commit_probe` / `_commit_closing_reply` / `_settle_current_turn` + `_ask_next_question` / `_close_session`) → commit → `_turn_response`. SQL text, lock placement, commit order and event ordering are unchanged. | `test_chat_runtime.py`, `test_chat_full_flow_integration.py`, dual-run, snapshot 35/35 |
-| Evaluator + background memory (§9) | The report is persisted under its `interview_evaluation_jobs` lease and committed before anything else runs. Extraction is a durable job on the existing Celery/RabbitMQ worker and its default queue (`memory/extraction_job.py`, `workers/tasks/interview_memory.py`). **Job state lives in PostgreSQL** (`interview_sessions.metadata->'memory_extraction'`: QUEUED / PROCESSING / DONE / FAILED with `permanent`). `score` writes QUEUED and commits *before* `send_task`; the worker takes a transaction-scoped advisory lock held for the whole extraction and **re-reads the state under the lock** (check-then-lock race closed); failures are classified — disabled = skip, missing dependency or a refused provider request = permanent, connection/provider outage = transient with bounded exponential backoff (`rabbitmq_max_attempts` total attempts); a reconciler in the API lifespan re-dispatches evaluations of the last 6 h whose job is neither DONE nor permanently failed, at most 5 times. At-least-once by design, stated in the module. **Verified on a real RabbitMQ + worker** (2026-11-26, host worker against the compose broker and database): broker → worker → DB → store round trip, durable FAILED on a refused provider key (401, unpaid), duplicate delivery skipped, reconciliation of a persisted-but-undispatched evaluation. The success path (a real extraction) needs a paid call and was not run. | `test_memory_extraction_job.py` (40) |
-| §13 instrumentation | The agent marks speech end, submit and Core answered, and reports `voice_reply_started` per utterance kind with the elapsed times; `voice_answer_submitted` carries `since_speech_end_ms`; TTS metrics carry the kind. `scripts/eval/interviews/voice/livekit_turn_metrics.py` derives TTFA, TTMR, Qwen finalization, endpointing wait, VieNeu first byte, calls/turn, wasted speculation, hit rate, early-ack availability and a false-cut proxy with P50/P95/P99 from stored events — no provider call. **Implemented, not yet run on a real room.** | `test_livekit_turn_metrics.py` |
+| Evaluator + background memory (§9) | The report is persisted under its `interview_evaluation_jobs` lease and committed before anything else runs. Extraction is a durable job on the existing Celery/RabbitMQ worker and its default queue (`memory/extraction_job.py`, `workers/tasks/interview_memory.py`). **Job state lives in PostgreSQL** (`interview_sessions.metadata->'memory_extraction'`: QUEUED / PROCESSING / DONE / FAILED with `permanent`). `score` writes QUEUED and commits *before* `send_task`; the worker takes a transaction-scoped advisory lock held for the whole extraction and **re-reads the state under the lock** (check-then-lock race closed); failures are classified — disabled = skip, missing dependency or a refused provider request = permanent, connection/provider outage = transient with bounded exponential backoff (`rabbitmq_max_attempts` total attempts); a reconciler in the API lifespan re-dispatches evaluations of the last 6 h whose job is neither DONE nor permanently failed, at most 5 times. At-least-once by design, stated in the module. **Verified on a real RabbitMQ + worker** (2026-11-26): broker → worker → DB → store round trip, durable FAILED on a refused provider key (401), duplicate delivery skipped, reconciliation of a persisted-but-undispatched evaluation, and one real extraction end to end (see "Remaining migration work"). The failure written after an extraction's rollback is guarded against a *permanent* failure written meanwhile as well as against DONE (a transient FAILED over the reconciler's `dispatch_exhausted` would have reopened the job). | `test_memory_extraction_job.py` (53) |
+| §13 instrumentation | The agent marks speech end, submit and Core answered, and reports `voice_reply_started` per utterance kind with the elapsed times; `voice_answer_submitted` carries `since_speech_end_ms`; TTS metrics carry the kind. `scripts/eval/interviews/voice/livekit_turn_metrics.py` derives TTFA, TTMR, Qwen finalization, endpointing wait, VieNeu first byte, calls/turn, wasted speculation, hit rate, early-ack availability and a false-cut proxy with P50/P95/P99 from stored events — no provider call. **Run on a real room** (run 3, four sessions). Since run 4 the agent also reports the endpointing chain per submit (`voice_endpointing`: VAD end → final → LiveKit turn end → submit, with the anchor and the wait it scheduled), fillers cut by the reply and the prefetch round trip, and the report attributes pre-submit events (STT finish, nudge audio, prefetch) to the answer they preceded — run 3's "TTFA" rows had read the *next* answer's nudge. | `test_livekit_turn_metrics.py` |
 
 ### Measured, not assumed
 
@@ -261,12 +261,14 @@ How to read it, honestly:
   now traced so the next run can show whether the guard is refusing a real
   leak or a redirect that merely restates the question's own topic. The guard
   is untouched.
-- **Not measured:** TTFA and TTMR (need a LiveKit room and a speaking
-  candidate); response-quality parity (shadow report). A Luna call cancelled
-  at fan-in may still be billed; the harness cannot see that.
+- **Not measured in runs 1–2:** TTFA and TTMR (they need a LiveKit room and
+  a speaking candidate — run 3 below); response-quality parity (shadow
+  report; see "Quality parity" below). A Luna call cancelled at fan-in may
+  still be billed; the harness cannot see that.
 
 Stub runs (`--stub`, zero spend) confirm every configuration routes as
-designed; the live numbers above and the pilot below are the only measurements.
+designed; runs 1–3 are live measurements, run 4 is a profile of run 3's
+stored events plus two provider-free measurements.
 
 **Run 3 — LiveKit pilot** (2026-11-26, `livekit_pilot.py`: a synthetic candidate
 playing the same eight VieNeu-synthesized Vietnamese answers into a real room;
@@ -284,7 +286,7 @@ anticipation `07bfbb98-7d15-4814-b243-e10ea95d7311`, endpointing `0aadd15b-9057-
 | TTMR max of 8 | 13247 ms | 8951 ms | 12850 ms | 10209 ms |
 | client TTFA p50 (end of candidate audio → first audible agent audio) | 5589 ms | 5451 ms | 5451 ms | 5561 ms |
 | speech end → submit p50 (endpointing wait) | 2857 ms | 2843 ms | 2857 ms | 3006 ms |
-| Qwen finalization p50 (3 of 8 turns reported) | 1532 ms | 1657 ms | 1557 ms | 1644 ms |
+| Qwen finalization p50 (LiveKit's `transcription_delay`, 3 of 8 turns; run 4 reads Qwen's own diagnostic on all 8: 1702 / 1685 / 1715 / 1723 ms) | 1532 ms | 1657 ms | 1557 ms | 1644 ms |
 | Core p50 | 3699 ms | 4143 ms | 3010 ms | 3894 ms |
 | reply playback after Core p50 | 1131 ms | 476 ms | 1117 ms | 1085 ms |
 | VieNeu first byte p50, question / filler | 453 / 1117 ms | 457 / 1109 ms | 453 / 1117 ms | 454 / 1124 ms |
@@ -296,9 +298,14 @@ anticipation `07bfbb98-7d15-4814-b243-e10ea95d7311`, endpointing `0aadd15b-9057-
 
 What the pilot says, and what it cannot:
 
-- **TTFA is the processing filler.** In every configuration the first audio
-  after the answer is the filler line (~2.9 s endpointing wait + ~1.1 s VieNeu
-  first byte); none of the three features touches that path.
+- **TTFA is the pause nudge, and run 3's TTFA row was mis-attributed.** In
+  every configuration the first audio after an answer is the mid-answer nudge
+  ("mình đang nghe…"), which fires 1.25 s after a fragment while the commit
+  fires at 1.8 s, then pays ~1.1 s of VieNeu first byte. Run 3's report
+  assigned that audio to the *previous* turn (it plays before the submit), so
+  its "TTFA p50 ≈ 3.5 s" mixed turns; re-read with the corrected attribution
+  (run 4) it is 2565 / 2323 ms (baseline / unified), still the nudge on 8 of
+  8 turns. None of the three features touches that path.
 - **Unified** made one call per answer instead of 1.25 and lost nothing
   visible: TTMR p50 7.3 s vs 7.7 s, worst turn 9.0 s vs 13.2 s — eight turns,
   so treat as "not worse", not as a gain.
@@ -310,8 +317,12 @@ What the pilot says, and what it cannot:
   them with no session id (fixed in this commit: they now carry the session
   and a `speculative.` purpose prefix).
 - **Adaptive endpointing changed nothing measurable** (speech end → submit
-  3.0 s vs 2.9 s). Root cause not established in the pilot; it needs its own
-  investigation against Qwen partials before it can be enabled.
+  3.0 s vs 2.9 s). Run 4 established why: the window's wait is the *last* of
+  three serial timers, so shortening it by band cannot remove the 1.07 s the
+  recognizer and LiveKit spend first; and on these answers every band
+  resolved to the 2.0 s "hesitant" wait (turn end → submit was 2000 ms on all
+  8 turns), because the synthetic speaker's fragments end without a closing
+  particle or punctuation.
 - Not measured: true false cuts (the proxy saw none; a human has to listen),
   quality parity (`agent_shadow_report.py`, separate), and the candidate's
   real playback leg beyond the synthetic client.
@@ -323,19 +334,124 @@ the pilot agree). `VOICE_LLM_SPECULATIVE_PREVIEW=0` (anticipation off: 0 hits,
 4× spend). `VOICE_ADAPTIVE_ENDPOINTING=0` (no measured effect).
 `INTERVIEW_TALKER_ENABLED=false` (unchanged). The latency floor the pilot
 shows — ~2.9 s of endpointing wait, ~1.5 s of Qwen finalization inside it,
-3–4 s of Core — is where the next work is, not in the three flags.
+3–4 s of Core — is where the next work is, not in the three flags. Run 4
+below is that work.
+
+**Run 4 — critical-path profile** (2026-11-26; the stored events and call logs
+of run 3's four sessions, re-read per turn; plus two measurements that cost
+no provider call: VieNeu first byte against text length and idle time, and
+the pilot answers' pause structure). Nothing here is a new live session.
+
+*Speech end → submit, per turn (p50 of 8, each configuration within ±30 ms):*
+
+| leg | p50 | what it is |
+|---|---|---|
+| last voiced PCM → VAD end of speech | 1 430 ms | Silero kept "speaking" ~1 s longer than Qwen's RMS threshold on the synthetic audio; a human tail is expected nearer the 0.45 s `min_silence`. **Unverified for a person.** |
+| VAD end → Qwen final transcript | 276 ms | Qwen's 0.8 s of audio silence, up to 0.8 s of chunk backlog (each 1 s chunk takes 430–490 ms to process, serially), the last partial chunk (316 ms) and `/api/finish` (430 ms): 1 702 ms from the last voiced PCM, overlapping the VAD leg. |
+| final → LiveKit turn end | 804 ms | LiveKit's fixed `min_endpointing_delay=0.8`, counted *after* the final transcript. A second silence timer. |
+| turn end → submit | 1 800 ms (2 000 ms with adaptive endpointing) | The answer window's own wait. A third. |
+| **VAD end → submit** | **2 857 ms** | = 276 + 804 + 1 800, three timers in series. With a human speaker (final ~1.25 s after VAD end) the same chain is ~3.9 s. |
+
+*Core, per turn:* the provider call is 97–98 % of it. `core_ms − Σ call_ms` =
+67–142 ms (agent → API hop, claim, prepare, persist, commit); the turn
+graph outside the call = 6–18 ms; memory retrieval is one Postgres query
+cached 60 s per user (no embedding call). Provider latency fits
+`1 885 ms + 0.063 ms × input tokens + 13.0 ms × output tokens` (n = 35
+calls, gpt-4o-mini via the Responses API): 2 500 input tokens cost ~160 ms,
+150 output tokens ~2 000 ms. The decider's output — rationale, evidence
+refs, the `covered`/`missing` evaluation lists, the spoken line — is the
+lever; shrinking it is a prompt/contract change and belongs after the
+quality-parity report, not in this run.
+
+*Voice output:* VieNeu first byte is **447–465 ms** for 17 to 218 characters on
+a warm connection, **1.07–1.21 s** after ≥ 6 s idle or on a fresh client (4 s
+idle still warm), and a `GET /health` costs the same cold start and warms it.
+In the pilot the nudge lines were synthesized each time (1.1 s, not fixed
+lines), and once a nudge was served from the in-memory cache the question
+after a 25-second answer paid the cold start instead (baseline question
+first byte 1 124 ms vs 466 ms in unified, where an uncached nudge had just
+warmed the connection). A nudge was still playing when Core answered on 3 of
+22 nudged turns, holding the question back by up to 477 ms; p50 "reply
+playback after Core" 1 131 ms (baseline) is the cold first byte, not the queue.
+
+*Budget:* the preview endpoint's calls were invisible to any counter; no
+cap existed at dispatch; the SDK retried transport errors once on its own,
+uncounted.
+
+*What changed from the profile (this commit), each measured or testable
+without a provider:*
+
+- **Hard call budget at dispatch** (`src/modules/ai/budget.py`, charged in
+  `facade._responses_create` before every attempt — the first, the retry
+  after a refused option, the one transport retry that replaces the SDK's;
+  `max_retries=0`). A turn runs under `INTERVIEW_TURN_CALL_BUDGET` (6), a
+  preview under `INTERVIEW_PREVIEW_CALL_BUDGET` (2), the prefetch under 0,
+  all against `INTERVIEW_SESSION_CALL_BUDGET` (120) per process. A refused
+  call fails like a provider error and is an `ai_call_logs` row with
+  `error_type=CallBudgetExceeded`. `test_call_budget_dispatch.py`.
+- **LiveKit's 0.8 s post-final delay removed for Qwen** (`min_delay=0.0`,
+  like AssemblyAI; `max_delay` ≥ 3 s so a Qwen final arriving 1.7 s after
+  speech end is still waited for). Expected: −0.8 s on every turn, no change
+  to the candidate's silence allowance beyond that duplicate.
+- **One explicit anchor for the window** (`VOICE_ANSWER_COMMIT_ANCHOR`):
+  `transcript` (default, today's clock) or `speech_end` (the 1.8 / 2.2 s
+  count from VAD end of speech; the recognizer's latency is not waited for
+  again). The constants did not move. **The default stays `transcript`:**
+  the pilot material has intra-answer pauses of 1.3–2.6 s (measured on the
+  eight WAVs) that a 1.8 s window counted from a prompt VAD end would cut,
+  and the spec's own §8 bands top out at 2.2 s. The human-speaker benchmark
+  with labelled false cuts decides it (`livekit_human_benchmark.py`, arm
+  `unified_speech_end`).
+- **Nudges are fixed lines** (cached on disk after the first synthesis),
+  **the TTS connection is kept warm** (`VieNeuTTS.warm`: at speech start,
+  at submit and every 3 s while Core thinks — measured warm at 4 s idle,
+  cold at 6 s), and **the reply cuts a nudge or filler still playing**
+  (`_interrupt_filler`, reported as `voice_filler_interrupted`). Expected:
+  question first byte 1.1 s → 0.45 s on every turn, and no queueing behind
+  the nudge. `VOICE_ANSWER_PAUSE_NUDGE_ENABLED=0` is the filler-off arm of
+  the audit.
+- **Deterministic prefetch, separate from speculation**
+  (`POST /livekit/runtime/prefetch`, called by the agent when an answer
+  starts): candidate memory and the interviewer playbook, under a zero call
+  budget. The profile says the whole non-provider part of a turn is ~80 ms,
+  so this is worth at most that; it exists so the deterministic part no
+  longer rides on a speculative inference that costs two calls. The turn
+  still reads its authoritative context under the claim's row lock.
+- **Per-turn phase timings** (`turn_phases` event: load, claim, prepare,
+  inference, persist, commit) and the endpointing chain per submit
+  (`voice_endpointing`), so the next pilot reads the profile directly.
+
+*Expected after these changes, to be measured, not claimed:* VAD end → submit
+2.86 s → ~2.05 s (`transcript` anchor) or ~1.8 s (`speech_end`); reply
+playback after Core ~1.1 s → ~0.5 s; TTMR p50 ~7.3 s → ~5.7 s (unified).
+A validation session costs ~16 provider calls per configuration; it was not
+run in this commit (no authorization for paid calls was given for it).
+
+**Quality parity (shadow report), what exists:** `agent_shadow_report.py` now
+reads the stored decision records (it dropped every LIVE turn before — the
+event stores the full record, the report expected its summary) and reports
+LIVE turns on their own. Over the last 60 days of this database: 53 live
+turns in 10 sessions, executed by the model 100 %, 0 menu violations, 0
+decide errors, graph p50 3 680 ms, actions `continue_warm_up` 47 ·
+`repeat_question` 5 · `acknowledge_and_probe` 1. **That distribution is the
+finding:** the pilot's synthetic answers never left the warm-up, so the
+Unified Thinker's text-carrying actions (probe, clarify, redirect, answer)
+were exercised once in four sessions; "carried its own line" is 0/34 because
+`continue_warm_up` is natively one call in every mode. Parity between the
+model's decisions and the rule ladder needs a SHADOW period (3 calls per
+turn) or the human benchmark's sessions; neither was authorized here.
 
 
 ### Remaining migration work
 
 | Brief | Outstanding |
 |---|---|
-| §5–§7 validation | Built, unit-tested and **measured live** (five configurations, two runs; see above). Hybrid is measured and rejected on cost/latency grounds, not left untested. `execution_paths_benchmark.py` compares Baseline / Unified / Unified+Anticipation / Hybrid on real turns (calls incl. speculation and Talker, p50/p95, rejection and fallback rates, early-ack availability, tokens); it has run only with `--stub`. TTFA/TTMR still need a LiveKit room. Hybrid stays off until that run and a shadow period say otherwise. |
+| §5–§7 validation | Built, unit-tested and **measured live** (five configurations in runs 1–2, four in the run 3 room pilot; see above). Hybrid is measured and rejected on cost/latency grounds, not left untested. `execution_paths_benchmark.py` has run live (run 2) and with `--stub`. TTFA/TTMR were measured in run 3 with a synthetic speaker; a human speaker is still missing. Hybrid stays off until a shadow period says otherwise. |
 | Early-ack transport | Delivered over an opt-in NDJSON stream of the internal worker↔API endpoint. A failure after headers arrives as `response.error`; the plain JSON path is unchanged. The candidate-facing protocol is untouched. |
 | §8 Session/graph | Phased (see above). Kept on purpose: the Main LangGraph `respond` checkpoint replay overlaps the runtime's `client_message_id` replay. Both are tested; removing either is a durability decision (spec §4, §14 phase 2), not a refactor, and needs its own authorization. |
 | §9 Evaluator/memory | **Verified end to end**: the `Dockerfile` base stage now installs the `memory` extra (authorized 2026-11-26), both rebuilt images import `langmem`, the Postgres store and the task module, and one real extraction ran through the compose worker, PostgreSQL and the LangMem store (1 provider call, `gpt-4o-mini`, 710/48 tokens; DONE persisted with counts; one memory item stamped with the session; a duplicate delivery skipped with 0 calls). Job state transitions are single guarded SQL statements (nothing overwrites DONE, QUEUED never revives a permanent failure, the reconciler's writes are compare-and-set), every failure is recorded under the advisory lock, and the reconciler takes a sweep lock, orders least-recently-attempted first, and has a bounded manual counterpart (`scripts/ops/reconcile_memory_extraction.py`) for outages longer than its 6-hour window. Remaining: a production deployment of the rebuilt images. |
-| §13 LiveKit benchmark | **Pilot run** (see Measured, run 3): four configurations, one session of eight answers each, real room and real providers, a synthetic candidate (`livekit_pilot.py`). Remaining: a human-speaker session per configuration (synthetic TTS audio is easier for STT than a person), human-labelled false cuts, the quality-parity shadow report, and a larger sample before any P95 claim. |
-| §3 Quality parity | Call counts and latency measured; response-quality parity still needs a shadow run. The record and `agent_shadow_report` expose `carried_text_rate` / `rejected_by` to make it checkable. |
+| §13 LiveKit benchmark | **Pilot run** (run 3) and **profiled** (run 4). Remaining: the validation session per configuration after run 4's changes (~16 calls each, needs authorization), a human-speaker session per arm of `livekit_human_benchmark.py` (`prepare` checks the containers' flags, `report` writes the record with a label template; the checklist makes the person leave the warm-up and pause on purpose), human-labelled false cuts to decide `VOICE_ANSWER_COMMIT_ANCHOR`, the SHADOW period for parity, and a larger sample before any P95 claim. |
+| §3 Quality parity | Call counts and latency measured; the shadow report reads live turns now (see run 4) and shows the pilot never left the warm-up, so the Unified Thinker's own lines are measured on one turn. A SHADOW period (3 calls/turn) or the human benchmark's sessions are needed for parity; not authorized in this run. |
 | Spec §10 tree | `core/` is retained by brief §2, which deliberately diverges from spec §11. `contracts.py`, `events.py`, `config.py` and the `session/` and `memory/` file splits are not done. |
 
 ### Feature flags (all default off)
@@ -346,6 +462,9 @@ shows — ~2.9 s of endpointing wait, ~1.5 s of Qwen finalization inside it,
 | `VOICE_ADAPTIVE_ENDPOINTING` | Transcript-aware commit wait (§8), with `VOICE_COMMIT_COMPLETE` / `_UNSURE` / `_HESITANT`. **Keep off**: no measured effect in the pilot. |
 | `VOICE_LLM_SPECULATIVE_PREVIEW` | Anticipation (§7); on by default in the agent when STT is Qwen. **Recommended off**: 0 of 24 previews reused in the pilot at 4× the session's provider spend. |
 | `INTERVIEW_TALKER_ENABLED` / `INTERVIEW_TALKER_MODEL` | Hybrid path (§6.4). Model empty = Talker unavailable, router never picks Hybrid. Verified reachable: `gpt-5.6-luna`. |
+| `VOICE_ANSWER_COMMIT_ANCHOR` | `transcript` (default) or `speech_end`: the clock the 1.8 / 2.2 s window counts from (run 4). **Keep `transcript`** until the human benchmark labels false cuts under `speech_end`. |
+| `VOICE_ANSWER_PAUSE_NUDGE_ENABLED` | Default on. `0` silences the mid-answer nudge: the filler-off arm of the voice-output audit. |
+| `INTERVIEW_TURN_CALL_BUDGET` / `INTERVIEW_PREVIEW_CALL_BUDGET` / `INTERVIEW_SESSION_CALL_BUDGET` | Hard provider-call caps charged at dispatch (6 / 2 / 120). Not flags: always on. |
 
 ## Change rule
 

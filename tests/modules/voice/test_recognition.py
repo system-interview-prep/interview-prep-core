@@ -36,14 +36,21 @@ def test_qwen_factory_passes_all_settings_and_does_not_claim_context_support(mon
     assert "context" not in kwargs
 
 
-@pytest.mark.parametrize("provider, detection, delay", [("qwen", "vad", 0.8), ("assemblyai", "stt", 0)])
+@pytest.mark.parametrize("provider, detection, delay", [("qwen", "vad", 0), ("assemblyai", "stt", 0)])
 def test_shared_vad_and_endpointing_do_not_depend_on_test_mode(monkeypatch, provider, detection, delay):
     vad = Mock()
     monkeypatch.setattr(recognition.inference, "VAD", vad)
     tuning = voice_tuning({})
     options = recognition.recognition_options(SimpleNamespace(provider=provider), tuning)
     assert options["turn_handling"]["turn_detection"] == detection
+    # The 0.8 s Qwen used to get here was a second silence wait after its final
+    # transcript, on top of the answer window's (critical-path profile, 2026-11-26).
     assert options["turn_handling"]["endpointing"]["min_delay"] == delay
+    if provider == "qwen":
+        # LiveKit waits this long for a Qwen final that arrives 1.25-1.7 s after speech end.
+        assert options["turn_handling"]["endpointing"]["max_delay"] >= recognition.QWEN_ENDPOINT_MAX_DELAY_SECONDS
+    else:
+        assert options["turn_handling"]["endpointing"]["max_delay"] == tuning.endpoint_max_delay
     assert vad.call_args.kwargs["activation_threshold"] == tuning.vad_activation_threshold
     assert options["llm"] is None
 

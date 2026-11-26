@@ -23,6 +23,8 @@ from src.core.security import bearer_scheme, current_user
 from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
 from src.core.pipeline_events import current_purpose_prefix, current_session_id
+from src.modules.ai.budget import budget_scope
+from src.modules.interviews.admin import interviewer_playbook
 from src.modules.interviews.realtime.anticipation.validator import PreviewKey, validate_preview
 from src.modules.interviews.session import preview_authority
 from src.modules.interviews.realtime.events import VOICE_EVENTS, sanitize_fields
@@ -353,6 +355,49 @@ def _authoritative_preview_key(
     )
 
 
+@router.post("/livekit/runtime/prefetch")
+async def prefetch_livekit_runtime_context(
+    claims: dict[str, str] = Depends(_voice_runtime_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Warm the deterministic context of the next turn while the candidate speaks.
+
+    Brief §4: separate from the speculative preview above, which pays for
+    model calls. This reads what the canonical turn will read anyway --
+    the candidate's memory (cached 60 s per user in ``candidate_memory``)
+    and the interviewer playbook (cached 60 s) -- and nothing that depends
+    on the answer. It runs under a **zero call budget**: a provider call
+    from here is a bug and raises instead of spending. It writes no
+    interview state, and the turn still reads its authoritative context
+    under the claim's row lock, so nothing prefetched here can be stale
+    where it matters. The rubric, question and session row are not cached:
+    the profile shows the whole non-provider part of a turn at ~80 ms, and
+    the claim must re-read them anyway.
+    """
+    session = await _runtime_session(db, claims)
+    session_id = str(session["id"])
+    current_session_id.set(session_id)
+    started = perf_counter()
+    warmed: list[str] = []
+    with budget_scope(f"prefetch:{session_id}", limit=0):
+        turns = await _load_turns(db, session_id)
+        current_turn = _only_asked_turn(turns)
+        if candidate_memory.enabled() != "0":
+            with contextlib.suppress(Exception):
+                memory_user = await candidate_memory._user_id_of_session(db, session_id)
+                if memory_user:
+                    await candidate_memory.load(memory_user)
+                    warmed.append("candidate_memory")
+        with contextlib.suppress(Exception):
+            await interviewer_playbook.refresh()
+            warmed.append("playbook")
+    return {
+        "warmed": warmed,
+        "activeTurn": current_turn is not None,
+        "ms": round((perf_counter() - started) * 1000),
+    }
+
+
 @router.post("/livekit/runtime/preview")
 async def preview_livekit_runtime_answer(
     payload: VoiceRuntimePreview,
@@ -403,38 +448,49 @@ async def preview_livekit_runtime_answer(
                 session_state["candidate_memory"] = memory_hits
 
     engine = InterviewCoreEngine()
-    # The preview's prompt carries the same canary code as the turn it stands in for.
-    with canary_scope(session["id"]):
-        evaluation = await engine._evaluate_candidate_response(
-            candidate_text=transcript,
-            current_stage=stage,
-            current_question=question,
-            is_vi=is_vi,
-            telemetry={},
-            memory_hits=memory_hits,
-        )
-    # V2 brief §5: reuse the Unified Thinker for speculation. With the flag on,
-    # the preview also carries the whole decision -- action, target and the
-    # spoken line -- so the §6 Fast path can execute it with no new call. It
-    # is computed on this transcript only, and the token binds it to that
-    # transcript's hash and this turn: it is redeemed only if the candidate
-    # finished saying exactly this, which is what makes it not "partial".
-    decision_record = None
-    if unified_enabled():
-        with contextlib.suppress(Exception):
-            ctx = build_turn_context(
-                CandidateTurnInput(session_id=session["id"], turn_index=int(current_turn["turn_index"]),
-                                   text_content=transcript, modality="VOICE"),
-                session_state,
-            )
-            menu = build_menu(ctx, memory_enabled=False)
-            with canary_scope(session["id"]):
-                decision = await decide_by_model(
-                    ctx, allowed_actions=menu.allowed, pacing=pacing_block(ctx), unified=True
-                )
-            if is_violation(decision) is None and decision.action in menu.allowed:
-                decision_record = decision.as_record()
     settings = get_settings()
+    # Speculation runs under its own hard call budget (ai/budget.py): the
+    # evaluation and, with Unified on, the decision -- and not a call more.
+    # It also draws on the session's budget, so a speaker whose every interim
+    # starts a preview cannot outspend the interview itself.
+    preview_budget = budget_scope(
+        f"preview:{session['id']}",
+        limit=settings.interview_preview_call_budget,
+        session_id=str(session["id"]),
+        session_limit=settings.interview_session_call_budget,
+    )
+    decision_record = None
+    with preview_budget:
+        # The preview's prompt carries the same canary code as the turn it stands in for.
+        with canary_scope(session["id"]):
+            evaluation = await engine._evaluate_candidate_response(
+                candidate_text=transcript,
+                current_stage=stage,
+                current_question=question,
+                is_vi=is_vi,
+                telemetry={},
+                memory_hits=memory_hits,
+            )
+        # V2 brief §5: reuse the Unified Thinker for speculation. With the flag on,
+        # the preview also carries the whole decision -- action, target and the
+        # spoken line -- so the §6 Fast path can execute it with no new call. It
+        # is computed on this transcript only, and the token binds it to that
+        # transcript's hash and this turn: it is redeemed only if the candidate
+        # finished saying exactly this, which is what makes it not "partial".
+        if unified_enabled():
+            with contextlib.suppress(Exception):
+                ctx = build_turn_context(
+                    CandidateTurnInput(session_id=session["id"], turn_index=int(current_turn["turn_index"]),
+                                       text_content=transcript, modality="VOICE"),
+                    session_state,
+                )
+                menu = build_menu(ctx, memory_enabled=False)
+                with canary_scope(session["id"]):
+                    decision = await decide_by_model(
+                        ctx, allowed_actions=menu.allowed, pacing=pacing_block(ctx), unified=True
+                    )
+                if is_violation(decision) is None and decision.action in menu.allowed:
+                    decision_record = decision.as_record()
     preview_token = jwt.encode(
         {
             "scope": "interview:voice-preview",

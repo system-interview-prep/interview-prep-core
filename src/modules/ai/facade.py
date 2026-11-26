@@ -1,13 +1,15 @@
 """Public OpenAI adapter shared by business modules."""
 
+import time
 from functools import lru_cache
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from fastapi.concurrency import run_in_threadpool
 
 from src.infrastructure import langfuse
 from src.core.config import get_settings
 from src.core.pipeline_events import ai_call_timer, caller_purpose
+from src.modules.ai import budget
 from src.modules.ai.cache_store import (  # noqa: F401 - re-exported for other modules
     CacheStore,
     FileCacheStore,
@@ -35,28 +37,66 @@ def _takes_temperature(model: str) -> bool:
     return model not in _NO_TEMPERATURE_MODELS and not model.casefold().startswith(_REASONING_MODEL_PREFIXES)
 
 
-@lru_cache
-def _client():
+#: The SDK's own retries are off: the one transport retry lives in
+#: ``_responses_create`` where the call budget can see it. An SDK-internal
+#: retry would be a request nobody counted.
+SDK_MAX_RETRIES = 0
+
+
+def _build_client(api_key: str, timeout: float):
     from openai import OpenAI
 
+    # The SDK default is a 600s read timeout with 2 retries, so a stalled
+    # provider could hold an interview turn for half an hour. Callers already
+    # fall back on provider errors; fail fast enough for them to do so.
+    return OpenAI(api_key=api_key, timeout=timeout, max_retries=SDK_MAX_RETRIES)
+
+
+@lru_cache
+def _client():
     settings = get_settings()
     api_key = settings.openai_api_key
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured")
-    # The SDK default is a 600s read timeout with 2 retries, so a stalled
-    # provider could hold an interview turn for half an hour. Callers already
-    # fall back on provider errors; fail fast enough for them to do so.
-    return OpenAI(api_key=api_key, timeout=settings.ai_request_timeout_seconds, max_retries=1)
+    return _build_client(api_key, settings.ai_request_timeout_seconds)
 
 
-def _responses_create(options: dict, model: str):
+def _retryable_transport_error(exc: BaseException) -> bool:
+    """The errors the SDK used to retry on its own: connection, timeout, 408/409/429/5xx."""
+    try:
+        import openai
+    except ImportError:  # pragma: no cover - the SDK is installed wherever this runs
+        return False
+    if isinstance(exc, openai.APIConnectionError):  # APITimeoutError is a subclass
+        return True
+    if isinstance(exc, openai.APIStatusError):
+        status = getattr(exc, "status_code", None)
+        return status in (408, 409, 429) or (isinstance(status, int) and status >= 500)
+    return False
+
+
+#: Pause before the one transport retry; the SDK's first backoff was 0.5 s too.
+TRANSPORT_RETRY_DELAY_SECONDS = 0.5
+
+
+def _responses_create(options: dict, model: str, *, purpose: str = "") -> Any:
     """``responses.create`` that drops an option the model or endpoint refuses.
 
     A model that answered "temperature is not supported", or an endpoint that
     refused ``reasoning`` or a JSON schema, is remembered so later calls skip the
     option instead of paying for a rejected request first.
+
+    **Every attempt is charged to the call budget first** (``ai.budget``): the
+    retry after a refused option, and the single retry after a transport error
+    (connection, timeout, 408/409/429/5xx -- what the SDK retried silently
+    before ``max_retries=0``). A scope with nothing left raises
+    :class:`budget.CallBudgetExceeded` *before* the request is sent; the
+    surrounding ``ai_call_timer`` records that as the call's error, so the
+    refusal is visible in ``ai_call_logs`` like any other failed call.
     """
-    for _ in range(4):
+    transport_retried = False
+    for _ in range(5):
+        budget.charge(purpose or caller_purpose(3))
         try:
             return _client().responses.create(**options)
         except Exception as exc:
@@ -70,6 +110,9 @@ def _responses_create(options: dict, model: str):
             elif ("schema" in message or "format" in message) and "text" in options:
                 _NO_SCHEMA_MODELS.add(model)
                 options.pop("text", None)
+            elif not transport_retried and _retryable_transport_error(exc):
+                transport_retried = True
+                time.sleep(TRANSPORT_RETRY_DELAY_SECONDS)
             else:
                 raise
     raise RuntimeError("model call failed after dropping unsupported options")
@@ -145,7 +188,7 @@ async def generate_tool_calls(
             options["reasoning"] = {"effort": reasoning_effort}
         timer = ai_call_timer(purpose, provider="openai", model=model, input_text=input_text)
         with timer as call:
-            response = _responses_create(options, model)
+            response = _responses_create(options, model, purpose=purpose)
             calls: list[ToolCall] = []
             for item in getattr(response, "output", None) or []:
                 if getattr(item, "type", None) != "function_call":
@@ -225,7 +268,7 @@ async def generate_text(
             options["text"] = {"format": {"type": "json_schema", "strict": True, **json_schema}}
         timer = ai_call_timer(purpose, provider="openai", model=model, input_text=input_text)
         with timer as call:
-            response = _responses_create(options, model)
+            response = _responses_create(options, model, purpose=purpose)
             output = str(response.output_text or "").strip()
             call.done(output, getattr(response, "usage", None))
             usage_box.append(getattr(response, "usage", None))
