@@ -334,23 +334,21 @@ class VoiceLabAgent(Agent):
             self._schedule_preview(combined)
 
     def _preview_key(self, transcript: str) -> PreviewKey:
-        """What this speculation assumes, so a stale result cannot be reused.
+        """What this worker can truthfully say a speculation assumed.
 
-        The runtime knows the session, which question is being answered and
-        which turn generation it is on; the transcript revision is what stops
-        a partial transcript ever standing in for a finished one. The server
-        re-checks the active turn and the transcript hash when the token is
-        redeemed, so this is the near-side half of the §7 contract.
+        Only two things: the session, and the transcript it heard. The turn id,
+        question version, session-state, rubric and policy versions are the
+        server's to know; an earlier version of this method filled them with a
+        local counter and a hash of the spoken prompt, which made the engine's
+        comparison look seven-wide while checking nothing real. They are left
+        ``None`` here, the engine reports them as unchecked, and the server
+        recomputes and enforces all seven at redemption (lab.py).
+
+        The turn generation still exists -- it resets the speculation budget and
+        cancels the previous answer's task when a new answer starts -- it just
+        no longer pretends to be a turn id.
         """
-        return preview_key(
-            session_id=self._session_id,
-            turn_id=f"gen-{self._turn_generation}",
-            question_id=sha256(
-                (self._last_interview_speech_text or "").encode("utf-8")
-            ).hexdigest()[:16],
-            transcript=transcript,
-            state_version=str(self._turn_generation),
-        )
+        return preview_key(session_id=self._session_id, transcript=transcript)
 
     async def _speculate(self, transcript: str, key: PreviewKey) -> str | None:
         """Ask the runtime for a preview token. Read-only; never writes state."""

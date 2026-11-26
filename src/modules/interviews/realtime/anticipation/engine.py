@@ -109,6 +109,7 @@ class AnticipationEngine:
         self._result_key: PreviewKey | None = None
         self._calls_this_turn = 0
         self._last_started = 0.0
+        self._last_observed = ""
         self.stats = AnticipationStats()
 
     # ------------------------------------------------------------------ turn
@@ -120,6 +121,7 @@ class AnticipationEngine:
         self._result = None
         self._result_key = None
         self._calls_this_turn = 0
+        self._last_observed = ""
 
     def _cancel(self) -> None:
         task, self._task = self._task, None
@@ -142,6 +144,12 @@ class AnticipationEngine:
             return
         if self._calls_this_turn >= self._max_calls:
             return
+        # Qwen re-emits an unchanged interim while the candidate pauses. The
+        # same text cannot yield a different preview, so it must not cost a
+        # second call -- that is uncontrolled spend by another name.
+        if text == self._last_observed:
+            return
+        self._last_observed = text
         # A newer snapshot replaces an older pending one: only the latest
         # transcript is worth speculating on.
         self._pending = (text, key)
@@ -192,9 +200,28 @@ class AnticipationEngine:
         A preview still in flight is not waited for: it is simply absent, and
         the caller runs the canonical inference now. That is the §7 rule, and
         making ``take`` synchronous is what keeps it true no matter who calls it.
+
+        Three guarantees the first version lacked:
+
+        * ``take`` marks the start of canonical inference, so any speculation
+          still running is cancelled here -- its result could never be used and
+          every further second of it is provider spend for nothing. (A cancelled
+          client call may still be billed; the cap is on calls started.)
+        * A result is consumed once. The same token must not be handed to two
+          commits; the server would reject the second on turn mismatch, but the
+          engine should not offer it at all.
+        * The worker validates leniently -- only the fields it truly knows
+          (session, transcript) -- and reports the rest as unchecked. The
+          authoritative seven-field check is the server's, at redemption.
         """
+        had_pending = self._pending is not None or (self._task is not None and not self._task.done())
+        self._cancel()
+        self._pending = None
+        if had_pending:
+            self.stats.discard("cancelled_at_commit")
+
         rejection: PreviewRejected | None = validate_preview(
-            preview=self._result, computed_for=self._result_key, final=final
+            preview=self._result, computed_for=self._result_key, final=final, strict=False
         )
         if rejection is not None:
             if self._result is not None or rejection.reason != "no_preview":
@@ -204,10 +231,16 @@ class AnticipationEngine:
                     reason=rejection.reason,
                     fields=",".join(rejection.fields),
                 )
+            self._result, self._result_key = None, None
             return None
+        result, key = self._result, self._result_key
+        self._result, self._result_key = None, None
         self.stats.reused += 1
-        self._emit("anticipation_reused")
-        return self._result
+        self._emit(
+            "anticipation_reused",
+            unchecked_by_client=",".join(key.unchecked(final)) if key is not None else "",
+        )
+        return result
 
     def _emit(self, event: str, **fields: Any) -> None:
         if self._on_event is None:

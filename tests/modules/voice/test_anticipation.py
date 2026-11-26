@@ -13,6 +13,7 @@ import pytest
 
 from src.modules.interviews.realtime.anticipation import (
     AnticipationEngine,
+    PreviewKey,
     preview_key,
     validate_preview,
 )
@@ -222,3 +223,118 @@ async def test_only_the_newest_transcript_is_spoken_for() -> None:
 
     assert engine.stats.as_dict()["reasons"].get("superseded") == 1
     await engine.aclose()
+
+
+# --- V2 review, part 1: what each side can truthfully validate --------------
+
+
+def test_the_validator_is_strict_on_the_server_and_honest_on_the_client() -> None:
+    """Seven fields in a dataclass are not seven-field validation.
+
+    The worker knows only the session and the transcript; the server knows all
+    seven. Strict mode (server) rejects anything missing as `incomplete`;
+    lenient mode (worker) compares what it knows and names the rest as
+    unchecked, so a reader of the record can see that the authoritative check
+    happened elsewhere.
+    """
+    client = preview_key(session_id="s1", transcript="em dùng redis làm cache")
+    server = _key()  # all seven populated
+
+    assert client.missing() == ["turn_id", "question_id", "state_version", "rubric_version", "policy_version"]
+    # Server, strict: the client-side key is not enough on its own.
+    rejection = validate_preview(preview="t", computed_for=client, final=server, strict=True)
+    assert rejection is not None and rejection.reason == "incomplete"
+    assert set(rejection.fields) == set(client.missing())
+    # Worker, lenient: session and transcript agree, the rest is unchecked.
+    assert validate_preview(preview="t", computed_for=client, final=server, strict=False) is None
+    assert client.unchecked(server) == client.missing()
+    # The transcript is never skippable, on either side.
+    blank = PreviewKey(session_id="s1", transcript_revision=None)
+    assert validate_preview(preview="t", computed_for=blank, final=server, strict=False).reason == "incomplete"
+
+
+def test_a_token_without_a_key_is_rejected_not_waved_through() -> None:
+    """An older token format carries no key; strict mode treats that as no key."""
+    assert PreviewKey.from_dict(None) is None
+    assert PreviewKey.from_dict("garbage") is None
+    assert validate_preview(preview="t", computed_for=PreviewKey.from_dict(None), final=_key()).reason == "no_key"
+    # A round trip through the token payload is lossless.
+    assert PreviewKey.from_dict(_key().as_dict()) == _key()
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_interim_does_not_cost_a_second_call() -> None:
+    """Qwen re-emits the same interim while the candidate pauses; that is not new information."""
+    calls: list[str] = []
+
+    async def infer(transcript, key):
+        calls.append(transcript)
+        return "x"
+
+    engine = AnticipationEngine(infer, enabled=True, debounce_seconds=0)
+    for _ in range(4):
+        engine.observe("em dùng redis làm cache cho hệ thống", _key())
+        await asyncio.sleep(0.02)
+
+    assert calls == ["em dùng redis làm cache cho hệ thống"]
+    await engine.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_preview_is_consumed_exactly_once() -> None:
+    async def infer(_transcript, _key):
+        return "preview-token"
+
+    engine = AnticipationEngine(infer, enabled=True, debounce_seconds=0)
+    engine.observe("em dùng redis làm cache", _key())
+    await asyncio.sleep(0.05)
+
+    assert engine.take(_key()) == "preview-token"
+    assert engine.take(_key()) is None, "the same token must not be handed to a second commit"
+    assert engine.stats.as_dict()["reused"] == 1
+
+
+@pytest.mark.asyncio
+async def test_take_cancels_speculation_still_in_flight() -> None:
+    """Canonical inference has started: a result that arrives now can never be
+    used, and every further second of it is provider spend for nothing."""
+    cancelled = asyncio.Event()
+
+    async def slow(_transcript, _key):
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    engine = AnticipationEngine(slow, enabled=True, debounce_seconds=0)
+    engine.observe("em dùng redis làm cache cho hệ thống", _key())
+    await asyncio.sleep(0.05)
+
+    assert engine.take(_key()) is None
+    await asyncio.sleep(0.01)
+    assert cancelled.is_set()
+    assert engine.stats.as_dict()["reasons"].get("cancelled_at_commit") == 1
+    await engine.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_worker_key_claims_only_what_the_worker_knows() -> None:
+    """runtime._preview_key once filled turn/question/state with a local counter
+    and a prompt hash. It now leaves them None; the engine reports them as
+    unchecked and the server enforces them at redemption."""
+    async def infer(_transcript, _key):
+        return "tok"
+
+    seen: list[dict] = []
+    engine = AnticipationEngine(infer, enabled=True, debounce_seconds=0,
+                                on_event=lambda event, **f: seen.append({"event": event, **f}))
+    worker_key = preview_key(session_id="s1", transcript="em dùng redis làm cache")
+    engine.observe("em dùng redis làm cache", worker_key)
+    await asyncio.sleep(0.05)
+
+    assert engine.take(preview_key(session_id="s1", transcript="em dùng redis làm cache")) == "tok"
+    reused = next(e for e in seen if e["event"] == "anticipation_reused")
+    assert set(reused["unchecked_by_client"].split(",")) == {
+        "turn_id", "question_id", "state_version", "rubric_version", "policy_version"
+    }

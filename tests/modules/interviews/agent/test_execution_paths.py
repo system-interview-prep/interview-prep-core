@@ -395,3 +395,41 @@ async def test_early_speech_fires_when_two_timers_race_and_the_talker_is_ahead(s
 
     assert spoken == ["Mình nghe rồi."], "the ack was available before anything was spoken and must be said"
     assert out.metadata["decision"]["arbiter"]["early_acknowledgment"] == "Mình nghe rồi."
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_hybrid_turn_from_outside_leaves_no_child_task_running(session_state_factory, monkeypatch) -> None:
+    """V2 review: structured cancellation.
+
+    If the turn is cancelled while Thinker and Talker are both in flight,
+    neither may outlive it -- a leaked Talker task keeps paying Luna for a
+    decision nobody will read.
+    """
+    monkeypatch.setattr("src.modules.interviews.agents.interviewer.graph.get_settings",
+                        lambda: type("S", (), {"interview_talker_enabled": True})())
+    monkeypatch.setattr(interview_agent, "talker_model", lambda: "gpt-5.6-luna")
+    cancelled: list[str] = []
+
+    def stuck(name):
+        async def run(ctx, **_kw):
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancelled.append(name)
+                raise
+        return run
+
+    monkeypatch.setattr(interview_agent, "decide_by_model", stuck("thinker"))
+    monkeypatch.setattr(interview_agent, "predict_by_talker", stuck("talker"))
+
+    turn = asyncio.create_task(interview_agent.run_turn(
+        InterviewCoreEngine(llm_client=CountingLLM()), _turn(),
+        session_state_factory(stage=InterviewStage.DEEP_DIVE), mode=interview_agent.MODE_LIVE,
+    ))
+    await asyncio.sleep(0.05)
+    turn.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+    await asyncio.sleep(0.01)
+
+    assert sorted(cancelled) == ["talker", "thinker"]

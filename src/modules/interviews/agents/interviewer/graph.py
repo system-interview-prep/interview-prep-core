@@ -191,30 +191,39 @@ async def decide(state: TurnGraphState) -> dict:
         finished: list[asyncio.Task] = []
         thinker_task.add_done_callback(finished.append)
         talker_task.add_done_callback(finished.append)
-        await asyncio.wait({thinker_task, talker_task}, return_when=asyncio.FIRST_COMPLETED)
-        if talker_task.done() and (not finished or finished[0] is talker_task):
-            # The Talker got there first: say its neutral line now, while the
-            # Thinker is still deciding (or has only just finished and nothing
-            # has been spoken). §6.3: only after the turn ended and the input
-            # guards passed (both true here) and only a line that already
-            # passed the acknowledgement guard (talker.py does that).
-            talker = talker_task.result()
-            speak = state.get("on_early_speech")
-            if talker is not None and talker.acknowledgment and speak is not None:
-                try:
-                    speak(talker.acknowledgment)
-                    trace_event("interviewer", "early_speech", session_id=str(ctx.session_id))
-                except Exception:  # noqa: BLE001 - early speech is best effort
-                    logger.debug("early speech failed", exc_info=True)
-        await thinker_task
-        if talker is None:
-            if talker_task.done():
+        try:
+            await asyncio.wait({thinker_task, talker_task}, return_when=asyncio.FIRST_COMPLETED)
+            if (
+                talker_task.done()
+                and not talker_task.cancelled()
+                and (not finished or finished[0] is talker_task)
+            ):
+                # The Talker got there first: say its neutral line now, while
+                # the Thinker is still deciding (or has only just finished and
+                # nothing has been spoken). §6.3: only after the turn ended and
+                # the input guards passed (both true here) and only a line that
+                # already passed the acknowledgement guard (talker.py does that).
                 talker = talker_task.result()
-            else:
-                # §6.4: the runtime does not wait for Luna at fan-in once the
-                # Thinker has answered. The client is cancelled; the provider
-                # may still bill, which the record counts.
-                talker_task.cancel()
+                speak = state.get("on_early_speech")
+                if talker is not None and talker.acknowledgment and speak is not None:
+                    try:
+                        speak(talker.acknowledgment)
+                        trace_event("interviewer", "early_speech", session_id=str(ctx.session_id))
+                    except Exception:  # noqa: BLE001 - early speech is best effort
+                        logger.debug("early speech failed", exc_info=True)
+            await thinker_task
+            if talker is None and talker_task.done() and not talker_task.cancelled():
+                talker = talker_task.result()
+        finally:
+            # Structured cleanup: whatever path led here -- the Thinker
+            # answered first, this turn was cancelled from outside, or a
+            # callback raised -- no child task outlives the decision. §6.4:
+            # Luna is not waited for at fan-in; a cancelled client call may
+            # still be billed, which the record counts as a wasted call.
+            for task in (thinker_task, talker_task):
+                if not task.done():
+                    task.cancel()
+            if not talker_task.done() or talker_task.cancelled():
                 trace_event("interviewer", "talker_cancelled_at_fan_in", session_id=str(ctx.session_id))
 
     # ---- Unified: the single Thinker call ---------------------------------
