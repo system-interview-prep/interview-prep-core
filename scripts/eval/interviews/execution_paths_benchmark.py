@@ -60,6 +60,17 @@ class Call:
     output_tokens: int
     status: str
 
+    @property
+    def role(self) -> str:
+        """thinker | talker | speech (the fallback line) | other."""
+        if self.purpose.endswith("agent.decide"):
+            return "thinker"
+        if self.purpose.endswith("agent.talker"):
+            return "talker"
+        if ".response_generation." in self.purpose or self.purpose.endswith("_generate_interviewer_line"):
+            return "speech"
+        return "other"
+
 
 @dataclass
 class Turn:
@@ -89,6 +100,58 @@ class Turn:
             sum(c.input_tokens for c in self.calls) + self.speculative_tokens[0],
             sum(c.output_tokens for c in self.calls) + self.speculative_tokens[1],
         )
+
+
+class BudgetExceeded(RuntimeError):
+    """Raised before a call is sent once the authorized budget would be exceeded."""
+
+
+class _SentCounter:
+    """Counts provider calls at the moment they are sent.
+
+    record_ai_call fires when a call *finishes*; a Talker call cancelled at
+    fan-in never gets there but was still sent (and may still be billed). An
+    authorized budget has to be enforced on sends, so the facade's two entry
+    points are wrapped and the counter is checked before each one goes out.
+    """
+
+    def __init__(self, limit: int | None) -> None:
+        self.limit = limit
+        self.sent = 0
+
+    def check(self) -> None:
+        if self.limit is not None and self.sent >= self.limit:
+            raise BudgetExceeded(f"authorized budget of {self.limit} provider calls reached")
+        self.sent += 1
+
+    def can_afford(self, worst_case: int) -> bool:
+        return self.limit is None or self.sent + worst_case <= self.limit
+
+
+_SENT = _SentCounter(None)
+
+
+def _install_budget(limit: int | None) -> None:
+    """Wrap both facade entry points so every send is counted and capped."""
+    global _SENT
+    _SENT = _SentCounter(limit)
+    from src.modules.ai import facade
+    from src.modules.interviews.agents.interviewer import response_generation, talker, thinker
+
+    real_tools, real_text = facade.generate_tool_calls, facade.generate_text
+
+    async def tools(**kw):
+        _SENT.check()
+        return await real_tools(**kw)
+
+    async def text(**kw):
+        _SENT.check()
+        return await real_text(**kw)
+
+    for module in (facade, thinker, talker):
+        module.generate_tool_calls = tools  # type: ignore[assignment]
+    for module in (facade, response_generation):
+        module.generate_text = text  # type: ignore[assignment]
 
 
 class _CallSink:
@@ -256,6 +319,19 @@ def summarize(turns: list[Turn]) -> dict[str, Any]:
             for c in t.calls:
                 by_model[c.model or "?"] = by_model.get(c.model or "?", 0) + 1
         early = [t.early_ack_ms for t in ok if t.early_ack_ms is not None]
+        all_calls = [c for t in ok for c in t.calls]
+        by_role_ms = {
+            role: _percentile([c.duration_ms for c in all_calls if c.role == role], 50)
+            for role in ("thinker", "talker", "speech")
+        }
+        tokens_by_model: dict[str, dict[str, int]] = {}
+        for c in all_calls:
+            slot = tokens_by_model.setdefault(c.model or "?", {"in": 0, "out": 0, "calls": 0})
+            slot["in"] += c.input_tokens
+            slot["out"] += c.output_tokens
+            slot["calls"] += 1
+        with_talker = [t for t in ok if t.talker_outcome and t.talker_outcome != "no_talker"]
+        n_talker = len(with_talker) or 1
         out[config] = {
             "turns": len(rows),
             "errors": len(rows) - len(ok),
@@ -275,6 +351,18 @@ def summarize(turns: list[Turn]) -> dict[str, Any]:
             "fallback_rate": round(sum(1 for t in ok if t.rejected) / len(ok), 3) if ok else None,
             "talker_outcomes": {o: sum(1 for t in ok if t.talker_outcome == o) for o in {t.talker_outcome for t in ok if t.talker_outcome}},
             "early_ack_available_p50_ms": _percentile(early, 50),
+            # Per-role p50 of the provider's own duration_ms (facade timer).
+            "latency_by_role_p50_ms": by_role_ms,
+            # Speech calls are only ever made after a guard rejected the carried
+            # line (or on baseline, where there is no carried line).
+            "fallback_speech_calls": sum(1 for c in all_calls if c.role == "speech"),
+            "tokens_by_model": tokens_by_model,
+            # Luna match rate of §13, and why it missed, as separate rates over
+            # turns where a Talker output existed.
+            "talker_reuse_rate": round(sum(1 for t in with_talker if t.talker_outcome == "reused") / n_talker, 3) if with_talker else None,
+            "action_mismatch_rate": round(sum(1 for t in with_talker if t.talker_outcome == "action_mismatch") / n_talker, 3) if with_talker else None,
+            "target_mismatch_rate": round(sum(1 for t in with_talker if t.talker_outcome == "target_mismatch") / n_talker, 3) if with_talker else None,
+            "talker_guard_rejected_rate": round(sum(1 for t in with_talker if str(t.talker_outcome).startswith("guard:")) / n_talker, 3) if with_talker else None,
             "early_ack_rate": round(len(early) / len(ok), 3) if ok else None,
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
@@ -293,6 +381,20 @@ def render(report: dict[str, Any], turns: list[Turn]) -> str:
             f"{config:<13}{r['turns']:<7}{str(r['calls_per_turn_total']):<12}{r['speculative_calls']:<8}"
             f"{str(r['p50_ms']):<10}{str(r['p95_ms']):<10}{str(r['speculation_p50_ms']):<10}{r['carried_text']:<9}{r['guard_rejected']:<10}"
             f"{str(r['early_ack_available_p50_ms']):<11}{r['tokens_in']}/{r['tokens_out']}"
+        )
+    lines.append("")
+    lines.append("per config: role p50 (thinker/talker/speech) · fallback speech calls · talker reuse/action-miss/target-miss · tokens by model")
+    for config in CONFIGS:
+        r = report.get(config)
+        if not r:
+            continue
+        roles = r["latency_by_role_p50_ms"]
+        toks = "  ".join(f"{m}: {v['calls']} calls {v['in']}/{v['out']}" for m, v in r["tokens_by_model"].items())
+        lines.append(
+            f"  {config:<13}roles={roles['thinker']}/{roles['talker']}/{roles['speech']} ms  "
+            f"fallback={r['fallback_speech_calls']}  reuse={r['talker_reuse_rate']} "
+            f"action-miss={r['action_mismatch_rate']} target-miss={r['target_mismatch_rate']} "
+            f"talker-guard={r['talker_guard_rejected_rate']}  |  {toks}"
         )
     lines.append("")
     lines.append("not measured here: TTFA / TTMR (need a LiveKit room), response-quality parity (shadow report).")
@@ -361,19 +463,38 @@ def _install_stub() -> None:
     response_generation.generate_text = text  # type: ignore[assignment]
 
 
-async def _main_async(turns: int, configs: list[str], stub: bool) -> int:
+WORST_CASE_CALLS = {"baseline": 2, "unified": 2, "anticipation": 3, "hybrid": 3, "hybrid_plain": 3}
+
+
+async def _main_async(turns: int, configs: list[str], stub: bool, max_calls: int | None) -> int:
     from src.core import pipeline_events
 
     if stub:
         _install_stub()
+    # The budget wraps whatever generate_* is at this point (real or stub), so
+    # it counts sends in both modes and the cap can be proven for free.
+    _install_budget(max_calls)
     sink = _CallSink()
     pipeline_events.record_ai_call = sink  # type: ignore[assignment]
     results: list[Turn] = []
-    for config in configs:
-        for index in range(turns):
-            results.append(await _run_turn(config, FIXTURES[index % len(FIXTURES)], sink))
+    truncated = None
+    try:
+        for config in configs:
+            for index in range(turns):
+                if not _SENT.can_afford(WORST_CASE_CALLS[config]):
+                    truncated = f"stopped before {config} turn {index + 1}: {_SENT.sent} sent, next could exceed {max_calls}"
+                    raise StopIteration
+                results.append(await _run_turn(config, FIXTURES[index % len(FIXTURES)], sink))
+    except StopIteration:
+        pass
+    except BudgetExceeded as exc:
+        truncated = str(exc)
     report = summarize(results)
+    report["_budget"] = {"max_calls": max_calls, "sent": _SENT.sent, "truncated": truncated}
+    if truncated:
+        print(f"!! BUDGET: {truncated}\n")
     print(render(report, results))
+    print(f"budget: sent={_SENT.sent} cap={max_calls}")
     print()
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
@@ -384,6 +505,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--turns", type=int, default=10, help="turns per configuration (1-50)")
     parser.add_argument("--configs", default=",".join(CONFIGS), help="comma-separated subset of " + ",".join(CONFIGS))
     parser.add_argument("--stub", action="store_true", help="instant fake provider: checks the plumbing, spends nothing")
+    parser.add_argument("--max-calls", type=int, default=None,
+                        help="hard cap on provider calls SENT; the run stops before a turn that could exceed it")
     args = parser.parse_args(argv)
     if not 1 <= args.turns <= 50:
         parser.error("--turns must be between 1 and 50; this spends real money")
@@ -399,7 +522,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         worst = args.turns * sum({"baseline": 2, "unified": 2, "anticipation": 3, "hybrid": 3, "hybrid_plain": 3}[c] for c in configs)
         print(f"running {args.turns} turns x {configs} — up to ~{worst} paid provider calls\n")
-    return asyncio.run(_main_async(args.turns, configs, args.stub))
+    return asyncio.run(_main_async(args.turns, configs, args.stub, args.max_calls))
 
 
 if __name__ == "__main__":
