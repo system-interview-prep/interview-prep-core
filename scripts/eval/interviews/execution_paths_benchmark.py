@@ -62,14 +62,47 @@ class Call:
 
     @property
     def role(self) -> str:
-        """thinker | talker | speech (the fallback line) | other."""
-        if self.purpose.endswith("agent.decide"):
+        """thinker | talker | evaluate | speech (a generated line) | other.
+
+        `_generate_interviewer_line` forwards a short purpose ("confirm_abort",
+        "redirect_off_topic_answer", "candidate_question_<intent>"...), while
+        the probe and clarify generators let the facade derive theirs
+        ("interviews.response_generation.InterviewResponseMixin._generate_probe_question").
+        Both are speech. The evaluator's JSON call is its own role so a
+        baseline/rule turn is not mistaken for a fallback.
+        """
+        purpose = self.purpose
+        if purpose.endswith("agent.decide"):
             return "thinker"
-        if self.purpose.endswith("agent.talker"):
+        if purpose.endswith("agent.talker"):
             return "talker"
-        if ".response_generation." in self.purpose or self.purpose.endswith("_generate_interviewer_line"):
+        if "_evaluate_candidate_response" in purpose:
+            return "evaluate"
+        if (
+            ".response_generation." in purpose
+            or purpose in _SHORT_LINE_PURPOSES
+            or purpose.startswith("candidate_question_")
+        ):
             return "speech"
         return "other"
+
+
+#: Purposes `_generate_interviewer_line` is called with (turn_engine.py); a
+#: line generated under any of these is a speech call.
+_SHORT_LINE_PURPOSES = frozenset(
+    {
+        "close_candidate_qna",
+        "complete_after_skip",
+        "complete_interview",
+        "confirm_abort",
+        "end_after_repeated_give_up",
+        "hard_timeout_close",
+        "redirect_off_topic_answer",
+        "decline_system_instruction_request",
+        "coding_result_and_follow_up",
+        "candidate_give_up",
+    }
+)
 
 
 @dataclass
@@ -138,14 +171,24 @@ def _install_budget(limit: int | None) -> None:
     from src.modules.ai import facade
     from src.modules.interviews.agents.interviewer import response_generation, talker, thinker
 
+    from src.core import pipeline_events
+
     real_tools, real_text = facade.generate_tool_calls, facade.generate_text
 
+    # The facade derives a missing `purpose` from its caller's frame. Wrapped,
+    # that frame is this wrapper, and every speech call was filed under
+    # "execution_paths_benchmark.text" -- which is how the hybrid_plain run
+    # reported fallback=0 while gpt-4o-mini showed 19 calls for 10 turns. The
+    # wrapper's caller *is* the real caller, so deriving the purpose here, one
+    # frame up, yields the exact string production would.
     async def tools(**kw):
         _SENT.check()
+        kw.setdefault("purpose", pipeline_events.caller_purpose(2))
         return await real_tools(**kw)
 
     async def text(**kw):
         _SENT.check()
+        kw.setdefault("purpose", pipeline_events.caller_purpose(2))
         return await real_text(**kw)
 
     for module in (facade, thinker, talker):
@@ -322,7 +365,7 @@ def summarize(turns: list[Turn]) -> dict[str, Any]:
         all_calls = [c for t in ok for c in t.calls]
         by_role_ms = {
             role: _percentile([c.duration_ms for c in all_calls if c.role == role], 50)
-            for role in ("thinker", "talker", "speech")
+            for role in ("thinker", "talker", "evaluate", "speech")
         }
         tokens_by_model: dict[str, dict[str, int]] = {}
         for c in all_calls:
@@ -356,6 +399,7 @@ def summarize(turns: list[Turn]) -> dict[str, Any]:
             # Speech calls are only ever made after a guard rejected the carried
             # line (or on baseline, where there is no carried line).
             "fallback_speech_calls": sum(1 for c in all_calls if c.role == "speech"),
+            "unclassified_calls": sum(1 for c in all_calls if c.role == "other"),
             "tokens_by_model": tokens_by_model,
             # Luna match rate of §13, and why it missed, as separate rates over
             # turns where a Talker output existed.
@@ -383,7 +427,7 @@ def render(report: dict[str, Any], turns: list[Turn]) -> str:
             f"{str(r['early_ack_available_p50_ms']):<11}{r['tokens_in']}/{r['tokens_out']}"
         )
     lines.append("")
-    lines.append("per config: role p50 (thinker/talker/speech) · fallback speech calls · talker reuse/action-miss/target-miss · tokens by model")
+    lines.append("per config: role p50 (thinker/talker/evaluate/speech) · fallback speech calls · unclassified · talker reuse/action-miss/target-miss · tokens by model")
     for config in CONFIGS:
         r = report.get(config)
         if not r:
@@ -391,8 +435,8 @@ def render(report: dict[str, Any], turns: list[Turn]) -> str:
         roles = r["latency_by_role_p50_ms"]
         toks = "  ".join(f"{m}: {v['calls']} calls {v['in']}/{v['out']}" for m, v in r["tokens_by_model"].items())
         lines.append(
-            f"  {config:<13}roles={roles['thinker']}/{roles['talker']}/{roles['speech']} ms  "
-            f"fallback={r['fallback_speech_calls']}  reuse={r['talker_reuse_rate']} "
+            f"  {config:<13}roles={roles['thinker']}/{roles['talker']}/{roles['evaluate']}/{roles['speech']} ms  "
+            f"fallback={r['fallback_speech_calls']} unclassified={r['unclassified_calls']}  reuse={r['talker_reuse_rate']} "
             f"action-miss={r['action_mismatch_rate']} target-miss={r['target_mismatch_rate']} "
             f"talker-guard={r['talker_guard_rejected_rate']}  |  {toks}"
         )

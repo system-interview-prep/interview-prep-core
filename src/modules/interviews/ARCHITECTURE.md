@@ -200,6 +200,7 @@ gpt-4o-mini, Talker on gpt-5.6-luna. Every provider call is counted at
 | unified | 1.2 | 0 | 3475.2 ms | 4678.0 ms | — | 8/10 | 2 | — | 25 639 / 1 602 |
 | anticipation | 1.1 | 10 | **5.4 ms** | 1787.9 ms | ~3.4 s | 9/10 | 1 | — | see caveat |
 | hybrid | **2.2** | 0 | 3337.2 ms | 4843.9 ms | — | 7/10 | 3 | 1989.1 ms (9/10) | 32 754 / 2 384 |
+| hybrid_plain (Unified off) | **2.9** | 0 | **4419.7 ms** | 6757.6 ms | — | 1/10 | 0 | 1869.2 ms (6/10) | 31 531 / 2 204 |
 
 How to read it, honestly:
 
@@ -221,10 +222,30 @@ How to read it, honestly:
   correctly kept it (6× `thinker_has_text`, 3× `target_mismatch`, 1×
   cancelled at fan-in). The only thing Hybrid bought is a guarded acknowledgment
   available ~2.0 s in on 9/10 turns — and the correction brief is explicit that
-  early acknowledgment alone is not a meaningful-response improvement. **Hybrid
-  stays off.** The configuration in which Luna's line could replace a speech
-  call (Hybrid with Unified off, `hybrid_plain`) is in the harness and not yet
-  run.
+  early acknowledgment alone is not a meaningful-response improvement.
+- **`hybrid_plain` (Unified off) is worse still, and it settles the question.**
+  This is the one configuration in which Luna's predicted line could replace
+  the speech call, so it was run under a hard cap of 30 calls (29 sent).
+  Result: the most calls of any configuration (2.9/turn: Thinker + Talker +
+  the speech call Luna failed to replace), the slowest authoritative response
+  (p50 4420 ms, p95 6758 ms), and a Luna reuse rate of **1 in 6** where a Talker
+  output existed. Decomposed: action mismatch **0%**, target mismatch **83%**,
+  guard-rejected 0% — Luna and the Thinker agree on *what to do* and disagree
+  on *which missing point to probe*, which §6.4 rightly refuses to paper over.
+  Four of ten turns had no Talker output at all because the Thinker finished
+  first and Luna was cancelled at fan-in. Per-role p50: Thinker 2378 ms,
+  Talker 2083 ms — Luna is not meaningfully faster. Tokens: gpt-5.6-luna 10
+  calls 7 218 / 885; gpt-4o-mini 19 calls 24 313 / 1 319 (10 Thinker + 9
+  speech fallbacks). Early ack ~1.9 s on 6/10, as before. No guardrail was
+  changed to improve any of this.
+- **Recommendation: Hybrid stays disabled; Unified + Anticipation is the
+  default architecture.** Unified is the only configuration that lowers both
+  call count and tail latency without a cost penalty; Anticipation adds the
+  near-zero post-speech cost *when its preview hits*, which is the one number
+  still unmeasured (it needs real partial transcripts). Hybrid's early
+  acknowledgment is real but buys no meaningful-response latency and costs a
+  guaranteed extra Luna call per turn; it should be revisited only if TTFA
+  becomes a product goal in its own right.
 - **Guard rejections: 20–30%, all `hints_answer`.** The criteria-terms prompt
   steer removed the `evaluative` rejections but not these. The rejected text is
   now traced so the next run can show whether the guard is refusing a real
@@ -241,7 +262,7 @@ designed; the live numbers above are the only measurements.
 
 | Brief | Outstanding |
 |---|---|
-| §5–§7 validation | Built and unit-tested, **not yet measured live** as a set. `execution_paths_benchmark.py` compares Baseline / Unified / Unified+Anticipation / Hybrid on real turns (calls incl. speculation and Talker, p50/p95, rejection and fallback rates, early-ack availability, tokens); it has run only with `--stub`. TTFA/TTMR still need a LiveKit room. Hybrid stays off until that run and a shadow period say otherwise. |
+| §5–§7 validation | Built, unit-tested and **measured live** (five configurations, two runs; see above). Hybrid is measured and rejected on cost/latency grounds, not left untested. `execution_paths_benchmark.py` compares Baseline / Unified / Unified+Anticipation / Hybrid on real turns (calls incl. speculation and Talker, p50/p95, rejection and fallback rates, early-ack availability, tokens); it has run only with `--stub`. TTFA/TTMR still need a LiveKit room. Hybrid stays off until that run and a shadow period say otherwise. |
 | Early-ack transport | Delivered over an opt-in NDJSON stream of the internal worker↔API endpoint. A failure after headers arrives as `response.error`; the plain JSON path is unchanged. The candidate-facing protocol is untouched. |
 | §8 Session/graph | `process_candidate_message` is still one 1419-line function. Context extraction done; the PHASE 1/2/3 split is not. |
 | §9 Evaluator/memory | Report is persisted before extraction, but post-session memory extraction is **not** yet a durable Celery/RabbitMQ job. |
