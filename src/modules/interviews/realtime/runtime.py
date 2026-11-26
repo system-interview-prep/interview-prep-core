@@ -443,16 +443,11 @@ class VoiceLabAgent(Agent):
         answer_text = self._answer.text
         if not answer_text:
             return
-        if self._preview_text != answer_text and self._preview_target != answer_text:
-            self._schedule_preview(answer_text)
-        preview_is_pending = (
-            self._preview_target == answer_text
-            and self._preview_task is not None
-            and not self._preview_task.done()
-        )
-        if preview_is_pending:
-            with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(asyncio.shield(self._preview_task), timeout=1.0)
+        # V2 spec §7 / brief §5: speculation must never delay the canonical
+        # inference. This used to schedule a fresh preview for the very text it
+        # was about to submit, then hold the turn up to a second waiting for
+        # it. Both are gone: a preview that is already finished and still
+        # matches is reused below, and one still in flight is simply not there.
         answer = self._answer.take()
         if answer is None:
             return
