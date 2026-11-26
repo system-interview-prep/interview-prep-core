@@ -674,12 +674,44 @@ speaker was ~1.4 s (run 4) and must be measured on a person. The client
 driver's TTFA (end of answer audio → first audible agent audio) is the
 candidate-side number for the same turns.
 
-**Not yet measured:** this build has not run in a room. The A/B rerun (~31
-calls) and the human-speaker sessions (relevance, naturalness, interruption
-rate, false cuts) need paid calls and were not authorized in this brief.
-Expected if the preparation lands before the pause: speech end →
-audible backchannel ≈ VAD detection (~0.45 s on a person) + playout; on
-the synthetic speaker the VAD tail (~1.4 s) dominates.
+**Run 6 — measured (2026-11-26, two matched synthetic sessions, 46 paid
+calls; A `c493cce0-d187-451c-be3f-f5ebfcfc259a` no backchannel, B
+`c41b6bd7-c299-4358-a408-cf85373ed241` prepared backchannel; same eight
+answers, Unified Thinker, nudge off, caps turn 6 / session 40 / Talker 2):**
+
+| | A | B |
+|---|---|---|
+| last voiced PCM → VAD stop (the trigger's own delay) | — | 1 402 ms p50 (synthetic tail; a person is expected near the 0.45 s `min_silence`) |
+| **prepared audio available at a VAD speech end** | — | **1 of 16 speech ends (6 %)** |
+| prepared audio reused / wasted | — | 1 / 0; the one prepared line played **458 ms** after the VAD stop (synthesis took 3 090 ms, cold connection plus a concurrent question) |
+| audible backchannel after VAD stop, all turns with one | — | p50 1 894 ms, p95 4 158 ms, **6 of 8 turns** (5 synthesized at playback, 1 prepared) |
+| client TTFA (end of answer audio → first audible agent audio) | 8 760 ms | 6 261 ms |
+| client TTMR | 8 760 ms | 8 400 ms |
+| server TTMR | 5 392 ms | 5 845 ms |
+| Core | 2 903 ms | 3 110 ms |
+| reply playback after Core | 460 ms | 499 ms |
+| Talker | — | 16 inferences: 4 silence, 1 guard-rejected (`all_rejected`), 9 spoken (4 processing acks), 2 dropped `context_moved`; TTFT p50 776 ms, to unit 948 ms; 1 candidate overlap |
+| provider calls | 15 | 31 (15 + 16 Talker; 11 closed early, usage unknown) |
+| tokens in / out (logged) | 30 274 / 3 343 | 34 942 / 2 204 |
+
+What it says, coverage first: **the target (300–600 ms) was reached on the
+one turn where audio had been prepared, and audio was prepared on one turn.**
+The stable-partial trigger is a pause trigger in disguise: Qwen revises the
+tail of 18 of 21 interims while the candidate talks, so an interim repeats
+only in a pause — when the VAD stops as well — and the Talker is then asked
+*after* the pause began: ~0.8 s to its first token, ~0.45 s to VieNeu's
+first byte, 1.3–1.9 s to audio. The 4 processing acks landed ~1 s after
+the submit and were cut by the reply on 4 turns. TTMR is unchanged (client
+8 760 → 8 400 ms, server 5 392 → 5 845 ms, n=8). Blocking: reply playback
+after Core 460 → 499 ms. Relevance and naturalness: not rated (synthetic,
+no stored speech); lines were 13–15 words against a 10-word ask.
+
+Changed from it (this commit): the coordinator is also offered a *growing*
+partial — one that gained ≥ 8 words since the last request, stable or not —
+so a line can be written and synthesized while the candidate is still
+talking; the model is told the transcript is partial and the drift check
+still guards playback. Not yet measured: one more B session (~17 calls)
+would show whether availability at speech end rises from 6 %.
 
 ### Remaining migration work
 

@@ -272,6 +272,11 @@ class BackchannelCoordinator:
         if closing:
             await asyncio.gather(*closing, return_exceptions=True)
 
+    def grew_enough(self, transcript: str) -> bool:
+        """Has the candidate said enough new words since the last request to ask again?"""
+        text = " ".join(str(transcript or "").split())
+        return len(text.split()) - len(self._last_transcript.split()) >= MIN_NEW_WORDS_WHILE_SPEAKING
+
     def note_transcript(self, transcript: str) -> None:
         """The latest transcript (interim or final): what a held unit is checked against."""
         self._current_transcript = " ".join(str(transcript or "").split())

@@ -547,9 +547,19 @@ class VoiceLabAgent(Agent):
         # between phrases) is a safe moment to let the Talker *prepare* a line
         # for the next pause; the coordinator bounds how often, and playback
         # still waits for the pause (audit 2026-11-26, item 1-2).
-        if self._bc().enabled and self._answer.transcript_stable:
+        if self._bc().enabled:
             partial = " ".join(part for part in (self._answer.text, " ".join(str(text or "").split())) if part)
             self._bc().note_transcript(partial)
+        # Run 6 (2026-11-26) measured the stable-partial trigger as a pause
+        # trigger in disguise: Qwen revises the tail of 18 of 21 interims while
+        # the candidate talks, so an interim repeats only in a pause -- and
+        # then the VAD stops too, the line is written after the pause and the
+        # audio arrives ~1.9 s later. Prepared audio was available at 1 of 16
+        # speech ends. So a *growing* partial is also offered: the coordinator
+        # asks only after enough new words (its cost bound), the model is told
+        # the transcript is partial, and the line is re-checked for drift
+        # before it is played.
+        if self._bc().enabled and (self._answer.transcript_stable or self._bc().grew_enough(partial)):
             self._bc().observe(
                 partial, phase=PHASE_LISTENING, answer_seconds=self._answer.duration_seconds,
                 fragments=len(self._answer.fragments),
