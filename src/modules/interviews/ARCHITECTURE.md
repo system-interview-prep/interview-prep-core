@@ -266,7 +266,65 @@ How to read it, honestly:
   at fan-in may still be billed; the harness cannot see that.
 
 Stub runs (`--stub`, zero spend) confirm every configuration routes as
-designed; the live numbers above are the only measurements.
+designed; the live numbers above and the pilot below are the only measurements.
+
+**Run 3 — LiveKit pilot** (2026-11-26, `livekit_pilot.py`: a synthetic candidate
+playing the same eight VieNeu-synthesized Vietnamese answers into a real room;
+real Qwen STT `Qwen/Qwen3-ASR-0.6B`, real Thinker `gpt-4o-mini`, real VieNeu
+`vieneu-v3-turbo`; flags read back from the running backend and voice-agent
+containers before each session; Hybrid off; one session of 8 answers per
+configuration — **a pilot, not a P95**). Sessions: baseline
+`7583d3b4-ee2b-4adf-89c9-48fc5bccd651`, unified `917d7cb4-5a8b-41ac-9ba3-75023fb3579b`,
+anticipation `07bfbb98-7d15-4814-b243-e10ea95d7311`, endpointing `0aadd15b-9057-42d2-95f5-ddf59dbadaf6`.
+
+| | baseline | unified | +anticipation | +adaptive endpointing |
+|---|---|---|---|---|
+| TTFA p50 (speech end → first audio, server) | 3468 ms | 3476 ms | 3575 ms | 3587 ms |
+| TTMR p50 (→ official reply) | 7720 ms | 7269 ms | 6743 ms | 7611 ms |
+| TTMR max of 8 | 13247 ms | 8951 ms | 12850 ms | 10209 ms |
+| client TTFA p50 (end of candidate audio → first audible agent audio) | 5589 ms | 5451 ms | 5451 ms | 5561 ms |
+| speech end → submit p50 (endpointing wait) | 2857 ms | 2843 ms | 2857 ms | 3006 ms |
+| Qwen finalization p50 (3 of 8 turns reported) | 1532 ms | 1657 ms | 1557 ms | 1644 ms |
+| Core p50 | 3699 ms | 4143 ms | 3010 ms | 3894 ms |
+| reply playback after Core p50 | 1131 ms | 476 ms | 1117 ms | 1085 ms |
+| VieNeu first byte p50, question / filler | 453 / 1117 ms | 457 / 1109 ms | 453 / 1117 ms | 454 / 1124 ms |
+| provider calls, session-attributed (incl. 6 planner) | 16 | 14 | 15 | 14 |
+| provider calls **unattributed** (preview endpoint) | 0 | 0 | 48 | 44 |
+| anticipation: started / reused / discarded | — | — | 24 / 0 / 5 stale | 22 / 0 / 3 stale |
+| false-cut proxy (speech after submit) | 0/8 | 0/8 | 0/8 | 0/8 |
+| core failures | 0 | 0 | 0 | 0 |
+
+What the pilot says, and what it cannot:
+
+- **TTFA is the processing filler.** In every configuration the first audio
+  after the answer is the filler line (~2.9 s endpointing wait + ~1.1 s VieNeu
+  first byte); none of the three features touches that path.
+- **Unified** made one call per answer instead of 1.25 and lost nothing
+  visible: TTMR p50 7.3 s vs 7.7 s, worst turn 9.0 s vs 13.2 s — eight turns,
+  so treat as "not worse", not as a gain.
+- **Anticipation reused nothing.** 24 speculative previews, each two provider
+  calls (evaluation + unified decision), **four times the session's spend**,
+  every finished preview discarded as `stale`: a continuous speaker's final
+  transcript never equals the partial the preview ran on. The per-session
+  budget check did not see these calls because the preview endpoint logged
+  them with no session id (fixed in this commit: they now carry the session
+  and a `speculative.` purpose prefix).
+- **Adaptive endpointing changed nothing measurable** (speech end → submit
+  3.0 s vs 2.9 s). Root cause not established in the pilot; it needs its own
+  investigation against Qwen partials before it can be enabled.
+- Not measured: true false cuts (the proxy saw none; a human has to listen),
+  quality parity (`agent_shadow_report.py`, separate), and the candidate's
+  real playback leg beyond the synthetic client.
+
+**Recommendation (production flags), from these measurements:**
+`INTERVIEW_UNIFIED_THINKER=1` is the candidate default once the shadow
+quality report is clean (fewer calls, latency not worse, two live runs plus
+the pilot agree). `VOICE_LLM_SPECULATIVE_PREVIEW=0` (anticipation off: 0 hits,
+4× spend). `VOICE_ADAPTIVE_ENDPOINTING=0` (no measured effect).
+`INTERVIEW_TALKER_ENABLED=false` (unchanged). The latency floor the pilot
+shows — ~2.9 s of endpointing wait, ~1.5 s of Qwen finalization inside it,
+3–4 s of Core — is where the next work is, not in the three flags.
+
 
 ### Remaining migration work
 
@@ -275,8 +333,8 @@ designed; the live numbers above are the only measurements.
 | §5–§7 validation | Built, unit-tested and **measured live** (five configurations, two runs; see above). Hybrid is measured and rejected on cost/latency grounds, not left untested. `execution_paths_benchmark.py` compares Baseline / Unified / Unified+Anticipation / Hybrid on real turns (calls incl. speculation and Talker, p50/p95, rejection and fallback rates, early-ack availability, tokens); it has run only with `--stub`. TTFA/TTMR still need a LiveKit room. Hybrid stays off until that run and a shadow period say otherwise. |
 | Early-ack transport | Delivered over an opt-in NDJSON stream of the internal worker↔API endpoint. A failure after headers arrives as `response.error`; the plain JSON path is unchanged. The candidate-facing protocol is untouched. |
 | §8 Session/graph | Phased (see above). Kept on purpose: the Main LangGraph `respond` checkpoint replay overlaps the runtime's `client_message_id` replay. Both are tested; removing either is a durability decision (spec §4, §14 phase 2), not a refactor, and needs its own authorization. |
-| §9 Evaluator/memory | Verified against a real broker and worker (see above). **Blocked** on deployment: the `Dockerfile` base stage installs `.[embeddings,voice-realtime]` — the `memory` extra (`langmem`) is missing from both the `api` and `worker` images, so in production the job records `FAILED permanent (missing_dependency)` where the inline path failed silently before. Required correction (not applied here, deployment files are out of scope): `pip install ".[embeddings,voice-realtime,memory]"` in the base stage. Windows hosts also need the selector event loop for psycopg (`workers/async_runner.py` now does this; production Linux is unaffected). The real extraction (one paid run) is still unverified. |
-| §13 LiveKit benchmark | Instrumentation, report and the bounded four-configuration runbook (`scripts/eval/interviews/voice/livekit_benchmark.py`: baseline / unified / unified+anticipation / +adaptive endpointing, Hybrid always off, `check` gates the env, `compare` lines up the sessions) are ready; **blocked** on a real LiveKit room session with a human speaker (paid Qwen, VieNeu and OpenAI calls) — authorization pending. TTFA/TTMR end at the agent's playback start, not the candidate's speaker; the false-cut number is a proxy (speech after submit), not a human label; quality parity is measured separately with `agent_shadow_report.py`. |
+| §9 Evaluator/memory | **Verified end to end**: the `Dockerfile` base stage now installs the `memory` extra (authorized 2026-11-26), both rebuilt images import `langmem`, the Postgres store and the task module, and one real extraction ran through the compose worker, PostgreSQL and the LangMem store (1 provider call, `gpt-4o-mini`, 710/48 tokens; DONE persisted with counts; one memory item stamped with the session; a duplicate delivery skipped with 0 calls). Job state transitions are single guarded SQL statements (nothing overwrites DONE, QUEUED never revives a permanent failure, the reconciler's writes are compare-and-set), every failure is recorded under the advisory lock, and the reconciler takes a sweep lock, orders least-recently-attempted first, and has a bounded manual counterpart (`scripts/ops/reconcile_memory_extraction.py`) for outages longer than its 6-hour window. Remaining: a production deployment of the rebuilt images. |
+| §13 LiveKit benchmark | **Pilot run** (see Measured, run 3): four configurations, one session of eight answers each, real room and real providers, a synthetic candidate (`livekit_pilot.py`). Remaining: a human-speaker session per configuration (synthetic TTS audio is easier for STT than a person), human-labelled false cuts, the quality-parity shadow report, and a larger sample before any P95 claim. |
 | §3 Quality parity | Call counts and latency measured; response-quality parity still needs a shadow run. The record and `agent_shadow_report` expose `carried_text_rate` / `rejected_by` to make it checkable. |
 | Spec §10 tree | `core/` is retained by brief §2, which deliberately diverges from spec §11. `contracts.py`, `events.py`, `config.py` and the `session/` and `memory/` file splits are not done. |
 
@@ -284,8 +342,9 @@ designed; the live numbers above are the only measurements.
 
 | Env | Effect |
 |---|---|
-| `INTERVIEW_UNIFIED_THINKER` | One inference per turn (§6.2). |
-| `VOICE_ADAPTIVE_ENDPOINTING` | Transcript-aware commit wait (§8), with `VOICE_COMMIT_COMPLETE` / `_UNSURE` / `_HESITANT`. |
+| `INTERVIEW_UNIFIED_THINKER` | One inference per turn (§6.2). **Recommended on** after the shadow quality report (pilot: fewer calls, latency not worse). |
+| `VOICE_ADAPTIVE_ENDPOINTING` | Transcript-aware commit wait (§8), with `VOICE_COMMIT_COMPLETE` / `_UNSURE` / `_HESITANT`. **Keep off**: no measured effect in the pilot. |
+| `VOICE_LLM_SPECULATIVE_PREVIEW` | Anticipation (§7); on by default in the agent when STT is Qwen. **Recommended off**: 0 of 24 previews reused in the pilot at 4× the session's provider spend. |
 | `INTERVIEW_TALKER_ENABLED` / `INTERVIEW_TALKER_MODEL` | Hybrid path (§6.4). Model empty = Talker unavailable, router never picks Hybrid. Verified reachable: `gpt-5.6-luna`. |
 
 ## Change rule

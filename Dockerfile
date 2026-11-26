@@ -10,7 +10,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 RUN pip install --upgrade pip && \
-    pip install --default-timeout=1000 --retries 10 ".[embeddings,voice-realtime]"
+    pip install --default-timeout=1000 --retries 10 ".[embeddings,voice-realtime,memory]"
 
 COPY src ./src
 COPY tests ./tests

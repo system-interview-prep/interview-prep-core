@@ -1,15 +1,20 @@
 """Post-session memory extraction as a durable background job (V2 spec §9).
 
 The report is persisted first; the dispatch is recorded in PostgreSQL before
-the task is sent; the job survives duplicate delivery (including the
-check-then-lock interleaving), a lost worker, a refused or lost dispatch,
-classifies its failures, and never touches the grade.
+the task is sent; every state transition is one guarded SQL statement; the
+job survives duplicate delivery (including the check-then-lock interleaving),
+a lost worker, a refused or lost dispatch, concurrent reconcilers, and it
+classifies its failures. Nothing here touches the grade.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import re
+import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -36,14 +41,25 @@ class _Rows:
 
 
 class _DB:
-    """What the job asks of PostgreSQL: the job state, the advisory lock, the
-    reconciler's query. Every call is logged in order so a test can say what
-    happened between the lock and the DONE write."""
+    """PostgreSQL as the job sees it: the job state, the advisory locks, the
+    guarded transition and the reconciler's query. The transition enforces the
+    same guards as the real statement, so a test can prove a write was refused.
+    Every call is logged in order."""
 
-    def __init__(self, *, lock: bool = True, states: dict[str, dict | None] | None = None, on_lock=None) -> None:
+    def __init__(
+        self,
+        *,
+        lock: bool = True,
+        sweep_lock: bool = True,
+        states: dict[str, dict | None] | None = None,
+        on_lock=None,
+        on_rollback=None,
+    ) -> None:
         self.lock = lock
+        self.sweep_lock = sweep_lock
         self.states: dict[str, dict | None] = dict(states or {})
         self.on_lock = on_lock
+        self.on_rollback = on_rollback
         self.log: list[Any] = []
         self.rows: list[dict] = []
 
@@ -51,24 +67,37 @@ class _DB:
         sql = str(statement)
         params = params or {}
         if "pg_try_advisory_xact_lock" in sql:
+            if params["key"] == job.RECONCILE_LOCK_KEY:
+                self.log.append("sweep_lock")
+                return self.sweep_lock
             self.log.append("lock")
             if self.on_lock is not None:
                 self.on_lock(self)
             return self.lock
-        if "metadata->'memory_extraction'" in sql:
+        if sql.strip().startswith("SELECT metadata->'memory_extraction'"):
             self.log.append("read")
             state = self.states.get(str(params["sid"]))
             return json.dumps(state) if state is not None else None
+        if "UPDATE interview_sessions" in sql and "RETURNING" in sql:
+            sid = str(params["sid"])
+            current = self.states.get(sid) or {}
+            if "<> 'DONE'" in sql and current.get("status") == "DONE":
+                self.log.append(("refused", "done"))
+                return None
+            if "'permanent'" in sql and "<> 'true'" in sql and current.get("permanent") is True:
+                self.log.append(("refused", "permanent"))
+                return None
+            if ":seen" in sql and str(current.get("updated_at") or "") != params["seen"]:
+                self.log.append(("refused", "seen"))
+                return None
+            merged = {**current, **json.loads(params["job"]), "dispatches": int(current.get("dispatches") or 0) + int(params["bump"])}
+            self.states[sid] = merged
+            self.log.append(("write", merged["status"]))
+            return json.dumps(merged)
         raise AssertionError(sql)
 
     async def execute(self, statement: Any, params: dict | None = None):
         sql = str(statement)
-        params = params or {}
-        if "UPDATE interview_sessions" in sql:
-            state = json.loads(params["job"])
-            self.states[str(params["sid"])] = state
-            self.log.append(("write", state["status"]))
-            return None
         if "FROM interview_evaluations e" in sql:
             self.log.append("reconcile_query")
             return _Rows(self.rows)
@@ -79,6 +108,8 @@ class _DB:
 
     async def rollback(self) -> None:
         self.log.append("rollback")
+        if self.on_rollback is not None:
+            self.on_rollback(self)
 
 
 @pytest.fixture
@@ -114,6 +145,10 @@ async def _run(db, **kw):
     return await job.run_memory_extraction_job(db, "s1", **kw)
 
 
+DONE = {"status": "DONE", "counts": {"inserted": 2}, "updated_at": "2026-11-26T00:00:00+00:00"}
+PERMANENT = {"status": "FAILED", "permanent": True, "reason": "missing_dependency", "updated_at": "2026-11-26T00:00:00+00:00"}
+
+
 # ---------------------------------------------------------------- the job
 
 
@@ -131,9 +166,11 @@ async def test_a_first_delivery_extracts_under_the_lock_and_records_done(readwri
 @pytest.mark.asyncio
 async def test_the_advisory_lock_is_held_throughout_the_extraction(readwrite, extraction) -> None:
     """A transaction-scoped lock is released by commit or rollback. Neither may
-    happen between taking it and writing DONE."""
+    happen between taking it and writing DONE; no write precedes the lock."""
     db = _DB()
     await _run(db)
+    before_lock = db.log[: db.log.index("lock")]
+    assert not any(isinstance(item, tuple) and item[0] == "write" for item in before_lock)
     after_lock = db.log[db.log.index("lock") :]
     assert "commit" not in after_lock[: after_lock.index(("write", "DONE"))]
     assert "rollback" not in after_lock
@@ -141,10 +178,9 @@ async def test_the_advisory_lock_is_held_throughout_the_extraction(readwrite, ex
 
 @pytest.mark.asyncio
 async def test_a_duplicate_delivery_stops_before_the_lock(readwrite, extraction) -> None:
-    db = _DB(states={"s1": {"status": "DONE", "counts": {"inserted": 2}}})
+    db = _DB(states={"s1": DONE})
     again = await _run(db)
-    assert again["status"] == "SKIPPED" and again["reason"] == "already_extracted"
-    assert again["counts"] == {"inserted": 2}
+    assert again["status"] == "SKIPPED" and again["reason"] == "already_extracted" and again["counts"] == {"inserted": 2}
     assert "lock" not in db.log and extraction == []
 
 
@@ -154,7 +190,7 @@ async def test_check_then_lock_race_is_caught_by_the_read_under_the_lock(readwri
     one that locks second must re-read and find what the first wrote."""
 
     def other_worker_finishes_first(db: _DB) -> None:
-        db.states["s1"] = {"status": "DONE", "counts": {"inserted": 1}, "attempt": 1}
+        db.states["s1"] = dict(DONE)
 
     db = _DB(on_lock=other_worker_finishes_first)
     result = await _run(db)
@@ -162,6 +198,17 @@ async def test_check_then_lock_race_is_caught_by_the_read_under_the_lock(readwri
     assert extraction == [], "the second worker must not extract again"
     assert db.log == ["read", "lock", "read", "rollback"]
     assert any(name == "candidate_memory_job_duplicate" and kw.get("after_lock") for name, kw in readwrite)
+
+
+@pytest.mark.asyncio
+async def test_a_permanent_failure_is_rechecked_under_the_lock(readwrite, extraction) -> None:
+    def other_worker_gave_up(db: _DB) -> None:
+        db.states["s1"] = dict(PERMANENT)
+
+    db = _DB(on_lock=other_worker_gave_up)
+    result = await _run(db)
+    assert result["status"] == "FAILED" and result["permanent"] is True and result["skipped"] is True
+    assert extraction == [] and db.log == ["read", "lock", "read", "rollback"]
 
 
 @pytest.mark.asyncio
@@ -182,6 +229,64 @@ async def test_a_lost_worker_leaves_processing_which_the_redelivery_resumes(read
     assert len(extraction) == 1
 
 
+# ------------------------------------------------------- guarded transitions
+
+
+@pytest.mark.asyncio
+async def test_a_failure_recorded_after_rollback_never_overwrites_a_done_written_meanwhile(readwrite, monkeypatch) -> None:
+    """The extraction raised; its rollback released the lock; another delivery
+    took it and finished. The FAILED write must be refused, not win."""
+
+    async def boom(db, *a, **k):
+        db.log.append("extract")
+        raise ConnectionError("provider down")
+
+    monkeypatch.setattr(job, "extract_after_session", boom)
+
+    def other_delivery_finishes(db: _DB) -> None:
+        db.states["s1"] = dict(DONE)
+
+    db = _DB(on_rollback=other_delivery_finishes)
+    result = await _run(db, attempt=1, max_attempts=3)
+    assert result["status"] == "SKIPPED" and result["reason"] == "already_extracted"
+    assert db.states["s1"]["status"] == "DONE", "DONE stands"
+    assert ("refused", "done") in db.log
+    assert not any(name == "candidate_memory_job_failed" for name, _ in readwrite)
+
+
+@pytest.mark.asyncio
+async def test_queued_never_overwrites_done_or_revives_a_permanent_failure() -> None:
+    done = _DB(states={"s1": dict(DONE)})
+    assert await job.mark_queued(done, "s1") is None and done.states["s1"]["status"] == "DONE"
+    permanent = _DB(states={"s1": dict(PERMANENT)})
+    assert await job.mark_queued(permanent, "s1") is None and permanent.states["s1"]["status"] == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_a_failure_write_is_not_computed_from_stale_state(readwrite, monkeypatch) -> None:
+    """Between PROCESSING and the failure, a concurrent mark_queued bumped
+    dispatches. The FAILED transition merges in SQL, so the bump survives."""
+
+    async def boom(db, *a, **k):
+        db.states["s1"] = {**db.states["s1"], "dispatches": 4, "updated_at": "later"}
+        raise ConnectionError("provider down")
+
+    monkeypatch.setattr(job, "extract_after_session", boom)
+    db = _DB()
+    with pytest.raises(job.TransientExtractionError):
+        await _run(db, attempt=1, max_attempts=3)
+    assert db.states["s1"]["status"] == "FAILED" and db.states["s1"]["dispatches"] == 4
+
+
+@pytest.mark.asyncio
+async def test_mark_queued_is_one_guarded_statement_that_increments_in_sql() -> None:
+    db = _DB()
+    state = await job.mark_queued(db, "s1")
+    assert state["status"] == "QUEUED" and state["dispatches"] == 1
+    assert db.log == [("write", "QUEUED"), "commit"], "no read-modify-write"
+    assert (await job.mark_queued(db, "s1"))["dispatches"] == 2
+
+
 # ------------------------------------------------------------ failure classes
 
 
@@ -198,7 +303,6 @@ async def test_a_transient_extraction_failure_is_recorded_and_raised_for_retry(r
     state = db.states["s1"]
     assert state["status"] == "FAILED" and state["permanent"] is False and state["reason"] == "transient"
     assert "provider down" in state["error"]
-    # The failing transaction was rolled back (lock released) before FAILED was written and committed.
     assert db.log[db.log.index("extract") :] == ["extract", "rollback", ("write", "FAILED"), "commit"]
 
 
@@ -220,17 +324,16 @@ async def test_a_refused_provider_request_is_permanent_on_the_first_attempt(read
         raise type("OpenAIAuthenticationError", (Exception,), {})("401 incorrect api key")
 
     monkeypatch.setattr(job, "extract_after_session", refused)
-    db = _DB()
-    result = await _run(db, attempt=1, max_attempts=3)
+    result = await _run(_DB(), attempt=1, max_attempts=3)
     assert result["status"] == "FAILED" and result["permanent"] is True and result["reason"] == "rejected"
 
 
 @pytest.mark.asyncio
-async def test_a_missing_dependency_is_permanent_and_not_retried(readwrite, extraction) -> None:
+async def test_a_missing_dependency_is_recorded_under_the_lock_and_not_retried(readwrite, extraction) -> None:
     db = _DB()
     result = await _run(db, store=None, store_error=MemoryStoreUnavailable("missing dependency: langmem", permanent=True))
     assert result["status"] == "FAILED" and result["permanent"] is True and result["reason"] == "missing_dependency"
-    assert db.states["s1"]["status"] == "FAILED" and extraction == []
+    assert db.log == ["read", "lock", "read", ("write", "FAILED"), "commit"] and extraction == []
 
 
 @pytest.mark.asyncio
@@ -239,7 +342,7 @@ async def test_a_store_connection_failure_is_transient_never_a_successful_skip(r
     with pytest.raises(job.TransientExtractionError):
         await _run(db, store=None, store_error=MemoryStoreUnavailable("cannot connect", permanent=False))
     assert db.states["s1"]["status"] == "FAILED" and db.states["s1"]["permanent"] is False
-    # A store that is simply absent, with no explanation, is treated the same way.
+    assert db.log.index("lock") < db.log.index(("write", "FAILED"))
     db2 = _DB()
     with pytest.raises(job.TransientExtractionError):
         await _run(db2, store=None)
@@ -247,18 +350,28 @@ async def test_a_store_connection_failure_is_transient_never_a_successful_skip(r
 
 
 @pytest.mark.asyncio
+async def test_a_store_failure_yields_to_a_done_that_appeared_under_the_lock(readwrite, extraction) -> None:
+    def other_worker_finishes_first(db: _DB) -> None:
+        db.states["s1"] = dict(DONE)
+
+    db = _DB(on_lock=other_worker_finishes_first)
+    result = await _run(db, store=None, store_error=MemoryStoreUnavailable("cannot connect", permanent=False))
+    assert result["status"] == "SKIPPED" and result["reason"] == "already_extracted"
+    assert db.states["s1"]["status"] == "DONE" and not any(isinstance(i, tuple) and i[0] == "write" for i in db.log)
+
+
+@pytest.mark.asyncio
 async def test_a_permanently_failed_session_is_not_run_again(readwrite, extraction) -> None:
-    db = _DB(states={"s1": {"status": "FAILED", "permanent": True, "reason": "missing_dependency"}})
+    db = _DB(states={"s1": dict(PERMANENT)})
     result = await _run(db)
     assert result["status"] == "FAILED" and result["permanent"] is True and result["skipped"] is True
     assert extraction == [] and "lock" not in db.log
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("setup,reason", [(dict(evaluation=None), "evaluation_not_available")])
-async def test_nothing_to_extract_from_is_a_skip(readwrite, extraction, setup, reason) -> None:
-    result = await _run(_DB(), **setup)
-    assert result["status"] == "SKIPPED" and result["reason"] == reason
+async def test_nothing_to_extract_from_is_a_skip(readwrite, extraction) -> None:
+    result = await _run(_DB(), evaluation=None)
+    assert result["status"] == "SKIPPED" and result["reason"] == "evaluation_not_available"
     assert extraction == []
 
 
@@ -329,17 +442,6 @@ def test_an_accepted_dispatch_carries_the_session_id(monkeypatch) -> None:
     assert sent == [(job.EXTRACT_TASK_NAME, [{"session_id": "s1"}])]
 
 
-@pytest.mark.asyncio
-async def test_mark_queued_records_the_dispatch_durably_and_commits() -> None:
-    db = _DB()
-    state = await job.mark_queued(db, "s1")
-    assert state["status"] == "QUEUED" and state["dispatches"] == 1
-    assert db.log == ["read", ("write", "QUEUED"), "commit"]
-    assert (await job.mark_queued(db, "s1"))["dispatches"] == 2
-    done = _DB(states={"s1": {"status": "DONE"}})
-    assert await job.mark_queued(done, "s1") is None, "nothing to dispatch for a finished session"
-
-
 # ------------------------------------------------------------ reconciliation
 
 
@@ -352,36 +454,85 @@ def _state(status: str, *, age_seconds: float, dispatches: int = 1, **extra) -> 
     }
 
 
+def _sweep_db(**states) -> _DB:
+    db = _DB(states=states)
+    db.rows = [{"session_id": sid, "job": state} for sid, state in states.items()]
+    return db
+
+
 @pytest.mark.asyncio
 async def test_the_reconciler_redispatches_lost_and_stale_jobs_but_not_fresh_ones(readwrite) -> None:
-    db = _DB(
-        states={
-            "lost": None,  # evaluation persisted, process died before send_task
-            "fresh": _state("QUEUED", age_seconds=30),
-            "stale": _state("PROCESSING", age_seconds=3600),
-            "transient": _state("FAILED", age_seconds=1200, permanent=False, dispatches=2),
-            "worn": _state("FAILED", age_seconds=1200, permanent=False, dispatches=5),
-        }
+    db = _sweep_db(
+        lost=None,  # evaluation persisted, process died before send_task
+        fresh=_state("QUEUED", age_seconds=30),
+        stale=_state("PROCESSING", age_seconds=3600),
+        transient=_state("FAILED", age_seconds=1200, permanent=False, dispatches=2),
+        worn=_state("FAILED", age_seconds=1200, permanent=False, dispatches=5),
     )
-    db.rows = [{"session_id": sid, "job": state} for sid, state in db.states.items()]
     sent: list[str] = []
     summary = await job.reconcile_memory_extraction(db, enqueue=lambda sid: sent.append(sid) or True)
     assert sorted(sent) == ["lost", "stale", "transient"]
-    assert summary == {"status": "COMPLETE", "candidates": 5, "dispatched": 3, "fresh": 1, "exhausted": 1, "dispatch_failed": 0}
+    assert summary == {"status": "COMPLETE", "candidates": 5, "dispatched": 3, "fresh": 1, "exhausted": 1, "dispatch_failed": 0, "raced": 0}
     assert db.states["lost"]["status"] == "QUEUED" and db.states["lost"]["dispatches"] == 1
     assert db.states["transient"]["dispatches"] == 3
     assert db.states["worn"]["status"] == "FAILED" and db.states["worn"]["permanent"] is True
     assert db.states["worn"]["reason"] == "dispatch_exhausted"
-    assert db.log[-1] == "commit"
+    assert db.log[0] == "sweep_lock" and db.log[-1] == "commit"
+
+
+@pytest.mark.asyncio
+async def test_only_one_replica_sweeps_at_a_time(readwrite) -> None:
+    db = _sweep_db(lost=None)
+    db.sweep_lock = False
+    summary = await job.reconcile_memory_extraction(db, enqueue=lambda sid: True)
+    assert summary == {"status": "SKIPPED", "reason": "sweep_in_progress"}
+    assert db.log == ["sweep_lock", "rollback"] and db.states["lost"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_worker_that_moves_first_wins_over_the_sweep(readwrite) -> None:
+    """Between the sweep's read and its QUEUED write the worker finished the
+    job (DONE) -- the compare-and-set write is refused and DONE stands."""
+    db = _sweep_db(stale=_state("PROCESSING", age_seconds=3600))
+
+    def worker_finishes_during_dispatch(sid: str) -> bool:
+        db.states[sid] = dict(DONE)
+        return True
+
+    summary = await job.reconcile_memory_extraction(db, enqueue=worker_finishes_during_dispatch)
+    assert summary["raced"] == 1 and summary["dispatched"] == 0
+    assert db.states["stale"]["status"] == "DONE"
 
 
 @pytest.mark.asyncio
 async def test_the_reconciler_reports_a_broker_that_is_still_down(readwrite) -> None:
-    db = _DB(states={"lost": None})
-    db.rows = [{"session_id": "lost", "job": None}]
+    db = _sweep_db(lost=None)
     summary = await job.reconcile_memory_extraction(db, enqueue=lambda sid: False)
     assert summary["dispatch_failed"] == 1 and summary["dispatched"] == 0
     assert db.states["lost"] is None, "no QUEUED record for a dispatch that did not happen"
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_reports_without_locking_writing_or_dispatching(readwrite) -> None:
+    db = _sweep_db(lost=None, worn=_state("FAILED", age_seconds=1200, permanent=False, dispatches=5))
+    sent: list[str] = []
+    summary = await job.reconcile_memory_extraction(db, enqueue=lambda sid: sent.append(sid) or True, dry_run=True)
+    assert summary["status"] == "DRY_RUN" and summary["dispatched"] == 1 and summary["exhausted"] == 1
+    assert summary["planned"] == [
+        {"session_id": "lost", "action": "dispatch", "dispatches": 1},
+        {"session_id": "worn", "action": "exhaust", "dispatches": 5},
+    ]
+    assert sent == [] and db.log == ["reconcile_query"]
+    assert db.states["lost"] is None and db.states["worn"]["permanent"] is False
+
+
+def test_eligibility_is_least_recently_attempted_first_inside_a_bounded_window() -> None:
+    sql = job._RECONCILE_SQL
+    assert "make_interval(hours => :hours)" in sql and "make_interval(secs => :grace)" in sql
+    assert "<> 'DONE'" in sql and "'permanent'" in sql
+    assert re.search(r"ORDER BY COALESCE\(\(s\.metadata->'memory_extraction'->>'updated_at'\)::timestamptz, e\.created_at\) ASC", sql)
+    assert "DESC" not in sql, "newest-first would starve the oldest of a backlog wider than the limit"
+    assert job.RECONCILE_WINDOW_HOURS == 6 and job.RECONCILE_LIMIT == 20
 
 
 @pytest.mark.asyncio
@@ -390,6 +541,58 @@ async def test_the_reconciler_does_nothing_when_memory_is_off(monkeypatch) -> No
     db = _DB()
     assert (await job.reconcile_memory_extraction(db))["status"] == "SKIPPED"
     assert db.log == []
+
+
+# ------------------------------------------------------ manual recovery tool
+
+_OPS = Path(__file__).resolve().parents[4] / "scripts" / "ops" / "reconcile_memory_extraction.py"
+
+
+def _ops_module():
+    spec = importlib.util.spec_from_file_location("reconcile_memory_extraction_cli", _OPS)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["reconcile_memory_extraction_cli"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_manual_recovery_tool_is_bounded_and_defaults_to_the_automatic_window() -> None:
+    ops = _ops_module()
+    args = ops.parse_args([])
+    assert (args.window_hours, args.limit, args.max_dispatches, args.dry_run) == (6, 20, 5, False)
+    assert ops.parse_args(["--window-hours", "48", "--limit", "50", "--dry-run"]).dry_run is True
+    with pytest.raises(SystemExit):
+        ops.parse_args(["--window-hours", "721"])
+    with pytest.raises(SystemExit):
+        ops.parse_args(["--limit", "201"])
+
+
+@pytest.mark.asyncio
+async def test_the_manual_recovery_tool_passes_its_bounds_to_the_reconciler(monkeypatch) -> None:
+    ops = _ops_module()
+    seen: dict = {}
+
+    async def fake_reconcile(db, **kwargs):
+        seen.update(kwargs)
+        return {"status": "DRY_RUN"}
+
+    class _Factory:
+        def __call__(self):
+            return self
+
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *a):
+            return False
+
+    import src.infrastructure.database as database
+
+    monkeypatch.setattr(database, "StandaloneSessionFactory", _Factory())
+    monkeypatch.setattr(job, "reconcile_memory_extraction", fake_reconcile)
+    summary = await ops.run(ops.parse_args(["--window-hours", "48", "--limit", "7", "--max-dispatches", "2", "--dry-run"]))
+    assert summary == {"status": "DRY_RUN"}
+    assert seen == {"limit": 7, "window_hours": 48, "max_dispatches": 2, "dry_run": True}
 
 
 # ------------------------------------------------------------------- score()
@@ -438,7 +641,7 @@ async def test_score_persists_the_report_records_the_dispatch_then_sends(score, 
     assert result == REPORT
     assert order == ["graded", "sent"]
     assert db.states["s1"]["status"] == "QUEUED", "the dispatch is durable before the task is sent"
-    assert db.log.index(("write", "QUEUED")) < len(db.log) and inline == []
+    assert inline == []
 
 
 @pytest.mark.asyncio
@@ -477,8 +680,6 @@ def task(monkeypatch):
 
     def fake_retry(**kwargs):
         retries.append(kwargs)
-        if kwargs.get("exhausted"):
-            raise MaxRetriesExceededError()
         raise _Retry()
 
     monkeypatch.setattr(module.extract_session_memory, "retry", fake_retry)
@@ -510,7 +711,7 @@ def test_the_task_retries_a_transient_failure_with_the_bounded_backoff(task, mon
     finally:
         module.extract_session_memory.pop_request()
     assert seen == [2], "attempt = retries + 1"
-    assert retries[0]["countdown"] == job.retry_delay_seconds(2, jitter=lambda: 0.0) or 60 <= retries[0]["countdown"] <= 150
+    assert 60 <= retries[0]["countdown"] <= 90
 
 
 def test_the_task_retries_a_busy_session_later(task, monkeypatch) -> None:

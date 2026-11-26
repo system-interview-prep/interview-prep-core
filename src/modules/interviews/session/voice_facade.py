@@ -10,9 +10,12 @@ from src.modules.interviews.session.chat_runtime import ChatRuntimeError
 
 async def start_voice_interview(db: AsyncSession, session_row: dict[str, Any]) -> dict[str, Any]:
     """Start or resume a voice interview using the canonical chat runtime."""
+    # No early speech at the opening: the Hybrid callback belongs to an answer
+    # turn. (A stray reference here crashed every real voice session at
+    # runtime start with a NameError; found by the §13 pilot, 2026-11-26.)
     return await run_interview_command(
         session_id=str(session_row["id"]), command="open",
-        operations=database_operations(db=db, user={}, session_row=session_row, on_early_speech=on_early_speech),
+        operations=database_operations(db=db, user={}, session_row=session_row),
     )
 
 
@@ -31,9 +34,12 @@ async def submit_voice_answer(
     on_early_speech: Any = None,
 ) -> dict[str, Any]:
     """Submit a final media transcript to the modality-neutral Interview Core."""
+    # The early-speech callback travels in the operations closure, never in
+    # the checkpointed payload (graph/runtime.py); it was accepted here but
+    # not passed on, so the Hybrid stream's early line never reached the turn.
     return await run_interview_command(
         session_id=str(session_row["id"]), command="respond", event_id=client_message_id,
-        operations=database_operations(db=db, user={}, session_row=session_row),
+        operations=database_operations(db=db, user={}, session_row=session_row, on_early_speech=on_early_speech),
         payload={"client_message_id": client_message_id, "content": content,
                  "telemetry": telemetry or {}, "modality": modality,
                  "duration_seconds": duration_seconds,

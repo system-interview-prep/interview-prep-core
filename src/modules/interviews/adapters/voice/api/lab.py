@@ -22,6 +22,7 @@ from src.core.config import get_settings
 from src.core.security import bearer_scheme, current_user
 from src.core.trace_logging import trace_event
 from src.infrastructure.database import get_db
+from src.core.pipeline_events import current_purpose_prefix, current_session_id
 from src.modules.interviews.realtime.anticipation.validator import PreviewKey, validate_preview
 from src.modules.interviews.session import preview_authority
 from src.modules.interviews.realtime.events import VOICE_EVENTS, sanitize_fields
@@ -360,6 +361,12 @@ async def preview_livekit_runtime_answer(
 ) -> dict:
     """Run the same answer evaluator speculatively without writing interview state."""
     session = await _runtime_session(db, claims)
+    # Every model call below is this session's, and speculative: say so in
+    # ai_call_logs, so the per-session budget and the §13 report can count it.
+    # (The pilot found 24 previews × 2 calls per session logged with no
+    # session id -- four times the attributed spend, invisible.)
+    current_session_id.set(str(session["id"]))
+    current_purpose_prefix.set("speculative.")
     transcript = payload.transcript.strip()
     if len(transcript.split()) < 4 or len(transcript) < 16:
         return {"previewToken": None, "reason": "transcript_too_short"}

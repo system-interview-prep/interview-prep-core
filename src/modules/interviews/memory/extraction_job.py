@@ -12,31 +12,43 @@ statement by the reconciler. States: ``QUEUED`` (dispatched), ``PROCESSING``
 (a worker is on it), ``DONE`` (with the counts), ``FAILED`` (with ``permanent``
 true when no retry will help).
 
+**Every transition is one guarded SQL statement.** The new state is merged
+into the old one *inside* the UPDATE, and the WHERE clause refuses what must
+never happen: nothing overwrites ``DONE``; ``QUEUED`` and ``PROCESSING`` do
+not revive a permanent failure; the reconciler's writes are compare-and-set
+on ``updated_at`` so a worker that moved first wins. A refused transition
+returns ``None`` and the caller re-reads instead of assuming.
+
 What makes the job safe to deliver more than once, to lose a worker on, and
 to lose the dispatch of:
 
-* **Idempotency** -- a ``DONE`` state stops a redelivery. It is read once
-  before the lock (cheap exit) and **again after the lock is held**: two
-  deliveries that both passed the first read cannot both extract, because the
-  second to lock re-reads ``DONE``.
+* **Idempotency** -- ``DONE`` is read once before the advisory lock (cheap
+  exit) and **again after the lock is held**, together with the permanent
+  failure check; two deliveries that both passed the first read serialize on
+  the lock and the second re-reads what the first wrote. Every failure,
+  including a store that cannot be opened, is recorded *under the lock*.
 * **Mutual exclusion** -- a transaction-scoped Postgres advisory lock on the
   session id, held for the whole extraction (the transaction that took it is
   the one that writes ``DONE``). A worker that cannot take it asks to be
-  retried later rather than failing.
+  retried later rather than failing. The reconciler takes its own sweep lock,
+  so concurrent API replicas do not double-dispatch.
 * **Worker failure** -- Celery acknowledges late and rejects on worker loss
   (``celery_app.py``); the lock dies with the crashed connection; the state is
   ``PROCESSING`` and the redelivery runs it again.
 * **Failure classes** -- disabled memory is a *skip*; a missing dependency
-  (the ``memory`` extra) is *permanent*; a connection or provider outage is
-  *transient* and retried with bounded exponential backoff; an unknown error
-  is treated as transient until the attempt cap, then recorded permanent.
-  A transient failure never returns a successful result.
+  (the ``memory`` extra) or a request the provider refuses (401/403/400/404)
+  is *permanent*; a connection or provider outage is *transient* and retried
+  with bounded exponential backoff; an unknown error is treated as transient
+  until the attempt cap, then recorded permanent. A transient failure never
+  returns a successful result.
 * **Dispatch failure** -- ``score`` writes ``QUEUED`` and commits *before*
   ``send_task``. If the broker refuses, it falls back to the pre-§9 inline
   run. If the process dies between the commit and the dispatch, the
   reconciler (:func:`reconcile_memory_extraction`, run periodically by the
-  API) finds evaluations whose job is neither ``DONE`` nor permanently failed
-  and dispatches them again, a bounded number of times.
+  API, or by hand with ``scripts/ops/reconcile_memory_extraction.py`` for a
+  window wider than the automatic one) finds evaluations whose job is neither
+  ``DONE`` nor permanently failed and dispatches them again, least recently
+  attempted first so nothing starves, a bounded number of times.
 
 The job is **at-least-once, not exactly-once**: a worker lost between
 finishing the extraction and writing ``DONE`` repeats one extraction on
@@ -96,12 +108,16 @@ RECONCILE_GRACE_SECONDS = 120
 #: ... and older than this. Short on purpose: the crash window the sweep
 #: closes is seconds long, and a wide window would re-dispatch every
 #: evaluation graded before this job existed -- a paid backfill nobody asked
-#: for (seen on the dev database: one pre-feature session per sweep).
+#: for (seen on the dev database: one pre-feature session per sweep). After a
+#: longer outage, run scripts/ops/reconcile_memory_extraction.py with an
+#: explicit window.
 RECONCILE_WINDOW_HOURS = 6
 #: Sessions per sweep; with the 5-minute cadence this bounds the dispatch rate.
 RECONCILE_LIMIT = 20
 #: Dispatches per session before the reconciler gives up for good.
 MAX_DISPATCHES = 5
+#: Advisory lock key of the sweep itself (one sweep at a time across replicas).
+RECONCILE_LOCK_KEY = "interview-memory:reconcile"
 
 
 class TransientExtractionError(RuntimeError):
@@ -142,7 +158,7 @@ _TRANSIENT_MARKERS = (
 
 
 def classify(exc: BaseException) -> str:
-    """``"skip"``, ``"transient"`` or ``"permanent"`` for one failure.
+    """``"transient"`` or ``"permanent"`` for one failure.
 
     Disabled memory is not a failure at all and never reaches here. A missing
     dependency (``ImportError``) is permanent: no retry installs it. A request
@@ -180,10 +196,26 @@ def max_attempts() -> int:
 # ------------------------------------------------------------ job state (DB)
 
 _READ_STATE = "SELECT metadata->'memory_extraction' FROM interview_sessions WHERE id = :sid"
-_WRITE_STATE = (
-    "UPDATE interview_sessions SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), "
-    "'{memory_extraction}', CAST(:job AS jsonb), true), updated_at = now() WHERE id = :sid"
-)
+
+# One guarded transition. The new fields are merged into the current state
+# inside the statement (no read-modify-write), ``dispatches`` is incremented
+# in SQL, and the guards below decide whether the write may happen at all.
+_TRANSITION = """
+UPDATE interview_sessions
+SET metadata = jsonb_set(
+        COALESCE(metadata, '{{}}'::jsonb), '{{memory_extraction}}',
+        COALESCE(metadata->'memory_extraction', '{{}}'::jsonb)
+          || CAST(:job AS jsonb)
+          || jsonb_build_object(
+               'dispatches', COALESCE((metadata->'memory_extraction'->>'dispatches')::int, 0) + :bump),
+        true),
+    updated_at = now()
+WHERE id = :sid{guards}
+RETURNING metadata->'memory_extraction'
+"""
+_GUARD_NOT_DONE = "\n  AND COALESCE(metadata->'memory_extraction'->>'status', '') <> 'DONE'"
+_GUARD_NOT_PERMANENT = "\n  AND COALESCE(metadata->'memory_extraction'->>'permanent', 'false') <> 'true'"
+_GUARD_SEEN = "\n  AND COALESCE(metadata->'memory_extraction'->>'updated_at', '') = :seen"
 
 
 def _parse(raw: Any) -> dict[str, Any] | None:
@@ -204,12 +236,36 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-async def _write_state(
-    db: AsyncSession, session_id: str, previous: dict[str, Any] | None, **fields: Any
-) -> dict[str, Any]:
-    merged = {**(previous or {}), **fields, "updated_at": _now_iso()}
-    await db.execute(text(_WRITE_STATE), {"sid": str(session_id), "job": json.dumps(merged, default=str)})
-    return merged
+async def _transition(
+    db: AsyncSession,
+    session_id: str,
+    *,
+    bump: int = 0,
+    unless_done: bool = True,
+    unless_permanent: bool = False,
+    seen: str | None = None,
+    **fields: Any,
+) -> dict[str, Any] | None:
+    """Apply one guarded state transition; ``None`` when a guard refused it.
+
+    ``unless_done`` (default) never overwrites a finished job; ``unless_permanent``
+    never revives a permanently failed one; ``seen`` makes the write
+    compare-and-set on the ``updated_at`` the caller read.
+    """
+    guards = ""
+    if unless_done:
+        guards += _GUARD_NOT_DONE
+    if unless_permanent:
+        guards += _GUARD_NOT_PERMANENT
+    params: dict[str, Any] = {
+        "sid": str(session_id),
+        "bump": int(bump),
+        "job": json.dumps({**fields, "updated_at": _now_iso()}, default=str),
+    }
+    if seen is not None:
+        guards += _GUARD_SEEN
+        params["seen"] = seen
+    return _parse(await db.scalar(text(_TRANSITION.format(guards=guards)), params))
 
 
 def _is_done(state: dict[str, Any] | None) -> bool:
@@ -220,30 +276,33 @@ def _is_permanent_failure(state: dict[str, Any] | None) -> bool:
     return bool(state) and state.get("status") == "FAILED" and bool(state.get("permanent"))
 
 
+def _settled(session_id: str, state: dict[str, Any], *, after_lock: bool = False) -> dict[str, Any]:
+    """The result for a job that is already DONE or permanently FAILED."""
+    if _is_done(state):
+        trace_event("interviewer", "candidate_memory_job_duplicate", session_id=session_id, after_lock=after_lock)
+        return {"sessionId": session_id, "status": "SKIPPED", "reason": "already_extracted", "counts": state.get("counts")}
+    return {"sessionId": session_id, "status": "FAILED", "permanent": True, "reason": state.get("reason"), "skipped": True}
+
+
 async def mark_queued(db: AsyncSession, session_id: str, *, reason: str = "scored") -> dict[str, Any] | None:
     """Record the dispatch durably, and commit, before the task is sent.
 
-    Returns the new state, or ``None`` when the session is already ``DONE`` or
-    permanently failed (then nothing should be dispatched).
+    One guarded statement: returns the new state, or ``None`` when the session
+    is already ``DONE`` or permanently failed (then nothing should be
+    dispatched). Safe under concurrent API replicas: the increment happens in
+    SQL and a finished job is never reopened.
     """
-    previous = await job_state(db, session_id)
-    if _is_done(previous) or _is_permanent_failure(previous):
-        return None
-    state = await _write_state(
-        db, session_id, previous,
-        status="QUEUED", reason=reason, dispatches=int((previous or {}).get("dispatches") or 0) + 1,
-        queued_at=_now_iso(),
+    state = await _transition(
+        db, session_id, bump=1, unless_done=True, unless_permanent=True,
+        status="QUEUED", reason=reason, queued_at=_now_iso(),
     )
     await db.commit()
     return state
 
 
-async def _try_lock(db: AsyncSession, session_id: str) -> bool:
-    """A transaction-scoped advisory lock on the session; released at commit/rollback."""
-    locked = await db.scalar(
-        text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
-        {"key": f"interview-memory:{session_id}"},
-    )
+async def _try_lock(db: AsyncSession, key: str) -> bool:
+    """A transaction-scoped advisory lock; released at commit/rollback."""
+    locked = await db.scalar(text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"), {"key": key})
     return bool(locked)
 
 
@@ -282,61 +341,64 @@ async def run_memory_extraction_job(
 
     # 1. A cheap look before the lock. Not the authoritative one.
     state = await job_state(db, session_id)
-    if _is_done(state):
-        trace_event("interviewer", "candidate_memory_job_duplicate", session_id=session_id)
-        return {"sessionId": session_id, "status": "SKIPPED", "reason": "already_extracted", "counts": state.get("counts")}
-    if _is_permanent_failure(state):
-        return {"sessionId": session_id, "status": "FAILED", "permanent": True, "reason": state.get("reason"), "skipped": True}
-
-    if store is None:
-        # The store could not be opened: that is a failure to record, never a
-        # successful skip. Transient (connection) or permanent (dependency).
-        return await _record_failure(
-            db, session_id, state,
-            store_error or MemoryStoreUnavailable("store_unavailable", permanent=False),
-            attempt=attempt, limit=limit,
-        )
+    if _is_done(state) or _is_permanent_failure(state):
+        return _settled(session_id, state)
 
     user_id = await candidate_memory._user_id_of_session(db, session_id)
     if not user_id:
         return {"sessionId": session_id, "status": "SKIPPED", "reason": "no_user"}
 
     # 2. The lock. Transaction-scoped: it is released by the commit that
-    #    writes DONE (or the rollback on failure), never earlier.
-    if not await _try_lock(db, session_id):
+    #    writes DONE or FAILED (or the rollback on an extraction error), never
+    #    earlier. Every state transition below happens while it is held.
+    if not await _try_lock(db, f"interview-memory:{session_id}"):
         await db.rollback()
         trace_event("interviewer", "candidate_memory_job_busy", session_id=session_id)
         return {"sessionId": session_id, "status": "RETRY", "reason": "in_progress", "retry_in": RETRY_IN_SECONDS}
 
     # 3. The authoritative look, under the lock. Two deliveries that both
-    #    passed step 1 serialize here; the second reads what the first wrote.
+    #    passed step 1 serialize here; the second reads what the first wrote,
+    #    DONE or permanently FAILED alike.
     state = await job_state(db, session_id)
-    if _is_done(state):
+    if _is_done(state) or _is_permanent_failure(state):
         await db.rollback()
-        trace_event("interviewer", "candidate_memory_job_duplicate", session_id=session_id, after_lock=True)
-        return {"sessionId": session_id, "status": "SKIPPED", "reason": "already_extracted", "counts": state.get("counts")}
+        return _settled(session_id, state, after_lock=True)
 
-    state = await _write_state(db, session_id, state, status="PROCESSING", attempt=attempt, started_at=_now_iso())
+    if store is None:
+        # The store could not be opened: a failure to record -- under the lock,
+        # like every other one -- never a successful skip.
+        return await _record_failure(
+            db, session_id, store_error or MemoryStoreUnavailable("store_unavailable", permanent=False),
+            attempt=attempt, limit=limit,
+        )
+
+    await _transition(db, session_id, status="PROCESSING", attempt=attempt, started_at=_now_iso())
     try:
         counts = await extract_after_session(db, session_id, evaluation=evaluation, store=store, raise_errors=True)
     except Exception as exc:  # noqa: BLE001 - classified and recorded below
-        await db.rollback()  # releases the lock
-        return await _record_failure(db, session_id, state, exc, attempt=attempt, limit=limit)
-    await _write_state(db, session_id, state, status="DONE", attempt=attempt, counts=dict(counts or {}), finished_at=_now_iso())
+        # The failing transaction is rolled back (the lock goes with it); the
+        # failure is then recorded by a fresh, guarded transition -- never from
+        # a state read before the extraction started.
+        await db.rollback()
+        return await _record_failure(db, session_id, exc, attempt=attempt, limit=limit)
+    done = await _transition(
+        db, session_id, status="DONE", attempt=attempt, counts=dict(counts or {}), finished_at=_now_iso()
+    )
     await db.commit()  # releases the lock
+    if done is None:  # cannot happen under the lock; if it ever does, say so rather than lie
+        logger.error("memory extraction for %s finished but its DONE transition was refused", session_id)
     return {"sessionId": session_id, "status": "COMPLETE", "counts": dict(counts or {})}
 
 
 async def _record_failure(
     db: AsyncSession,
     session_id: str,
-    state: dict[str, Any] | None,
     exc: BaseException,
     *,
     attempt: int,
     limit: int,
 ) -> dict[str, Any]:
-    """Write FAILED durably; raise for a retry or return a permanent failure."""
+    """Write FAILED durably (never over DONE); raise for a retry or return a permanent failure."""
     kind = classify(exc)
     permanent = kind == "permanent" or attempt >= limit
     if isinstance(exc, (ImportError, ModuleNotFoundError)) or (isinstance(exc, MemoryStoreUnavailable) and exc.permanent):
@@ -348,11 +410,17 @@ async def _record_failure(
     else:
         reason = "transient"
     error = f"{type(exc).__name__}: {exc}"[:500]
-    await _write_state(
-        db, session_id, state,
-        status="FAILED", attempt=attempt, permanent=permanent, reason=reason, error=error, failed_at=_now_iso(),
+    state = await _transition(
+        db, session_id, status="FAILED", attempt=attempt, permanent=permanent, reason=reason, error=error,
+        failed_at=_now_iso(),
     )
     await db.commit()
+    if state is None:
+        # Another delivery finished the job while this one was failing: its
+        # DONE stands, and this failure is not recorded over it.
+        current = await job_state(db, session_id)
+        if _is_done(current):
+            return _settled(session_id, current, after_lock=True)
     trace_event(
         "interviewer", "candidate_memory_job_failed", session_id=session_id,
         attempt=attempt, permanent=permanent, reason=reason, error_type=type(exc).__name__,
@@ -384,6 +452,10 @@ def enqueue_memory_extraction(session_id: str) -> bool:
 
 # ------------------------------------------------------------ reconciliation
 
+# Eligible: a persisted evaluation inside the window, past the grace period,
+# whose job is neither DONE nor permanently FAILED. Least recently attempted
+# first (a job never attempted counts from its evaluation), so a backlog
+# wider than ``limit`` rotates instead of starving its oldest members.
 _RECONCILE_SQL = """
 SELECT e.session_id AS session_id, s.metadata->'memory_extraction' AS job
 FROM interview_evaluations e
@@ -392,7 +464,7 @@ WHERE e.created_at >= now() - make_interval(hours => :hours)
   AND e.created_at <= now() - make_interval(secs => :grace)
   AND COALESCE(s.metadata->'memory_extraction'->>'status', '') <> 'DONE'
   AND COALESCE(s.metadata->'memory_extraction'->>'permanent', 'false') <> 'true'
-ORDER BY e.created_at DESC
+ORDER BY COALESCE((s.metadata->'memory_extraction'->>'updated_at')::timestamptz, e.created_at) ASC
 LIMIT :limit
 """
 
@@ -420,6 +492,7 @@ async def reconcile_memory_extraction(
     max_dispatches: int = MAX_DISPATCHES,
     enqueue: Callable[[str], bool] = enqueue_memory_extraction,
     now: datetime | None = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Re-dispatch persisted evaluations whose extraction never finished.
 
@@ -431,34 +504,74 @@ async def reconcile_memory_extraction(
     backfill pre-feature sessions at provider cost), at most ``limit``
     sessions per sweep, and ``max_dispatches`` per session, after which the
     job is marked permanently failed so it is not retried forever.
+
+    Concurrency: one sweep at a time (an advisory lock on the sweep; a replica
+    that cannot take it skips this round), and every write is compare-and-set
+    on the ``updated_at`` the sweep read, so a worker that moved first wins.
+
+    ``dry_run`` reads and reports what the sweep *would* do; it takes no lock,
+    writes nothing and dispatches nothing.
     """
     if candidate_memory.enabled() != "readwrite":
         return {"status": "SKIPPED", "reason": "memory_disabled"}
+    if not dry_run and not await _try_lock(db, RECONCILE_LOCK_KEY):
+        await db.rollback()
+        return {"status": "SKIPPED", "reason": "sweep_in_progress"}
     now = now or datetime.now(UTC)
     rows = (
         await db.execute(text(_RECONCILE_SQL), {"hours": window_hours, "grace": grace_seconds, "limit": limit})
     ).mappings().all()
-    summary = {"status": "COMPLETE", "candidates": len(rows), "dispatched": 0, "fresh": 0, "exhausted": 0, "dispatch_failed": 0}
+    summary: dict[str, Any] = {
+        "status": "DRY_RUN" if dry_run else "COMPLETE",
+        "candidates": len(rows), "dispatched": 0, "fresh": 0, "exhausted": 0, "dispatch_failed": 0, "raced": 0,
+    }
+    planned: list[dict[str, Any]] = []
     for row in rows:
         session_id = str(row["session_id"])
         state = _parse(row["job"])
+        seen = str((state or {}).get("updated_at") or "")
         age = _age_seconds(state, now)
         if state and state.get("status") in ("QUEUED", "PROCESSING") and age is not None and age < lease_seconds:
             summary["fresh"] += 1
             continue
         dispatches = int((state or {}).get("dispatches") or 0)
         if dispatches >= max_dispatches:
-            await _write_state(db, session_id, state, status="FAILED", permanent=True, reason="dispatch_exhausted", dispatches=dispatches)
+            planned.append({"session_id": session_id, "action": "exhaust", "dispatches": dispatches})
+            if dry_run:
+                summary["exhausted"] += 1
+                continue
+            written = await _transition(
+                db, session_id, seen=seen, status="FAILED", permanent=True, reason="dispatch_exhausted",
+            )
+            if written is None:
+                summary["raced"] += 1
+                continue
             summary["exhausted"] += 1
             trace_event("interviewer", "candidate_memory_job_failed", session_id=session_id, permanent=True, reason="dispatch_exhausted")
             continue
-        if enqueue(session_id):
-            await _write_state(db, session_id, state, status="QUEUED", reason="reconciled", dispatches=dispatches + 1, queued_at=_now_iso())
+        planned.append({"session_id": session_id, "action": "dispatch", "dispatches": dispatches + 1})
+        if dry_run:
             summary["dispatched"] += 1
-        else:
+            continue
+        if not enqueue(session_id):
             summary["dispatch_failed"] += 1
-    await db.commit()
-    if summary["dispatched"] or summary["exhausted"]:
+            continue
+        written = await _transition(
+            db, session_id, bump=1, unless_permanent=True, seen=seen,
+            status="QUEUED", reason="reconciled", queued_at=_now_iso(),
+        )
+        if written is None:
+            # The job moved under us (a worker finished or failed it for good)
+            # between the read and this write; the dispatch just sent will find
+            # that state and stop. Nothing of ours is written over it.
+            summary["raced"] += 1
+            continue
+        summary["dispatched"] += 1
+    if dry_run:
+        summary["planned"] = planned
+        return summary
+    await db.commit()  # releases the sweep lock
+    if summary["dispatched"] or summary["exhausted"] or summary["raced"]:
         trace_event("interviewer", "candidate_memory_reconciled", **{k: v for k, v in summary.items() if k != "status"})
     return summary
 

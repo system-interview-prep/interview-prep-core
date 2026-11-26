@@ -93,6 +93,14 @@ class MatchRun:
     started: float = field(default_factory=time.perf_counter)
 
 
+#: Prefix for the ``purpose`` of every model call made in this context --
+#: ``"speculative."`` while the voice preview endpoint runs, so a speculative
+#: call is told apart from the canonical one with the same caller (the §13
+#: pilot found 48 such calls per session invisible to the budget and report).
+current_purpose_prefix: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "ai_purpose_prefix", default=""
+)
+
 current_match_run: contextvars.ContextVar[MatchRun | None] = contextvars.ContextVar(
     "pipeline_match_run", default=None
 )
@@ -607,7 +615,7 @@ def record_ai_call(
         capture = bool(get_settings().ai_call_log_capture_text)
         row = {
             "session_id": current_session_id.get(),
-            "purpose": purpose[:160],
+            "purpose": (current_purpose_prefix.get() + purpose)[:160],
             "provider": provider[:32],
             "model": (model or "")[:120] or None,
             "status": status[:12],
