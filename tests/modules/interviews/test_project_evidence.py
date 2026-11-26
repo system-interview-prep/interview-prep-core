@@ -13,7 +13,7 @@ Covers:
 
 import pytest
 
-from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 from src.modules.interviews.agents.planner.evidence import (
     StructuredProjectEvidence,
     extract_project_evidences,

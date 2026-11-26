@@ -52,7 +52,7 @@ def _record_turn_snapshot(request: pytest.FixtureRequest, monkeypatch: pytest.Mo
     dual = os.getenv("DUAL_RUN_TURNS") == "1"
     if not path and not dual:
         return
-    from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+    from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 
     original = InterviewCoreEngine.handle_turn
 

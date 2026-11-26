@@ -9,7 +9,7 @@ import pytest
 from src.modules.interviews.agents.interviewer import thinker as decide_module
 from src.modules.interviews.agents.interviewer import graph as turn_graph
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput, TurnAction
-from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 from tests.modules.interviews.agent.conftest import FakeToolCaller, tool_call
 from tests.modules.interviews.agent.test_turn_graph import ScriptedLLM
 

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput, InterviewStage, TurnAction
-from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 
 
 class InsufficientAnswerLLM:

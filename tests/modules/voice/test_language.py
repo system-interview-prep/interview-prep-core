@@ -7,9 +7,7 @@ from src.modules.interviews.realtime.speech.language import (
     normalize_transcript_for_locale,
     speakable_text,
 )
-from src.modules.interviews.core.conversation.turn_engine import (
-    InterviewCoreEngine,
-)
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 
 
 class _EnglishDriftLLM:

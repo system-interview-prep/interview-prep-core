@@ -9,9 +9,9 @@ import pytest
 from src.modules.interviews.agents.interviewer import thinker as decide_module
 from src.modules.interviews.agents.interviewer.thinker import decide_by_model, is_violation
 from src.modules.interviews.agents.interviewer.tools import SEARCH_MEMORY, TOOLS, tools_for
-from src.modules.interviews.core.conversation.prompt.decide import decide_input, decide_prompt
+from src.modules.interviews.agents.interviewer.prompts.decide import decide_input, decide_prompt
 from src.modules.interviews.core.conversation.turn_context import ACTIONS
-from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 from src.modules.interviews.core.conversation.turn_rules import PROHIBITED_LEAK_PATTERNS
 from src.modules.interviews.core.contracts.interview import InterviewStage
 from tests.modules.interviews.agent.conftest import FakeToolCaller, tool_call

@@ -31,7 +31,7 @@ from src.modules.interviews.core.guardrails.output import (
     qna_rejection_reason,
     validate_probe_text,
 )
-from src.modules.interviews.core.conversation.prompt.decide import decide_input, decide_prompt
+from src.modules.interviews.agents.interviewer.prompts.decide import decide_input, decide_prompt
 from src.modules.interviews.core.conversation.turn_context import Decision, TurnContext
 
 PURPOSE = "interviews.agent.decide"

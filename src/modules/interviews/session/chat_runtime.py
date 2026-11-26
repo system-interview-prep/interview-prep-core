@@ -50,8 +50,8 @@ from src.modules.interviews.agents.interviewer.context import (  # noqa: F401
 )
 from src.modules.interviews.memory import candidate_memory
 from src.modules.interviews.agents.interviewer.graph import run_turn
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 from src.modules.interviews.core.conversation.turn_engine import (
-    InterviewCoreEngine,
     pacing_seconds,
     validate_probe_text,
 )

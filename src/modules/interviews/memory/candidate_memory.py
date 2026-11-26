@@ -41,7 +41,7 @@ from src.core.trace_logging import trace_event
 from src.infrastructure import langfuse
 from src.modules.interviews.graph.checkpoints import get_interview_store
 from src.modules.interviews.progress.progress_repository import load_progress
-from src.modules.interviews.core.conversation.prompt.candidate_memory import (
+from src.modules.interviews.memory.prompts import (
     MAX_ITEMS,
     extract_instructions,
 )

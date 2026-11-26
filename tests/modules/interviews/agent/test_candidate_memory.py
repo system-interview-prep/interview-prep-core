@@ -12,8 +12,9 @@ from langgraph.store.memory import InMemoryStore
 from src.modules.interviews.agents.interviewer import graph as turn_graph
 from src.modules.interviews.memory import candidate_memory as cm
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput, TurnAction
-from src.modules.interviews.core.conversation.prompt.candidate_memory import MAX_BLOCK_CHARS, MAX_ITEMS, block
-from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.agents.interviewer.prompts.candidate_memory import MAX_BLOCK_CHARS, block
+from src.modules.interviews.memory.prompts import MAX_ITEMS
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 from src.modules.interviews.core.guardrails.output import memory_rejection_reason
 from tests.modules.interviews.agent.conftest import FakeToolCaller, doc_id, scripted_chat_model, tool_call
 from tests.modules.interviews.agent.test_turn_graph import ScriptedLLM

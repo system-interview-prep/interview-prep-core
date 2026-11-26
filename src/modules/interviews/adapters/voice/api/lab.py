@@ -27,7 +27,7 @@ from src.modules.interviews.session.voice_facade import (
     start_voice_interview,
     submit_voice_answer,
 )
-from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 from src.modules.interviews.core.contracts.interview import InterviewStage
 from src.modules.interviews.core.guardrails.common import canary_scope
 

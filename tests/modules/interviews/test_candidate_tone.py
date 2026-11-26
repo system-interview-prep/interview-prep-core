@@ -1,9 +1,9 @@
 import pytest
 
-from src.modules.interviews.core.conversation.prompt.candidate_tone import (
+from src.modules.interviews.agents.interviewer.prompts.candidate_tone import (
     candidate_tone_instruction,
 )
-from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 
 
 @pytest.mark.parametrize("tone", ["supportive", "strict"])

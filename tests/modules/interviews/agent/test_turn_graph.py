@@ -17,7 +17,7 @@ from src.modules.interviews.core.conversation.turn_context import (
     ACTIONS,
     Decision,
 )
-from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 
 
 class ScriptedLLM:

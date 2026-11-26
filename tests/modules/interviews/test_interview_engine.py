@@ -11,8 +11,8 @@ from src.modules.interviews.core.contracts.interview import (
     SessionExitReason,
     TurnAction,
 )
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 from src.modules.interviews.core.conversation.turn_engine import (
-    InterviewCoreEngine,
     classify_candidate_question,
     is_abort_request,
     is_repeat_request,

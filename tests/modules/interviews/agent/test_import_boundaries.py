@@ -38,17 +38,28 @@ RULES = {
         "src.modules.interviews.admin",
         "src.modules.interviews.session",
     ),
+    # V2 correction brief §2: Core is the framework-independent domain layer.
+    # It owns the deterministic policies, contracts, guardrails, dialogue rules
+    # and state transitions, and must reach no AI provider, no LangGraph, no
+    # LiveKit, no database and no LangMem. Inference lives behind the
+    # `TurnInference` port that `agents/interviewer/` implements.
     "core": (
-        "langgraph", "langmem", "sqlalchemy",
+        "langgraph", "langmem", "sqlalchemy", "psycopg",
         "livekit",
+        "openai",
+        "src.modules.ai",
         "src.modules.interviews.agents",
         "src.modules.interviews.graph",
         "src.modules.interviews.session",
+        "src.modules.interviews.realtime",
+        "src.modules.interviews.memory",
         "src.modules.interviews.adapters",
+        "src.modules.interviews.admin",
+        "src.modules.interviews.api",
     ),
-    "core/conversation/prompt": (
+    "agents/interviewer/prompts": (
         "src.modules.interviews.core.conversation.turn_engine",
-        "src.modules.interviews.core.conversation.response_generation",
+        "src.modules.interviews.agents.interviewer.response_generation",
         "src.modules.interviews.core.conversation.turn_rules",
         "src.modules.ai",
     ),

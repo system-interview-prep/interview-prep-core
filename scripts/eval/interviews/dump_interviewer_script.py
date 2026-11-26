@@ -33,7 +33,8 @@ from src.modules.interviews.realtime import endpointing as answer_window
 from src.modules.interviews.core.conversation import turn_engine as engine_module
 from src.modules.interviews.core.dialogue import phrases as script
 from src.modules.interviews.core.dialogue import policy as voice
-from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine, candidate_question_response
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
+from src.modules.interviews.core.conversation.turn_engine import candidate_question_response
 from src.modules.interviews.core.contracts.interview import InterviewStage
 from src.modules.interviews.core.dialogue.opening import build_opening, warmup_question
 from src.modules.interviews.agents.interviewer.spoken_questions import _prompt as _rewrite_prompt

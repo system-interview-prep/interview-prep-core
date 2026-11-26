@@ -28,9 +28,9 @@ import time
 from pathlib import Path
 
 from src.modules.ai.facade import generate_text
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 from src.modules.interviews.core.conversation.turn_engine import (
     PROHIBITED_LEAK_PATTERNS,
-    InterviewCoreEngine,
     _loads_llm_json,
 )
 from src.modules.interviews.core.contracts.interview import InterviewStage

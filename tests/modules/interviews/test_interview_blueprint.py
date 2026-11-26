@@ -10,7 +10,7 @@ from src.modules.interviews.core.session_policy.blueprint import (
     blueprint_from_payload,
     default_blueprint,
 )
-from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 from src.modules.interviews.core.conversation.turn_rules import MAX_QNA_QUESTIONS, QNA_BUDGET_SECONDS, TIME_THRESHOLDS
 from src.modules.interviews.core.contracts.interview import InterviewStage
 from src.modules.interviews.agents.planner.planner import _question_budget

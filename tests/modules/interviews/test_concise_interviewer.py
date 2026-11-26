@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 from src.modules.interviews.core.contracts.interview import InterviewStage
 from src.modules.interviews.agents.evaluator.grading import InterviewEvaluationEngine
 from src.modules.interviews.agents.evaluator.evaluation_types import TurnEvaluationInput

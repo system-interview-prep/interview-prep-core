@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from src.modules.interviews.session.chat_runtime import build_session_state_from_db
-from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput, InterviewStage, TurnAction
 from src.modules.interviews.core.guardrails.output import is_evaluative
 from src.modules.interviews.core.dialogue.policy import pick_variant

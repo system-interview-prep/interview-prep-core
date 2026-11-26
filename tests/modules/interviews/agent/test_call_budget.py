@@ -20,7 +20,7 @@ import pytest
 
 from src.modules.interviews.agents.interviewer import graph as interview_agent
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput, InterviewStage
-from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 
 
 class CountingLLM:

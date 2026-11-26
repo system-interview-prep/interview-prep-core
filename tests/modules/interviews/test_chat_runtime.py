@@ -14,7 +14,7 @@ from src.modules.interviews.session.chat_runtime import (
     process_candidate_message,
     start_chat_session,
 )
-from src.modules.interviews.core.conversation.turn_engine import InterviewCoreEngine
+from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 from src.modules.interviews.core.contracts.interview import (
     InterviewStage,
     InterviewerTurnOutput,
