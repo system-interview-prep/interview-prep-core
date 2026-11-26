@@ -427,6 +427,7 @@ async def extract_after_session(
     store: Any = None,
     model: Any = None,
     is_vi: bool = True,
+    raise_errors: bool = False,
 ) -> Dict[str, int]:
     """After grading: the ``langmem`` memory manager runs once on the grader's conclusions.
 
@@ -437,7 +438,9 @@ async def extract_after_session(
 
     It inserts, patches and removes items in the user's namespace; at most
     MAX_OPS changes survive. Every model call is an ``ai_call_logs`` row; the
-    whole run is one Langfuse generation. Never raises.
+    whole run is one Langfuse generation. Never raises -- unless
+    ``raise_errors`` is set, which the background job (extraction_job.py) uses
+    so a failed run is retried instead of swallowed.
     """
     store = _store_or_none(store)
     if store is None:
@@ -476,6 +479,8 @@ async def extract_after_session(
     except Exception as exc:  # noqa: BLE001 - grading already succeeded; memory must not undo that
         logger.warning("candidate memory extraction failed: %s", exc)
         trace_event("interviewer", "candidate_memory_extract_error", session_id=str(session_id), error_type=type(exc).__name__)
+        if raise_errors:
+            raise
         return {}
 
 

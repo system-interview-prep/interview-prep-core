@@ -9,7 +9,7 @@ from src.modules.interviews.agents.planner import PlannerAgent
 from src.modules.interviews.graph.command_runner import InterviewCommandRunner
 from src.modules.interviews.graph.ports import InterviewOperations
 from src.modules.interviews.graph.state import InterviewCommand
-from src.modules.interviews.memory import candidate_memory
+from src.modules.interviews.memory import candidate_memory, extraction_job
 from src.modules.interviews.session.chat_runtime import (
     complete_chat_session,
     process_candidate_message,
@@ -117,9 +117,13 @@ def database_operations(
         # Question Bank proposals are generated only after the session is closed
         # and scored; the worker re-checks both conditions and is idempotent.
         enqueue_session_question_suggestions(session_id)
-        if not existing:
-            if candidate_memory.enabled() == "readwrite":
-                # After grading, from the grader's conclusions; never undoes a finished grade.
+        if not existing and candidate_memory.enabled() == "readwrite":
+            # V2 spec §9: the report is persisted and committed above; extraction
+            # is a durable, idempotent background job on the existing Celery/
+            # RabbitMQ worker (memory/extraction_job.py). If the broker refuses
+            # the dispatch, keep the pre-§9 inline run so the memory is not
+            # silently lost. Neither path can undo a finished grade.
+            if not extraction_job.enqueue_memory_extraction(session_id):
                 await candidate_memory.extract_after_session(db, session_id, evaluation=result)
         return result
 

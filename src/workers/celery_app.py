@@ -13,6 +13,7 @@ celery_app = Celery(
         "src.workers.tasks.cv",
         "src.workers.tasks.job_description",
         "src.workers.tasks.question_bank",
+        "src.workers.tasks.interview_memory",
     ],
 )
 celery_app.conf.update(
@@ -26,6 +27,9 @@ celery_app.conf.update(
         "job_description.*": {"queue": settings.rabbitmq_jd_queue},
         # Question pre-generation follows JD publishing; reuse its queue.
         "question_bank.*": {"queue": settings.rabbitmq_jd_queue},
+        # interview.* (post-session memory extraction) stays on the default
+        # "celery" queue, which the worker already consumes: no new queue, no
+        # topology change (V2 spec §9).
     },
 )
 
