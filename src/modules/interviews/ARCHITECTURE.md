@@ -161,6 +161,57 @@ requires. These are facts about this HEAD, not targets.
 | Luna / Talker | Not a separate service: an OpenAI model id (`gpt-5.6-luna`). `src/modules/ai/facade.py` now takes a per-call `model=`, so the Talker uses the existing provider (spec §1.1). Settings: `interview_talker_model` (empty = use `llm_model`) and `interview_talker_enabled` (**false**). |
 | Broker for background work | RabbitMQ + Celery already configured; no new infrastructure is needed for §9. |
 
+## V2 migration status (2026-11-26)
+
+Three columns, as the V2 correction brief §10 asks: what is built, what the
+target is, and what is left. **The refactoring is not finished.** Nothing below
+is marked done without a test or a measurement behind it.
+
+### Built and verified
+
+| Area | State | Evidence |
+|---|---|---|
+| Core boundary (brief §2) | Core is framework-independent: no AI provider, LangGraph, LiveKit, database or LangMem. Inference sits behind `TurnInference`; `agents/interviewer/engine.py` composes the halves. | `test_import_boundaries.py` |
+| Unified Thinker (§6.2) | One inference carries evaluation, decision and the spoken line for `acknowledge_and_probe`, `clarify_question`, `redirect_off_topic`, `answer_candidate_question`. Each text passes that action's own guard; a rejected one falls back. | `test_call_budget.py`, measured below |
+| Adaptive endpointing (§8) | Wait follows transcript completeness, stability and ASR confidence across the spec's three bands. | `test_adaptive_endpointing.py` |
+| Anticipation non-blocking (§7) | The 1 s wait on the critical path is gone. `take()` is synchronous; previews are validated against seven version fields. | `test_anticipation.py` |
+| Talker model reachable (§7) | `gpt-5.6-luna` resolves through the existing OpenAI provider. | live probe, 2026-11-26 |
+
+### Measured, not assumed
+
+n=20 turns per mode, real provider, gpt-4o-mini, whole LIVE turns:
+
+| | calls/turn | p50 | p95 | carried own line |
+|---|---|---|---|---|
+| baseline | 2.00 | 3353.9 ms | 5547.9 ms | — |
+| unified | 1.25 | 3352.4 ms | 4285.1 ms | 15/20 |
+
+**p50 is unchanged.** The win is call count (−37%) and the tail (p95 −23%): the
+unified call is itself slower because it writes the line as well as choosing
+the action, which cancels the saved round trip at the median. TTFA and TTMR are
+**not** measured — they need a LiveKit room and a speaking candidate.
+`scripts/eval/interviews/unified_thinker_benchmark.py` reproduces the above.
+
+### Remaining migration work
+
+| Brief | Outstanding |
+|---|---|
+| §5 Anticipation | The engine exists and is non-blocking, but the LiveKit runtime still owns its own preview-token fields instead of delegating; speculation does not yet reuse the Unified Thinker, and memory is not prefetched during speech. |
+| §6 Execution paths | Fast / Unified / Hybrid are **not** implemented as explicit routed paths. RULE/LIVE/SHADOW remain rollout modes and must not be confused with them. |
+| §7 Hybrid Parallel | `talker.py`, `arbiter.py` and adaptive routing do not exist. Model reachability is verified; nothing is wired. `interview_talker_enabled` is false. |
+| §8 Session/graph | `process_candidate_message` is still one 1419-line function. Context extraction done; the PHASE 1/2/3 split is not. |
+| §9 Evaluator/memory | Report is persisted before extraction, but post-session memory extraction is **not** yet a durable Celery/RabbitMQ job. |
+| §3 Quality parity | Call counts and latency measured; response-quality parity still needs a shadow run. The record and `agent_shadow_report` expose `carried_text_rate` / `rejected_by` to make it checkable. |
+| Spec §10 tree | `core/` is retained by brief §2, which deliberately diverges from spec §11. `contracts.py`, `events.py`, `config.py` and the `session/` and `memory/` file splits are not done. |
+
+### Feature flags (all default off)
+
+| Env | Effect |
+|---|---|
+| `INTERVIEW_UNIFIED_THINKER` | One inference per turn (§6.2). |
+| `VOICE_ADAPTIVE_ENDPOINTING` | Transcript-aware commit wait (§8), with `VOICE_COMMIT_COMPLETE` / `_UNSURE` / `_HESITANT`. |
+| `interview_talker_enabled` | Reserved for Hybrid; nothing reads it yet. |
+
 ## Change rule
 
 Change what the interviewer asks, how it handles an answer, or how it scores in Core so all modes behave consistently. Change an adapter only for transport, transcription, audio/video presentation, or channel-specific recovery. Remove a file only after checking imports, tests, scripts, and deployment entry points.
