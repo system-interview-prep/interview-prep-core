@@ -181,18 +181,61 @@ is marked done without a test or a measurement behind it.
 
 ### Measured, not assumed
 
-n=20 turns per mode, real provider, gpt-4o-mini, whole LIVE turns:
+Two live runs, whole LIVE turns through the real turn graph, Thinker on
+gpt-4o-mini, Talker on gpt-5.6-luna. Every provider call is counted at
+`record_ai_call`, so speculation, the Talker and fallback speech are included.
+
+**Run 1** — `unified_thinker_benchmark.py`, n=20/mode (2026-11-26):
 
 | | calls/turn | p50 | p95 | carried own line |
 |---|---|---|---|---|
 | baseline | 2.00 | 3353.9 ms | 5547.9 ms | — |
 | unified | 1.25 | 3352.4 ms | 4285.1 ms | 15/20 |
 
-**p50 is unchanged.** The win is call count (−37%) and the tail (p95 −23%): the
-unified call is itself slower because it writes the line as well as choosing
-the action, which cancels the saved round trip at the median. TTFA and TTMR are
-**not** measured — they need a LiveKit room and a speaking candidate.
-`scripts/eval/interviews/unified_thinker_benchmark.py` reproduces the above.
+**Run 2** — `execution_paths_benchmark.py --turns 10`, four configurations:
+
+| config | calls/turn (incl. spec) | spec calls | p50 | p95 | spec p50 | carried | guard-rejected | early ack avail. p50 | tokens in / out |
+|---|---|---|---|---|---|---|---|---|---|
+| baseline | 2.0 | 0 | 4303.8 ms | 8570.7 ms | — | 0 | 0 | — | 25 231 / 1 399 |
+| unified | 1.2 | 0 | 3475.2 ms | 4678.0 ms | — | 8/10 | 2 | — | 25 639 / 1 602 |
+| anticipation | 1.1 | 10 | **5.4 ms** | 1787.9 ms | ~3.4 s | 9/10 | 1 | — | see caveat |
+| hybrid | **2.2** | 0 | 3337.2 ms | 4843.9 ms | — | 7/10 | 3 | 1989.1 ms (9/10) | 32 754 / 2 384 |
+
+How to read it, honestly:
+
+- **Unified.** The two runs disagree on the median (flat in run 1, −19% in run
+  2; provider latency swung a lot — baseline p95 was 5.5 s then 8.6 s) and
+  agree on what matters structurally: call count −37…40% and tail −23…45%. Do
+  not quote a p50 figure as established.
+- **Anticipation's 5.4 ms is a ceiling, not an expectation.** The harness
+  speculates on the exact final text, so its hit rate is 100% by construction,
+  and the speculation itself took ~3.4 s. In a room that call overlaps the
+  candidate's speech; if they stop talking before it lands, the turn falls back
+  to Unified. Real hit rate is unknown until measured with real partial
+  transcripts. Run 2's token column for this row excluded the speculative
+  calls; the harness has since been fixed to charge them.
+- **Hybrid, as configured, is net-negative.** It made *more* calls than
+  baseline (2.2 vs 2.0), used +30% input / +70% output tokens, and did not
+  move TTMR (p50 3337 ≈ unified 3475). Luna's prediction was **never reused**:
+  with Unified on the Thinker always carries its own line, so the Arbiter
+  correctly kept it (6× `thinker_has_text`, 3× `target_mismatch`, 1×
+  cancelled at fan-in). The only thing Hybrid bought is a guarded acknowledgment
+  available ~2.0 s in on 9/10 turns — and the correction brief is explicit that
+  early acknowledgment alone is not a meaningful-response improvement. **Hybrid
+  stays off.** The configuration in which Luna's line could replace a speech
+  call (Hybrid with Unified off, `hybrid_plain`) is in the harness and not yet
+  run.
+- **Guard rejections: 20–30%, all `hints_answer`.** The criteria-terms prompt
+  steer removed the `evaluative` rejections but not these. The rejected text is
+  now traced so the next run can show whether the guard is refusing a real
+  leak or a redirect that merely restates the question's own topic. The guard
+  is untouched.
+- **Not measured:** TTFA and TTMR (need a LiveKit room and a speaking
+  candidate); response-quality parity (shadow report). A Luna call cancelled
+  at fan-in may still be billed; the harness cannot see that.
+
+Stub runs (`--stub`, zero spend) confirm every configuration routes as
+designed; the live numbers above are the only measurements.
 
 ### Remaining migration work
 

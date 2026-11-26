@@ -86,12 +86,18 @@ def _checked_unified_text(
         reason = "unknown_argument"
 
     if reason:
+        # The text is logged (truncated) so a rejection can be judged: the
+        # measured run showed every remaining rejection is hints_answer, and
+        # without the line nobody can tell a real leak from a redirect that
+        # merely restates the question's own topic. Precedent: probe_rejected
+        # already logs 200 chars of the probe.
         trace_event(
             "interviewer",
             "unified_text_rejected",
             action=action,
             argument=argument,
             reason=reason,
+            text=text_value[:160],
             session_id=str(ctx.session_id),
         )
         return None

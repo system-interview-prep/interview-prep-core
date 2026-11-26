@@ -17,6 +17,12 @@ Configurations:
     anticipation  unified, with a speculative preview run on the same text
                   first (counted) and then redeemed on the Fast path (0 new)
     hybrid        unified + Talker concurrently; early ack captured
+    hybrid_plain  Talker concurrently with the flag OFF: the Thinker carries no
+                  line, so Luna's prediction can substitute for the speech
+                  call when the Arbiter proves it equivalent. The measured
+                  'hybrid' run showed Luna is never reused with Unified on
+                  (thinker_has_text), so this is the configuration in which
+                  the prediction half of §6.3 can earn its cost at all
 
 What is NOT measured, and why: TTFA and TTMR (§13) are speech-end-to-audio
 numbers that need a LiveKit room, VieNeu and a speaking candidate. This
@@ -42,7 +48,7 @@ from typing import Any
 
 from scripts.eval.interviews.unified_thinker_benchmark import FIXTURES, _percentile, _session_state
 
-CONFIGS = ("baseline", "unified", "anticipation", "hybrid")
+CONFIGS = ("baseline", "unified", "anticipation", "hybrid", "hybrid_plain")
 
 
 @dataclass
@@ -64,6 +70,8 @@ class Turn:
     wall_ms: float
     calls: list[Call] = field(default_factory=list)
     speculative_calls: int = 0
+    speculative_ms: float = 0.0
+    speculative_tokens: tuple[int, int] = (0, 0)
     carried_text: bool = False
     rejected: list[str] = field(default_factory=list)
     talker_outcome: str | None = None
@@ -76,7 +84,11 @@ class Turn:
 
     @property
     def tokens(self) -> tuple[int, int]:
-        return sum(c.input_tokens for c in self.calls), sum(c.output_tokens for c in self.calls)
+        """On-path plus speculative tokens: what the turn cost in total."""
+        return (
+            sum(c.input_tokens for c in self.calls) + self.speculative_tokens[0],
+            sum(c.output_tokens for c in self.calls) + self.speculative_tokens[1],
+        )
 
 
 class _CallSink:
@@ -108,9 +120,9 @@ def _set_flags(config: str) -> dict[str, str | None]:
         "talker_enabled": settings.interview_talker_enabled,
         "talker_model": settings.interview_talker_model,
     }
-    os.environ["INTERVIEW_UNIFIED_THINKER"] = "0" if config == "baseline" else "1"
-    object.__setattr__(settings, "interview_talker_enabled", config == "hybrid")
-    if config == "hybrid" and not settings.interview_talker_model:
+    os.environ["INTERVIEW_UNIFIED_THINKER"] = "0" if config in ("baseline", "hybrid_plain") else "1"
+    object.__setattr__(settings, "interview_talker_enabled", config in ("hybrid", "hybrid_plain"))
+    if config in ("hybrid", "hybrid_plain") and not settings.interview_talker_model:
         object.__setattr__(settings, "interview_talker_model", "gpt-5.6-luna")
     return previous
 
@@ -127,12 +139,16 @@ def _restore(previous: dict[str, Any]) -> None:
     object.__setattr__(settings, "interview_talker_model", previous["talker_model"])
 
 
-async def _speculate(fixture: dict[str, Any], sink: _CallSink) -> tuple[dict | None, int]:
+async def _speculate(fixture: dict[str, Any], sink: _CallSink) -> tuple[dict | None, int, float, tuple[int, int]]:
     """Run the Unified decider as a preview would, on the exact final text.
 
-    Returns the decision record a validated preview would carry, and how many
-    calls it cost — those are charged to the turn as speculative calls so the
-    'total provider calls including speculation' number is honest.
+    Returns the decision record a validated preview would carry, how many calls
+    it cost, how long it took, and its tokens. All three are charged to the turn:
+    the on-path figure for Anticipation is only meaningful next to the
+    speculation it depends on, and in a real room that speculation must finish
+    before the candidate stops speaking or the turn falls back to Unified. The
+    harness also speculates on the exact final text, so its hit rate is 100% by
+    construction -- a ceiling, never an expectation.
     """
     from src.modules.interviews.agents.interviewer.menu import build_menu
     from src.modules.interviews.agents.interviewer.pacing import pacing_block
@@ -141,6 +157,17 @@ async def _speculate(fixture: dict[str, Any], sink: _CallSink) -> tuple[dict | N
     from src.modules.interviews.core.conversation.turn_context import build_turn_context
 
     before = len(sink.calls)
+    started = time.perf_counter()
+
+    def charged(record: dict | None) -> tuple[dict | None, int, float, tuple[int, int]]:
+        spent = sink.calls[before:]
+        return (
+            record,
+            len(spent),
+            round((time.perf_counter() - started) * 1000, 1),
+            (sum(c.input_tokens for c in spent), sum(c.output_tokens for c in spent)),
+        )
+
     state = _session_state(fixture, InterviewStage.DEEP_DIVE)
     ctx = build_turn_context(
         CandidateTurnInput(session_id="bench", turn_index=3, text_content=fixture["answer"], modality="VOICE"),
@@ -150,10 +177,10 @@ async def _speculate(fixture: dict[str, Any], sink: _CallSink) -> tuple[dict | N
     try:
         decision = await decide_by_model(ctx, allowed_actions=menu.allowed, pacing=pacing_block(ctx), unified=True)
     except Exception:  # noqa: BLE001 - a failed speculation is just "no preview"
-        return None, len(sink.calls) - before
+        return charged(None)
     if is_violation(decision) is None and decision.action in menu.allowed:
-        return decision.as_record(), len(sink.calls) - before
-    return None, len(sink.calls) - before
+        return charged(decision.as_record())
+    return charged(None)
 
 
 async def _run_turn(config: str, fixture: dict[str, Any], sink: _CallSink) -> Turn:
@@ -163,9 +190,9 @@ async def _run_turn(config: str, fixture: dict[str, Any], sink: _CallSink) -> Tu
 
     previous = _set_flags(config)
     try:
-        preview, speculative = (None, 0)
+        preview, speculative, speculative_ms, speculative_tokens = (None, 0, 0.0, (0, 0))
         if config == "anticipation":
-            preview, speculative = await _speculate(fixture, sink)
+            preview, speculative, speculative_ms, speculative_tokens = await _speculate(fixture, sink)
 
         state = _session_state(fixture, InterviewStage.DEEP_DIVE)
         turn_input = CandidateTurnInput(
@@ -202,6 +229,8 @@ async def _run_turn(config: str, fixture: dict[str, Any], sink: _CallSink) -> Tu
             wall_ms=round(wall, 1),
             calls=sink.calls[first_call:],
             speculative_calls=speculative,
+            speculative_ms=speculative_ms,
+            speculative_tokens=speculative_tokens,
             carried_text=bool(unified.get("carried_text")),
             rejected=list(unified.get("rejected") or []),
             talker_outcome=arbiter.get("outcome"),
@@ -233,6 +262,10 @@ def summarize(turns: list[Turn]) -> dict[str, Any]:
             "calls_per_turn_total": round(sum(t.total_calls for t in ok) / len(ok), 2) if ok else None,
             "calls_per_turn_on_path": round(sum(len(t.calls) for t in ok) / len(ok), 2) if ok else None,
             "speculative_calls": sum(t.speculative_calls for t in ok),
+            # Wall time of the speculation itself. In a room it overlaps the
+            # candidate's speech; here it ran before the turn and is reported
+            # beside the on-path number so neither can be read alone.
+            "speculation_p50_ms": _percentile([t.speculative_ms for t in ok if t.speculative_calls], 50),
             "calls_by_model": by_model,
             "p50_ms": _percentile(walls, 50),
             "p95_ms": _percentile(walls, 95),
@@ -250,7 +283,7 @@ def summarize(turns: list[Turn]) -> dict[str, Any]:
 
 
 def render(report: dict[str, Any], turns: list[Turn]) -> str:
-    head = f"{'config':<13}{'turns':<7}{'calls/turn':<12}{'(spec)':<8}{'p50 ms':<10}{'p95 ms':<10}{'carried':<9}{'rejected':<10}{'early p50':<11}tokens in/out"
+    head = f"{'config':<13}{'turns':<7}{'calls/turn':<12}{'(spec)':<8}{'p50 ms':<10}{'p95 ms':<10}{'spec p50':<10}{'carried':<9}{'rejected':<10}{'early p50':<11}tokens in/out"
     lines = [head, "-" * len(head)]
     for config in CONFIGS:
         r = report.get(config)
@@ -258,12 +291,14 @@ def render(report: dict[str, Any], turns: list[Turn]) -> str:
             continue
         lines.append(
             f"{config:<13}{r['turns']:<7}{str(r['calls_per_turn_total']):<12}{r['speculative_calls']:<8}"
-            f"{str(r['p50_ms']):<10}{str(r['p95_ms']):<10}{r['carried_text']:<9}{r['guard_rejected']:<10}"
+            f"{str(r['p50_ms']):<10}{str(r['p95_ms']):<10}{str(r['speculation_p50_ms']):<10}{r['carried_text']:<9}{r['guard_rejected']:<10}"
             f"{str(r['early_ack_available_p50_ms']):<11}{r['tokens_in']}/{r['tokens_out']}"
         )
     lines.append("")
     lines.append("not measured here: TTFA / TTMR (need a LiveKit room), response-quality parity (shadow report).")
     lines.append("'early p50' = ms from turn start until the Talker's guarded line was AVAILABLE; it is not TTFA.")
+    lines.append("'spec p50' = wall time of the speculative call itself (anticipation only). Read p50 and spec p50 together:")
+    lines.append("  the on-path number is what remains AFTER speculation has landed, and the harness forces a 100% hit rate.")
     lines.append("")
     for t in turns:
         extra = []
@@ -362,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
         if not (get_settings().openai_api_key or os.getenv("OPENAI_API_KEY")):
             print("No OpenAI key configured: nothing to measure (use --stub to check plumbing).", file=sys.stderr)
             return 2
-        worst = args.turns * sum({"baseline": 2, "unified": 2, "anticipation": 3, "hybrid": 3}[c] for c in configs)
+        worst = args.turns * sum({"baseline": 2, "unified": 2, "anticipation": 3, "hybrid": 3, "hybrid_plain": 3}[c] for c in configs)
         print(f"running {args.turns} turns x {configs} — up to ~{worst} paid provider calls\n")
     return asyncio.run(_main_async(args.turns, configs, args.stub))
 
