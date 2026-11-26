@@ -118,6 +118,7 @@ _PRE_SUBMIT_EVENTS = frozenset({
     "voice_stt_diagnostic", "voice_answer_pause_nudge", "voice_prefetch",
     # Listening-phase backchannels happen before the submit they belong to.
     "voice_backchannel", "voice_backchannel_spoken", "voice_backchannel_discarded", "voice_backchannel_overlap",
+    "voice_backchannel_prepared", "voice_backchannel_speech_end",
 })
 
 
@@ -198,6 +199,22 @@ def measure_turn(turn: dict[str, Any]) -> dict[str, Any]:
     prefetch = _first(turn, "voice_prefetch")
     inferences = [_payload(e) for e in turn["events"] if e.get("event") == "voice_backchannel"]
     spoken_units = [_payload(e) for e in turn["events"] if e.get("event") == "voice_backchannel_spoken"]
+    prepared = [_payload(e) for e in turn["events"] if e.get("event") == "voice_backchannel_prepared"]
+    speech_ends = [_payload(e) for e in turn["events"] if e.get("event") == "voice_backchannel_speech_end"]
+    discards = [_payload(e) for e in turn["events"] if e.get("event") == "voice_backchannel_discarded"]
+    # The candidate's last voiced PCM (Qwen's clock) → VAD end of speech
+    # (the agent's), per answer: how late the playback trigger itself is.
+    vad_stop = None
+    if submitted_at is not None and submitted.get("since_speech_end_ms") is not None:
+        vad_stop = submitted_at.timestamp() - float(submitted["since_speech_end_ms"]) / 1000
+    pcm_end_to_vad = None
+    if finishes and vad_stop is not None:
+        fin = finishes[-1]
+        fin_at = _when(fin)
+        delay = _payload(fin).get("pcm_speech_end_to_final_ms")
+        if fin_at is not None and delay is not None:
+            pcm_end_to_vad = round((vad_stop - (fin_at.timestamp() - float(delay) / 1000)) * 1000)
+    backchannel_audio = _first(turn, "voice_reply_started", kind="backchannel")
     tts_by_kind: dict[str, list[float]] = {}
     for event in turn["events"]:
         if event.get("event") == "voice_tts_metrics":
@@ -238,6 +255,16 @@ def measure_turn(turn: dict[str, Any]) -> dict[str, Any]:
         "backchannel_discarded": _count(turn, "voice_backchannel_discarded"),
         "backchannel_overlaps": _count(turn, "voice_backchannel_overlap"),
         "backchannel_processing_spoken": sum(1 for p in spoken_units if p.get("phase") == "processing"),
+        # Immediate speech-end backchanneling (brief 2026-11-26).
+        "backchannel_prepared": len(prepared),
+        "backchannel_prepared_audio_ready": sum(1 for p in prepared if p.get("audio_ready")),
+        "backchannel_prepare_ms": [float(p["prepare_ms"]) for p in prepared if p.get("prepare_ms") is not None],
+        "backchannel_spoken_prepared": sum(1 for p in spoken_units if p.get("prepared_audio")),
+        "backchannel_wasted": sum(1 for p in discards if p.get("prepared_audio")),
+        "backchannel_speech_ends": len(speech_ends),
+        "backchannel_speech_ends_with_audio": sum(1 for p in speech_ends if p.get("prepared_available")),
+        "backchannel_audio_since_vad_ms": _payload(backchannel_audio).get("since_speech_end_ms") if backchannel_audio else None,
+        "pcm_end_to_vad_ms": pcm_end_to_vad,
         "prefetch_ms": _payload(prefetch).get("ms") if prefetch else None,
         "prefetch_ok": _payload(prefetch).get("ok") if prefetch else None,
         "words": submitted.get("words"),
@@ -386,8 +413,26 @@ def _backchannel_summary(measured: list[dict[str, Any]], calls: list[dict[str, A
         kinds.update(t["backchannel_kinds"])
     talker_calls = [c for c in calls if "talker" in str(c.get("purpose") or "")]
     cancelled_calls = [c for c in talker_calls if str(c.get("error_type") or "") == "cancelled"]
+    prepared = sum(t["backchannel_prepared"] for t in measured)
+    speech_ends = sum(t["backchannel_speech_ends"] for t in measured)
+    spoken_prepared = sum(t["backchannel_spoken_prepared"] for t in measured)
+    wasted = sum(t["backchannel_wasted"] for t in measured)
     return {
         "talker_calls_cancelled": len(cancelled_calls),
+        # Coverage first (never "immediate" on the turns that had audio only):
+        "prepared": prepared,
+        "prepared_audio_ready": sum(t["backchannel_prepared_audio_ready"] for t in measured),
+        "prepare_ms": summary([v for t in measured for v in t["backchannel_prepare_ms"]]),
+        "speech_ends": speech_ends,
+        "speech_ends_with_prepared_audio": sum(t["backchannel_speech_ends_with_audio"] for t in measured),
+        "availability_at_speech_end": round(sum(t["backchannel_speech_ends_with_audio"] for t in measured) / speech_ends, 3) if speech_ends else None,
+        "spoken_prepared": spoken_prepared,
+        "reuse_rate": round(spoken_prepared / prepared, 3) if prepared else None,
+        "wasted": wasted,
+        "wasted_rate": round(wasted / prepared, 3) if prepared else None,
+        "turns_with_audible_backchannel": sum(1 for t in measured if t["backchannel_audio_since_vad_ms"] is not None),
+        "audible_since_vad_ms": summary([t["backchannel_audio_since_vad_ms"] for t in measured]),
+        "pcm_end_to_vad_ms": summary([t["pcm_end_to_vad_ms"] for t in measured]),
         "inferences": sum(t["backchannel_inferences"] for t in measured),
         "silent": sum(t["backchannel_silent"] for t in measured),
         "errors": sum(t["backchannel_errors"] for t in measured),
@@ -463,6 +508,20 @@ def render(report: dict[str, Any]) -> str:
         )
         lines.append(
             f"{'Talker generation (to last unit)':38} {bc['total_ms']['n']:>3} {_fmt(bc['total_ms']['p50']):>7} {_fmt(bc['total_ms']['p95']):>7} {_fmt(bc['total_ms']['p99']):>7}"
+        )
+        lines.append(
+            f"prepared audio: {bc['prepared']} prepared ({bc['prepared_audio_ready']} with audio, synth p50 {_fmt(bc['prepare_ms']['p50'])} ms)  "
+            f"available at {bc['speech_ends_with_prepared_audio']}/{bc['speech_ends']} speech ends "
+            f"({_fmt(bc['availability_at_speech_end'] * 100) + '%' if bc['availability_at_speech_end'] is not None else '—'})  "
+            f"reused {bc['spoken_prepared']} ({_fmt(bc['reuse_rate'] * 100) + '%' if bc['reuse_rate'] is not None else '—'})  "
+            f"wasted {bc['wasted']}"
+        )
+        lines.append(
+            f"{'audible backchannel after VAD stop':38} {bc['audible_since_vad_ms']['n']:>3} {_fmt(bc['audible_since_vad_ms']['p50']):>7} {_fmt(bc['audible_since_vad_ms']['p95']):>7} {_fmt(bc['audible_since_vad_ms']['p99']):>7}"
+            f"   (turns with one: {bc['turns_with_audible_backchannel']}/{report['turns']})"
+        )
+        lines.append(
+            f"{'last voiced PCM → VAD stop':38} {bc['pcm_end_to_vad_ms']['n']:>3} {_fmt(bc['pcm_end_to_vad_ms']['p50']):>7} {_fmt(bc['pcm_end_to_vad_ms']['p95']):>7} {_fmt(bc['pcm_end_to_vad_ms']['p99']):>7}"
         )
         lines.append(
             f"talker calls: {bc['talker_calls']} (closed early: {bc['talker_calls_cancelled']}, usage unknown for those)  "

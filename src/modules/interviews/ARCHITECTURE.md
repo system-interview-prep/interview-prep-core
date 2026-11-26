@@ -620,6 +620,67 @@ Core, 97 % of it); the ~2.05 s silence window (now one clock; `speech_end`
 anchor untested on a person); the Talker's ~0.8 s TTFT plus TTS first byte
 when the connection is cold; the Qwen 1 s decode window (~1.7 s to final).
 
+### Immediate speech-end backchanneling (brief 2026-11-26; built, not yet measured live)
+
+The objective is the silence between the candidate's last voiced frame and
+the first audible contextual backchannel — not the Thinker's latency, which
+keeps its 2–4 s and its guards. Target 300–600 ms *when prepared audio is
+available*; coverage is reported beside latency.
+
+**What changed (localized, same adapters, same voice, same cache):**
+
+- A validated unit that arrives while the candidate is still speaking is no
+  longer held as text: the runtime synthesizes it **now** with the VieNeu
+  adapter into the in-memory speech cache (`_prepare_backchannel_audio`;
+  never on disk — the line is this answer's), and the coordinator keeps
+  exactly one pending item (text, kind, the transcript it was written for,
+  ready time, audio ready, synthesis ms) for at most 20 s.
+- Playback is triggered by the **VAD end-of-speech signal alone**
+  (`on_user_stopped` → `_play_pending`): not Qwen's final, not LiveKit's turn
+  end, not the window's commit, not the Thinker. `speak()` of the same text
+  is a cache hit in `tts_node`, so the only latency left is the agent's
+  playout. A short pause is not read as the end of the answer: the window
+  and the Thinker continue unchanged.
+- Before playing, the pending line is re-checked: same turn, no authoritative
+  reply yet, not expired, transcript drift ≤ 12 words since it was written,
+  candidate not speaking. A newer prepared line supersedes an older one; the
+  reply, a new answer or expiry drops it as **wasted synthesis** (counted).
+- A line that arrives during a pause is spoken at once, synthesized at
+  playback (`prepared_audio=false`, `trigger=ready`).
+- The TTS keep-alive now runs from the first word of the answer when
+  backchanneling is on (cold first byte 1 126 ms vs 455 ms warm, measured).
+- Thinker independence is unchanged: preparation runs in the coordinator's
+  task, the reply still interrupts a playing backchannel, and the processing
+  phase behaves as before.
+
+**VieNeu contention, measured (self-hosted, no LLM):** alone, question
+first byte 455 ms / 4.9 s total for 6.9 s of audio, backchannel 455 ms /
+2.3 s. Two requests started together: the question keeps 465 ms, the
+backchannel pays 1 126 ms (a second, cold connection plus server queueing).
+Backchannel first, question 300 ms later: 456 / 490 ms — the overlap the
+runtime actually produces (prepared seconds before the reply) costs the
+reply ≈ 35 ms. Worst case — the reply's synthesis starting while a prepare
+is mid-stream — is bounded by the prepare's remaining time (≤ ~2 s) and
+avoided when the reply arrives: the coordinator's task is cancelled and its
+TTS stream closed before the reply is spoken.
+
+**Measurement added to `livekit_turn_metrics.py`:** prepared count and
+synthesis time, availability at each VAD speech end (`voice_backchannel_speech_end`),
+reuse rate (spoken with prepared audio / prepared), wasted rate, audible
+backchannel after VAD stop (`voice_reply_started kind=backchannel`), turns
+with one (coverage), and last voiced PCM → VAD stop from Qwen's finish
+diagnostic — the delay the trigger itself adds, which on the synthetic
+speaker was ~1.4 s (run 4) and must be measured on a person. The client
+driver's TTFA (end of answer audio → first audible agent audio) is the
+candidate-side number for the same turns.
+
+**Not yet measured:** this build has not run in a room. The A/B rerun (~31
+calls) and the human-speaker sessions (relevance, naturalness, interruption
+rate, false cuts) need paid calls and were not authorized in this brief.
+Expected if the preparation lands before the pause: speech end →
+audible backchannel ≈ VAD detection (~0.45 s on a person) + playout; on
+the synthetic speaker the VAD tail (~1.4 s) dominates.
+
 ### Remaining migration work
 
 | Brief | Outstanding |

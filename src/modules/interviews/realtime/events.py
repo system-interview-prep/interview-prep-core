@@ -83,6 +83,10 @@ VOICE_EVENTS = frozenset(
         "voice_backchannel_spoken",
         "voice_backchannel_discarded",
         "voice_backchannel_overlap",
+        # Immediate speech-end backchanneling: audio prepared during speech;
+        # at every VAD end of speech, whether prepared audio was available.
+        "voice_backchannel_prepared",
+        "voice_backchannel_speech_end",
         "voice_stt_diagnostic",
         "voice_tts_fallback",
         "voice_provider_degraded",

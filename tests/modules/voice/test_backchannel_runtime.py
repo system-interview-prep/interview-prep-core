@@ -201,6 +201,81 @@ async def test_a_stable_partial_lets_the_talker_prepare_while_the_candidate_spea
 
 
 @pytest.mark.asyncio
+async def test_prepared_audio_goes_into_the_speech_cache_and_playback_is_a_cache_hit(monkeypatch) -> None:
+    """The line is synthesized with the same adapter and voice while the
+    candidate speaks; speak() later replays it through tts_node."""
+    from src.modules.interviews.realtime.tts.cache import SpeechAudioCache
+
+    agent, _events, _client, _spoken = _agent()
+    agent._speech_cache = SpeechAudioCache(voice_signature="vieneu|test", directory=None)
+    synthesized: list[str] = []
+
+    class _Frame:
+        def __init__(self, data: bytes) -> None:
+            self.data, self.sample_rate, self.num_channels, self.samples_per_channel = data, 16000, 1, len(data) // 2
+
+    class _Stream:
+        def __init__(self, text: str) -> None:
+            synthesized.append(text)
+            self._frames = iter([SimpleNamespace(frame=_Frame(b"\x01\x00" * 320)), SimpleNamespace(frame=_Frame(b"\x02\x00" * 320))])
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._frames)
+            except StopIteration:
+                raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            pass
+
+    agent._prepare_tts = SimpleNamespace(synthesize=lambda text: _Stream(text))
+    assert await agent._prepare_backchannel_audio("À, TTL theo từng key.") is True
+    assert synthesized == ["À, TTL theo từng key."]
+    clip = agent._speech_cache.get("À, TTL theo từng key.")
+    assert clip is not None and len(clip.pcm) == 1280 and clip.sample_rate == 16000
+    # Preparing the same line again costs nothing.
+    assert await agent._prepare_backchannel_audio("À, TTL theo từng key.") is True and len(synthesized) == 1
+
+    # Playback: tts_node finds the clip and never calls the TTS.
+    async def text_stream():
+        yield "À, TTL theo từng key."
+
+    frames = [f async for f in agent.tts_node(text_stream(), None)]
+    assert len(frames) >= 2 and synthesized == ["À, TTL theo từng key."]
+
+
+@pytest.mark.asyncio
+async def test_the_tts_connection_is_kept_warm_from_the_first_word_when_backchanneling(monkeypatch) -> None:
+    monkeypatch.setattr(livekit_agent, "TTS_KEEPALIVE_SECONDS", 0.01)
+    pings: list[int] = []
+
+    async def warm_tts() -> bool:
+        pings.append(1)
+        return True
+
+    agent, *_ = _agent()
+    agent._warm_tts = warm_tts
+    agent.on_user_speaking()
+    await asyncio.sleep(0.05)
+    assert len(pings) >= 2
+    agent._tts_keepalive_task.cancel()
+    off, *_ = _agent(enabled=False)
+    off._warm_tts = warm_tts
+    off.on_user_speaking()
+    assert getattr(off, "_tts_keepalive_task", None) is None
+
+
+@pytest.mark.asyncio
+async def test_without_a_tts_or_cache_nothing_is_prepared_and_playback_synthesizes() -> None:
+    agent, *_ = _agent()
+    agent._speech_cache = None
+    assert await agent._prepare_backchannel_audio("À, TTL theo từng key.") is False
+
+
+@pytest.mark.asyncio
 async def test_the_submit_asks_for_a_processing_acknowledgment_and_the_reply_cuts_it(monkeypatch) -> None:
     monkeypatch.setattr(livekit_agent, "processing_filler_enabled", lambda: True)  # a template: must not run
     agent, events, client, spoken = _agent(core_delay=0.05)

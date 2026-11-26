@@ -52,13 +52,20 @@ _HOLD_TICK = 0.1
 MAX_DRIFT_WORDS = 12
 #: While the candidate is still speaking, ask again only after this many new words.
 MIN_NEW_WORDS_WHILE_SPEAKING = 8
+#: A prepared backchannel (text validated, audio synthesized) is kept this long
+#: waiting for a pause; after that it is wasted synthesis, not a line to say.
+PENDING_LIFETIME_SECONDS = 20.0
 
 Infer = Callable[[dict[str, Any]], AsyncIterator[dict[str, Any]]]
 Play = Callable[[str, str], Any]
+#: ``await prepare(text) -> bool``: synthesize the validated line into the
+#: audio cache now, so playing it later costs no TTS round trip.
+Prepare = Callable[[str], Awaitable[bool]]
 
 
 class BackchannelStats:
-    __slots__ = ("requested", "skipped", "completed", "spoken", "discarded", "silent", "errors", "reasons", "overlaps")
+    __slots__ = ("requested", "skipped", "completed", "spoken", "discarded", "silent", "errors", "reasons", "overlaps",
+                 "prepared", "spoken_prepared", "wasted", "speech_ends", "speech_ends_with_audio")
 
     def __init__(self) -> None:
         self.requested = 0
@@ -69,6 +76,11 @@ class BackchannelStats:
         self.silent = 0
         self.errors = 0
         self.overlaps = 0
+        self.prepared = 0
+        self.spoken_prepared = 0
+        self.wasted = 0
+        self.speech_ends = 0
+        self.speech_ends_with_audio = 0
         self.reasons: dict[str, int] = {}
 
     def note(self, reason: str) -> None:
@@ -81,6 +93,8 @@ class BackchannelStats:
             "spoken": self.spoken, "discarded": self.discarded, "silent": self.silent, "errors": self.errors,
             "overlaps": self.overlaps,
             "stale_rate": round(self.discarded / judged, 3) if judged else None,
+            "prepared": self.prepared, "spoken_prepared": self.spoken_prepared, "wasted": self.wasted,
+            "speech_ends": self.speech_ends, "speech_ends_with_audio": self.speech_ends_with_audio,
             "reasons": dict(self.reasons),
         }
 
@@ -98,9 +112,17 @@ class BackchannelCoordinator:
         min_gap_seconds: float = 4.0,
         hold_seconds: float = HOLD_SECONDS,
         on_event: Callable[..., None] | None = None,
+        prepare: Prepare | None = None,
+        pending_lifetime_seconds: float = PENDING_LIFETIME_SECONDS,
     ) -> None:
         self._infer = infer
         self._play = play
+        self._prepare = prepare
+        self._lifetime = max(1.0, float(pending_lifetime_seconds))
+        # The one prepared backchannel waiting for a pause (text, audio in the
+        # cache, the transcript it was written for). Bounded: one item, one
+        # short line, one lifetime.
+        self._pending: dict[str, Any] | None = None
         self.enabled = enabled
         self._calls_per_turn = max(1, int(calls_per_turn))
         self._min_gap = max(0.0, float(min_gap_seconds))
@@ -129,6 +151,7 @@ class BackchannelCoordinator:
     def reset_turn(self) -> None:
         """A new answer is starting: forget the previous turn's backchannels."""
         self._cancel("new_turn")
+        self._drop_pending("new_turn")
         self._generation += 1
         self._calls_this_turn = 0
         self._last_transcript = ""
@@ -145,12 +168,89 @@ class BackchannelCoordinator:
             self._emit("backchannel_overlap")
 
     def on_user_stopped(self) -> None:
+        """VAD end of speech: the moment a prepared backchannel is played.
+
+        Not Qwen's final, not LiveKit's turn end, not the window's commit, not
+        the Thinker: the VAD signal alone. A short pause is *not* taken as the
+        end of the answer -- the line is an acknowledgment, the answer window
+        and the Thinker go on exactly as before.
+        """
         self._speaking = False
+        if self.enabled:
+            self.stats.speech_ends += 1
+            available = self._pending is not None and bool(self._pending.get("audio_ready"))
+            if available:
+                self.stats.speech_ends_with_audio += 1
+            self._emit("backchannel_speech_end", prepared_available=available, pending=self._pending is not None)
+        self._play_pending(trigger="vad_stop")
 
     def on_reply_ready(self) -> None:
         """The authoritative reply exists: nothing pending may be played after it."""
         self._reply_ready = True
         self._cancel("reply_ready")
+        self._drop_pending("reply_ready")
+
+    def _drop_pending(self, reason: str) -> None:
+        pending, self._pending = self._pending, None
+        if pending is None:
+            return
+        self.stats.discarded += 1
+        self.stats.note(reason)
+        if pending.get("audio_ready"):
+            self.stats.wasted += 1
+        self._emit("backchannel_discarded", reason=reason, kind=pending.get("kind"), held_ms=None,
+                   prepared_audio=bool(pending.get("audio_ready")))
+
+    def _play_pending(self, *, trigger: str) -> bool:
+        """Play the prepared line now if it still fits; otherwise drop it and say why."""
+        pending = self._pending
+        if pending is None:
+            return False
+        if self._speaking:
+            return False
+        if pending["generation"] != self._generation:
+            self._drop_pending("new_turn")
+            return False
+        if self._reply_ready:
+            self._drop_pending("reply_ready")
+            return False
+        if perf_counter() - pending["ready_at"] > self._lifetime:
+            self._drop_pending("expired")
+            return False
+        drift = len(self._current_transcript.split()) - int(pending.get("prepared_for") or 0)
+        if pending.get("prepared_for") and drift > MAX_DRIFT_WORDS:
+            self._drop_pending("context_moved")
+            return False
+        self._pending = None
+        self._speak(pending["unit"], pending["phase"], held=perf_counter() - pending["ready_at"],
+                    prepared_audio=bool(pending.get("audio_ready")), trigger=trigger,
+                    prepare_ms=pending.get("prepare_ms"))
+        return True
+
+    def _speak(self, unit: dict[str, Any], phase: str, *, held: float, prepared_audio: bool, trigger: str,
+               prepare_ms: int | None = None) -> None:
+        text = str(unit.get("text") or "").strip()
+        self._playing = self._play(text, str(unit.get("kind") or "contextual"))
+        logger.info("backchannel spoken", extra={"phase": phase, "kind": unit.get("kind"), "words": len(text.split()),
+                                                 "held_ms": round(held * 1000), "prepared_audio": prepared_audio,
+                                                 "trigger": trigger})
+        self._last_spoken_at = perf_counter()
+        self._said.append(text)
+        self.stats.spoken += 1
+        if prepared_audio:
+            self.stats.spoken_prepared += 1
+        self._emit(
+            "backchannel_spoken",
+            phase=phase,
+            kind=unit.get("kind"),
+            words=len(text.split()),
+            ttft_ms=unit.get("ttft_ms"),
+            ready_ms=unit.get("at_ms"),
+            held_ms=round(held * 1000),
+            prepared_audio=prepared_audio,
+            trigger=trigger,
+            prepare_ms=prepare_ms,
+        )
 
     def _cancel(self, reason: str) -> None:
         task, self._task = self._task, None
@@ -288,40 +388,44 @@ class BackchannelCoordinator:
         text = str(unit.get("text") or "").strip()
         if not text:
             return False
-        held = 0.0
-        # Generation is separate from playback: a line prepared while the
-        # candidate spoke waits for the next natural pause (bounded), and is
-        # then checked against the context as it is *now*, not as it was.
-        while self._speaking and held < self._hold:
-            if generation != self._generation or self._reply_ready:
-                break
-            await asyncio.sleep(_HOLD_TICK)
-            held += _HOLD_TICK
         if generation != self._generation:
-            return self._discard("new_turn", unit, held)
+            return self._discard("new_turn", unit, 0.0)
         if self._reply_ready:
-            return self._discard("reply_ready", unit, held)
-        if self._speaking:
-            return self._discard("candidate_speaking", unit, held)
-        drift = len(self._current_transcript.split()) - prepared_for
-        if prepared_for and drift > MAX_DRIFT_WORDS:
-            return self._discard("context_moved", unit, held)
-        self._playing = self._play(text, str(unit.get("kind") or "contextual"))
-        logger.info("backchannel spoken", extra={"phase": phase, "kind": unit.get("kind"), "words": len(text.split()),
-                                                 "held_ms": round(held * 1000), "generation": generation})
-        self._last_spoken_at = perf_counter()
-        self._said.append(text)
-        self.stats.spoken += 1
-        self._emit(
-            "backchannel_spoken",
-            phase=phase,
-            kind=unit.get("kind"),
-            words=len(text.split()),
-            ttft_ms=unit.get("ttft_ms"),
-            ready_ms=unit.get("at_ms"),
-            held_ms=round(held * 1000),
-        )
-        return True
+            return self._discard("reply_ready", unit, 0.0)
+        if not self._speaking:
+            # A pause is already here: say it now (TTS on the critical path of
+            # this line only, never of the turn).
+            drift = len(self._current_transcript.split()) - prepared_for
+            if prepared_for and drift > MAX_DRIFT_WORDS:
+                return self._discard("context_moved", unit, 0.0)
+            self._speak(unit, phase, held=0.0, prepared_audio=False, trigger="ready")
+            return True
+        # The candidate is still talking: prepare the audio *now* and keep the
+        # line for the VAD end of speech (on_user_stopped). One pending item;
+        # a newer one replaces an older one that never got its pause.
+        if self._pending is not None:
+            self._drop_pending("superseded")
+        started = perf_counter()
+        audio_ready = False
+        if self._prepare is not None:
+            try:
+                audio_ready = bool(await self._prepare(text))
+            except Exception:  # noqa: BLE001 - no audio means the line is synthesized at playback
+                logger.debug("backchannel audio preparation failed", exc_info=True)
+        prepare_ms = round((perf_counter() - started) * 1000)
+        if generation != self._generation:
+            return self._discard("new_turn", unit, 0.0)
+        if self._reply_ready:
+            return self._discard("reply_ready", unit, 0.0)
+        self.stats.prepared += 1
+        self._pending = {
+            "unit": unit, "text": text, "kind": unit.get("kind"), "phase": phase, "generation": generation,
+            "prepared_for": prepared_for, "ready_at": perf_counter(), "audio_ready": audio_ready, "prepare_ms": prepare_ms,
+        }
+        self._emit("backchannel_prepared", phase=phase, kind=unit.get("kind"), words=len(text.split()),
+                   audio_ready=audio_ready, prepare_ms=prepare_ms, ttft_ms=unit.get("ttft_ms"))
+        # The candidate may have paused during synthesis.
+        return self._play_pending(trigger="ready")
 
     def _discard(self, reason: str, unit: dict[str, Any], held: float) -> bool:
         logger.info("backchannel discarded", extra={"reason": reason, "kind": unit.get("kind"), "held_ms": round(held * 1000)})

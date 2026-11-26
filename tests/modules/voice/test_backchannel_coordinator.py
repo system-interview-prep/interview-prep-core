@@ -47,8 +47,9 @@ def _coordinator(talker, *, enabled=True, **kw):
         handles.append(handle)
         return handle
 
+    kw.pop("hold", None)
     coordinator = bc.BackchannelCoordinator(
-        talker, play, enabled=enabled, min_gap_seconds=kw.pop("min_gap", 0.0), hold_seconds=kw.pop("hold", 0.3),
+        talker, play, enabled=enabled, min_gap_seconds=kw.pop("min_gap", 0.0),
         on_event=lambda event, **fields: events.append((event, fields)), **kw,
     )
     return coordinator, played, events, handles
@@ -80,11 +81,12 @@ async def test_a_unit_is_played_when_the_candidate_is_quiet_and_the_signals_trav
     assert request["phase"] == "listening" and request["speaking"] is False
     assert request["signals"]["answer_seconds"] == 6.2 and request["signals"]["fragments"] == 2
     assert request["signals"]["seconds_since_last_backchannel"] is None and request["signals"]["last_backchannels"] == []
-    names = [e for e, _ in events]
+    names = [e for e, _ in events if e != "backchannel_speech_end"]
     assert names == ["backchannel_spoken", "backchannel"]
-    spoken = dict(events[0][1])
+    spoken = [f for e, f in events if e == "backchannel_spoken"][0]
     assert spoken["kind"] == "reflective" and spoken["words"] == 5 and spoken["ttft_ms"] == 300
-    done = dict(events[1][1])
+    assert spoken["prepared_audio"] is False and spoken["trigger"] == "ready"
+    done = [f for e, f in events if e == "backchannel"][0]
     assert done["spoken"] == 1 and done["units"] == 1 and done["ok"] is True
     assert coordinator.stats.as_dict()["spoken"] == 1 and coordinator.stats.as_dict()["stale_rate"] == 0.0
     # The next request tells the model what was already said and how long ago.
@@ -136,30 +138,95 @@ async def test_the_minimum_gap_and_an_unchanged_transcript_skip_while_listening_
 
 
 @pytest.mark.asyncio
-async def test_a_unit_waits_briefly_for_a_pause_and_is_dropped_if_the_candidate_keeps_talking() -> None:
+async def test_a_line_that_arrives_while_the_candidate_talks_is_prepared_and_played_at_the_vad_stop() -> None:
+    """Immediate speech-end backchanneling: audio synthesized during speech, played
+    the moment the VAD says the candidate stopped -- not at Qwen's final, not
+    at the turn end, not at the submit, not when the Thinker answers."""
+    prepared: list[str] = []
+
+    async def prepare(text: str) -> bool:
+        prepared.append(text)
+        await asyncio.sleep(0.02)
+        return True
+
     talker = _Talker()
-    coordinator, played, events, _ = _coordinator(talker, hold=0.25)
-    coordinator.observe("Em dùng Redis", phase="listening")
-    coordinator.on_user_speaking()  # they resumed before the unit arrived
+    coordinator, played, events, _ = _coordinator(talker, prepare=prepare)
+    coordinator.on_user_speaking()
+    assert coordinator.observe("Em dùng Redis làm cache và đặt TTL năm phút cho từng key", phase="listening")
     await _settle(coordinator)
-    assert played == []
-    discarded = [f for e, f in events if e == "backchannel_discarded"]
-    assert discarded and discarded[0]["reason"] == "candidate_speaking" and discarded[0]["held_ms"] >= 200
-    assert coordinator.stats.as_dict()["stale_rate"] == 1.0
+    assert prepared == ["Ừ, mình hình dung được."] and played == [], "synthesized, held: the candidate is still talking"
+    assert coordinator._pending is not None and coordinator._pending["audio_ready"] is True
+    prepared_event = [f for e, f in events if e == "backchannel_prepared"][0]
+    assert prepared_event["audio_ready"] is True and prepared_event["prepare_ms"] >= 15
+    coordinator.on_user_stopped()  # the VAD signal alone
+    assert played == [("Ừ, mình hình dung được.", "reflective")]
+    spoken = [f for e, f in events if e == "backchannel_spoken"][0]
+    assert spoken["prepared_audio"] is True and spoken["trigger"] == "vad_stop"
+    speech_end = [f for e, f in events if e == "backchannel_speech_end"][0]
+    assert speech_end == {"prepared_available": True, "pending": True}
+    stats = coordinator.stats.as_dict()
+    assert stats["prepared"] == 1 and stats["spoken_prepared"] == 1 and stats["wasted"] == 0
+    assert stats["speech_ends"] == 1 and stats["speech_ends_with_audio"] == 1
 
-    # ...but a pause inside the hold lets it play: a line prepared during
-    # speech (enough new words) waits for the pause, then plays.
+
+@pytest.mark.asyncio
+async def test_a_prepared_line_is_dropped_as_wasted_when_the_turn_moves_on_or_it_expires() -> None:
+    async def prepare(_text: str) -> bool:
+        return True
+
+    talker = _Talker()
+    coordinator, played, events, _ = _coordinator(talker, prepare=prepare, pending_lifetime_seconds=1.0)
+    coordinator.on_user_speaking()
+    coordinator.observe("Em dùng Redis làm cache và đặt TTL năm phút cho từng key", phase="listening")
+    await _settle(coordinator)
+    coordinator.on_reply_ready()  # the Thinker answered before any pause
+    assert played == [] and coordinator._pending is None
+    dropped = [f for e, f in events if e == "backchannel_discarded"][-1]
+    assert dropped["reason"] == "reply_ready" and dropped["prepared_audio"] is True
+    assert coordinator.stats.wasted == 1
+
     talker2 = _Talker()
-    coordinator2, played2, _, _ = _coordinator(talker2, hold=0.5)
+    coordinator2, played2, events2, _ = _coordinator(talker2, prepare=prepare, pending_lifetime_seconds=1.0)
     coordinator2.on_user_speaking()
-    assert coordinator2.observe("Em dùng Redis làm cache và đặt TTL năm phút cho từng key", phase="listening")
+    coordinator2.observe("Em dùng Redis làm cache và đặt TTL năm phút cho từng key", phase="listening")
+    await _settle(coordinator2)
+    coordinator2._pending["ready_at"] -= 5.0  # the pause never came
+    coordinator2.on_user_stopped()
+    assert played2 == [] and [f for e, f in events2 if e == "backchannel_discarded"][-1]["reason"] == "expired"
+    # A speech end with nothing prepared is counted too: coverage, not just hits.
+    assert [f for e, f in events2 if e == "backchannel_speech_end"][-1]["prepared_available"] is True
+    coordinator2.on_user_stopped()
+    assert [f for e, f in events2 if e == "backchannel_speech_end"][-1] == {"prepared_available": False, "pending": False}
 
-    async def pause_soon():
-        await asyncio.sleep(0.15)
-        coordinator2.on_user_stopped()
 
-    await asyncio.gather(pause_soon(), coordinator2._task)
-    assert len(played2) == 1
+@pytest.mark.asyncio
+async def test_without_a_prepare_hook_the_line_still_waits_for_the_vad_stop_and_is_synthesized_then() -> None:
+    talker = _Talker()
+    coordinator, played, events, _ = _coordinator(talker)
+    coordinator.on_user_speaking()
+    coordinator.observe("Em dùng Redis làm cache và đặt TTL năm phút cho từng key", phase="listening")
+    await _settle(coordinator)
+    assert played == [] and coordinator._pending["audio_ready"] is False
+    coordinator.on_user_stopped()
+    assert len(played) == 1
+    assert [f for e, f in events if e == "backchannel_spoken"][0]["prepared_audio"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_newer_prepared_line_replaces_the_older_one_that_never_got_its_pause() -> None:
+    async def prepare(_text: str) -> bool:
+        return True
+
+    talker = _Talker()
+    coordinator, played, events, _ = _coordinator(talker, prepare=prepare, calls_per_turn=3)
+    coordinator.on_user_speaking()
+    coordinator.observe("Em dùng Redis làm cache và đặt TTL năm phút cho từng key", phase="listening")
+    await _settle(coordinator)
+    coordinator.observe("Em dùng Redis làm cache và đặt TTL năm phút cho từng key còn khi dữ liệu đổi thì xoá key", phase="listening")
+    await _settle(coordinator)
+    assert [f["reason"] for e, f in events if e == "backchannel_discarded"] == ["superseded"]
+    coordinator.on_user_stopped()
+    assert len(played) == 1 and coordinator.stats.wasted == 1
 
 
 @pytest.mark.asyncio

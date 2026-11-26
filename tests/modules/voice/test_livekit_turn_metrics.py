@@ -305,6 +305,36 @@ def test_backchannel_inferences_and_units_are_measured_per_answer() -> None:
     assert "Talker time to first token" in text and "stale rate" in text
 
 
+def test_prepared_audio_coverage_reuse_and_waste_are_reported_with_the_vad_delay() -> None:
+    events = [
+        _ev(0, "voice_session_started", 0),
+        _ev(1, "voice_stt_diagnostic", 0, phase="finish", processing_ms=430, pcm_speech_end_to_final_ms=1700),
+        _ev(2, "voice_backchannel_prepared", 0, phase="listening", kind="reflective", words=4, audio_ready=True, prepare_ms=620, ttft_ms=800),
+        _ev(3, "voice_backchannel_speech_end", 0, prepared_available=True, pending=True),
+        _ev(4, "voice_backchannel_spoken", 0, phase="listening", kind="reflective", words=4, ttft_ms=800, ready_ms=900,
+            held_ms=2500, prepared_audio=True, trigger="vad_stop", prepare_ms=620),
+        _ev(5, "voice_reply_started", 0, kind="backchannel", since_speech_end_ms=410),
+        _ev(6, "voice_backchannel", 0, phase="listening", kind="reflective", ok=True, ttft_ms=800, total_ms=950, units=1, rejected=0, spoken=1),
+        _ev(7, "voice_backchannel_speech_end", 0, prepared_available=False, pending=False),
+        _ev(8, "voice_answer_submitted", 0, since_speech_end_ms=2000, words=40, fragments=2),
+        _ev(9, "voice_backchannel_discarded", 0, reason="reply_ready", kind="processing", held_ms=None, prepared_audio=True),
+        _ev(10, "voice_core_completed", 0, core_ms=3000, action="PROBE"),
+        _ev(11, "voice_reply_started", 1, kind="question", since_speech_end_ms=6000, since_submit_ms=4000, since_core_ms=450),
+    ]
+    report = metrics.summarize(events, [])
+    turn = report["per_turn"][0]
+    assert turn["backchannel_prepared"] == 1 and turn["backchannel_spoken_prepared"] == 1 and turn["backchannel_wasted"] == 1
+    assert turn["backchannel_speech_ends"] == 2 and turn["backchannel_speech_ends_with_audio"] == 1
+    assert turn["backchannel_audio_since_vad_ms"] == 410
+    # submit at t=8 s with 2 000 ms since VAD stop → VAD stop at t=6 s; finish at t=1 s with pcm end 1.7 s earlier.
+    assert turn["pcm_end_to_vad_ms"] == 6700
+    bc = report["backchannel"]
+    assert bc["availability_at_speech_end"] == 0.5 and bc["reuse_rate"] == 1.0 and bc["wasted"] == 1
+    assert bc["turns_with_audible_backchannel"] == 1 and bc["audible_since_vad_ms"]["p50"] == 410
+    text = metrics.render(report)
+    assert "available at 1/2 speech ends" in text and "audible backchannel after VAD stop" in text
+
+
 def test_percentiles_are_nearest_rank_and_empty_is_none() -> None:
     assert metrics.percentile([], 50) is None
     assert metrics.percentile([5.0], 99) == 5.0

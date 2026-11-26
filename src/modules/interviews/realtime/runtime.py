@@ -176,8 +176,13 @@ class VoiceLabAgent(Agent):
         enable_backchannel: bool = False,
         backchannel_calls_per_turn: int = 3,
         backchannel_min_gap_seconds: float = 4.0,
+        prepare_tts=None,
     ) -> None:
         super().__init__(instructions=AGENT_INSTRUCTIONS)
+        # The TTS used to synthesize a validated backchannel *while the
+        # candidate speaks*, into the speech cache, so playing it at the VAD
+        # end of speech is a cache hit (tts_node). None: synthesize at playback.
+        self._prepare_tts = prepare_tts
         # ``await warm_tts()`` keeps the TTS connection open (VieNeu); None for
         # providers that do not need it.
         self._warm_tts = warm_tts
@@ -256,6 +261,7 @@ class VoiceLabAgent(Agent):
             calls_per_turn=backchannel_calls_per_turn,
             min_gap_seconds=backchannel_min_gap_seconds,
             on_event=lambda event, **fields: self.report(f"voice_{event}", **fields),
+            prepare=self._prepare_backchannel_audio,
         )
         self._core_in_flight = False
         self._repeat_after_core = False
@@ -325,6 +331,42 @@ class VoiceLabAgent(Agent):
                 if raw.strip():
                     yield json.loads(raw)
 
+    async def _prepare_backchannel_audio(self, text: str) -> bool:
+        """Synthesize a validated backchannel into the speech cache now.
+
+        Same adapter, same voice, same cache ``tts_node`` reads: the later
+        ``speak()`` of this exact text replays the clip instead of calling
+        VieNeu. In memory only (never on disk: the line is this answer's).
+        Returns False when there is nothing to prepare with, so the caller
+        knows the audio will be synthesized at playback instead.
+        """
+        cache = getattr(self, "_speech_cache", None)
+        tts = getattr(self, "_prepare_tts", None)
+        if cache is None or tts is None:
+            return False
+        key = localize_particles(text)
+        if cache.get(key) is not None:
+            return True
+        pieces: list[bytes] = []
+        sample_rate = channels = 0
+        stream = tts.synthesize(speakable_text(key, locale=self._locale))
+        try:
+            async for event in stream:
+                frame = getattr(event, "frame", None)
+                if frame is None:
+                    continue
+                pieces.append(bytes(frame.data))
+                sample_rate, channels = frame.sample_rate, frame.num_channels
+        finally:
+            aclose = getattr(stream, "aclose", None)
+            if callable(aclose):
+                with contextlib.suppress(Exception):
+                    await aclose()
+        if not pieces:
+            return False
+        cache.put(key, SpeechClip(pcm=b"".join(pieces), sample_rate=sample_rate, channels=channels), persist=False)
+        return True
+
     def _speak_backchannel(self, text: str, kind: str):
         """Play one validated unit: interruptible, outside the chat context,
         and cut by the authoritative reply like any filler (``_interrupt_filler``)."""
@@ -393,6 +435,13 @@ class VoiceLabAgent(Agent):
             self._anticipation.reset_turn()
             self._bc().reset_turn()
         self._start_prefetch()
+        # With backchanneling on, a prepared line is synthesized *during* the
+        # answer: keep the TTS connection warm from the first word, not only
+        # while Core thinks (measured: 455 ms warm vs 1 126 ms cold first byte).
+        if self._bc().enabled and getattr(self, "_warm_tts", None) is not None:
+            task = getattr(self, "_tts_keepalive_task", None)
+            if task is None or task.done():
+                self._tts_keepalive_task = asyncio.create_task(self._tts_keepalive())
 
     # ── Deterministic warm-up while the candidate speaks ─────────────────────
 
@@ -729,8 +778,8 @@ class VoiceLabAgent(Agent):
         )
         self._publish_turn_state("processing")
         # The reply's TTS must not pay a cold connection after a long answer.
-        self._cancel_task(getattr(self, "_tts_keepalive_task", None))
-        if getattr(self, "_warm_tts", None) is not None:
+        keepalive = getattr(self, "_tts_keepalive_task", None)
+        if getattr(self, "_warm_tts", None) is not None and (keepalive is None or keepalive.done()):
             self._tts_keepalive_task = asyncio.create_task(self._tts_keepalive())
 
         # The processing backchannel: the Talker sees the whole answer and the
@@ -1699,6 +1748,7 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
         enable_backchannel=_bool_env("INTERVIEW_BACKCHANNEL_ENABLED", False),
         backchannel_calls_per_turn=_int_env("INTERVIEW_BACKCHANNEL_CALLS_PER_TURN", 3) or 3,
         backchannel_min_gap_seconds=_float_env("INTERVIEW_BACKCHANNEL_MIN_GAP_SECONDS", 4.0),
+        prepare_tts=primary_tts if use_vieneu else None,
     )
 
     abandon_grace = _float_env("VOICE_LAB_ABANDON_GRACE_SECONDS", 20.0)
