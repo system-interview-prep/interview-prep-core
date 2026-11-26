@@ -32,6 +32,9 @@ def decision_record(
     stage_before: Optional[str] = None,
     stage_after: Optional[str] = None,
     transition_target: Optional[str] = None,
+    execution_path: Optional[str] = None,
+    route_reason: Optional[str] = None,
+    arbiter: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     violation = None
     if agent_decision is not None and agent_decision.source == "agent":
@@ -77,6 +80,12 @@ def decision_record(
         "stage_after": stage_after,
         "transition": transition,
         "unified": _unified_outcome(agent_decision),
+        # V2 spec §6.1: which execution path LIVE took, and what the Arbiter
+        # made of the Talker on the Hybrid path. The Luna match rate of §13
+        # is `arbiter.talker_reused` over turns where a Talker output existed.
+        "execution_path": execution_path,
+        "route_reason": route_reason,
+        "arbiter": dict(arbiter) if arbiter else None,
         "latency_ms": int((perf_counter() - started_at) * 1000),
     }
 
@@ -137,6 +146,8 @@ def summary(record: Dict[str, Any]) -> Dict[str, Any]:
         # Whether §6.2's single inference supplied the spoken line on this turn.
         "unified_carried_text": (record.get("unified") or {}).get("carried_text"),
         "unified_rejected": (record.get("unified") or {}).get("rejected"),
+        "execution_path": record.get("execution_path"),
+        "talker_outcome": (record.get("arbiter") or {}).get("outcome"),
         "latency_ms": record.get("latency_ms"),
     }
 
@@ -155,6 +166,10 @@ def scores(record: Dict[str, Any]) -> Dict[str, float]:
         # itself, and how often its line was sent back by a guard.
         out["agent.unified_carried_text"] = 1.0 if unified.get("carried_text") else 0.0
         out["agent.unified_rejected"] = 1.0 if unified.get("rejected") else 0.0
+    arbiter = record.get("arbiter")
+    if arbiter is not None:
+        out["agent.talker_reused"] = 1.0 if arbiter.get("talker_reused") else 0.0
+        out["agent.early_acknowledgment"] = 1.0 if arbiter.get("early_acknowledgment") else 0.0
     return out
 
 

@@ -57,6 +57,12 @@ VOICE_EVENTS = frozenset(
         "voice_late_speech_captured",
         "voice_interruption",
         "voice_processing_filler",
+        # V2 spec §6.4: the Talker's guarded line spoken before fan-in.
+        "voice_early_acknowledgment",
+        # V2 spec §7 / §13: preview hit rate and wasted calls.
+        "voice_anticipation_ready",
+        "voice_anticipation_discarded",
+        "voice_anticipation_reused",
         "voice_tts_metrics",
         "voice_stt_diagnostic",
         "voice_tts_fallback",

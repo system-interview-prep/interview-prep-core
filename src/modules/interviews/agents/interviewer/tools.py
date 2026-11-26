@@ -37,18 +37,29 @@ UNIFIED_TEXT_ACTIONS: Dict[str, str] = {
 
 # What the model is told each utterance must be. The wording is deliberately
 # about content, never length: 3bf4591 removed the rigid dialogue limits.
+#
+# The spoken descriptions end with one shared clause about assessment terms.
+# Measured against the real provider, the guard rejected 4 of 20 unified
+# lines as hints_answer: the model is handed the assessment criteria to
+# *judge* with and was echoing their vocabulary into the line it *spoke*,
+# which gives the answer away. The guard is right to refuse that; the fix
+# belongs in the ask, not in the guard.
+_NO_CRITERIA_TERMS = (
+    " Chỉ dùng từ ngữ ứng viên hoặc câu hỏi đã dùng; không đưa vào lời thoại "
+    "thuật ngữ chỉ xuất hiện trong tiêu chí đánh giá."
+)
 _UNIFIED_TEXT_DESCRIPTIONS: Dict[str, str] = {
     "probe_text": (
         "Câu hỏi đào sâu gửi nguyên văn cho ứng viên, đúng một câu hỏi, bám vào ý còn thiếu. "
-        "Không nhận xét đúng/sai, không gợi ý đáp án, không nhắc tiêu chí đánh giá."
+        "Không nhận xét đúng/sai, không gợi ý đáp án, không nhắc tiêu chí đánh giá." + _NO_CRITERIA_TERMS
     ),
     "clarify_text": (
         "Nói lại câu hỏi đang chờ theo cách khác, gửi nguyên văn cho ứng viên. "
-        "Không giảng giải, không chê câu hỏi khó hay dễ, không tiết lộ đáp án mong đợi."
+        "Không giảng giải, không chê câu hỏi khó hay dễ, không tiết lộ đáp án mong đợi." + _NO_CRITERIA_TERMS
     ),
     "redirect_text": (
         "Một lời nhắc nhẹ rồi quay lại câu hỏi đang chờ, gửi nguyên văn cho ứng viên. "
-        "Không phán xét ứng viên, không nhận xét đúng/sai."
+        "Không phán xét ứng viên, không nhận xét đúng/sai." + _NO_CRITERIA_TERMS
     ),
     "answer_text": (
         "Trả lời câu hỏi của ứng viên, gửi nguyên văn. Chỉ dùng thông tin tuyển dụng đã biết; "

@@ -1,6 +1,8 @@
 """Voice experiments and the authenticated LiveKit adapter for Interview Core."""
 
+import asyncio
 import contextlib
+import json
 import os
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -10,7 +12,7 @@ from typing import Any
 import httpx
 import jwt
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -29,6 +31,12 @@ from src.modules.interviews.session.voice_facade import (
     submit_voice_answer,
 )
 from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
+from src.modules.interviews.agents.interviewer.menu import build_menu
+from src.modules.interviews.agents.interviewer.pacing import pacing_block
+from src.modules.interviews.agents.interviewer.thinker import decide_by_model, is_violation
+from src.modules.interviews.agents.interviewer.tools import unified_enabled
+from src.modules.interviews.core.contracts.interview import CandidateTurnInput
+from src.modules.interviews.core.conversation.turn_context import build_turn_context
 from src.modules.interviews.memory import candidate_memory
 from src.modules.interviews.core.contracts.interview import InterviewStage
 from src.modules.interviews.core.guardrails.common import canary_scope
@@ -376,6 +384,27 @@ async def preview_livekit_runtime_answer(
             telemetry={},
             memory_hits=memory_hits,
         )
+    # V2 brief §5: reuse the Unified Thinker for speculation. With the flag on,
+    # the preview also carries the whole decision -- action, target and the
+    # spoken line -- so the §6 Fast path can execute it with no new call. It
+    # is computed on this transcript only, and the token binds it to that
+    # transcript's hash and this turn: it is redeemed only if the candidate
+    # finished saying exactly this, which is what makes it not "partial".
+    decision_record = None
+    if unified_enabled():
+        with contextlib.suppress(Exception):
+            ctx = build_turn_context(
+                CandidateTurnInput(session_id=session["id"], turn_index=int(current_turn["turn_index"]),
+                                   text_content=transcript, modality="VOICE"),
+                session_state,
+            )
+            menu = build_menu(ctx, memory_enabled=False)
+            with canary_scope(session["id"]):
+                decision = await decide_by_model(
+                    ctx, allowed_actions=menu.allowed, pacing=pacing_block(ctx), unified=True
+                )
+            if is_violation(decision) is None and decision.action in menu.allowed:
+                decision_record = decision.as_record()
     settings = get_settings()
     preview_token = jwt.encode(
         {
@@ -385,6 +414,7 @@ async def preview_livekit_runtime_answer(
             "turn_id": str(current_turn["id"]),
             "transcript_hash": sha256(transcript.encode("utf-8")).hexdigest(),
             "evaluation": evaluation,
+            "decision": decision_record,
             "iat": datetime.now(UTC),
             "exp": datetime.now(UTC) + timedelta(minutes=2),
         },
@@ -430,13 +460,15 @@ async def mark_livekit_candidate_left(
 @router.post("/livekit/runtime/message")
 async def send_livekit_runtime_message(
     payload: VoiceRuntimeMessage,
+    stream: bool = False,
     claims: dict[str, str] = Depends(_voice_runtime_claims),
     db: AsyncSession = Depends(get_db),
-) -> dict:
+):
     session = await _runtime_session(db, claims)
     modality = "VIDEO" if session["mode"] == "video" else "VOICE"
     telemetry = {**payload.telemetry, "transport": "livekit", "modality": modality}
     precomputed_evaluation = None
+    precomputed_decision = None
     if payload.preview_token:
         settings = get_settings()
         try:
@@ -462,26 +494,89 @@ async def send_livekit_runtime_message(
                 )
                 if str(active_turn) == preview.get("turn_id"):
                     precomputed_evaluation = preview["evaluation"]
+                    if isinstance(preview.get("decision"), dict):
+                        precomputed_decision = preview["decision"]
         except jwt.InvalidTokenError:
             # Preview is an optimization only; canonical evaluation must still run.
             pass
-    try:
-        return await submit_voice_answer(
-            db=db,
-            session_row=session,
-            client_message_id=payload.client_message_id,
-            content=payload.content,
-            telemetry=telemetry,
-            duration_seconds=payload.duration_seconds,
-            modality=modality,
-            precomputed_evaluation=precomputed_evaluation,
-        )
-    except ValueError as exc:
-        await db.rollback()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except ChatRuntimeError as exc:
-        await db.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not stream:
+        try:
+            return await submit_voice_answer(
+                db=db,
+                session_row=session,
+                client_message_id=payload.client_message_id,
+                content=payload.content,
+                telemetry=telemetry,
+                duration_seconds=payload.duration_seconds,
+                modality=modality,
+                precomputed_evaluation=precomputed_evaluation,
+                precomputed_decision=precomputed_decision,
+            )
+        except ValueError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ChatRuntimeError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # V2 spec §6.4 / §12 and the correction brief §7: the Hybrid path's early
+    # acknowledgment must reach the worker before the graph has finished. The
+    # worker opts in with ``?stream=1`` and reads NDJSON: zero or one
+    # ``response.early`` line as soon as the Talker's guarded line exists,
+    # then exactly one ``response.final`` carrying the body the plain path
+    # returns. Nothing about the turn itself changes -- same command, same
+    # checkpoint, same persistence; only the delivery is incremental. The
+    # trade-off: a failure after the headers are sent arrives as
+    # ``response.error`` with the status the plain path would have raised.
+    early: asyncio.Queue = asyncio.Queue()
+
+    def on_early_speech(text_value: str) -> None:
+        early.put_nowait({"type": "response.early", "text": text_value})
+
+    async def run() -> dict:
+        try:
+            return await submit_voice_answer(
+                db=db,
+                session_row=session,
+                client_message_id=payload.client_message_id,
+                content=payload.content,
+                telemetry=telemetry,
+                duration_seconds=payload.duration_seconds,
+                modality=modality,
+                precomputed_evaluation=precomputed_evaluation,
+                precomputed_decision=precomputed_decision,
+                on_early_speech=on_early_speech,
+            )
+        except ValueError as exc:
+            await db.rollback()
+            return {"type": "response.error", "status": 422, "detail": str(exc)}
+        except ChatRuntimeError as exc:
+            await db.rollback()
+            return {"type": "response.error", "status": 409, "detail": str(exc)}
+
+    async def lines():
+        task = asyncio.create_task(run())
+        try:
+            while not task.done():
+                getter = asyncio.create_task(early.get())
+                done, _ = await asyncio.wait({task, getter}, return_when=asyncio.FIRST_COMPLETED)
+                if getter in done:
+                    yield json.dumps(getter.result(), ensure_ascii=False) + "\n"
+                else:
+                    getter.cancel()
+            # Drain anything the Talker queued in the same tick the turn ended.
+            while not early.empty():
+                yield json.dumps(early.get_nowait(), ensure_ascii=False) + "\n"
+            result = task.result()
+            if result.get("type") == "response.error":
+                yield json.dumps(result, ensure_ascii=False) + "\n"
+            else:
+                yield json.dumps({"type": "response.final", **result}, ensure_ascii=False, default=str) + "\n"
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson")
 
 
 @router.post("/livekit/runtime/events", status_code=202)

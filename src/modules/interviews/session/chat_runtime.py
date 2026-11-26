@@ -933,6 +933,8 @@ async def process_candidate_message(
     modality: str = "CHAT",
     duration_seconds: float = 0.0,
     precomputed_evaluation: dict[str, Any] | None = None,
+    precomputed_decision: dict[str, Any] | None = None,
+    on_early_speech: Any = None,
     elapsed_override_seconds: float | None = None,
     core_engine: InterviewCoreEngine | None = None,
 ) -> dict[str, Any]:
@@ -1484,6 +1486,7 @@ async def process_candidate_message(
         duration_seconds=duration_seconds,
         telemetry=telemetry or {},
         precomputed_evaluation=precomputed_evaluation,
+        precomputed_decision=precomputed_decision,
     )
 
     # Langfuse: one trace per turn with every model call, the decision and the
@@ -1526,7 +1529,10 @@ async def process_candidate_message(
                 memory_user = str(session_row.get("user_id") or "")
                 session_state["candidate_memory"] = await candidate_memory.load(memory_user)
                 memory_search = candidate_memory.search_for(memory_user)
-            core_output = await run_turn(engine, turn_input, session_state, memory_search=memory_search)
+            core_output = await run_turn(
+                engine, turn_input, session_state,
+                memory_search=memory_search, on_early_speech=on_early_speech,
+            )
         except Exception as exc:
             trace_event(
                 "interviewer",

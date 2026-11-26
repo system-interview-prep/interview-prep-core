@@ -21,10 +21,18 @@ class TurnGraphState(TypedDict, total=False):
     menu_reasons: dict[str, str]
     pacing: dict[str, Any]
     memory_search: Any
+    # route (LIVE only): the execution path of V2 spec §6.1
+    execution_path: str  # "fast" | "unified" | "hybrid"
+    route_reason: str
+    # Called with the early acknowledgment on the Hybrid path, before fan-in.
+    # Live callable: never checkpointed, this graph has no checkpointer.
+    on_early_speech: Any
     # decide
     decision: Any
     rule_decision: Any
     agent_decision: Any
+    talker_output: Any
+    arbiter: dict[str, Any] | None
     executed: str
     decide_error: str | None
     # act / guards_out

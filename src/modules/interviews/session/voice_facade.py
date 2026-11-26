@@ -12,7 +12,7 @@ async def start_voice_interview(db: AsyncSession, session_row: dict[str, Any]) -
     """Start or resume a voice interview using the canonical chat runtime."""
     return await run_interview_command(
         session_id=str(session_row["id"]), command="open",
-        operations=database_operations(db=db, user={}, session_row=session_row),
+        operations=database_operations(db=db, user={}, session_row=session_row, on_early_speech=on_early_speech),
     )
 
 
@@ -26,6 +26,8 @@ async def submit_voice_answer(
     duration_seconds: float = 0.0,
     modality: str = "VOICE",
     precomputed_evaluation: dict[str, Any] | None = None,
+    precomputed_decision: dict[str, Any] | None = None,
+    on_early_speech: Any = None,
 ) -> dict[str, Any]:
     """Submit a final media transcript to the modality-neutral Interview Core."""
     return await run_interview_command(
@@ -34,7 +36,8 @@ async def submit_voice_answer(
         payload={"client_message_id": client_message_id, "content": content,
                  "telemetry": telemetry or {}, "modality": modality,
                  "duration_seconds": duration_seconds,
-                 "precomputed_evaluation": precomputed_evaluation},
+                 "precomputed_evaluation": precomputed_evaluation,
+                 "precomputed_decision": precomputed_decision},
     )
 
 

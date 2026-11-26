@@ -53,6 +53,11 @@ class CandidateTurnInput(BaseModel):
     duration_seconds: float = Field(default=0.0, description="Thời gian ứng viên hoàn thành câu trả lời")
     telemetry: Dict[str, Any] = Field(default_factory=dict, description="Metadata: VAD pauses, typing speed, proctoring flags...")
     precomputed_evaluation: Optional[Dict[str, Any]] = Field(default=None, exclude=True)
+    # A validated preview that already carries the whole decision (V2 spec §7):
+    # the Fast path executes it without a new call. Set only by the voice
+    # runtime after the server has confirmed the final transcript and the
+    # active turn match what the preview assumed. Never persisted.
+    precomputed_decision: Optional[Dict[str, Any]] = Field(default=None, exclude=True)
 
 
 class InterviewerTurnOutput(BaseModel):

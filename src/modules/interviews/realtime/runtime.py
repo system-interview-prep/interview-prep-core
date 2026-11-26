@@ -24,6 +24,7 @@ from livekit.agents import Agent, AgentServer, AgentSession, inference
 from livekit.agents.voice.turn import InterruptionOptions
 from livekit.plugins import elevenlabs
 
+from src.core.config import get_settings
 from src.modules.interviews.realtime.anticipation import AnticipationEngine, PreviewKey, preview_key
 from src.modules.interviews.realtime.endpointing import (
     ANSWER_PAUSE_NUDGE_SECONDS, PROCESSING_FILLER_SECONDS, AnswerWindow,
@@ -194,10 +195,15 @@ class VoiceLabAgent(Agent):
         # engine owns the task, the budget and the staleness rules, and its
         # `take` is synchronous so no code here can wait on a preview.
         self._turn_generation = 0
+        # Hybrid (V2 §6.4): consume the API's early acknowledgment stream.
+        # Off by default; read once so delivery cannot change mid-session.
+        self._hybrid_enabled = bool(get_settings().interview_talker_enabled)
         self._anticipation = AnticipationEngine(
             self._speculate,
             enabled=enable_speculative_preview,
-            on_event=lambda event, **fields: self.report(event, **fields),
+            # The engine names its events generically; report() drops anything
+            # outside VOICE_EVENTS, so they are prefixed here to be kept.
+            on_event=lambda event, **fields: self.report(f"voice_{event}", **fields),
         )
         self._core_in_flight = False
         self._repeat_after_core = False
@@ -418,6 +424,66 @@ class VoiceLabAgent(Agent):
     def _unclear_transcript_text(self) -> str:
         return unclear_transcript_text(self._locale)
 
+    async def _submit_answer(self, answer, preview_token: str | None, core_started: float) -> dict:
+        """POST the answer; on the Hybrid path, speak the early line as it arrives.
+
+        V2 spec §6.4 and the correction brief §7. The API streams NDJSON when
+        asked: zero or one ``response.early`` as soon as the Talker's guarded
+        acknowledgment exists, then one ``response.final``. The early line is
+        spoken immediately, interruptible, outside the chat context -- it is a
+        beat, not a decision -- and the method returns only the final body, so
+        everything after it is unchanged. Without Hybrid the plain JSON path is
+        used, exactly as before.
+        """
+        body = {
+            "clientMessageId": answer.client_message_id,
+            "content": answer.text,
+            "durationSeconds": answer.duration_seconds,
+            "telemetry": {
+                "roomName": self._room_name,
+                "rawTranscript": answer.raw_text,
+                "answerFragments": answer.fragment_count,
+                "transcriptConfidence": answer.confidence,
+                "interruption": self._last_interruption_telemetry,
+            },
+            "previewToken": preview_token,
+        }
+        if not getattr(self, "_hybrid_enabled", False):
+            response = await self._runtime_client.post("/ai/voice-lab/livekit/runtime/message", json=body)
+            response.raise_for_status()
+            return response.json()
+
+        final: dict | None = None
+        async with self._runtime_client.stream(
+            "POST", "/ai/voice-lab/livekit/runtime/message", params={"stream": "1"}, json=body
+        ) as response:
+            response.raise_for_status()
+            async for raw in response.aiter_lines():
+                if not raw.strip():
+                    continue
+                event = json.loads(raw)
+                kind = event.get("type")
+                if kind == "response.early":
+                    text_value = str(event.get("text") or "").strip()
+                    if text_value and not self._answer_pause_nudged:
+                        self.report(
+                            "voice_early_acknowledgment",
+                            after_ms=round((perf_counter() - core_started) * 1000),
+                        )
+                        # Guarded server-side (acknowledgement guard in the
+                        # Talker). Interruptible so a candidate who resumes
+                        # talking cuts it off; never added to the chat context.
+                        self.speak(text_value, allow_interruptions=True, add_to_chat_ctx=False, kind="early_ack")
+                elif kind == "response.final":
+                    final = {k: v for k, v in event.items() if k != "type"}
+                elif kind == "response.error":
+                    raise RuntimeError(
+                        f"Interview Core returned {event.get('status')}: {event.get('detail')}"
+                    )
+        if final is None:
+            raise RuntimeError("Interview Core stream ended without a final response")
+        return final
+
     async def _commit_answer(self) -> None:
         """Submit the buffered answer to Interview Core and speak its reply."""
         if self._core_in_flight:
@@ -479,24 +545,7 @@ class VoiceLabAgent(Agent):
             filler_task = asyncio.create_task(filler())
         core_started = perf_counter()
         try:
-            response = await self._runtime_client.post(
-                "/ai/voice-lab/livekit/runtime/message",
-                json={
-                    "clientMessageId": answer.client_message_id,
-                    "content": answer.text,
-                    "durationSeconds": answer.duration_seconds,
-                    "telemetry": {
-                        "roomName": self._room_name,
-                        "rawTranscript": answer.raw_text,
-                        "answerFragments": answer.fragment_count,
-                        "transcriptConfidence": answer.confidence,
-                        "interruption": self._last_interruption_telemetry,
-                    },
-                    "previewToken": preview_token,
-                },
-            )
-            response.raise_for_status()
-            response_payload = response.json()
+            response_payload = await self._submit_answer(answer, preview_token, core_started)
             assistant = response_payload.get("assistantResponse")
             content = assistant.get("content") if isinstance(assistant, dict) else None
             if not isinstance(content, str) or not content.strip():

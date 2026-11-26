@@ -23,8 +23,17 @@ from src.modules.interviews.agents.evaluator.report import (
 )
 
 
-def database_operations(*, db: AsyncSession, user: dict, session_row: dict) -> InterviewOperations:
-    """Bind trusted ownership-checked context outside checkpointed state."""
+def database_operations(
+    *, db: AsyncSession, user: dict, session_row: dict, on_early_speech: Any = None
+) -> InterviewOperations:
+    """Bind trusted ownership-checked context outside checkpointed state.
+
+    ``on_early_speech`` is a live callable and therefore travels here, in the
+    closure, not in ``payload``: payload is LangGraph state and is
+    checkpointed to PostgreSQL (V2 brief §8 -- no live objects in
+    persistent state). The Hybrid path calls it with the Talker's guarded
+    acknowledgment before the graph finishes.
+    """
     session_id = str(session_row["id"])
     planner = PlannerAgent()
 
@@ -89,6 +98,8 @@ def database_operations(*, db: AsyncSession, user: dict, session_row: dict) -> I
             modality=payload.get("modality", "CHAT"),
             duration_seconds=payload.get("duration_seconds", 0.0),
             precomputed_evaluation=payload.get("precomputed_evaluation"),
+            precomputed_decision=payload.get("precomputed_decision"),
+            on_early_speech=on_early_speech,
         )
 
     async def finish(payload: dict) -> dict:

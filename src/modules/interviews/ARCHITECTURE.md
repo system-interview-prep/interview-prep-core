@@ -174,7 +174,9 @@ is marked done without a test or a measurement behind it.
 | Core boundary (brief §2) | Core is framework-independent: no AI provider, LangGraph, LiveKit, database or LangMem. Inference sits behind `TurnInference`; `agents/interviewer/engine.py` composes the halves. | `test_import_boundaries.py` |
 | Unified Thinker (§6.2) | One inference carries evaluation, decision and the spoken line for `acknowledge_and_probe`, `clarify_question`, `redirect_off_topic`, `answer_candidate_question`. Each text passes that action's own guard; a rejected one falls back. | `test_call_budget.py`, measured below |
 | Adaptive endpointing (§8) | Wait follows transcript completeness, stability and ASR confidence across the spec's three bands. | `test_adaptive_endpointing.py` |
-| Anticipation non-blocking (§7) | The 1 s wait on the critical path is gone. `take()` is synchronous; previews are validated against seven version fields. | `test_anticipation.py` |
+| Anticipation Engine (§7, brief §5) | Owns speculation; the runtime holds no preview fields. `take()` is synchronous; seven validation fields; cancellable and bounded; memory prefetched during speech; with the Unified flag the preview carries a whole decision. | `test_anticipation.py`, `test_core_in_flight_flow.py` |
+| Execution paths (§6.1, brief §6) | `router.py` picks Fast / Unified / Hybrid inside LIVE from values the turn already holds — never a call. RULE/SHADOW are untouched rollout modes. Fast executes a server-validated preview with 0 new calls. | `test_execution_paths.py` |
+| Hybrid Parallel (§6.4, brief §7) | `talker.py` (Luna via the existing provider's `model=`), `arbiter.py` (deterministic, no third call). Thinker and Talker run concurrently; the guarded early acknowledgment reaches the worker before fan-in over an opt-in NDJSON stream of the internal message endpoint (`response.early` → `response.final`); Luna is not waited for once the Thinker answers. **Off by default** (`interview_talker_enabled`). | `test_execution_paths.py`, `test_runtime_message_stream.py`, `test_core_in_flight_flow.py` |
 | Talker model reachable (§7) | `gpt-5.6-luna` resolves through the existing OpenAI provider. | live probe, 2026-11-26 |
 
 ### Measured, not assumed
@@ -196,9 +198,8 @@ the action, which cancels the saved round trip at the median. TTFA and TTMR are
 
 | Brief | Outstanding |
 |---|---|
-| §5 Anticipation | The engine exists and is non-blocking, but the LiveKit runtime still owns its own preview-token fields instead of delegating; speculation does not yet reuse the Unified Thinker, and memory is not prefetched during speech. |
-| §6 Execution paths | Fast / Unified / Hybrid are **not** implemented as explicit routed paths. RULE/LIVE/SHADOW remain rollout modes and must not be confused with them. |
-| §7 Hybrid Parallel | `talker.py`, `arbiter.py` and adaptive routing do not exist. Model reachability is verified; nothing is wired. `interview_talker_enabled` is false. |
+| §5–§7 validation | Built and unit-tested, **not yet measured live** as a set. `execution_paths_benchmark.py` compares Baseline / Unified / Unified+Anticipation / Hybrid on real turns (calls incl. speculation and Talker, p50/p95, rejection and fallback rates, early-ack availability, tokens); it has run only with `--stub`. TTFA/TTMR still need a LiveKit room. Hybrid stays off until that run and a shadow period say otherwise. |
+| Early-ack transport | Delivered over an opt-in NDJSON stream of the internal worker↔API endpoint. A failure after headers arrives as `response.error`; the plain JSON path is unchanged. The candidate-facing protocol is untouched. |
 | §8 Session/graph | `process_candidate_message` is still one 1419-line function. Context extraction done; the PHASE 1/2/3 split is not. |
 | §9 Evaluator/memory | Report is persisted before extraction, but post-session memory extraction is **not** yet a durable Celery/RabbitMQ job. |
 | §3 Quality parity | Call counts and latency measured; response-quality parity still needs a shadow run. The record and `agent_shadow_report` expose `carried_text_rate` / `rejected_by` to make it checkable. |
@@ -210,7 +211,7 @@ the action, which cancels the saved round trip at the median. TTFA and TTMR are
 |---|---|
 | `INTERVIEW_UNIFIED_THINKER` | One inference per turn (§6.2). |
 | `VOICE_ADAPTIVE_ENDPOINTING` | Transcript-aware commit wait (§8), with `VOICE_COMMIT_COMPLETE` / `_UNSURE` / `_HESITANT`. |
-| `interview_talker_enabled` | Reserved for Hybrid; nothing reads it yet. |
+| `INTERVIEW_TALKER_ENABLED` / `INTERVIEW_TALKER_MODEL` | Hybrid path (§6.4). Model empty = Talker unavailable, router never picks Hybrid. Verified reachable: `gpt-5.6-luna`. |
 
 ## Change rule
 

@@ -20,6 +20,7 @@ through ``handle_turn`` unchanged.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from time import perf_counter
@@ -28,11 +29,16 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from src.core.trace_logging import trace_event
-from src.modules.interviews.agents.interviewer.thinker import decide_by_model, is_violation
+from src.core.config import get_settings
+from src.modules.interviews.agents.interviewer.arbiter import arbitrate
 from src.modules.interviews.agents.interviewer.menu import build_menu
 from src.modules.interviews.agents.interviewer.pacing import pacing_block
 from src.modules.interviews.agents.interviewer.record import decision_record, emit
+from src.modules.interviews.agents.interviewer.router import FAST, HYBRID, choose_path
 from src.modules.interviews.agents.interviewer.state import TurnGraphState
+from src.modules.interviews.agents.interviewer.talker import predict_by_talker, talker_model
+from src.modules.interviews.agents.interviewer.thinker import decide_by_model, is_violation
+from src.modules.interviews.core.conversation.turn_context import Decision
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput, InterviewerTurnOutput
 from src.modules.interviews.core.conversation.turn_context import build_turn_context
 from src.modules.interviews.core.guardrails.common import canary_scope
@@ -62,11 +68,62 @@ async def build_menu_node(state: TurnGraphState) -> dict:
     return {"allowed_actions": menu.allowed, "menu_reasons": menu.reasons, "pacing": pacing_block(ctx)}
 
 
+def _decision_from_preview(record: dict) -> Decision | None:
+    """Rebuild the decision a validated preview carried (V2 spec §7, Fast path).
+
+    The voice runtime sets ``precomputed_decision`` only after the server has
+    confirmed the final transcript and the active turn match what the preview
+    assumed, so this was computed on the exact text the candidate finished
+    with -- not a partial transcript. It is still re-checked against the menu
+    below like any live decision, and marked as having come from a preview.
+    """
+    try:
+        action = str(record.get("action") or "")
+        if not action:
+            return None
+        return Decision(
+            action,
+            dict(record.get("args") or {}),
+            reason=str(record.get("reason") or "preview"),
+            evidence_refs=[str(r) for r in (record.get("evidence_refs") or [])],
+            source="agent",
+            path=["preview", *[str(x) for x in (record.get("path") or [])]],
+        )
+    except Exception:  # noqa: BLE001 - a malformed preview is just "no preview"
+        return None
+
+
+async def route(state: TurnGraphState) -> dict:
+    """Pick the execution path (V2 spec §6.1). Deterministic; costs no call.
+
+    Only LIVE routes. RULE and SHADOW are rollout modes and keep their own
+    behaviour untouched; the path recorded for them is the mode itself so the
+    record never shows a path those modes did not take.
+    """
+    mode = state.get("mode", MODE_RULE)
+    if mode != MODE_LIVE:
+        return {"execution_path": mode, "route_reason": "rollout_mode"}
+    settings = get_settings()
+    turn_input = state["turn_input"]
+    chosen = choose_path(
+        early_decision=state.get("early_decision"),
+        preview_decision=getattr(turn_input, "precomputed_decision", None),
+        modality=getattr(turn_input, "modality", "CHAT"),
+        hybrid_enabled=bool(settings.interview_talker_enabled),
+        talker_model=talker_model(),
+    )
+    return {"execution_path": chosen.path, "route_reason": chosen.reason}
+
+
 async def decide(state: TurnGraphState) -> dict:
     """Use the model as the live decider; run the legacy ladder only as fallback.
 
     Shadow deliberately evaluates both paths. Rule mode remains the explicit
-    fallback/rollback mode.
+    fallback/rollback mode. Inside LIVE the execution path chosen by ``route``
+    decides how many calls are made: Fast reuses a validated preview (0 new),
+    Unified asks the Thinker once (1), Hybrid asks the Thinker and the Talker
+    concurrently (2 in parallel) and lets the Arbiter attach the Talker's line
+    only when it can prove equivalence.
     """
     early = state.get("early_decision")
     if early is not None:
@@ -79,13 +136,16 @@ async def decide(state: TurnGraphState) -> dict:
 
     agent = None
     error = None
+    talker = None
+    arbiter: dict | None = None
+    allowed = state.get("allowed_actions", [])
 
     async def ask_agent() -> None:
         nonlocal agent, error
         try:
             agent = await decide_by_model(
                 ctx,
-                allowed_actions=state.get("allowed_actions", []),
+                allowed_actions=allowed,
                 pacing=state.get("pacing", {}),
                 memory_search=state.get("memory_search"),
             )
@@ -105,16 +165,77 @@ async def decide(state: TurnGraphState) -> dict:
             "decide_error": error,
         }
 
-    # MODE_LIVE: deliberately call the new decider before the legacy rule
-    # ladder, so its evaluation cannot steer or overrule an accepted decision.
-    await ask_agent()
+    path = state.get("execution_path")
+
+    # ---- Fast: a validated preview already holds the decision -------------
+    if path == FAST:
+        preview = getattr(state["turn_input"], "precomputed_decision", None)
+        agent = _decision_from_preview(preview) if preview else None
+        if agent is None:
+            # Nothing reusable after all: pay for the Unified call.
+            trace_event("interviewer", "fast_path_fell_through", session_id=str(ctx.session_id))
+            await ask_agent()
+
+    # ---- Hybrid: Thinker and Talker concurrently, early speech before fan-in
+    elif path == HYBRID:
+        thinker_task = asyncio.create_task(ask_agent())
+        talker_task = asyncio.create_task(
+            predict_by_talker(ctx, allowed_actions=allowed, pacing=state.get("pacing", {}))
+        )
+        # Completion order, recorded exactly. Inferring "who finished first"
+        # from asyncio.wait's return set is wrong when both land in one loop
+        # tick (Windows timers resolve at ~15 ms): the set holds both, the
+        # Thinker looks "done first", and a perfectly good acknowledgment is
+        # dropped although nothing has been spoken yet. The callbacks fire in
+        # the order the tasks actually completed.
+        finished: list[asyncio.Task] = []
+        thinker_task.add_done_callback(finished.append)
+        talker_task.add_done_callback(finished.append)
+        await asyncio.wait({thinker_task, talker_task}, return_when=asyncio.FIRST_COMPLETED)
+        if talker_task.done() and (not finished or finished[0] is talker_task):
+            # The Talker got there first: say its neutral line now, while the
+            # Thinker is still deciding (or has only just finished and nothing
+            # has been spoken). §6.3: only after the turn ended and the input
+            # guards passed (both true here) and only a line that already
+            # passed the acknowledgement guard (talker.py does that).
+            talker = talker_task.result()
+            speak = state.get("on_early_speech")
+            if talker is not None and talker.acknowledgment and speak is not None:
+                try:
+                    speak(talker.acknowledgment)
+                    trace_event("interviewer", "early_speech", session_id=str(ctx.session_id))
+                except Exception:  # noqa: BLE001 - early speech is best effort
+                    logger.debug("early speech failed", exc_info=True)
+        await thinker_task
+        if talker is None:
+            if talker_task.done():
+                talker = talker_task.result()
+            else:
+                # §6.4: the runtime does not wait for Luna at fan-in once the
+                # Thinker has answered. The client is cancelled; the provider
+                # may still bill, which the record counts.
+                talker_task.cancel()
+                trace_event("interviewer", "talker_cancelled_at_fan_in", session_id=str(ctx.session_id))
+
+    # ---- Unified: the single Thinker call ---------------------------------
+    else:
+        await ask_agent()
 
     if mode == MODE_LIVE:
         if (
             agent is not None
             and is_violation(agent) is None
-            and agent.action in state.get("allowed_actions", [])
+            and agent.action in allowed
         ):
+            if path == HYBRID:
+                verdict = arbitrate(ctx, thinker=agent, talker=talker, allowed_actions=allowed)
+                agent = verdict.decision
+                arbiter = {
+                    "talker_reused": verdict.talker_reused,
+                    "outcome": verdict.talker_outcome,
+                    "early_acknowledgment": verdict.acknowledgment,
+                    "talker_model": getattr(talker, "model", None),
+                }
             # Live decisions do not consume the legacy evaluator's answer,
             # sufficiency, intent or probe text. Keep only the code-computed
             # queue/window controls needed by the action handlers.
@@ -129,6 +250,8 @@ async def decide(state: TurnGraphState) -> dict:
                 "decision": agent,
                 "rule_decision": None,
                 "agent_decision": agent,
+                "talker_output": talker,
+                "arbiter": arbiter,
                 "executed": "agent",
                 "decide_error": error,
             }
@@ -140,6 +263,8 @@ async def decide(state: TurnGraphState) -> dict:
             "decision": rule,
             "rule_decision": rule,
             "agent_decision": agent,
+            "talker_output": talker,
+            "arbiter": arbiter,
             "executed": "rule",
             "decide_error": error,
         }
@@ -181,6 +306,9 @@ async def record(state: TurnGraphState) -> dict:
         agent_decision=state.get("agent_decision"),
         executed=state.get("executed", "rule"),
         decide_error=state.get("decide_error"),
+        execution_path=state.get("execution_path"),
+        route_reason=state.get("route_reason"),
+        arbiter=state.get("arbiter"),
         contract={
             "reference": contract.get("reference"),
             "session_plan_fingerprint": contract.get("session_plan_fingerprint"),
@@ -209,13 +337,15 @@ def build_turn_graph() -> Any:
     graph = StateGraph(TurnGraphState)
     graph.add_node("guards_in", guards_in)
     graph.add_node("build_menu", build_menu_node)
+    graph.add_node("route", route)
     graph.add_node("decide", decide)
     graph.add_node("act", act)
     graph.add_node("guards_out", guards_out)
     graph.add_node("record", record)
     graph.add_edge(START, "guards_in")
-    graph.add_conditional_edges("guards_in", _after_guards, {"decide": "decide", "build_menu": "build_menu"})
-    graph.add_edge("build_menu", "decide")
+    graph.add_conditional_edges("guards_in", _after_guards, {"decide": "route", "build_menu": "build_menu"})
+    graph.add_edge("build_menu", "route")
+    graph.add_edge("route", "decide")
     graph.add_edge("decide", "act")
     graph.add_edge("act", "guards_out")
     graph.add_edge("guards_out", "record")
@@ -247,8 +377,15 @@ async def run_turn(
     *,
     mode: str | None = None,
     memory_search: Any = None,
+    on_early_speech: Any = None,
 ) -> InterviewerTurnOutput:
-    """One candidate turn through the graph; the engine's own pipeline for doubles."""
+    """One candidate turn through the graph; the engine's own pipeline for doubles.
+
+    ``on_early_speech(text)`` is called on the Hybrid path with the Talker's
+    guarded acknowledgment as soon as it is available, before the graph has
+    finished -- the §6.4 early response that does not wait for fan-in. A
+    caller that cannot speak passes nothing and the line is simply not said.
+    """
     if not engine_has_steps(engine):
         return await engine.handle_turn(turn_input, session_state)
     with canary_scope(turn_input.session_id) as code:
@@ -260,6 +397,7 @@ async def run_turn(
                 "canary_code": code,
                 "mode": mode or agent_mode(),
                 "memory_search": memory_search,
+                "on_early_speech": on_early_speech,
             },
             # The parent command graph uses sync durability; explicitly avoid
             # inheriting it because this graph has no checkpointer of its own.
