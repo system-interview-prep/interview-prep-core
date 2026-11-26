@@ -308,6 +308,9 @@ class VoiceLabAgent(Agent):
 
     def on_interim_transcript(self, text: str) -> None:
         """Speculatively evaluate a stable rolling transcript without committing it."""
+        # Endpointing needs to know whether the tail is still moving whether or
+        # not speculation is on, so this is fed before the preview guard.
+        self._answer.note_interim(text)
         if not self._enable_speculative_preview:
             return
         transcript = normalize_transcript_for_locale(
