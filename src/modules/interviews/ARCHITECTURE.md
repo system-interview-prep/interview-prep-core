@@ -524,6 +524,102 @@ TTS first byte) and will be dropped if the candidate resumes in the meantime
 — its real hit rate is unmeasured; relevance and naturalness are human
 judgements and have none yet.
 
+### Run 5 — streaming backchannel validation (2026-11-26; 46 paid calls of the 81 authorized)
+
+**Luna streaming probe (1 call, the real backchannel prompt, 666 input
+tokens):** real incremental delivery — 26 deltas of 1–11 characters — but
+**time to first token 4 080 ms**, the whole 30-token line inside the next
+343 ms (inter-delta gaps 0/89/122/128 ms), total 4 502 ms; usage reported
+in `response.completed` (666 / 30). The line was 18 words against a prompt
+asking for 12, so the guard's 14-word cap rejected it: the prompt now asks
+for 10 and the cap is 16. In the benchmark below, 16 Talker calls had TTFT
+734–1 174 ms (p50 822) and total 846–1 291 ms — the probe's 4 s was the
+first call on a cold model, not the rate. **Conclusion: streaming is real
+but the stream is short; what the candidate waits for is the first token.**
+
+**Audit of the first implementation (localized changes, all tested):**
+(1) the Talker is now also asked on a *stable* partial — Qwen re-emitting an
+unchanged interim — not only at fragment ends and the submit; (2) generation
+is separate from playback: a line prepared during speech waits up to 6 s for
+the next natural pause and is then re-checked against the transcript as it
+is *now* (dropped as `context_moved` after > 12 new words); (3) the prompt
+no longer forces silence while `speaking=true` — it says the line will play
+at the next pause, so follow the completed thought; (4) exactly one validated
+unit per inference, the stream closed the moment it is known; (5) a unit is
+emitted at its terminator, not at the following whitespace or the end of
+the stream; (6) explicit closure on every exit path — the facade closes the
+SDK stream and its inner generator, the Talker closes the facade's, the
+coordinator closes the API's — and an early close is an `ai_call_logs` row
+with `error_type=cancelled` (usage unknown: the provider reports none for a
+stream it did not finish); (7) a cancelled inference is awaited before the
+next one starts, so two Talker streams never overlap for one session;
+(8) see (2). Found by the benchmark and fixed after it: cancelled rows were
+lost to the table's `status IN (ok, error)` constraint (9 of session B's 16
+Talker calls were invisible), and a cancelled inference left no event.
+
+**Qwen adapter profile** (real server, real-time paced, two pilot answers,
+no LLM): the server decodes on its own 1 s window, so client chunk size does
+not add partials — 22 and 11 interims for every size; 18 of 21 interims had
+their tail revised later (stability is low: only a *repeated* interim is
+safe to act on, which is what the stable-partial trigger uses).
+
+| chunk | request p50 | backlog max | pcm end → final |
+|---|---|---|---|
+| 1 000 ms | 440–742 ms | 660–680 ms | 1 956–2 276 ms |
+| 500 ms | 313–331 ms | 560–620 ms | 1 905–1 941 ms |
+| 320 ms | 315–321 ms | 740–820 ms | 1 885–2 236 ms |
+| 250 ms | 317–318 ms | 820–880 ms | 1 909–2 921 ms |
+
+500 ms is the only size that helps (slightly: −50 ms to the final, lower
+backlog); 320 and 250 ms add requests faster than the server drains them.
+Not changed in configuration: the server's `--chunk-size-sec` must match.
+
+**Controlled benchmark** — two matched synthetic sessions, same eight
+answers, Unified Thinker, nudge off, Hybrid off, hard caps at dispatch
+(turn 6, session 40, Talker 2 per turn): A = no backchannel
+(`183fa339-7d21-4781-985c-5895e636d7f4`), B = streaming Talker
+(`4c698ae3-e686-4f0e-b4f3-813a63268d32`). p50 of 8 unless stated.
+
+| | A (no backchannel) | B (backchannel) |
+|---|---|---|
+| client TTFA (end of answer audio → first audible agent audio) | 9 075 ms | 5 961 ms |
+| client TTMR (→ first audio after the agent reports the reply) | 9 075 ms | 9 002 ms |
+| server TTFA / TTMR | 5 905 / 5 905 ms | 3 746 / 6 454 ms (p95 7 577 vs 8 368) |
+| speech end → submit | 2 076 ms | 2 058 ms |
+| Core | 3 421 ms | 3 755 ms |
+| reply playback after Core | 459 ms | 640 ms |
+| Talker time to first token / to unit | — | 822 / 936 ms (n=9 with events; 16 calls) |
+| Talker decisions | — | 16 inferences: 7 silence, 7 units synthesized, 6 audible, 1 cut before playing, 1 processing ack |
+| first audible backchannel after speech end | — | 2 070–3 971 ms (5 measured) |
+| candidate talked over a backchannel | — | 0 (synthetic speaker) |
+| fillers/backchannels cut by the reply | 0 | 5 of 8 turns |
+| provider calls (attributed) | 14 | 22 logged + 9 early-closed Talker calls lost to the constraint = 31 |
+| tokens in / out | 28 195 / 1 882 | 36 363 / 2 255 logged (+ ~9 × 1 000 in, unknown out) |
+| late speech after submit | 0/8 | 0/8 |
+| Evaluator | not run: the sessions never left the warm-up ("chưa có lượt trả lời chuyên môn") | same |
+
+What it says: **TTMR did not move** (client 9 075 → 9 002 ms, server
+5 905 → 6 454 ms — provider variance, n=8), as it must not: backchannels are
+not a latency improvement and are not claimed as one. **TTFA moved by
+~3.1 s** because a backchannel played first on 5 of 8 turns — that is
+earlier acknowledgment, not an earlier answer. Backchannel first byte paid
+VieNeu's cold connection (1 105–1 134 ms on 6 of 7; the keep-alive runs only
+at speech start and during Core); the reply's TTS was delayed ~180 ms by
+cutting the backchannel. Cost: +9 Talker calls per 8 answers at this cap,
+each ~900 input tokens (the context is re-sent), ~1.9 s of Talker wall time
+per turn off the critical path. Relevance and naturalness: **not rated** —
+the spoken text is not stored (events carry no speech) and a synthetic
+session cannot be human-rated; the 18-word probe line was on topic. Also
+under-reported: only 2 `voice_backchannel_spoken` events for 7 syntheses;
+the agent now logs each spoken/discarded/cancelled unit so the next run can
+say why. The client-server TTMR gap (~3.1 s) is the synthetic speaker's
+VAD tail (~1.4 s, run 4) plus transport and jitter buffering.
+
+**Remaining bottlenecks, in order:** the Thinker's provider call (3.4–3.8 s
+Core, 97 % of it); the ~2.05 s silence window (now one clock; `speech_end`
+anchor untested on a person); the Talker's ~0.8 s TTFT plus TTS first byte
+when the connection is cold; the Qwen 1 s decode window (~1.7 s to final).
+
 ### Remaining migration work
 
 | Brief | Outstanding |
@@ -547,7 +643,7 @@ judgements and have none yet.
 | `VOICE_ANSWER_COMMIT_ANCHOR` | `transcript` (default) or `speech_end`: the clock the 1.8 / 2.2 s window counts from (run 4). **Keep `transcript`** until the human benchmark labels false cuts under `speech_end`. |
 | `VOICE_ANSWER_PAUSE_NUDGE_ENABLED` | Default on. `0` silences the mid-answer nudge: the filler-off arm of the voice-output audit. |
 | `INTERVIEW_TURN_CALL_BUDGET` / `INTERVIEW_PREVIEW_CALL_BUDGET` / `INTERVIEW_SESSION_CALL_BUDGET` | Hard provider-call caps charged at dispatch (6 / 2 / 120). Not flags: always on. |
-| `INTERVIEW_BACKCHANNEL_ENABLED` (+ `_CALLS_PER_TURN`, `_MIN_GAP_SECONDS`, `_MAX_WORDS`) | The Talker as a context-aware streaming backchanneler; needs `INTERVIEW_TALKER_MODEL`. **Off** until the benchmark above has run. |
+| `INTERVIEW_BACKCHANNEL_ENABLED` (+ `_CALLS_PER_TURN`, `_MIN_GAP_SECONDS`, `_MAX_WORDS`) | The Talker as a context-aware streaming backchanneler; needs `INTERVIEW_TALKER_MODEL`. **Off**: run 5 measured it working (6 audible lines in 8 answers, TTMR unchanged, +9 calls) but relevance/naturalness are unrated and the warm TTS path is missing for it. |
 
 ## Change rule
 

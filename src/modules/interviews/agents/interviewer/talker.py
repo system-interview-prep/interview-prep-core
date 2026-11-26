@@ -114,15 +114,17 @@ def backchannel_prompt(is_vi: bool) -> str:
             "tự nhiên như một người đang chăm chú nghe.\n\n"
             "# Nhiệm vụ\n"
             "Đọc câu hỏi đang hỏi, vài câu gần đây, phần ứng viên đã nói tới giờ (bản ghi còn dang dở, có thể sai vài chữ), "
-            "trạng thái và các tín hiệu, rồi QUYẾT ĐỊNH: im lặng, hoặc nói MỘT câu rất ngắn (tối đa 12 từ) "
-            "cho thấy bạn đang theo dõi đúng điều họ vừa nói.\n\n"
+            "trạng thái và các tín hiệu, rồi QUYẾT ĐỊNH: im lặng, hoặc nói MỘT câu rất ngắn (tối đa 10 từ) "
+            "cho thấy bạn đang theo dõi đúng điều họ vừa nói.\n"
+            "Khi `speaking` là true, ứng viên đang nói: câu bạn viết sẽ được phát ở khoảng dừng tự nhiên "
+            "tiếp theo, vì vậy hãy bám vào ý họ vừa nói trọn, không bám đoạn đang nói dở.\n\n"
             "# Định dạng trả lời, bắt buộc\n"
             "Dòng 1: `kind: silence` hoặc `kind: minimal` hoặc `kind: reflective` hoặc `kind: contextual` hoặc `kind: processing`.\n"
             "Dòng 2 (chỉ khi không im lặng): câu nói, nguyên văn, một câu, không ngoặc kép.\n"
             "- minimal: một tiếng ngắn cho biết đang nghe. reflective: nhắc tới điều họ vừa nêu bằng lời của bạn. "
             "contextual: bám vào ý cụ thể đang nói. processing: khi phase là processing, cho biết bạn đang xem xét điều họ vừa nói.\n\n"
             "# Khi nào im lặng\n"
-            "- Ứng viên đang nói dở một ý, chưa có điểm dừng tự nhiên, hoặc `speaking` là true.\n"
+            "- Chưa có ý nào nói trọn để bám vào.\n"
             "- Vừa có một câu đệm cách đây chưa lâu (xem `seconds_since_last_backchannel`).\n"
             "- Bản ghi chưa đủ để hiểu họ đang nói về gì.\n"
             "Im lặng là lựa chọn đúng trong phần lớn trường hợp.\n\n"
@@ -139,12 +141,14 @@ def backchannel_prompt(is_vi: bool) -> str:
         "# Task\n"
         "Read the current question, the last few lines, what the candidate has said so far (a partial transcript, "
         "possibly with recognition errors), the status and the signals, then DECIDE: stay silent, or say ONE very "
-        "short line (at most 12 words) that shows you are following what they just said.\n\n"
+        "short line (at most 10 words) that shows you are following what they just said.\n"
+        "When `speaking` is true the candidate is still talking: your line will be played at the next natural "
+        "pause, so follow the thought they have completed, not the one in progress.\n\n"
         "# Required format\n"
         "Line 1: `kind: silence` | `kind: minimal` | `kind: reflective` | `kind: contextual` | `kind: processing`.\n"
         "Line 2 (only when not silent): the line itself, one sentence, no quotes.\n\n"
         "# When to stay silent\n"
-        "- The candidate is mid-thought, there is no natural pause, or `speaking` is true.\n"
+        "- No completed thought to follow yet.\n"
         "- A backchannel was said a moment ago (see `seconds_since_last_backchannel`).\n"
         "- The transcript is not enough to tell what they are talking about.\n"
         "Silence is the right choice most of the time.\n\n"
@@ -208,12 +212,16 @@ async def backchannel_by_talker(
 ) -> AsyncIterator[Dict[str, Any]]:
     """Stream the Talker's backchannel as validated units, then one ``done`` record.
 
-    Yields ``{"type": "unit", "text", "kind", "index", "ttft_ms", "at_ms"}``
-    for each complete sentence the guard accepted, in order, and finally
-    ``{"type": "done", "kind", "ttft_ms", "total_ms", "units", "rejected",
-    "reason"}``. ``kind == "silence"`` ends the call with no unit: the model
-    chose not to speak, and the stream is closed as soon as that line is
-    read, so the choice costs the fewest tokens it can.
+    Yields at most **one** ``{"type": "unit", "text", "kind", "index",
+    "ttft_ms", "at_ms"}`` -- the first complete sentence the guard accepted
+    -- and finally ``{"type": "done", "kind", "ttft_ms", "total_ms",
+    "units", "rejected", "reason"}``. ``kind == "silence"`` ends the call
+    with no unit. In both cases the provider stream is closed explicitly
+    as soon as the outcome is known, so the call costs the fewest tokens it
+    can. A unit is emitted the moment its terminator arrives (``.``, ``!``,
+    ``…``), without waiting for the whitespace or the end of the stream
+    (audit 2026-11-26: the probe's whole line arrived within 0.34 s of the
+    first token, so the wait was small, but it was there on every call).
 
     Never raises: a failure is a ``done`` with ``reason``. The guard is the
     Arbiter's :func:`arbitrate_backchannel` (the acknowledgement guard plus a
@@ -251,6 +259,7 @@ async def backchannel_by_talker(
         units += 1
         return {"type": "unit", "text": text, "kind": kind, "index": units, "ttft_ms": ttft_ms, "at_ms": ms()}
 
+    stream = None
     try:
         stream = generate_stream(
             instructions=backchannel_prompt(ctx.is_vi),
@@ -277,19 +286,23 @@ async def backchannel_by_talker(
                 body = rest
             else:
                 body += delta
+            # The first complete sentence is the utterance; nothing after it
+            # is read. A terminator ends it even without trailing whitespace.
             done, tail = split_units(body)
-            for sentence in done:
-                unit = await emit(sentence)
+            candidate = done[0] if done else (tail.strip() if tail.rstrip().endswith((".", "!", "…")) else "")
+            if candidate:
+                unit = await emit(candidate)
                 if unit is not None:
                     yield unit
-            body = tail
+                    break
+                body = tail if done else ""
         if kind is None and reason is None:
             # The stream ended on one line: no newline means no body.
             kind = parse_kind(buffer)
             reason = None if kind == "silence" else ("bad_format" if kind is None else None)
             if kind not in (None, "silence"):
                 body = ""
-        if kind not in (None, "silence") and body.strip():
+        if kind not in (None, "silence") and units == 0 and body.strip():
             unit = await emit(body.strip())
             if unit is not None:
                 yield unit
@@ -297,6 +310,15 @@ async def backchannel_by_talker(
         reason = f"error:{type(exc).__name__}"
         trace_event("interviewer", "talker_error", session_id=ctx.session_id, error_type=type(exc).__name__)
         logger.warning("talker backchannel failed: %s", exc)
+    finally:
+        # Close the provider stream now (silence, unit emitted, rejected, or
+        # cancelled from outside): the facade records the call on close.
+        aclose = getattr(stream, "aclose", None)
+        if callable(aclose):
+            try:
+                await aclose()
+            except Exception:  # noqa: BLE001
+                pass
     if kind and kind != "silence" and units == 0 and reason is None:
         reason = "all_rejected" if rejected else "empty"
     yield {"type": "done", "kind": kind, "ttft_ms": ttft_ms, "total_ms": ms(), "units": units,

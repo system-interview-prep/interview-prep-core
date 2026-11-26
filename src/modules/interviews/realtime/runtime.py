@@ -494,6 +494,17 @@ class VoiceLabAgent(Agent):
         # Endpointing needs to know whether the tail is still moving whether or
         # not speculation is on, so this is fed before the preview guard.
         self._answer.note_interim(text)
+        # A stable partial (Qwen re-emitted the same interim: the candidate is
+        # between phrases) is a safe moment to let the Talker *prepare* a line
+        # for the next pause; the coordinator bounds how often, and playback
+        # still waits for the pause (audit 2026-11-26, item 1-2).
+        if self._bc().enabled and self._answer.transcript_stable:
+            partial = " ".join(part for part in (self._answer.text, " ".join(str(text or "").split())) if part)
+            self._bc().note_transcript(partial)
+            self._bc().observe(
+                partial, phase=PHASE_LISTENING, answer_seconds=self._answer.duration_seconds,
+                fragments=len(self._answer.fragments),
+            )
         if not self._enable_speculative_preview:
             return
         transcript = normalize_transcript_for_locale(
@@ -1228,6 +1239,7 @@ class VoiceLabAgent(Agent):
         self._schedule_preview(self._answer.text)
         # A fragment just ended: the candidate paused. A safe moment for the
         # Talker to read what they said so far and decide whether to react.
+        self._bc().note_transcript(self._answer.text)
         self._bc().observe(
             self._answer.text, phase=PHASE_LISTENING, answer_seconds=self._answer.duration_seconds,
             fragments=len(self._answer.fragments),

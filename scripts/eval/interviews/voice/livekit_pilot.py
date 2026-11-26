@@ -242,6 +242,7 @@ class Candidate:
             if level > LOUD_RMS:
                 loud += 1
                 now = time.perf_counter()
+                previous_loud = self.agent_last_loud
                 if self.agent_last_loud is None or now - self.agent_last_loud > AGENT_SILENCE_S:
                     self.log(f"agent audio started (rms {level:.0f})")
                 self.agent_last_loud = now
@@ -255,6 +256,18 @@ class Candidate:
                     and now > current["speech_end_at"]
                 ):
                     current["first_audio_at"] = now
+                # Client TTMR: the first audio after the agent said it is
+                # listening again (turn.state after Core answered), with a
+                # short quiet gap before it so a backchannel being cut at that
+                # moment is not mistaken for the reply (its TTS leaves ~0.4 s).
+                if (
+                    current is not None
+                    and "reply_audio_at" not in current
+                    and current.get("listening_at") is not None
+                    and now >= current["listening_at"]
+                    and (previous_loud is None or now - previous_loud >= 0.15 or previous_loud < current["listening_at"])
+                ):
+                    current["reply_audio_at"] = now
             if frames % 500 == 0:
                 self.log(f"agent audio: {frames} frames, {loud} loud, last rms {level:.0f}")
 
@@ -325,16 +338,21 @@ class Candidate:
         await asyncio.sleep(8.0)
         return self._stop("completed")
 
-    def _finish_turn(self) -> None:
-        t = self.current or {}
+    def _finish_turn(self, t: dict | None = None) -> None:
+        t = t if t is not None else (self.current or {})
         if "speech_end_at" in t and "first_audio_at" in t:
             t["client_ttfa_ms"] = round((t["first_audio_at"] - t["speech_end_at"]) * 1000)
         if "speech_end_at" in t and "processing_at" in t:
             t["client_speech_end_to_processing_ms"] = round((t["processing_at"] - t["speech_end_at"]) * 1000)
-        self.log(f"turn {t.get('turn')}: client TTFA {t.get('client_ttfa_ms')} ms")
+        if "speech_end_at" in t and "reply_audio_at" in t:
+            t["client_ttmr_ms"] = round((t["reply_audio_at"] - t["speech_end_at"]) * 1000)
+        if t is self.current:
+            self.log(f"turn {t.get('turn')}: client TTFA {t.get('client_ttfa_ms')} ms")
 
     def _stop(self, reason: str) -> str:
         self.stop_reason = reason
+        for t in self.turns:
+            self._finish_turn(t)  # client TTMR lands after the first-audio wait
         return reason
 
     async def close(self) -> None:
@@ -416,6 +434,8 @@ async def pilot(args: argparse.Namespace) -> dict[str, Any]:
         record["voice_session_started"] = (started_events[0].get("payload") if started_events else None)
         ttfa = [t["client_ttfa_ms"] for t in candidate.turns if t.get("client_ttfa_ms") is not None]
         record["client_ttfa_ms"] = {"n": len(ttfa), "values": ttfa, "p50": metrics.percentile([float(v) for v in ttfa], 50), "max": max(ttfa) if ttfa else None}
+        ttmr = [t["client_ttmr_ms"] for t in candidate.turns if t.get("client_ttmr_ms") is not None]
+        record["client_ttmr_ms"] = {"n": len(ttmr), "values": ttmr, "p50": metrics.percentile([float(v) for v in ttmr], 50), "max": max(ttmr) if ttmr else None}
         record["client_speech_end_to_processing_ms"] = [t.get("client_speech_end_to_processing_ms") for t in candidate.turns]
         record["late_transcripts"] = sum(1 for t in candidate.turns if t.get("late_transcript"))
     finally:

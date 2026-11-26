@@ -167,7 +167,10 @@ class Settings(BaseSettings):
     interview_backchannel_enabled: bool = False
     interview_backchannel_calls_per_turn: int = Field(default=3, ge=1, le=10)
     interview_backchannel_min_gap_seconds: float = Field(default=4.0, ge=0.0, le=60.0)
-    interview_backchannel_max_words: int = Field(default=14, ge=3, le=40)
+    # The probe (2026-11-26) saw an 18-word line against a prompt asking for 12:
+    # the prompt now asks for 10 and the cap leaves room, so one long-ish line
+    # is said rather than every line being cut.
+    interview_backchannel_max_words: int = Field(default=16, ge=3, le=40)
     # Dynamic interview planning is opt-in because its time-allocation values
     # are Product policy. When enabled, the JSON must satisfy PlannerPolicyConfig.
     interview_dynamic_planner_enabled: bool = False

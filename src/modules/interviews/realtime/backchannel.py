@@ -41,9 +41,17 @@ PHASE_LISTENING = "listening"
 PHASE_PROCESSING = "processing"
 
 #: How long a ready unit waits for the candidate to pause before it is dropped.
-HOLD_SECONDS = 1.5
+#: Long enough for a line prepared *during* speech to be played at the next
+#: natural pause (audit 2026-11-26: generation is separate from playback).
+HOLD_SECONDS = 6.0
 #: How often the hold re-checks the candidate's state.
 _HOLD_TICK = 0.1
+#: A prepared line is stale when the candidate has said this many more words
+#: since the transcript it was written for (revalidation against the current
+#: context before playback). A scheduling constraint, not a content rule.
+MAX_DRIFT_WORDS = 12
+#: While the candidate is still speaking, ask again only after this many new words.
+MIN_NEW_WORDS_WHILE_SPEAKING = 8
 
 Infer = Callable[[dict[str, Any]], AsyncIterator[dict[str, Any]]]
 Play = Callable[[str, str], Any]
@@ -99,6 +107,8 @@ class BackchannelCoordinator:
         self._hold = max(0.0, float(hold_seconds))
         self._on_event = on_event
         self._task: asyncio.Task | None = None
+        self._closing: set[asyncio.Task] = set()
+        self._current_transcript = ""
         self._generation = 0
         self._calls_this_turn = 0
         self._last_started: float | None = None
@@ -146,8 +156,25 @@ class BackchannelCoordinator:
         task, self._task = self._task, None
         if task is not None and not task.done():
             task.cancel()
+            # Kept until it has unwound: the next inference waits for it, so a
+            # cancelled call never overlaps a new one (audit 2026-11-26).
+            self._closing.add(task)
+            task.add_done_callback(self._closing.discard)
             self.stats.discarded += 1
             self.stats.note(f"cancelled:{reason}")
+            logger.info("backchannel inference cancelled", extra={"reason": reason})
+            # Persisted too: the benchmark showed 7 of 16 inferences ending
+            # here with no event, invisible to the report.
+            self._emit("backchannel_discarded", reason=f"cancelled:{reason}", kind=None, held_ms=None)
+
+    async def _drain_closing(self) -> None:
+        closing = [t for t in self._closing if not t.done()]
+        if closing:
+            await asyncio.gather(*closing, return_exceptions=True)
+
+    def note_transcript(self, transcript: str) -> None:
+        """The latest transcript (interim or final): what a held unit is checked against."""
+        self._current_transcript = " ".join(str(transcript or "").split())
 
     # --------------------------------------------------------------- observe
 
@@ -174,6 +201,11 @@ class BackchannelCoordinator:
                 return self._skip("unchanged")
             if self._last_started is not None and now - self._last_started < self._min_gap:
                 return self._skip("min_gap")
+            if self._speaking and len(text.split()) - len(self._last_transcript.split()) < MIN_NEW_WORDS_WHILE_SPEAKING:
+                # Preparing during speech: only once the candidate has said
+                # enough new words for the model to have something new to follow.
+                return self._skip("few_new_words")
+        self._current_transcript = text
         self._last_transcript = text
         self._last_started = now
         self._calls_this_turn += 1
@@ -181,6 +213,7 @@ class BackchannelCoordinator:
             "transcript": text,
             "phase": phase,
             "speaking": self._speaking,
+            "prepared_for_words": len(text.split()),
             "signals": {
                 "seconds_since_last_backchannel": round(now - self._last_spoken_at, 1) if self._last_spoken_at else None,
                 "answer_seconds": round(answer_seconds, 1) if answer_seconds is not None else None,
@@ -204,15 +237,29 @@ class BackchannelCoordinator:
         done: dict[str, Any] = {}
         spoken = 0
         try:
-            async for item in self._infer(request):
-                kind = item.get("type")
-                if kind == "done":
-                    done = item
-                    break
-                if kind != "unit":
-                    continue
-                if await self._deliver(item, generation, phase):
-                    spoken += 1
+            # A cancelled inference still unwinding must finish before this
+            # one starts: never two Talker streams for one session.
+            await self._drain_closing()
+            if generation != self._generation:
+                return
+            inferring = self._infer(request)
+            try:
+                async for item in inferring:
+                    kind = item.get("type")
+                    if kind == "done":
+                        done = item
+                        break
+                    if kind != "unit":
+                        continue
+                    if await self._deliver(item, generation, phase, prepared_for=int(request.get("prepared_for_words") or 0)):
+                        spoken += 1
+            finally:
+                # Leaving the loop early (done, cancelled) must close the
+                # API stream too, which closes the provider's (audit item 6).
+                aclose = getattr(inferring, "aclose", None)
+                if callable(aclose):
+                    with contextlib.suppress(Exception):
+                        await aclose()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - a backchannel must never cost the candidate anything
@@ -237,12 +284,17 @@ class BackchannelCoordinator:
             spoken=spoken,
         )
 
-    async def _deliver(self, unit: dict[str, Any], generation: int, phase: str) -> bool:
+    async def _deliver(self, unit: dict[str, Any], generation: int, phase: str, *, prepared_for: int = 0) -> bool:
         text = str(unit.get("text") or "").strip()
         if not text:
             return False
         held = 0.0
+        # Generation is separate from playback: a line prepared while the
+        # candidate spoke waits for the next natural pause (bounded), and is
+        # then checked against the context as it is *now*, not as it was.
         while self._speaking and held < self._hold:
+            if generation != self._generation or self._reply_ready:
+                break
             await asyncio.sleep(_HOLD_TICK)
             held += _HOLD_TICK
         if generation != self._generation:
@@ -251,7 +303,12 @@ class BackchannelCoordinator:
             return self._discard("reply_ready", unit, held)
         if self._speaking:
             return self._discard("candidate_speaking", unit, held)
+        drift = len(self._current_transcript.split()) - prepared_for
+        if prepared_for and drift > MAX_DRIFT_WORDS:
+            return self._discard("context_moved", unit, held)
         self._playing = self._play(text, str(unit.get("kind") or "contextual"))
+        logger.info("backchannel spoken", extra={"phase": phase, "kind": unit.get("kind"), "words": len(text.split()),
+                                                 "held_ms": round(held * 1000), "generation": generation})
         self._last_spoken_at = perf_counter()
         self._said.append(text)
         self.stats.spoken += 1
@@ -267,6 +324,7 @@ class BackchannelCoordinator:
         return True
 
     def _discard(self, reason: str, unit: dict[str, Any], held: float) -> bool:
+        logger.info("backchannel discarded", extra={"reason": reason, "kind": unit.get("kind"), "held_ms": round(held * 1000)})
         self.stats.discarded += 1
         self.stats.note(reason)
         self._emit("backchannel_discarded", reason=reason, kind=unit.get("kind"), held_ms=round(held * 1000))

@@ -147,11 +147,12 @@ async def test_a_unit_waits_briefly_for_a_pause_and_is_dropped_if_the_candidate_
     assert discarded and discarded[0]["reason"] == "candidate_speaking" and discarded[0]["held_ms"] >= 200
     assert coordinator.stats.as_dict()["stale_rate"] == 1.0
 
-    # ...but a pause inside the hold lets it play.
+    # ...but a pause inside the hold lets it play: a line prepared during
+    # speech (enough new words) waits for the pause, then plays.
     talker2 = _Talker()
     coordinator2, played2, _, _ = _coordinator(talker2, hold=0.5)
     coordinator2.on_user_speaking()
-    coordinator2.observe("Em dùng Redis", phase="listening")
+    assert coordinator2.observe("Em dùng Redis làm cache và đặt TTL năm phút cho từng key", phase="listening")
 
     async def pause_soon():
         await asyncio.sleep(0.15)
@@ -159,6 +160,61 @@ async def test_a_unit_waits_briefly_for_a_pause_and_is_dropped_if_the_candidate_
 
     await asyncio.gather(pause_soon(), coordinator2._task)
     assert len(played2) == 1
+
+
+@pytest.mark.asyncio
+async def test_while_speaking_the_talker_is_asked_only_after_enough_new_words() -> None:
+    talker = _Talker(delay=0.0)
+    coordinator, _, _, _ = _coordinator(talker, calls_per_turn=5)
+    coordinator.on_user_speaking()
+    assert not coordinator.observe("Em dùng Redis", phase="listening")
+    assert coordinator.stats.reasons.get("skipped:few_new_words") == 1
+    assert coordinator.observe("Em dùng Redis làm cache và đặt TTL năm phút cho", phase="listening")
+    await _settle(coordinator)
+    assert talker.requests[-1]["speaking"] is True and talker.requests[-1]["prepared_for_words"] == 11
+
+
+@pytest.mark.asyncio
+async def test_a_prepared_line_is_revalidated_against_the_current_transcript_before_playback() -> None:
+    """Audit item 8: the candidate said a lot more since the line was written -> stale."""
+    talker = _Talker(delay=0.05)
+    coordinator, played, events, _ = _coordinator(talker)
+    coordinator.observe("Em dùng Redis làm cache", phase="listening")
+    coordinator.note_transcript("Em dùng Redis làm cache " + " ".join(["và"] * 20))
+    await _settle(coordinator)
+    assert played == []
+    assert [f for e, f in events if e == "backchannel_discarded"][0]["reason"] == "context_moved"
+    # A little drift is fine.
+    talker2 = _Talker(delay=0.05)
+    coordinator2, played2, _, _ = _coordinator(talker2)
+    coordinator2.observe("Em dùng Redis làm cache", phase="listening")
+    coordinator2.note_transcript("Em dùng Redis làm cache và TTL")
+    await _settle(coordinator2)
+    assert len(played2) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_inference_never_overlaps_the_next_one() -> None:
+    """Audit item 7: the new request waits for the cancelled stream to unwind."""
+    order: list[str] = []
+
+    async def slow(request):
+        order.append(f"start:{request['transcript']}")
+        try:
+            await asyncio.sleep(0.2)
+            yield {"type": "done", "kind": "silence", "ttft_ms": 1, "total_ms": 2, "units": 0, "rejected": [], "reason": None}
+        finally:
+            await asyncio.sleep(0.05)  # the provider connection closing
+            order.append(f"end:{request['transcript']}")
+
+    coordinator, _, _, _ = _coordinator(slow)
+    coordinator.observe("một", phase="listening")
+    await asyncio.sleep(0.02)
+    coordinator.reset_turn()  # cancels the first
+    coordinator.observe("hai", phase="listening")
+    await asyncio.sleep(0.01)
+    await asyncio.gather(*[t for t in coordinator._closing], coordinator._task, return_exceptions=True)
+    assert order == ["start:một", "end:một", "start:hai", "end:hai"]
 
 
 @pytest.mark.asyncio

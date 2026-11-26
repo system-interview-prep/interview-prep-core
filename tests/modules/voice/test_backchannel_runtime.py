@@ -181,6 +181,26 @@ async def test_a_finished_fragment_asks_the_talker_and_the_unit_is_spoken_not_a_
 
 
 @pytest.mark.asyncio
+async def test_a_stable_partial_lets_the_talker_prepare_while_the_candidate_speaks(monkeypatch) -> None:
+    """Audit items 1-2: generation during speech, playback at the pause."""
+    monkeypatch.setattr(livekit_agent, "processing_filler_enabled", lambda: False)
+    agent, events, client, spoken = _agent()
+    agent._enable_speculative_preview = False
+    agent.on_user_speaking()
+    partial = "Em dùng Redis làm cache và đặt TTL năm phút cho từng key còn khi"
+    agent.on_interim_transcript(partial)   # first sighting: not yet stable
+    assert client.streams == []
+    agent.on_interim_transcript(partial)   # re-emitted unchanged: stable
+    await asyncio.sleep(0.01)              # the coordinator's task reaches the API
+    assert len(client.streams) == 1 and client.streams[0][1]["speaking"] is True
+    await asyncio.sleep(0.05)
+    assert spoken == [], "nothing plays while the candidate is talking"
+    agent.on_user_stopped()
+    await agent._backchannel._task
+    assert [h.kind for h in spoken] == ["backchannel"]
+
+
+@pytest.mark.asyncio
 async def test_the_submit_asks_for_a_processing_acknowledgment_and_the_reply_cuts_it(monkeypatch) -> None:
     monkeypatch.setattr(livekit_agent, "processing_filler_enabled", lambda: True)  # a template: must not run
     agent, events, client, spoken = _agent(core_delay=0.05)

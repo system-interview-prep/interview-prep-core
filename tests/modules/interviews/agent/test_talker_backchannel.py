@@ -106,10 +106,61 @@ async def test_silence_on_a_single_line_without_newline_is_silence_too() -> None
 
 
 @pytest.mark.asyncio
-async def test_two_sentences_become_two_units_in_order() -> None:
-    items = await _collect(_stream("kind: contextual\n", "Ừ. ", "Redis với TTL, mình theo được.\n"))
-    assert [i["text"] for i in items if i["type"] == "unit"] == ["Ừ.", "Redis với TTL, mình theo được."]
-    assert items[-1]["units"] == 2
+async def test_at_most_one_unit_per_inference_and_the_rest_is_not_read() -> None:
+    read: list[str] = []
+
+    async def generate(**_kw):
+        for chunk in ("kind: contextual\n", "Ừ. ", "Redis với TTL, mình theo được.\n", "Một câu nữa."):
+            read.append(chunk)
+            yield chunk
+
+    items = [i async for i in talker.backchannel_by_talker(CTX, generate_stream=generate, model="gpt-5.6-luna")]
+    assert [i["text"] for i in items if i["type"] == "unit"] == ["Ừ."]
+    assert items[-1]["units"] == 1
+    assert read == ["kind: contextual\n", "Ừ. "], "the stream is left once the utterance is known"
+
+
+@pytest.mark.asyncio
+async def test_a_unit_is_emitted_at_its_terminator_without_waiting_for_whitespace_or_the_end() -> None:
+    """Audit item 5: the probe's line ended with '.' as the last token; buffering
+    for a following space would have waited for the end of the stream."""
+    read: list[str] = []
+
+    async def generate(**_kw):
+        for chunk in ("kind: reflective\n", "À, TTL theo", " từng key.", "<never read>"):
+            read.append(chunk)
+            yield chunk
+
+    items = [i async for i in talker.backchannel_by_talker(CTX, generate_stream=generate, model="gpt-5.6-luna")]
+    assert items[0]["type"] == "unit" and items[0]["text"] == "À, TTL theo từng key."
+    assert "<never read>" not in read
+
+
+@pytest.mark.asyncio
+async def test_the_provider_stream_is_closed_explicitly_on_silence_and_on_a_unit() -> None:
+    closed: list[str] = []
+
+    class _Gen:
+        def __init__(self, chunks):
+            self._it = iter(chunks)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._it)
+            except StopIteration:
+                raise StopAsyncIteration
+
+        async def aclose(self):
+            closed.append("closed")
+
+    def generate(**_kw):
+        return _Gen(["kind: silence\n", "x"])
+
+    [i async for i in talker.backchannel_by_talker(CTX, generate_stream=generate, model="gpt-5.6-luna")]
+    assert closed == ["closed"]
 
 
 @pytest.mark.asyncio
@@ -173,6 +224,10 @@ def test_the_feature_needs_both_the_setting_and_a_talker_model(monkeypatch) -> N
 def test_the_prompt_asks_for_a_decision_and_forbids_evaluation_without_templates() -> None:
     prompt = talker.backchannel_prompt(True)
     assert "kind: silence" in prompt and "Im lặng là lựa chọn đúng" in prompt
+    # Audit item 3: speaking=true no longer forces silence; it says the line
+    # will be played at the next pause, so follow the completed thought.
+    assert "`speaking` là true" in prompt and "khoảng dừng tự nhiên" in prompt
+    assert "hoặc `speaking` là true" not in prompt
     assert "Không nhận xét đúng/sai" in prompt and "không gợi ý đáp án" in prompt
     # No canned lines: the prompt names kinds, never utterances to pick from.
     assert "Mình nghe rồi" not in prompt and "cứ nói tiếp" not in prompt

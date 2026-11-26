@@ -385,7 +385,9 @@ def _backchannel_summary(measured: list[dict[str, Any]], calls: list[dict[str, A
     for t in measured:
         kinds.update(t["backchannel_kinds"])
     talker_calls = [c for c in calls if "talker" in str(c.get("purpose") or "")]
+    cancelled_calls = [c for c in talker_calls if str(c.get("error_type") or "") == "cancelled"]
     return {
+        "talker_calls_cancelled": len(cancelled_calls),
         "inferences": sum(t["backchannel_inferences"] for t in measured),
         "silent": sum(t["backchannel_silent"] for t in measured),
         "errors": sum(t["backchannel_errors"] for t in measured),
@@ -462,7 +464,10 @@ def render(report: dict[str, Any]) -> str:
         lines.append(
             f"{'Talker generation (to last unit)':38} {bc['total_ms']['n']:>3} {_fmt(bc['total_ms']['p50']):>7} {_fmt(bc['total_ms']['p95']):>7} {_fmt(bc['total_ms']['p99']):>7}"
         )
-        lines.append(f"talker calls: {bc['talker_calls']}  talker tokens in/out: {bc['talker_tokens']['in']}/{bc['talker_tokens']['out']}")
+        lines.append(
+            f"talker calls: {bc['talker_calls']} (closed early: {bc['talker_calls_cancelled']}, usage unknown for those)  "
+            f"talker tokens in/out: {bc['talker_tokens']['in']}/{bc['talker_tokens']['out']}"
+        )
     ep = report["endpointing"]
     lines.append(
         f"commit anchor: {ep['anchors'] or '—'}  nudged turns: {ep['nudged_turns']}/{report['turns']}  "
@@ -513,7 +518,7 @@ async def load(session_id: str) -> tuple[str, list[dict[str, Any]], list[dict[st
             for r in (
                 await db.execute(
                     text(
-                        "SELECT id, purpose, model, status, duration_ms, input_tokens, output_tokens, created_at "
+                        "SELECT id, purpose, model, status, duration_ms, input_tokens, output_tokens, error_type, created_at "
                         "FROM ai_call_logs WHERE session_id = :sid ORDER BY created_at, id"
                     ),
                     {"sid": session_id},

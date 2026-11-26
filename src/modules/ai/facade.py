@@ -1,5 +1,7 @@
 """Public OpenAI adapter shared by business modules."""
 
+import asyncio
+import contextlib
 import time
 from collections.abc import AsyncIterator
 from functools import lru_cache
@@ -168,11 +170,21 @@ async def _responses_stream(options: dict, model: str, *, purpose: str) -> Async
     for _ in range(5):
         budget.charge(purpose)
         yielded = False
+        stream = None
         try:
             stream = await _async_client().responses.create(**options, stream=True)
-            async for event in stream:
-                yielded = True
-                yield event
+            try:
+                async for event in stream:
+                    yielded = True
+                    yield event
+            finally:
+                # Explicit: a consumer that stops early (silence decided, a
+                # stale unit, a cancelled task) must release the provider
+                # connection now, not when the garbage collector gets to it.
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    with contextlib.suppress(Exception):
+                        await close()
             return
         except Exception as exc:
             if yielded:
@@ -230,8 +242,10 @@ async def generate_text_stream(
     pieces: list[str] = []
     usage: Any = None
     error: BaseException | None = None
+    cancelled = False
+    events = _responses_stream(options, model, purpose=purpose)
     try:
-        async for event in _responses_stream(options, model, purpose=purpose):
+        async for event in events:
             kind = str(getattr(event, "type", "") or "")
             if kind == "response.output_text.delta":
                 delta = str(getattr(event, "delta", "") or "")
@@ -243,10 +257,21 @@ async def generate_text_stream(
             elif kind in ("response.failed", "response.incomplete", "error"):
                 detail = getattr(event, "message", None) or getattr(getattr(event, "response", None), "status", kind)
                 raise RuntimeError(f"model stream ended with {kind}: {detail}")
+    except (GeneratorExit, asyncio.CancelledError):
+        # The consumer stopped early or its task was cancelled: the connection
+        # is closed by _responses_stream; the provider may still bill the
+        # tokens it generated meanwhile, and reports no usage for a stream it
+        # did not finish. Recorded as `cancelled` with what was received.
+        cancelled = True
+        raise
     except BaseException as exc:
         error = exc
         raise
     finally:
+        # Closing this generator does not close the inner one by itself: do it
+        # here, so the provider connection is released on every exit path.
+        with contextlib.suppress(Exception):
+            await events.aclose()
         output = "".join(pieces)
         # Through the module, like ai_call_timer does, so a test that patches
         # pipeline_events.record_ai_call sees this row too.
@@ -254,14 +279,18 @@ async def generate_text_stream(
             purpose=purpose,
             provider="openai",
             model=model,
-            status="error" if error is not None else "ok",
+            # ai_call_logs.status is CHECK-constrained to ok|error (no migration
+            # here): a cancelled stream is an `error` row whose error_type says
+            # `cancelled`. The benchmark lost nine Talker calls to that
+            # constraint before this (2026-11-26) -- spend nobody could see.
+            status="error" if (error is not None or cancelled) else "ok",
             duration_ms=int((time.perf_counter() - started) * 1000),
             input_tokens=_int_or_none(getattr(usage, "input_tokens", None)),
             output_tokens=_int_or_none(getattr(usage, "output_tokens", None)),
             input_chars=len(input_text),
             output_chars=len(output),
-            error_type=type(error).__name__ if error is not None else None,
-            error_message=str(error) if error is not None else None,
+            error_type=type(error).__name__ if error is not None else ("cancelled" if cancelled else None),
+            error_message=str(error) if error is not None else ("stream closed before completion; usage unknown" if cancelled else None),
             input_text=input_text,
             output_text=output,
         )

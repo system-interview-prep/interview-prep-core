@@ -108,6 +108,45 @@ async def test_an_error_after_tokens_flowed_ends_the_stream_and_is_recorded(monk
     assert recorded[-1]["status"] == "error" and recorded[-1]["output_text"] == "a"
 
 
+@pytest.mark.asyncio
+async def test_a_consumer_that_stops_early_closes_the_provider_stream_and_records_cancelled(monkeypatch, recorded) -> None:
+    """Audit item 6: explicit closure and accounting on an early stop (silence, stale unit)."""
+    closed: list[str] = []
+
+    class _Stream:
+        def __init__(self, events):
+            self._it = iter(events)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._it)
+            except StopIteration:
+                raise StopAsyncIteration
+
+        async def close(self):
+            closed.append("closed")
+
+    class _Responses:
+        async def create(self, **options):
+            return _Stream([_delta("kind: silence\n"), _delta("more"), _completed()])
+
+    monkeypatch.setattr(facade, "_async_client", lambda: SimpleNamespace(responses=_Responses()))
+    stream = facade.generate_text_stream(instructions="s", input_text="i", purpose="t.cancel")
+    first = await stream.__anext__()
+    await stream.aclose()
+    assert first == "kind: silence\n" and closed == ["closed"]
+    assert recorded[-1]["status"] == "error" and recorded[-1]["error_type"] == "cancelled"
+    assert recorded[-1]["output_tokens"] is None and recorded[-1]["output_text"] == "kind: silence\n"
+    # A stream read to the end closes too, and is `ok` with usage.
+    recorded.clear()
+    monkeypatch.setattr(facade, "_async_client", lambda: SimpleNamespace(responses=_Responses()))
+    [p async for p in facade.generate_text_stream(instructions="s", input_text="i", purpose="t.full")]
+    assert closed == ["closed", "closed"] and recorded[-1]["status"] == "ok" and recorded[-1]["output_tokens"] == 9
+
+
 def test_the_async_client_is_built_without_sdk_retries(monkeypatch) -> None:
     import openai
 
