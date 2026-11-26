@@ -13,6 +13,7 @@ import contextlib
 import json
 import logging
 import os
+from hashlib import sha256
 from pathlib import Path
 from time import perf_counter
 
@@ -23,6 +24,7 @@ from livekit.agents import Agent, AgentServer, AgentSession, inference
 from livekit.agents.voice.turn import InterruptionOptions
 from livekit.plugins import elevenlabs
 
+from src.modules.interviews.realtime.anticipation import AnticipationEngine, PreviewKey, preview_key
 from src.modules.interviews.realtime.endpointing import (
     ANSWER_PAUSE_NUDGE_SECONDS, PROCESSING_FILLER_SECONDS, AnswerWindow,
     backchannel_continue_text, core_error_text, localize_particles, not_heard_lines,
@@ -187,13 +189,16 @@ class VoiceLabAgent(Agent):
         self._answer_pause_nudge_count = 0
         self._last_answer_pause_nudge: str | None = None
         self._core_task: asyncio.Task | None = None
-        self._preview_task: asyncio.Task | None = None
-        self._preview_target = ""
-        self._preview_pending = ""
-        self._preview_text = ""
-        self._preview_token: str | None = None
-        self._preview_last_started = 0.0
-        self._preview_call_count = 0
+        # Speculation is owned by the Anticipation Engine, not by this class
+        # (V2 brief §5). The runtime supplies the inference and the key; the
+        # engine owns the task, the budget and the staleness rules, and its
+        # `take` is synchronous so no code here can wait on a preview.
+        self._turn_generation = 0
+        self._anticipation = AnticipationEngine(
+            self._speculate,
+            enabled=enable_speculative_preview,
+            on_event=lambda event, **fields: self.report(event, **fields),
+        )
         self._core_in_flight = False
         self._repeat_after_core = False
         self._reprompt_task: asyncio.Task | None = None
@@ -267,12 +272,11 @@ class VoiceLabAgent(Agent):
         self._cancel_task(self._commit_task)
         self._cancel_task(self._answer_pause_nudge_task)
         self._cancel_task(self._reprompt_task)
-        self._preview_token = None
-        self._preview_text = ""
-        self._preview_target = ""
-        self._preview_pending = ""
         if self._answer.is_empty:
-            self._preview_call_count = 0
+            # A new answer is starting: drop the previous turn's speculation
+            # and give this turn a fresh budget.
+            self._turn_generation += 1
+            self._anticipation.reset_turn()
 
     def _schedule_answer_pause_nudge(self) -> None:
         if self._answer_pause_nudged or self._core_in_flight or self._answer.is_empty:
@@ -323,66 +327,44 @@ class VoiceLabAgent(Agent):
         if len(combined) >= 16 and len(combined.split()) >= 4:
             self._schedule_preview(combined)
 
-    def _schedule_preview(self, transcript: str) -> None:
-        if (
-            not self._enable_speculative_preview
-            or self._core_in_flight
-            or transcript == self._preview_target
-            or self._preview_call_count >= 3
-        ):
-            return
-        self._preview_target = transcript
-        self._preview_pending = transcript
-        self._preview_token = None
-        self._preview_text = ""
-        if self._preview_task is None or self._preview_task.done():
-            self._preview_task = asyncio.create_task(self._drain_previews())
+    def _preview_key(self, transcript: str) -> PreviewKey:
+        """What this speculation assumes, so a stale result cannot be reused.
 
-    async def _drain_previews(self) -> None:
-        # Keep one model request at a time; while it runs, only the newest
-        # transcript snapshot is retained for the next speculative pass.
-        while self._preview_pending:
-            await asyncio.sleep(max(0.65, 1.0 - (perf_counter() - self._preview_last_started)))
-            transcript = self._preview_pending
-            self._preview_pending = ""
-            if transcript != self._preview_target or self._core_in_flight or self._preview_call_count >= 3:
-                continue
-            self._preview_last_started = perf_counter()
-            self._preview_call_count += 1
-            started = perf_counter()
-            try:
-                response = await self._runtime_client.post(
-                    "/ai/voice-lab/livekit/runtime/preview",
-                    json={"transcript": transcript},
-                )
-                response.raise_for_status()
-                token = response.json().get("previewToken")
-                if (
-                    transcript == self._preview_target
-                    and not self._preview_pending
-                    and isinstance(token, str)
-                    and token
-                ):
-                    self._preview_text = transcript
-                    self._preview_token = token
-                    logger.info(
-                        "Voice answer preview ready",
-                        extra={
-                            "session_id": self._session_id,
-                            "room_name": self._room_name,
-                            "transcript_words": len(transcript.split()),
-                            "preview_latency_ms": round((perf_counter() - started) * 1000),
-                        },
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.debug(
-                    "Voice answer preview unavailable; canonical evaluation will run",
-                    extra={"session_id": self._session_id, "room_name": self._room_name},
-                    exc_info=True,
-                )
-        self.report_state("candidate_speaking")
+        The runtime knows the session, which question is being answered and
+        which turn generation it is on; the transcript revision is what stops
+        a partial transcript ever standing in for a finished one. The server
+        re-checks the active turn and the transcript hash when the token is
+        redeemed, so this is the near-side half of the §7 contract.
+        """
+        return preview_key(
+            session_id=self._session_id,
+            turn_id=f"gen-{self._turn_generation}",
+            question_id=sha256(
+                (self._last_interview_speech_text or "").encode("utf-8")
+            ).hexdigest()[:16],
+            transcript=transcript,
+            state_version=str(self._turn_generation),
+        )
+
+    async def _speculate(self, transcript: str, key: PreviewKey) -> str | None:
+        """Ask the runtime for a preview token. Read-only; never writes state."""
+        response = await self._runtime_client.post(
+            "/ai/voice-lab/livekit/runtime/preview",
+            json={"transcript": transcript},
+        )
+        response.raise_for_status()
+        token = response.json().get("previewToken")
+        return token if isinstance(token, str) and token else None
+
+    def _schedule_preview(self, transcript: str) -> None:
+        """Hand a partial transcript to the engine. Returns immediately."""
+        if self._core_in_flight:
+            return
+        self._anticipation.observe(transcript, self._preview_key(transcript))
+        if self._enable_speculative_preview:
+            # Previously emitted at the end of the drain loop, which only ran
+            # when speculation was on. Kept on that same condition.
+            self.report_state("candidate_speaking")
 
     def on_agent_listening(self) -> None:
         """A question finished playing: start waiting for the answer."""
@@ -453,7 +435,11 @@ class VoiceLabAgent(Agent):
             return
         self._answer_pause_nudged = False
         self._cancel_task(self._answer_pause_nudge_task)
-        preview_token = self._preview_token if self._preview_text == answer.text else None
+        # Synchronous by contract: a preview still in flight is simply absent
+        # and the canonical inference runs now (§7). The engine discards
+        # anything whose transcript or versions moved; the server re-checks the
+        # active turn and transcript hash before honouring the token.
+        preview_token = self._anticipation.take(self._preview_key(answer.text))
         self._core_in_flight = True
         self._cancel_task(self._reprompt_task)
         self.report(

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.modules.interviews.realtime import runtime as livekit_agent
+from src.modules.interviews.realtime.anticipation import AnticipationEngine
 from src.modules.interviews.realtime.endpointing import AnswerWindow
 
 
@@ -70,11 +71,12 @@ def _agent(while_processing) -> tuple[livekit_agent.VoiceLabAgent, list[str]]:
     agent._answer_pause_nudged = False
     agent._answer_pause_nudge_task = None
     agent._reprompt_task = None
-    agent._preview_task = None
-    agent._preview_target = ""
-    agent._preview_pending = ""
-    agent._preview_text = ""
-    agent._preview_token = None
+    # Speculation now lives in the Anticipation Engine (V2 brief §5); the
+    # runtime holds no preview fields of its own.
+    agent._turn_generation = 0
+    agent._anticipation = AnticipationEngine(
+        lambda _t, _k: None, enabled=agent._enable_speculative_preview
+    )
     agent._core_in_flight = False
     agent._repeat_after_core = False
     agent._last_answer_metrics = {}
@@ -203,8 +205,11 @@ async def test_correction_reaches_core_with_raw_speech_and_exact_preview_binding
     assert message.content == [expected]
     assert agent._answer.text == expected
     assert agent._answer.raw_fragments == [spoken]
-    agent._preview_text = expected if matching_preview else "Bản tạm trước khi ứng viên nói xong."
-    agent._preview_token = "signed-preview-token"
+    # Prime the engine as if speculation had finished for this transcript (or,
+    # when it must not match, for an earlier half of the answer).
+    assumed = expected if matching_preview else "Bản tạm trước khi ứng viên nói xong."
+    agent._anticipation._result = "signed-preview-token"
+    agent._anticipation._result_key = agent._preview_key(assumed)
 
     await agent._commit_answer()
     payload = agent._runtime_client.payloads[0]

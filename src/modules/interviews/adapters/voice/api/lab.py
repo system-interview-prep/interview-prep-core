@@ -1,5 +1,6 @@
 """Voice experiments and the authenticated LiveKit adapter for Interview Core."""
 
+import contextlib
 import os
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -28,6 +29,7 @@ from src.modules.interviews.session.voice_facade import (
     submit_voice_answer,
 )
 from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
+from src.modules.interviews.memory import candidate_memory
 from src.modules.interviews.core.contracts.interview import InterviewStage
 from src.modules.interviews.core.guardrails.common import canary_scope
 
@@ -350,6 +352,19 @@ async def preview_livekit_runtime_answer(
         return {"previewToken": None, "reason": "stage_not_previewable"}
 
     is_vi = str(session.get("locale") or "vi").lower().startswith("vi")
+
+    # V2 brief §5: prefetch the candidate's memory while they are still
+    # speaking, so the canonical turn does not pay for it afterwards. Read-only
+    # and best-effort — speculation must never fail a turn, and §7 allows it to
+    # read but never to write.
+    memory_hits: list[dict] = []
+    if candidate_memory.enabled() != "0":
+        with contextlib.suppress(Exception):
+            memory_user = await candidate_memory._user_id_of_session(db, str(session["id"]))
+            if memory_user:
+                memory_hits = list(await candidate_memory.load(memory_user))
+                session_state["candidate_memory"] = memory_hits
+
     engine = InterviewCoreEngine()
     # The preview's prompt carries the same canary code as the turn it stands in for.
     with canary_scope(session["id"]):
@@ -359,6 +374,7 @@ async def preview_livekit_runtime_answer(
             current_question=question,
             is_vi=is_vi,
             telemetry={},
+            memory_hits=memory_hits,
         )
     settings = get_settings()
     preview_token = jwt.encode(

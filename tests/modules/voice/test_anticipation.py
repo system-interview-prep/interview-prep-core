@@ -157,3 +157,68 @@ def test_validate_names_the_fields_that_went_stale() -> None:
 
 def test_a_missing_preview_is_not_an_error() -> None:
     assert validate_preview(preview=None, computed_for=None, final=_key()).reason == "no_preview"
+
+
+@pytest.mark.asyncio
+async def test_speculation_cannot_outlive_a_cancel() -> None:
+    """§5: speculative tasks must be cancellable and must not leak.
+
+    A turn that ends while a preview is in flight has to be able to stop it;
+    otherwise a finished session keeps paying the provider.
+    """
+    cancelled = asyncio.Event()
+
+    async def slow(_transcript, _key):
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    engine = AnticipationEngine(slow, enabled=True, debounce_seconds=0)
+    engine.observe("em dùng redis làm cache cho hệ thống", _key())
+    await asyncio.sleep(0.05)
+
+    await engine.aclose()
+
+    assert cancelled.is_set()
+    assert engine.take(_key()) is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_speculation_is_invisible_to_the_turn() -> None:
+    """Speculation is an optimisation; its failure must never surface."""
+    async def boom(_transcript, _key):
+        raise RuntimeError("provider down")
+
+    engine = AnticipationEngine(boom, enabled=True, debounce_seconds=0)
+    engine.observe("em dùng redis làm cache cho hệ thống", _key())
+    await asyncio.sleep(0.05)
+
+    assert engine.take(_key()) is None
+    assert engine.stats.as_dict()["reasons"].get("error") == 1
+
+
+@pytest.mark.asyncio
+async def test_only_the_newest_transcript_is_spoken_for() -> None:
+    """A result computed for text the candidate has since extended is wasted.
+
+    It must be discarded rather than reused, and counted, because the wasted
+    calls of §13 are how the speculation budget gets judged.
+    """
+    release = asyncio.Event()
+
+    async def slow(transcript, _key):
+        await release.wait()
+        return f"token:{transcript}"
+
+    engine = AnticipationEngine(slow, enabled=True, debounce_seconds=0)
+    engine.observe("em dùng redis làm cache", _key("em dùng redis làm cache"))
+    await asyncio.sleep(0.02)
+    # The candidate keeps talking while the first call is still running.
+    engine.observe("em dùng redis làm cache và memcached", _key("em dùng redis làm cache và memcached"))
+    release.set()
+    await asyncio.sleep(0.05)
+
+    assert engine.stats.as_dict()["reasons"].get("superseded") == 1
+    await engine.aclose()
