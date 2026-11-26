@@ -547,6 +547,50 @@ def acknowledgement_rejection_reason(
     if breaks_house_style(text_value):
         return "style"
     return None
+def redirect_rejection_reason(
+    raw: Any, *, recent: Any = (), answer: str = "", question: str = "", rubric: str = ""
+) -> Optional[str]:
+    """Why a redirect back to the pending question cannot be said as is.
+
+    Everything the acknowledgement guard forbids — praise, verdicts, grader
+    voice, rubric and system leaks, parroting the candidate — still applies.
+    What does not is ``is_question``: a redirect's whole job is to bring the
+    candidate back to the question, so it usually ends in one.
+
+    That distinction was found by measuring. Reusing the acknowledgement guard
+    for the Unified Thinker's ``redirect_text`` rejected three of four live
+    turns with ``is_question``, which sent each of them back for a second
+    provider call to write a line no better than the one just discarded.
+    """
+    text_value = str(raw or "").strip()
+    if not text_value:
+        return "empty"
+    if "\n" in text_value:
+        return "multi_line"
+    if any(re.search(pattern, text_value, re.IGNORECASE) for pattern in PROHIBITED_LEAK_PATTERNS):
+        return "rubric_leak"
+    if leak := system_leak_reason(text_value):
+        return leak
+    if is_evaluative(text_value):
+        return "evaluative"
+    if is_grader_style(text_value):
+        return "grader_style"
+    if is_parroting(text_value, answer):
+        return "parroting"
+    if is_judgmental(text_value):
+        return "judgmental"
+    # Must not say what the answer lacked, nor hand the answer over while
+    # steering back. With question/rubric supplied this also catches a rubric
+    # term the conversation never used and a yes/no question that answers itself.
+    if hint := hint_rejection_reason(text_value, question=question, answer=answer, rubric=rubric):
+        return hint
+    if recent_contains(text_value, recent or ()):
+        return "repeats_recent"
+    if breaks_house_style(text_value):
+        return "style"
+    return None
+
+
 def receipt_rejection_reason(
     raw: Any, *, recent: Any = (), answer: str = ""
 ) -> Optional[str]:
@@ -717,6 +761,7 @@ __all__ = [
     "probe_is_sayable",
     "qna_rejection_reason",
     "receipt_rejection_reason",
+    "redirect_rejection_reason",
     "recent_contains",
     "sentence_count",
     "sounds_closed",

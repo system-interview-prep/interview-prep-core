@@ -25,10 +25,10 @@ from src.modules.interviews.agents.interviewer.tools import (
     unified_enabled,
 )
 from src.modules.interviews.core.guardrails.output import (
-    acknowledgement_rejection_reason,
     checked_probe,
     clarify_rejection_reason,
     qna_rejection_reason,
+    redirect_rejection_reason,
     validate_probe_text,
 )
 from src.modules.interviews.agents.interviewer.prompts.decide import decide_input, decide_prompt
@@ -75,9 +75,13 @@ def _checked_unified_text(
             question=ctx.candidate_text,
         )
     elif argument == "redirect_text":
-        # A redirect is a nudge back to the pending question: it must not grade
-        # the candidate or hand over the answer.
-        reason = acknowledgement_rejection_reason(text_value, answer=ctx.candidate_text)
+        # A nudge back to the pending question: it must not grade the candidate
+        # or hand over the answer, but it may *contain* the question, which is
+        # why this is not the acknowledgement guard. Measuring showed that one
+        # rejecting three of four live redirects on "is_question" alone.
+        reason = redirect_rejection_reason(
+            text_value, answer=ctx.candidate_text, question=question, rubric=rubric
+        )
     else:  # pragma: no cover - UNIFIED_TEXT_ACTIONS and this dispatch agree
         reason = "unknown_argument"
 

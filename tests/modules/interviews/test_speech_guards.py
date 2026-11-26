@@ -217,3 +217,54 @@ def test_a_follow_up_may_name_the_situation_but_not_the_technique() -> None:
     technique = "Khi hai request cùng ghi một key, versioning giúp gì?"
     reason = probe_rejection_reason(technique, _leak, question=QUESTION, answer=answer, rubric=rubric)
     assert reason == "hints_answer"
+
+
+# --- Redirect back to the pending question -----------------------------------
+
+
+def test_a_redirect_may_contain_the_question_it_returns_to() -> None:
+    """The acknowledgement guard is the wrong one for a redirect.
+
+    Measured against the real provider, reusing
+    ``acknowledgement_rejection_reason`` for the Unified Thinker's
+    ``redirect_text`` rejected three of four live turns on ``is_question``
+    alone — a redirect's job is to bring the candidate back to the question, so
+    it normally ends in one. Each rejection cost a second provider call to
+    write a line no better than the one discarded.
+    """
+    from src.modules.interviews.core.guardrails.output import (
+        acknowledgement_rejection_reason,
+        redirect_rejection_reason,
+    )
+
+    off_topic = "Dạ hôm nay trời mưa to quá, em đi làm bị kẹt xe gần một tiếng."
+    redirect = "Mình quay lại câu hỏi nhé: bạn thiết kế index cho bảng đơn hàng thế nào?"
+
+    assert acknowledgement_rejection_reason(redirect, answer=off_topic) == "is_question"
+    assert redirect_rejection_reason(redirect, answer=off_topic) is None
+
+
+@pytest.mark.parametrize(
+    "redirect,reason",
+    [
+        ("Câu trả lời chưa đúng, mình quay lại câu hỏi nhé.", "evaluative"),
+        ("Mình quay lại nhé, bạn dùng composite index trên (user_id, created_at) chứ?", "hints_answer"),
+        ("Bạn chưa nói gì đến index cả, quay lại câu hỏi nhé.", "verdict_hint"),
+    ],
+)
+def test_a_redirect_still_cannot_grade_or_give_the_answer(redirect: str, reason: str) -> None:
+    """Dropping ``is_question`` must not drop anything else.
+
+    Everything the acknowledgement guard forbids a redirect still forbids:
+    judging the candidate, saying what the answer lacked, or steering back by
+    naming the technique the rubric wanted.
+    """
+    from src.modules.interviews.core.guardrails.output import redirect_rejection_reason
+
+    question = "Bạn thiết kế index cho bảng đơn hàng thế nào?"
+    rubric = "chọn cột index, cardinality, composite index"
+    off_topic = "Dạ hôm nay trời mưa to quá."
+
+    assert redirect_rejection_reason(
+        redirect, answer=off_topic, question=question, rubric=rubric
+    ) == reason
