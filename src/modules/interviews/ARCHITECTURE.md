@@ -151,11 +151,11 @@ requires. These are facts about this HEAD, not targets.
 | Question the spec asks | What the code does |
 |---|---|
 | Which mode runs? | Code default `rule`; the project `.env` sets `INTERVIEW_AGENT_MODE=live`. All three modes work. |
-| LLM calls per turn | Input guard 0 · RULE 1 when the evaluator returns the probe in the same JSON, else 2 · LIVE 2 (decider + speech) · SHADOW 3. Counted by `tests/modules/interviews/agent/test_call_budget.py`. |
+| LLM calls per turn | Input guard 0 · RULE 1 when the evaluator returns the probe in the same JSON, else 2 · LIVE 2 (decider + speech), 1 with `INTERVIEW_UNIFIED_THINKER=1` on the common actions (measured 1.2–1.25 live) · SHADOW 3. Counted by `tests/modules/interviews/agent/test_call_budget.py`. |
 | Per-call latency | Already recorded: every call writes an `ai_call_logs` row with `duration_ms`, `purpose` and `model`. Percentiles come from that table. |
 | Qwen STT | `STTCapabilities(streaming=True, interim_results=True)`; 1.0 s chunks, 0.8 s endpoint silence. Partial transcripts exist. |
 | VieNeu TTS | `TTSCapabilities(streaming=False)`. No text-streaming API; audio arrives as an SSE byte stream per sentence, so progressive playback works and AC-12 needs no new API. |
-| Endpointing | Fixed `COMMIT_SILENCE_SECONDS=1.8` / `SHORT_COMMIT_SILENCE_SECONDS=2.2`, env-tunable. Not adaptive. |
+| Endpointing | Fixed `COMMIT_SILENCE_SECONDS=1.8` / `SHORT_COMMIT_SILENCE_SECONDS=2.2` by default; `VOICE_ADAPTIVE_ENDPOINTING=1` switches to the three-band adaptive wait of §8 (`realtime/endpointing.py`), not yet calibrated on real Qwen finalization. |
 | Main graph | Already exists: `graph/graph.py` dispatches the six commands on one compiled graph with a Postgres checkpoint. |
 | Video path | `adapters/video_calls/api/router.py::chat_voice_on_call` bypasses Core entirely (a bare `generate_text`). It and the chat/voice `chat` endpoints sit behind `legacy_interview_api_enabled`, **false** by default. |
 | Luna / Talker | Not a separate service: an OpenAI model id (`gpt-5.6-luna`). `src/modules/ai/facade.py` now takes a per-call `model=`, so the Talker uses the existing provider (spec §1.1). Settings: `interview_talker_model` (empty = use `llm_model`) and `interview_talker_enabled` (**false**). |
@@ -166,6 +166,13 @@ requires. These are facts about this HEAD, not targets.
 Three columns, as the V2 correction brief §10 asks: what is built, what the
 target is, and what is left. **The refactoring is not finished.** Nothing below
 is marked done without a test or a measurement behind it.
+
+Four words are used deliberately: **implemented** = code and unit tests exist;
+**experimental** = implemented but off by default and not accepted for
+production; **verified** = a gate is green (full suite, dual-run, snapshot) or a
+live measurement exists; **blocked** = something outside this branch must
+happen first. Hybrid and Luna are experimental and stay disabled; Unified
+Thinker + Anticipation is the accepted direction (benchmark decision, 2026-11-26).
 
 ### Built and verified
 
@@ -178,6 +185,9 @@ is marked done without a test or a measurement behind it.
 | Execution paths (§6.1, brief §6) | `router.py` picks Fast / Unified / Hybrid inside LIVE from values the turn already holds — never a call. RULE/SHADOW are untouched rollout modes. Fast executes a server-validated preview with 0 new calls. | `test_execution_paths.py` |
 | Hybrid Parallel (§6.4, brief §7) | `talker.py` (Luna via the existing provider's `model=`), `arbiter.py` (deterministic, no third call). Thinker and Talker run concurrently; the guarded early acknowledgment reaches the worker before fan-in over an opt-in NDJSON stream of the internal message endpoint (`response.early` → `response.final`); Luna is not waited for once the Thinker answers. **Off by default** (`interview_talker_enabled`). | `test_execution_paths.py`, `test_runtime_message_stream.py`, `test_core_in_flight_flow.py` |
 | Talker model reachable (§7) | `gpt-5.6-luna` resolves through the existing OpenAI provider. | live probe, 2026-11-26 |
+| Session runtime in phases (brief §8) | `process_candidate_message` is an orchestrator over typed phases: `_load_turn_context` → `_claim_candidate_message` (row lock, idempotency, Phase 1 write, commit) → `_prepare_inference` → `_run_authoritative_inference` (the only provider call, outside any lock) → re-lock → exactly one transition (`_commit_abort` / `_commit_clarify` / `_commit_probe` / `_commit_closing_reply` / `_settle_current_turn` + `_ask_next_question` / `_close_session`) → commit → `_turn_response`. SQL text, lock placement, commit order and event ordering are unchanged. | `test_chat_runtime.py`, `test_chat_full_flow_integration.py`, dual-run, snapshot 35/35 |
+| Evaluator + background memory (§9) | The report is persisted under its `interview_evaluation_jobs` lease and committed before anything else runs. Extraction is a durable job on the existing Celery/RabbitMQ worker and its default queue (`memory/extraction_job.py`, `workers/tasks/interview_memory.py`): per-user DONE marker in the memory store, Postgres advisory lock, retry with backoff, inline fallback when the broker refuses the dispatch. At-least-once by design, stated in the module. | `test_memory_extraction_job.py` |
+| §13 instrumentation | The agent marks speech end, submit and Core answered, and reports `voice_reply_started` per utterance kind with the elapsed times; `voice_answer_submitted` carries `since_speech_end_ms`; TTS metrics carry the kind. `scripts/eval/interviews/voice/livekit_turn_metrics.py` derives TTFA, TTMR, Qwen finalization, endpointing wait, VieNeu first byte, calls/turn, wasted speculation, hit rate, early-ack availability and a false-cut proxy with P50/P95/P99 from stored events — no provider call. **Implemented, not yet run on a real room.** | `test_livekit_turn_metrics.py` |
 
 ### Measured, not assumed
 
@@ -264,8 +274,9 @@ designed; the live numbers above are the only measurements.
 |---|---|
 | §5–§7 validation | Built, unit-tested and **measured live** (five configurations, two runs; see above). Hybrid is measured and rejected on cost/latency grounds, not left untested. `execution_paths_benchmark.py` compares Baseline / Unified / Unified+Anticipation / Hybrid on real turns (calls incl. speculation and Talker, p50/p95, rejection and fallback rates, early-ack availability, tokens); it has run only with `--stub`. TTFA/TTMR still need a LiveKit room. Hybrid stays off until that run and a shadow period say otherwise. |
 | Early-ack transport | Delivered over an opt-in NDJSON stream of the internal worker↔API endpoint. A failure after headers arrives as `response.error`; the plain JSON path is unchanged. The candidate-facing protocol is untouched. |
-| §8 Session/graph | `process_candidate_message` is still one 1419-line function. Context extraction done; the PHASE 1/2/3 split is not. |
-| §9 Evaluator/memory | Report is persisted before extraction, but post-session memory extraction is **not** yet a durable Celery/RabbitMQ job. |
+| §8 Session/graph | Phased (see above). Kept on purpose: the Main LangGraph `respond` checkpoint replay overlaps the runtime's `client_message_id` replay. Both are tested; removing either is a durability decision (spec §4, §14 phase 2), not a refactor, and needs its own authorization. |
+| §9 Evaluator/memory | Job built and unit-tested; **blocked** on two things outside the branch: the Docker images install no `memory` extra (langmem), so in production the job fails visibly after retries where the inline path failed silently before; and it has not run against a real broker and worker (no RabbitMQ in the test environment). |
+| §13 LiveKit benchmark | Instrumentation and report are ready; **blocked** on a real LiveKit room session (paid Qwen, VieNeu and OpenAI calls) — authorization pending. TTFA/TTMR end at the agent's playback start, not the candidate's speaker; the false-cut number is a proxy (speech after submit), not a human label. |
 | §3 Quality parity | Call counts and latency measured; response-quality parity still needs a shadow run. The record and `agent_shadow_report` expose `carried_text_rate` / `rejected_by` to make it checkable. |
 | Spec §10 tree | `core/` is retained by brief §2, which deliberately diverges from spec §11. `contracts.py`, `events.py`, `config.py` and the `session/` and `memory/` file splits are not done. |
 
