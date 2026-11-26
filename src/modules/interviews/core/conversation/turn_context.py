@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput, InterviewStage
@@ -100,6 +100,15 @@ class TurnContext:
     next_stage: Optional[InterviewStage] = None
     next_question: Any = None
     is_deepening_probe: bool = False
+    # The follow-ups already asked in this warm-up (CLARIFY messages of the
+    # turn, oldest first) and, once a decider's follow-up asked one of them
+    # again, which one -- the warm-up is then over (turn_rules).
+    warm_up_follow_ups: List[str] = field(default_factory=list)
+    warm_up_repeat: str = ""
+    # The probes already asked on this question (PROBE messages of the turn,
+    # oldest first) and the turn's exchange in order, for the decider.
+    question_follow_ups: List[str] = field(default_factory=list)
+    question_exchange: List[Dict[str, str]] = field(default_factory=list)
 
     @property
     def next_turn_index(self) -> int:
@@ -195,6 +204,79 @@ def build_turn_context(turn_input: CandidateTurnInput, session_state: Dict[str, 
         allow_early_exit=session_state.get("allow_early_exit", True),
         clarify_count=session_state.get("clarify_count", 0),
         blueprint=blueprint_from_payload(session_state.get("blueprint")),
+        warm_up_follow_ups=[str(x) for x in (session_state.get("warm_up_follow_ups") or []) if x],
+        question_follow_ups=[str(x) for x in (session_state.get("question_follow_ups") or []) if x],
+        question_exchange=[
+            {"role": str(m.get("role") or ""), "text": str(m.get("text") or "")}
+            for m in (session_state.get("question_exchange") or [])
+            if isinstance(m, dict) and str(m.get("text") or "").strip()
+        ],
+    )
+
+
+def _unasked_questions(state: Dict[str, Any]) -> int:
+    asked = {str(q) for q in state.get("asked_question_ids", []) or []}
+    pool = state.get("questions_pool", {}) or {}
+    return sum(
+        1
+        for stage in (InterviewStage.VALIDATE, InterviewStage.DEEP_DIVE, InterviewStage.CHALLENGE, InterviewStage.BEHAVIORAL)
+        for q in pool.get(stage.value, []) or []
+        if str(q.get("question_id") or q.get("question_version_id") or "") not in asked
+    )
+
+
+def question_time_budget(ctx: "TurnContext") -> Optional[Tuple[int, int]]:
+    """(seconds spent on this question, seconds it may take), or None.
+
+    Session 2678ce7b (26/11) spent ten minutes of a fifteen-minute interview
+    on its first CV question: every follow-up answer was short, so the
+    per-answer ``hard_answer_timeout`` never fired, and nothing measured the
+    question as a whole. A question's share is the time it has used plus the
+    time left before the closing reserve, divided among it and the questions
+    not yet asked -- recomputed each turn, so a question that ran long leaves
+    the rest of the plan its fair share instead of borrowing from it.
+    """
+    started = ctx.session_state.get("question_started_at")
+    if isinstance(started, str):
+        try:
+            started = datetime.fromisoformat(started)
+        except ValueError:
+            return None
+    if not isinstance(started, datetime):
+        return None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    used = max(0, int((ctx.now - started).total_seconds()))
+    closing_reserve = ctx.session_state.get(
+        "closing_reserve_seconds",
+        pacing_seconds(ctx.blueprint.closing.reserve_seconds, ctx.target_duration_seconds),
+    )
+    available = max(0, int(ctx.time_remaining_seconds) - int(closing_reserve or 0))
+    share = int((used + available) / (1 + _unasked_questions(ctx.session_state)))
+    return used, share
+
+
+DEFAULT_MAX_PROBES_PER_QUESTION = 2
+
+
+def probe_limit(ctx: "TurnContext") -> int:
+    """Follow-ups allowed on one question: the blueprint's, or the default."""
+    value = getattr(ctx.blueprint.contract, "max_probes_per_question", None)
+    return DEFAULT_MAX_PROBES_PER_QUESTION if value is None else int(value)
+
+
+def deepening_allowed(ctx: "TurnContext") -> bool:
+    """A "deepen" probe (push further on a sufficient answer) is the challenge
+    tier's move on a technical question's first follow-up -- the rule ladder's
+    conditions. Session 0e3c14c6 (basic tier) had the decider choose it twice,
+    and the canned deepen aspect replaced its own point with a load-and-failure
+    scenario: "mã lỗi 404 khi tải tăng mạnh"."""
+    telemetry = ctx.turn_input.telemetry or {}
+    return bool(
+        ctx.session_state.get("practice_tier") == "challenge"
+        and ctx.current_stage in (InterviewStage.DEEP_DIVE, InterviewStage.CHALLENGE)
+        and ctx.current_turn_in_question == 0
+        and not (telemetry.get("is_coding_turn") or telemetry.get("isCodingTurn"))
     )
 
 
@@ -243,6 +325,8 @@ def probe_window(ctx: TurnContext) -> ProbeWindow:
     is_behind_schedule = (
         ctx.elapsed_seconds > (ctx.target_duration_seconds * blueprint.pacing.behind_schedule_ratio)
     ) and ctx.current_stage in [InterviewStage.VALIDATE, InterviewStage.DEEP_DIVE]
+    budget = question_time_budget(ctx)
+    is_question_time_spent = bool(budget and budget[0] >= budget[1])
     stage_probes_enabled = (
         blueprint.validate_cv.probe_enabled
         if ctx.current_stage == InterviewStage.VALIDATE
@@ -254,6 +338,10 @@ def probe_window(ctx: TurnContext) -> ProbeWindow:
         "give_up": ctx.is_give_up,
         "behind_schedule": is_behind_schedule,
         "hard_answer_timeout": is_hard_answer_timeout,
+        # Follow-ups already asked on this question (blueprint contract).
+        "probe_budget": int(ctx.current_turn_in_question or 0) >= probe_limit(ctx),
+        # The question's whole share of the session, not one answer's length.
+        "question_time": is_question_time_spent,
         "behavioral_reserve": is_near_behavioral_reserve and has_pending_behavioral,
         "closing_reserve": is_near_closing_reserve,
         "stage": ctx.current_stage

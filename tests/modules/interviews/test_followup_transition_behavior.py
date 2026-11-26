@@ -131,7 +131,11 @@ async def test_insufficient_answer_after_first_probe_gets_one_more_followup() ->
 
 
 @pytest.mark.asyncio
-async def test_followup_can_continue_after_multiple_probes() -> None:
+async def test_after_the_follow_up_budget_the_interview_moves_on() -> None:
+    """Restored after sessions 2678ce7b and 61b17de5 (26/11): 3bf4591 had turned
+    this into "probes continue after two follow-ups", and the model then never
+    stopped. Two follow-ups (the blueprint's maxProbesPerQuestion) and the
+    question moves on, even with the answer still thin."""
     engine = TransitionCapturingEngine(llm_client=InsufficientAnswerLLM())
     candidate_answer = "Dự án HamTech ạ."
 
@@ -140,9 +144,9 @@ async def test_followup_can_continue_after_multiple_probes() -> None:
         _state(probe_count=2),
     )
 
-    assert result.action == TurnAction.PROBE
-    assert result.metadata["turn_in_question"] == 3
-    assert "trực tiếp làm phần nào" in result.message_text
+    assert result.action == TurnAction.NEXT_QUESTION
+    assert result.metadata["turn_in_question"] == 0
+    assert "trực tiếp làm phần nào" not in result.message_text
 
 
 @pytest.mark.asyncio

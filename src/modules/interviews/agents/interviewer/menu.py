@@ -15,6 +15,13 @@ from dataclasses import dataclass, field
 from typing import Dict, List
 
 from src.modules.interviews.core.contracts.interview import InterviewStage
+from src.modules.interviews.core.conversation.turn_rules import (
+    MAX_CLARIFIES_PER_QUESTION,
+    MAX_NON_ADVANCING_PER_QUESTION,
+    NON_ADVANCING_ACTIONS,
+    non_advancing_exhausted,
+    warm_up_follow_ups_exhausted,
+)
 from src.modules.interviews.core.conversation.turn_context import (
     ACTIONS,
     TurnContext,
@@ -63,12 +70,23 @@ def build_menu(ctx: TurnContext, *, memory_enabled: bool = False) -> Menu:
     deny("closing_qna", "not in closing stage")
 
     if stage == InterviewStage.WARM_UP:
-        allow("continue_warm_up")
+        exhausted = warm_up_follow_ups_exhausted(ctx)
+        if exhausted:
+            # The one thing the decider may not do is keep the candidate in
+            # the warm-up: past the cap, moving on is the only forward action.
+            deny("continue_warm_up", f"warm-up follow-ups exhausted ({exhausted})")
+        else:
+            allow("continue_warm_up")
         deny("acknowledge_and_probe", "warm-up never probes")
         deny("clarify_question", "warm-up uses continue_warm_up")
     else:
         deny("continue_warm_up", "only in warm-up")
-        allow("clarify_question")
+        if int(ctx.clarify_count or 0) >= MAX_CLARIFIES_PER_QUESTION:
+            # Rephrased twice already: a third rephrasing is the loop of
+            # session 0e3c14c6. Moving on (or the candidate's own skip) remains.
+            deny("clarify_question", f"clarified {ctx.clarify_count} times")
+        else:
+            allow("clarify_question")
         window = probe_window(ctx)
         if window.open:
             allow("acknowledge_and_probe")
@@ -77,6 +95,15 @@ def build_menu(ctx: TurnContext, *, memory_enabled: bool = False) -> Menu:
             deny("acknowledge_and_probe", ",".join(closed) or "probe window closed")
 
     allow("move_to_next_question")
+
+    if non_advancing_exhausted(ctx):
+        # Three replies on this question already went nowhere (session
+        # 08a2ee58: redirect, decline, repeat). Moving on, or the candidate's
+        # own stop, are what is left.
+        for action in NON_ADVANCING_ACTIONS:
+            if action in allowed:
+                allowed.remove(action)
+            reasons[action] = f"non-advancing replies exhausted ({MAX_NON_ADVANCING_PER_QUESTION})"
 
     queue_empty = _no_question_left(state)
     if queue_empty:

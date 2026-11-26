@@ -170,7 +170,7 @@ async def test_a_bridge_that_asks_or_grades_is_dropped_and_the_question_stays(ct
 async def test_a_bridge_that_narrates_the_process_is_dropped_in_any_stage(ctx_factory) -> None:
     """Since session 0e3c14c6 every move may carry a bridge; this one narrates the process."""
     ctx = ctx_factory(stage=InterviewStage.DEEP_DIVE)
-    decision = Decision("move_to_next_question", {"reason": "sufficient", "transition_text": "Mình sang chủ đề khác nhé."}, source="agent")
+    decision = Decision("move_to_next_question", {"reason": "sufficient", "transition_text": "Giờ mình chuyển sang câu hỏi tiếp theo nhé."}, source="agent")
     output = await InterviewCoreEngine().act_move_to_next_question(ctx, decision)
     assert output.metadata["transition"] == "" and "\n\n" not in output.message_text
 

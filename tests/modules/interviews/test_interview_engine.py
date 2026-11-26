@@ -331,11 +331,12 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output.action, TurnAction.CLARIFY)
         self.assertEqual(output.message_text, probe)
 
-    async def test_insufficient_answer_still_probes_after_two_followups(self):
-        """3bf4591 bỏ trần hai lượt hỏi phụ: còn thiếu ý cốt lõi thì vẫn đào sâu.
+    async def test_two_followups_are_the_budget_even_when_the_answer_is_thin(self):
+        """Trần hai lượt hỏi phụ (blueprint maxProbesPerQuestion) được khôi phục.
 
-        Trước đây lượt thứ ba luôn bị ép chuyển câu bất kể câu trả lời. Giới hạn
-        cứng đó đã được gỡ; nhịp độ do pacing và quỹ thời gian quyết định.
+        3bf4591 gỡ trần này; ba phiên thật ngày 26/11 sau đó hỏi mãi một câu
+        (9 lượt ở 2678ce7b, 4 lượt "nhiệm vụ cụ thể" ở 61b17de5). Hết hai lượt
+        thì chuyển câu, kể cả khi câu trả lời còn mỏng.
         """
         llm = MockLLM(eval_result={"score": 5.0, "is_sufficient": False, "acknowledgement": "Ghi nhận ý kiến."})
         engine = InterviewCoreEngine(llm_client=llm)
@@ -357,9 +358,8 @@ class TestInterviewCoreEngine(unittest.IsolatedAsyncioTestCase):
 
         output = await engine.handle_turn(turn_input, session_state)
 
-        self.assertEqual(output.action, TurnAction.PROBE)
-        # The probe stays inside the same question instead of advancing.
-        self.assertEqual(output.metadata.get("turn_in_question"), 3)
+        self.assertEqual(output.action, TurnAction.NEXT_QUESTION)
+        self.assertEqual(output.metadata.get("turn_in_question"), 0)
 
     async def test_low_score_and_insufficient_do_not_fast_fail_validation(self):
         """Low score/insufficiency in Validate may probe but cannot terminate the session."""

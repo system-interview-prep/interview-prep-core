@@ -39,6 +39,10 @@ class WarmUpPolicy(_Policy):
     """
     soft_answer_seconds: int = Field(120, alias="softAnswerSeconds", ge=30, le=600)
     hard_answer_seconds: int = Field(180, alias="hardAnswerSeconds", ge=30, le=900)
+    # Số lần tối đa người phỏng vấn mời ứng viên bổ sung phần giới thiệu; sau
+    # đó chuyển sang câu hỏi kế tiếp dù phần giới thiệu còn thiếu ý. Phiên
+    # e52c0757 (26/11) kẹt 12 lần ở "lý do quan tâm vị trí" vì không có giới hạn.
+    max_follow_ups: int = Field(2, alias="maxFollowUps", ge=0, le=5)
 
 
 class ValidatePolicy(_Policy):
@@ -130,8 +134,11 @@ class InterviewContractPolicy(_Policy):
         "all_frozen_questions", alias="coverageTarget"
     )
     require_behavioral_when_enabled: bool = Field(True, alias="requireBehavioralWhenEnabled")
-    # Kept only so existing versioned blueprints still load; runtime ignores this legacy value.
-    max_probes_per_question: int | None = Field(None, alias="maxProbesPerQuestion", ge=0, le=3)
+    # Follow-ups per question. 3bf4591 (25/11) made the runtime ignore it; the
+    # model then never stopped by itself (sessions 2678ce7b: 9 follow-ups,
+    # 61b17de5: 4 asking for "nhiệm vụ cụ thể" again). Enforced again; a
+    # stored blueprint without it gets the default.
+    max_probes_per_question: int | None = Field(2, alias="maxProbesPerQuestion", ge=0, le=3)
 
 
 class InterviewBlueprint(_Policy):

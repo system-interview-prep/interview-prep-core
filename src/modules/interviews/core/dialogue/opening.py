@@ -57,6 +57,12 @@ def _agenda(stages: Sequence[str], *, is_vi: bool) -> list[str]:
     return ordered
 
 
+def opening_agenda(stages: Sequence[str], *, is_vi: bool) -> str:
+    """What the interview will cover, as a phrase ("dự án trong CV, chuyên môn và
+    cách bạn làm việc nhóm"); the icebreaker prompt's facts."""
+    return _join(_agenda(stages, is_vi=is_vi), is_vi=is_vi)
+
+
 def build_opening(
     *,
     is_vi: bool,

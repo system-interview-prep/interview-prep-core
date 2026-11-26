@@ -33,8 +33,11 @@ from src.modules.interviews.core.guardrails.input import (
     candidate_requests_system_data,
     system_probe_decision,
 )
+from src.modules.interviews.core.guardrails.input import says_already_answered
 from src.modules.interviews.core.guardrails.output import (
     acknowledgement_rejection_reason,
+    announces_process,
+    has_lead_in,
     checked_probe,
     clarify_rejection_reason,
     enforce_final_output_guards,
@@ -44,6 +47,11 @@ from src.modules.interviews.core.guardrails.output import (
 )
 from src.modules.interviews.core.guardrails.common import candidate_block, candidate_data_rule, canary_scope
 from src.modules.interviews.core.conversation.turn_rules import (
+    MAX_CLARIFIES_PER_QUESTION,
+    non_advancing_exhausted,
+    follow_up_repeats,
+    warm_up_follow_up_repeats,
+    warm_up_follow_ups_exhausted,
     DEEPEN_ASPECT_EN,
     DEEPEN_ASPECT_VI,
     EVALUATION_SCHEMA,
@@ -212,6 +220,27 @@ class CoreTurnEngine:
             trace_event("interviewer", "input_guardrail_triggered", session_id=ctx.session_id,
                         guard="system_probe_or_injection")
             return system_probe
+        # XIN ĐỔI CÂU HỎI: a code rule in every mode. It lived only in the rule
+        # ladder, so in LIVE the model answered "em có thể chuyển câu hỏi khác
+        # không ạ?" with repeat_question (session 0e3c14c6). Same order as the
+        # ladder had it: right after the global guards.
+        if is_skip_request(ctx.candidate_text):
+            ctx.next_stage, ctx.next_question = self._get_next_stage_and_question(ctx.session_state)
+            if ctx.next_stage == InterviewStage.CLOSED or ctx.next_question is None:
+                return Decision("close_interview", {"reason": "skip_last"}, reason="skip on the last question",
+                                evidence_refs=["answer:text"], path=["#3"])
+            return Decision("move_to_next_question", {"reason": "candidate_skip"}, reason="skip phrase",
+                            evidence_refs=["answer:text"], path=["#3"])
+        # "Em đã trình bày rồi": the candidate closes the question themselves.
+        # Session 08a2ee58 answered it with a fixed decline and then the same
+        # question again. Not a skip -- what they said stays their answer.
+        if ctx.current_stage != InterviewStage.CLOSING and says_already_answered(ctx.candidate_text):
+            ctx.next_stage, ctx.next_question = self._get_next_stage_and_question(ctx.session_state)
+            if ctx.next_stage == InterviewStage.CLOSED or ctx.next_question is None:
+                return Decision("close_interview", {"reason": "complete"}, reason="candidate says answered",
+                                evidence_refs=["answer:text"], path=["#3b"])
+            return Decision("move_to_next_question", {"reason": "candidate_answered"}, reason="candidate says answered",
+                            evidence_refs=["answer:text"], path=["#3b"])
         return None
 
     # ----------------- BƯỚC 2: QUYẾT ĐỊNH THEO LUẬT ----------------- #
@@ -240,7 +269,8 @@ class CoreTurnEngine:
 
         # The candidate did not hear the question: ask it again word for word.
         # Not an answer, so it is neither evaluated nor added to the answer state.
-        if ctx.active_prompt and is_repeat_request(ctx.candidate_text):
+        stalled = non_advancing_exhausted(ctx)
+        if ctx.active_prompt and is_repeat_request(ctx.candidate_text) and not stalled:
             return Decision("repeat_question", reason="repeat phrase", evidence_refs=["answer:text"], path=path + ["#5"])
 
         ctx.intent = classify_candidate_intent(ctx.candidate_text, ctx.question_prompt)
@@ -248,7 +278,7 @@ class CoreTurnEngine:
         # Questions addressed to the interviewer are conversational control,
         # not evidence that the current assessment turn has been answered.
         candidate_question_intent = classify_candidate_question(ctx.candidate_text)
-        if candidate_question_intent is not None:
+        if candidate_question_intent is not None and not stalled:
             return Decision("answer_candidate_question", {"intent": candidate_question_intent},
                             reason="question to the interviewer", evidence_refs=["answer:text"], path=["#6"])
 
@@ -278,7 +308,7 @@ class CoreTurnEngine:
             return Decision("decline_system_probe", reason="evaluator intent",
                             evidence_refs=["evaluation:intent"], path=path + ["#8"])
         # Off-topic replies are not evidence: redirect without grading them.
-        if eval_result.get("intent") == "OFF_TOPIC":
+        if eval_result.get("intent") == "OFF_TOPIC" and not stalled:
             return Decision("redirect_off_topic", reason="evaluator intent",
                             evidence_refs=["evaluation:intent"], path=path + ["#8"])
 
@@ -287,7 +317,7 @@ class CoreTurnEngine:
         if ctx.intent == "CLARIFY_REQUEST" and ctx.current_stage not in (
             InterviewStage.WARM_UP,
             InterviewStage.CLOSING,
-        ):
+        ) and int(ctx.clarify_count or 0) < MAX_CLARIFIES_PER_QUESTION and not stalled:
             return Decision("clarify_question", reason="candidate asked for clarification",
                             evidence_refs=["answer:text"], path=path + ["#9"])
 
@@ -303,10 +333,21 @@ class CoreTurnEngine:
         ctx.sufficiency_status = sufficiency_status
         ctx.is_sufficient = sufficiency_status == "SUFFICIENT"
 
-        # Warm-up follow-ups stay conversational and use the evaluator's first response.
+        # Warm-up follow-ups stay conversational and use the evaluator's first
+        # response -- a bounded number of times (blueprint warm_up.max_follow_ups
+        # and the stage's time share): past that the interview moves on. One
+        # that asks again what this warm-up already asked ends it too.
+        if ctx.current_stage == InterviewStage.WARM_UP and not ctx.is_sufficient and not ctx.warm_up_repeat:
+            repeat = warm_up_follow_up_repeats(
+                str(eval_result.get("probe_question") or ""), ctx.warm_up_follow_ups
+            )
+            if repeat:
+                ctx.warm_up_repeat = repeat
+                trace_event("interviewer", "warm_up_follow_up_repeated", source="evaluation", repeat=repeat)
         if (
             ctx.current_stage == InterviewStage.WARM_UP
             and not ctx.is_sufficient
+            and not warm_up_follow_ups_exhausted(ctx)
         ):
             return Decision("continue_warm_up", {"missing_aspect": str(eval_result.get("missing_aspect") or "")},
                             reason="warm-up answer still missing a point",
@@ -570,12 +611,23 @@ class CoreTurnEngine:
     async def act_clarify_question(self, ctx: TurnContext, decision: Decision) -> InterviewerTurnOutput:
         # Unified Thinker (§6.2): the decider may carry the line it chose to
         # say, already past clarify_rejection_reason. Otherwise generate it.
-        clarify_msg = str(decision.args.get("clarify_text") or "") or await self._generate_clarify_text(
-            current_question=ctx.current_question,
-            candidate_text=ctx.candidate_text,
-            is_vi=ctx.is_vi,
-            memory_hits=ctx.session_state.get("candidate_memory") or (),
-        )
+        clarify_msg = str(decision.args.get("clarify_text") or "")
+        if not clarify_msg:
+            try:
+                clarify_msg = await self._generate_clarify_text(
+                    current_question=ctx.current_question,
+                    candidate_text=ctx.candidate_text,
+                    is_vi=ctx.is_vi,
+                    memory_hits=ctx.session_state.get("candidate_memory") or (),
+                )
+            except Exception as exc:  # noqa: BLE001 - a rejected line must not end the session
+                # Session 2678ce7b: one clarification rejected as "evaluative"
+                # raised out of the turn, the voice session closed as a
+                # technical failure and no report was produced. Saying the
+                # pending question again, as heard, is always safe.
+                trace_event("interviewer", "clarify_fallback_repeat", error_type=type(exc).__name__,
+                            error_message=str(exc)[:200], session_id=str(ctx.session_id))
+                clarify_msg = ctx.heard_prompt or ctx.question_prompt
         return InterviewerTurnOutput(
             session_id=ctx.session_id,
             turn_index=ctx.next_turn_index,
@@ -656,7 +708,7 @@ class CoreTurnEngine:
                 "sufficiency_status": "INSUFFICIENT",
                 "intent": ctx.intent,
                 "ack_source": "none",
-                "missing_aspect": eval_result.get("missing_aspect"),
+                "missing_aspect": eval_result.get("missing_aspect") or decision.args.get("missing_aspect"),
                 "probe_generated_in_evaluation": speech_plan[0]["source"] == "llm_evaluation",
                 "speech_plan": speech_plan,
             },
@@ -699,20 +751,47 @@ class CoreTurnEngine:
         elif probe_from_evaluation:
             speech_checks.record("probe", "pass", "from_evaluation")
         else:
-            probe_question = await self._generate_probe_question(
-                candidate_text=ctx.candidate_text,
-                current_question=ctx.current_question,
-                is_vi=ctx.is_vi,
-                current_stage=ctx.current_stage,
-                telemetry=ctx.turn_input.telemetry,
-                missing_aspect=(
-                    (DEEPEN_ASPECT_VI if ctx.is_vi else DEEPEN_ASPECT_EN)
-                    if ctx.is_deepening_probe
-                    else missing_aspect
-                ),
-                seed=ctx.seed,
-                recent_lines=ctx.recent_lines,
-                memory_hits=ctx.session_state.get("candidate_memory") or (),
+            try:
+                probe_question = await self._generate_probe_question(
+                    candidate_text=ctx.candidate_text,
+                    current_question=ctx.current_question,
+                    is_vi=ctx.is_vi,
+                    current_stage=ctx.current_stage,
+                    telemetry=ctx.turn_input.telemetry,
+                    missing_aspect=(
+                        # The decider's own point stays the subject of a deepen
+                        # probe; the generic aspect is only the how.
+                        (
+                            f"{missing_aspect}\n{DEEPEN_ASPECT_VI if ctx.is_vi else DEEPEN_ASPECT_EN}"
+                            if decision.source == "agent" and missing_aspect
+                            else (DEEPEN_ASPECT_VI if ctx.is_vi else DEEPEN_ASPECT_EN)
+                        )
+                        if ctx.is_deepening_probe
+                        else missing_aspect
+                    ),
+                    seed=ctx.seed,
+                    recent_lines=ctx.recent_lines,
+                    memory_hits=ctx.session_state.get("candidate_memory") or (),
+                )
+            except Exception as exc:  # noqa: BLE001 - a rejected probe must not end the session
+                # No probe passed its guard: the question moves on instead of
+                # failing the turn (session 2678ce7b lost its whole report to a
+                # rejected clarification raised the same way).
+                trace_event("interviewer", "probe_withdrawn", reason="generation_failed",
+                            error_type=type(exc).__name__, session_id=str(ctx.session_id))
+                return await self.act_move_to_next_question(
+                    ctx, Decision("move_to_next_question", {"reason": "no_probe"}, reason="probe generation failed")
+                )
+        # A follow-up that asks again what an earlier follow-up of this
+        # question asked is the loop of session 2678ce7b (the Redis-failure
+        # question twice, reworded): the candidate already answered it, so
+        # the question moves on.
+        repeat = follow_up_repeats(probe_question, ctx.question_follow_ups)
+        if repeat:
+            trace_event("interviewer", "probe_withdrawn", reason="repeated_follow_up", repeat=repeat,
+                        text=probe_question[:160], session_id=str(ctx.session_id))
+            return await self.act_move_to_next_question(
+                ctx, Decision("move_to_next_question", {"reason": "repeated_probe"}, reason=f"repeats {repeat}")
             )
         probe_source = "llm"
         probe_speech = probe_question
@@ -792,12 +871,35 @@ class CoreTurnEngine:
 
         eval_result = ctx.eval_result
         window = ctx.window or probe_window(ctx)
-        # After warm-up, ask the next frozen question without a confirmation beat.
         interviewer_message = next_question.spoken_prompt or next_question.main_prompt
         speech_plan = [{
             "act": "QUESTION",
             "source": "pregenerated" if next_question.spoken_prompt else "bank",
         }]
+        # Moving on: the decider may have written one bridging sentence in
+        # the same inference (no extra call) that closes the thread it was on.
+        # It goes through the acknowledgement guard, may not narrate the
+        # process, is dropped when the question already opens with its own
+        # lead-in, and precedes the frozen question as its own paragraph, so
+        # the question is still spoken verbatim (and still plays from the
+        # prefetch cache). Session 0e3c14c6: question after question with no
+        # link at all, "like two different interviews".
+        transition = str(decision.args.get("transition_text") or "").strip() if decision.source == "agent" else ""
+        if transition:
+            reason = acknowledgement_rejection_reason(
+                transition, recent=ctx.recent_lines, answer=ctx.candidate_text
+            ) or ("announces_process" if announces_process(transition) else None) or (
+                "question_has_lead_in" if has_lead_in(interviewer_message) else None
+            )
+            if reason:
+                speech_checks.record("ack", "reject", reason, transition)
+                trace_event("interviewer", "transition_rejected", reason=reason, text=transition[:160])
+                transition = ""
+            else:
+                speech_checks.record("ack", "pass", "transition")
+        if transition:
+            interviewer_message = f"{transition}\n\n{interviewer_message}"
+            speech_plan = [{"act": "TRANSITION", "source": "agent_decision"}, *speech_plan]
         return InterviewerTurnOutput(
             session_id=ctx.session_id,
             turn_index=ctx.next_turn_index,
@@ -814,7 +916,7 @@ class CoreTurnEngine:
                 "sufficiency_status": ctx.sufficiency_status,
                 "hard_answer_timeout": window.is_hard_answer_timeout,
                 "acknowledgement": "",
-                "transition": "",
+                "transition": transition,
                 "speech_plan": speech_plan,
                 "intent": eval_result.get("intent"),
                 "ack_source": "none",

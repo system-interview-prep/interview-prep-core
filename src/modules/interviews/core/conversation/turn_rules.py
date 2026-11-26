@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict
+import unicodedata
+from typing import Any, Dict, Sequence
 
 from src.modules.interviews.core.guardrails.input import (
     AMBIGUOUS_KEYWORDS,
@@ -66,17 +67,123 @@ TIME_THRESHOLDS = {
     InterviewStage.CLOSING: 1.00,  # 5% cuối cùng
 }
 
+#: The warm-up may run this many times its planned share of the session
+#: before its follow-ups stop regardless of count (a slow, long-winded
+#: introduction still gets room; an endless one does not).
+WARM_UP_TIME_OVERRUN = 2.0
+
+
+#: Function words of a Vietnamese follow-up (folded, no diacritics). What is
+#: left after removing them is what the line *asks for*: "lý do quan tâm vị
+#: trí" rather than "bạn có thể cho mình biết thêm về ... không".
+_FOLLOW_UP_STOPWORDS = frozenset(
+    "ban minh em anh chi co the cho biet them ve khong la gi nay cua o duoc va den voi nhe a "
+    "vay nhi dieu cu hon mot chut it xiu ro ra noi chia se hoi thu nua cung da dang se thi ma "
+    "rat nhung cac ngoai neu lam ke moi hay hoac toi tu bang toi roi nen de".split()
+)
+#: Two asks are the same ask when this share of their content words coincide.
+WARM_UP_REPEAT_OVERLAP = 0.6
+
+
+def _asked_terms(sentence: str) -> set[str]:
+    folded = unicodedata.normalize("NFKD", str(sentence or "").lower())
+    ascii_text = "".join(ch for ch in folded if not unicodedata.combining(ch)).replace("đ", "d")
+    return {t for t in re.findall(r"[a-z0-9]+", ascii_text) if t not in _FOLLOW_UP_STOPWORDS}
+
+
+def _question_sentences(text_value: str) -> list[str]:
+    parts = [p.strip() for p in re.split(r"(?<=[.?!…])\s+", str(text_value or "").strip()) if p.strip()]
+    asks = [p for p in parts if p.endswith("?")]
+    return asks or parts
+
+
+def follow_up_repeats(follow_up: str, previous: Sequence[str]) -> str | None:
+    """Which earlier follow-up of this question the new one asks again, or None.
+
+    Session e52c0757 (26/11): "Bạn có thể cho mình biết thêm về lý do bạn
+    quan tâm đến vị trí này không?" was asked five times, each a little
+    reworded ("lý do cụ thể", "rõ hơn"). A question sentence of the new line
+    whose content words overlap an earlier line's question sentence by
+    :data:`WARM_UP_REPEAT_OVERLAP` is the same ask. A different point
+    ("bạn học năm mấy?") shares nothing and passes.
+    """
+    asks = [a for a in (_asked_terms(s) for s in _question_sentences(follow_up)) if len(a) >= 2]
+    if not asks:
+        return None
+    for index, earlier in enumerate(previous, 1):
+        for prior in (_asked_terms(s) for s in _question_sentences(earlier)):
+            if len(prior) < 2:
+                continue
+            for ask in asks:
+                if len(ask & prior) / len(ask | prior) >= WARM_UP_REPEAT_OVERLAP:
+                    return f"follow_up:{index}"
+    return None
+
+
+# The warm-up's name for the same check (e0848ee, 09c2110).
+warm_up_follow_up_repeats = follow_up_repeats
+
+
+def warm_up_follow_ups_exhausted(ctx) -> str | None:
+    """Why the warm-up must move on now instead of asking again, or None.
+
+    Deterministic bounds, all policy rather than judgement: a follow-up that
+    asks what an earlier follow-up of this warm-up already asked (the
+    candidate answered it, however they answered -- asking a third time is
+    the defect, not the cure), the blueprint's ``warm_up.max_follow_ups``
+    (follow-ups already asked on this turn -- stored as CLARIFY messages,
+    counted in ``clarify_count``), and the stage's time share times
+    :data:`WARM_UP_TIME_OVERRUN`. The model still decides *what* to ask
+    while follow-ups remain; it can no longer decide to ask forever.
+    """
+    if ctx.current_stage != InterviewStage.WARM_UP:
+        return None
+    repeat = str(getattr(ctx, "warm_up_repeat", "") or "")
+    if repeat:
+        return f"repeated_follow_up:{repeat}"
+    limit = int(getattr(ctx.blueprint.warm_up, "max_follow_ups", 2))
+    used = int(getattr(ctx, "clarify_count", 0) or 0)
+    if used >= limit:
+        return f"follow_ups:{used}/{limit}"
+    target = max(1, int(getattr(ctx, "target_duration_seconds", 0) or 0))
+    elapsed_ratio = float(getattr(ctx, "elapsed_seconds", 0) or 0) / target
+    allowed_ratio = TIME_THRESHOLDS[InterviewStage.WARM_UP] * WARM_UP_TIME_OVERRUN
+    if elapsed_ratio > allowed_ratio:
+        return f"time:{elapsed_ratio:.2f}>{allowed_ratio:.2f}"
+    return None
+
+
 # What a deepening probe (challenge tier, sufficient answer) pushes on.
 DEEPEN_ASPECT_VI = (
-    "Ứng viên đã trả lời đủ ý chính. Hỏi sâu thêm MỘT bậc về đúng điều họ vừa nói: "
-    "đánh đổi của cách đó, chuyện gì xảy ra khi tải tăng mạnh hoặc một thành phần lỗi, "
-    "hoặc vì sao không chọn cách khác. Không hỏi lại điều họ đã trả lời."
+    "Ứng viên đã trả lời đủ ý chính. Hỏi sâu thêm MỘT bậc về đúng điều họ vừa nói, "
+    "chẳng hạn vì sao họ chọn cách đó thay vì cách khác, hoặc giới hạn của nó trong chính "
+    "bối cảnh họ kể. Không dựng tình huống mới mà họ chưa nhắc tới. Không hỏi lại điều họ đã trả lời."
 )
 DEEPEN_ASPECT_EN = (
-    "The candidate covered the main points. Push ONE level deeper on exactly what they said: "
-    "the trade-off of that approach, what happens under much higher load or when a part fails, "
-    "or why not another approach. Do not ask again what they already answered."
+    "The candidate covered the main points. Push ONE level deeper on exactly what they said, "
+    "such as why that approach rather than another, or its limits in the very context they "
+    "described. Do not invent a new scenario they did not raise. Do not ask again what they already answered."
 )
+#: Clarifications of one question before the interview moves on. Session
+#: 0e3c14c6 (26/11) rephrased the same follow-up three times while the
+#: candidate said they did not understand it and asked to move on.
+MAX_CLARIFIES_PER_QUESTION = 2
+#: Interviewer replies on one question that do not move the interview --
+#: repeat, redirect, clarify, answering the candidate's question, declining.
+#: Session 08a2ee58 (26/11) answered a behavioural answer with a redirect, a
+#: decline and a repeat in a row; each is bounded alone, but not together.
+MAX_NON_ADVANCING_PER_QUESTION = 3
+NON_ADVANCING_ACTIONS = (
+    "repeat_question", "redirect_off_topic", "clarify_question",
+    "answer_candidate_question", "decline_system_probe",
+)
+
+
+def non_advancing_exhausted(ctx) -> bool:
+    if ctx.current_stage in (InterviewStage.WARM_UP, InterviewStage.CLOSING):
+        return False
+    used = int((getattr(ctx, "session_state", None) or {}).get("non_advancing_count") or 0)
+    return used >= MAX_NON_ADVANCING_PER_QUESTION
 
 
 # Structured output for the legacy evaluation call. Lengths are generous; the

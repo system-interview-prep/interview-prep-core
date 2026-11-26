@@ -140,6 +140,21 @@ async def decide(state: TurnGraphState) -> dict:
     arbiter: dict | None = None
     allowed = state.get("allowed_actions", [])
 
+    # The question that moving on would ask, resolved before the decider
+    # writes its bridge (session 1b264b67: bridges were written blind, so
+    # they summed up the warm-up instead of leading somewhere). The same
+    # selection act_move_to_next_question would make; it changes no state.
+    next_question_text = ""
+    if "move_to_next_question" in allowed and ctx.next_question is None:
+        try:
+            ctx.next_stage, ctx.next_question = state["engine"]._get_next_stage_and_question(ctx.session_state)
+        except Exception:  # noqa: BLE001 - without it the bridge is written as before
+            ctx.next_stage, ctx.next_question = None, None
+    if ctx.next_question is not None:
+        next_question_text = str(
+            getattr(ctx.next_question, "spoken_prompt", None) or getattr(ctx.next_question, "main_prompt", "") or ""
+        )
+
     async def ask_agent() -> None:
         nonlocal agent, error
         try:
@@ -148,6 +163,7 @@ async def decide(state: TurnGraphState) -> dict:
                 allowed_actions=allowed,
                 pacing=state.get("pacing", {}),
                 memory_search=state.get("memory_search"),
+                next_question=next_question_text,
             )
         except Exception as exc:  # noqa: BLE001 - the model decider must never cost the candidate a turn
             error = type(exc).__name__

@@ -529,3 +529,56 @@ __all__ = [
     "looks_like_system_probe",
     "system_probe_decision",
 ]
+
+
+# Whole words only: the first version had a bare "ai" and matched "h-ai bạn"
+# (session 1b264b67), so the fixed decline was said to a team-conflict story.
+_SYSTEM_WORDS_RE = re.compile(
+    r"\b(prompt|system prompt|rubric|chấm điểm|thang điểm|cách chấm|tiêu chí chấm|mô hình (ai|ngôn ngữ)|"
+    r"llm|gpt|chatgpt|openai|instruction|chỉ dẫn|hướng dẫn (nội bộ|hệ thống)|api key|khoá api|khóa api|"
+    r"token|nội bộ|cấu hình|config|mã nguồn|source code|bạn là ai|bạn là bot|bạn dùng (mô hình|model))\b",
+    re.IGNORECASE,
+)
+
+
+def mentions_the_system(text: str) -> bool:
+    """Whether the candidate said anything about the system, the model or how
+    answers are assessed -- the least a model-chosen ``decline_system_probe``
+    needs (session 08a2ee58 used it for "em đã trình bày rồi")."""
+    return bool(_SYSTEM_WORDS_RE.search(str(text or "")))
+
+
+_ALREADY_ANSWERED_RE = re.compile(
+    r"(trình bày|trả lời|nói|kể|chia sẻ|giải thích)"
+    r"(\s+(câu này|câu đó|phần này|phần đó|ở trên|lúc nãy|trước đó|hết))?"
+    r"\s+(rồi|xong rồi|xong)\s*(mà|ạ|á|đó|nha|nhé|nhỉ|anh|chị)?\s*[.!?…]*\s*$",
+    re.IGNORECASE,
+)
+_ALREADY_ANSWERED_MAX_WORDS = 25
+
+
+def says_already_answered(text: str) -> bool:
+    """A short "em đã trình bày rồi" / "em trả lời rồi mà": the candidate
+    considers the question answered. Session 08a2ee58 (26/11) heard the same
+    behavioural question again after saying it twice. Long messages are
+    answers that may contain the words ("sau khi trình bày xong…"), so only
+    short ones count."""
+    value = str(text or "").strip()
+    if not value or len(value.split()) > _ALREADY_ANSWERED_MAX_WORDS:
+        return False
+    return bool(_ALREADY_ANSWERED_RE.search(value))
+
+
+_STOP_WORDS_RE = re.compile(
+    r"\b(dừng|ngừng|kết thúc|tạm dừng|nghỉ|bỏ cuộc|không muốn (tiếp|làm|phỏng vấn)|xin phép (về|rời|dừng)|"
+    r"stop|quit|end the interview|give up)\b",
+    re.IGNORECASE,
+)
+
+
+def mentions_stopping(text: str) -> bool:
+    """The least a model-chosen ``confirm_abort`` needs: the candidate said
+    something about stopping. Session 1b264b67 asked "bạn có muốn kết thúc buổi
+    phỏng vấn không?" after a team-conflict answer."""
+    value = str(text or "")
+    return is_abort_request(value) or bool(_STOP_WORDS_RE.search(value))

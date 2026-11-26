@@ -34,7 +34,10 @@ from src.modules.interviews.core.guardrails import llm_checks
 from src.modules.interviews.session.session_deadline import chat_deadline
 from src.modules.interviews.core.session_policy.blueprint import InterviewBlueprint, blueprint_from_payload
 from src.modules.interviews.core.dialogue import playbook, speech_checks
-from src.modules.interviews.core.dialogue.opening import build_opening, warmup_question
+from src.modules.interviews.core.dialogue.opening import build_opening, opening_agenda, warmup_question
+from src.modules.interviews.core.guardrails.common import candidate_block
+from src.modules.interviews.core.guardrails.input import is_abort_request
+from src.modules.interviews.core.guardrails.output import system_leak_reason
 from src.modules.interviews.core.session_policy.demo_mode import is_demo_duration
 from src.modules.interviews.core.dialogue.policy import (
     first_paragraph,
@@ -67,6 +70,158 @@ from src.modules.interviews.realtime.anticipation.validator import PreviewKey, v
 from src.modules.interviews.session.preview_authority import authoritative_preview_key
 
 _validate_probe_text = validate_probe_text
+
+
+async def _mark_message_failed(db: AsyncSession, *, session_id: Any, message_id: str | None) -> None:
+    """The candidate message's turn failed: let the next message through."""
+    if not message_id:
+        return
+    try:
+        await db.rollback()
+        await db.execute(
+            text(
+                """
+                UPDATE interview_chat_messages
+                SET metadata = jsonb_set(
+                    COALESCE(metadata, '{}'::jsonb),
+                    '{processingStatus}', '"FAILED"'::jsonb, true
+                )
+                WHERE session_id = :sid AND id = :message_id AND role = 'user'
+                """
+            ),
+            {"sid": session_id, "message_id": message_id},
+        )
+        await db.commit()
+    except Exception:  # noqa: BLE001 - best effort; the original error is what is raised
+        await db.rollback()
+
+
+# ---------------------------------------------------------------- icebreaker
+#
+# User request 2026-11-26: "trước warm-up cũng cần thêm 1 đoạn giới thiệu, làm
+# quen rồi mới bắt đầu phỏng vấn... agent làm điều này, không muốn cố định 1
+# câu". Every word below is model written; code only decides when.
+
+#: A reply to the small-talk question longer than this is the candidate
+#: already introducing themselves: it goes to Core as the warm-up answer.
+ICEBREAKER_MAX_REPLY_WORDS = 30
+
+
+def icebreaker_enabled() -> bool:
+    import os
+
+    return os.getenv("INTERVIEW_ICEBREAKER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _speech_engine(session_row: dict[str, Any]) -> InterviewCoreEngine:
+    tone = str((session_row.get("candidate_settings") or {}).get("aiTone") or "standard")
+    return InterviewCoreEngine(ai_generator=generate_text, candidate_tone=tone)
+
+
+def _icebreaker_opening_rejection(line: str) -> str | None:
+    """The opening must end in one small-talk question, not the warm-up's."""
+    if "?" not in line:
+        return "no_question"
+    if leak := system_leak_reason(line):
+        return leak
+    last = re.split(r"(?<=[.!?])\s+", line.strip())[-1]
+    if re.search(r"giới thiệu|kinh nghiệm|introduce|experience", last, re.IGNORECASE):
+        return "asks_the_warm_up"
+    return None
+
+
+def _icebreaker_reply_rejection(line: str) -> str | None:
+    """The reaction precedes the frozen question: it must not ask one."""
+    if "?" in line:
+        return "is_question"
+    return system_leak_reason(line)
+
+
+async def _icebreaker_opening(
+    session_row: dict[str, Any],
+    *,
+    is_vi: bool,
+    job_title: str | None,
+    call_name: str | None,
+    planned_stages: list[Any],
+) -> str | None:
+    """A model-written greeting plus one small-talk question, or None."""
+    if not icebreaker_enabled() or is_demo_duration(session_row.get("duration_minutes")):
+        return None
+    minutes = session_row.get("duration_minutes")
+    agenda = opening_agenda(planned_stages, is_vi=is_vi)
+    if is_vi:
+        context = (
+            "Đây là lúc mở đầu buổi luyện phỏng vấn, trước mọi câu hỏi. "
+            f"Tên gọi của ứng viên: {call_name or 'bạn'}. Vị trí: {job_title or 'không rõ'}. "
+            f"Thời lượng: khoảng {minutes or 'vài'} phút. Hôm nay sẽ trò chuyện về: {agenda or 'kinh nghiệm và chuyên môn'}.\n"
+            "Nói như một người phỏng vấn thân thiện vừa vào phòng: chào ứng viên bằng tên, nói ngắn rằng bạn là "
+            "người phỏng vấn AI của Intervia và hôm nay hai bên luyện phỏng vấn vị trí gì, khoảng bao lâu, nói về gì; "
+            "rồi hỏi MỘT câu làm quen nhẹ nhàng, chẳng hạn hôm nay bạn thấy thế nào, nghe mình có rõ không, hay có "
+            "hồi hộp không. Chưa hỏi ứng viên giới thiệu bản thân hay kinh nghiệm: câu đó sẽ đến sau. Ấm áp, tự nhiên, "
+            "không đọc như thông báo, không dùng câu mẫu."
+        )
+    else:
+        context = (
+            "This is the very start of a practice interview, before any question. "
+            f"Candidate's name: {call_name or 'there'}. Role: {job_title or 'unknown'}. "
+            f"Length: about {minutes or 'a few'} minutes. Today's topics: {agenda or 'experience and skills'}.\n"
+            "Speak like a friendly interviewer who just walked in: greet the candidate by name, say briefly that you are "
+            "Intervia's AI interviewer and what you will practise today, for how long and about what; then ask ONE light "
+            "small-talk question, such as how they are today, whether they can hear you well, or whether they feel "
+            "nervous. Do not ask them to introduce themselves or about their experience yet: that comes next. Warm and "
+            "natural, not an announcement, no template."
+        )
+    current_session_id.set(str(session_row.get("id") or ""))
+    try:
+        return await _speech_engine(session_row)._generate_interviewer_line(
+            purpose="opening_icebreaker", context=context, is_vi=is_vi, max_words=60,
+            reject=_icebreaker_opening_rejection, speech_kind="opening",
+        )
+    except Exception as exc:  # noqa: BLE001 - the fixed opening is the fallback
+        trace_event("interviewer", "icebreaker_opening_fallback", error_type=type(exc).__name__,
+                    session_id=str(session_row.get("id") or ""))
+        return None
+
+
+async def _icebreaker_lead(ctx: "TurnContext") -> str | None:
+    """The reaction to the candidate's small-talk reply, read before any lock.
+
+    None: this message is not a reply to the icebreaker (or is a long one,
+    or a stop request) and goes the normal way. "" : it is, but no reaction
+    could be written; the warm-up question is asked without one.
+    """
+    meta = _parse_metadata((ctx.last_asst_msg or {}).get("metadata") or {})
+    if meta.get("awaitingIcebreaker") is not True:
+        return None
+    reply = str(ctx.cleaned_content or "").strip()
+    if not reply or len(reply.split()) > ICEBREAKER_MAX_REPLY_WORDS or is_abort_request(reply):
+        return None
+    opening = str((ctx.last_asst_msg or {}).get("content") or "")
+    if ctx.is_vi:
+        context = (
+            f"Ở đầu buổi, bạn vừa chào và hỏi làm quen: «{opening}». Ứng viên đáp:\n{candidate_block(reply)}\n"
+            "Đáp lại một hai câu ngắn, thật tự nhiên và đúng với điều họ vừa nói (họ hồi hộp thì trấn an nhẹ, họ khoẻ "
+            "thì vui vẻ đáp lại, họ hỏi gì ngắn thì trả lời ngắn), rồi dẫn nhẹ vào việc bắt đầu. KHÔNG đặt câu hỏi: câu "
+            "hỏi đầu tiên sẽ được đọc ngay sau lời này."
+        )
+    else:
+        context = (
+            f"At the start you greeted the candidate and asked: «{opening}». They replied:\n{candidate_block(reply)}\n"
+            "Answer in one or two short, natural sentences that fit what they said (reassure them if nervous, respond "
+            "warmly if they are fine, answer briefly if they asked something), then lead gently into starting. Do NOT "
+            "ask a question: the first question is read right after this."
+        )
+    current_session_id.set(str(ctx.session_id))
+    try:
+        return await _speech_engine(ctx.session_row)._generate_interviewer_line(
+            purpose="icebreaker_reply", context=context, is_vi=ctx.is_vi, max_words=40,
+            reject=_icebreaker_reply_rejection, speech_kind="ack",
+        )
+    except Exception as exc:  # noqa: BLE001 - the question is still asked
+        trace_event("interviewer", "icebreaker_reply_fallback", error_type=type(exc).__name__,
+                    session_id=str(ctx.session_id))
+        return ""
 
 
 def _is_simple_transition_ack(text_value: str) -> bool:
@@ -845,6 +1000,7 @@ async def start_chat_session(
         or warmup_question(is_vi=is_vi, is_demo=False)
     )
 
+    icebreaker_text: str | None = None
     if re.match(r"^\s*(Chào|Hi|Hello)\b", q_text, flags=re.IGNORECASE):
         # A session frozen before the opening script existed: its warm-up
         # snapshot already greets, so only personalise it.
@@ -853,7 +1009,14 @@ async def start_chat_session(
             _personalize_opening(q_text, candidate_short_name) if is_vi else q_text
         )
     else:
-        opening_text = build_opening(
+        planned_stages = [(turn.get("question_snapshot") or {}).get("stage") for turn in turns]
+        # A model-written greeting and one small-talk question first; the
+        # warm-up question waits for the candidate's reply (_icebreaker_lead).
+        icebreaker_text = await _icebreaker_opening(
+            session_row, is_vi=is_vi, job_title=job_title,
+            call_name=candidate_short_name, planned_stages=planned_stages,
+        )
+        opening_text = icebreaker_text or build_opening(
             is_vi=is_vi,
             mode=str(session_row.get("mode") or "text"),
             duration_minutes=session_row.get("duration_minutes"),
@@ -861,7 +1024,7 @@ async def start_chat_session(
             # Vietnamese greets by the call name ("Chào Hiền"); the full name
             # ("Chào Nguyễn Thị Thanh Hiền") sounded like a roll call.
             call_name=candidate_short_name,
-            planned_stages=[(turn.get("question_snapshot") or {}).get("stage") for turn in turns],
+            planned_stages=planned_stages,
         )
         first_question_text = (
             q_text if is_vi else q_text
@@ -884,11 +1047,16 @@ async def start_chat_session(
                 "content": opening_text,
                 "metadata": json.dumps(
                     {"opening": True, "turnIndex": first_turn.get("turn_index", 0), "stage": "WARM_UP"}
+                    | ({"icebreaker": True, "awaitingIcebreaker": True} if icebreaker_text else {})
                 ),
                 "turn_id": first_turn["id"],
             },
         )
         question_sequence = 2
+        if icebreaker_text:
+            # The warm-up question is asked after the candidate's reply.
+            await db.commit()
+            return await get_chat_runtime(db, session_row)
 
     question_id = str(uuid4())
     q_meta = {
@@ -1266,6 +1434,7 @@ async def _claim_candidate_message(
     client_message_id: str | None,
     telemetry: dict[str, Any] | None,
     preview_key: dict[str, Any] | None = None,
+    icebreaker_lead: str | None = None,
 ) -> MessageClaim:
     """Lock the session, settle idempotency, write the candidate message, commit.
 
@@ -1410,11 +1579,30 @@ async def _claim_candidate_message(
                     "IN_PROGRESS: Câu trả lời trước vẫn đang được xử lý. Vui lòng chờ phản hồi của người phỏng vấn."
                 )
             if str(last_msg.get("content") or "").strip() != cleaned_content:
-                raise ChatRuntimeError(
-                    "RECOVERY_REQUIRED: Câu trả lời trước đã được lưu nhưng chưa có phản hồi. "
-                    "Vui lòng gửi lại đúng tin nhắn đó trước khi trả lời câu mới."
+                # Reaching here, the previous message either failed or has been
+                # PROCESSING past the stale limit (its worker is gone). Either
+                # way the candidate has moved on
+                # (said something else -- speech cannot resend the exact text).
+                # It stays in the transcript, marked SUPERSEDED, and this
+                # message is processed as a new one. Session 1b264b67 answered
+                # every later utterance with the fixed error line instead.
+                await db.execute(
+                    text(
+                        """
+                        UPDATE interview_chat_messages
+                        SET metadata = jsonb_set(
+                            COALESCE(metadata, '{}'::jsonb),
+                            '{processingStatus}', '"SUPERSEDED"'::jsonb, true
+                        )
+                        WHERE id = :message_id
+                        """
+                    ),
+                    {"message_id": last_msg["id"]},
                 )
+                trace_event("interviewer", "failed_message_superseded", session_id=str(session_id))
+                last_msg = None
 
+        if last_msg and last_msg.get("role") == "user":
             # A browser refresh or an older client may retry the exact saved
             # answer with a new/missing event id. Recover the persisted phase-1
             # row by content instead of leaving this session permanently stuck.
@@ -1435,6 +1623,17 @@ async def _claim_candidate_message(
         and _is_simple_transition_ack(cleaned_content)
     ):
         claim.reply = await _release_frozen_question(db, ctx, client_message_id=client_message_id)
+        return claim
+    # The reply to the icebreaker: the model's reaction, then the frozen
+    # warm-up question. Not an answer, so Core does not run.
+    if (
+        icebreaker_lead is not None
+        and not claim.recovered
+        and transition_metadata.get("awaitingIcebreaker") is True
+    ):
+        claim.reply = await _release_frozen_question(
+            db, ctx, client_message_id=client_message_id, lead=icebreaker_lead, purpose="icebreaker_reply",
+        )
         return claim
 
     # =========================================================================
@@ -1515,9 +1714,19 @@ async def _claim_candidate_message(
 
 
 async def _release_frozen_question(
-    db: AsyncSession, ctx: TurnContext, *, client_message_id: str | None
+    db: AsyncSession,
+    ctx: TurnContext,
+    *,
+    client_message_id: str | None,
+    lead: str = "",
+    purpose: str = "transition_ready",
 ) -> dict[str, Any]:
-    """A readiness response after a topic signpost: say the frozen question, no Core call."""
+    """A readiness response after a topic signpost: say the frozen question, no Core call.
+
+    Also the reply to the icebreaker (``purpose="icebreaker_reply"``): ``lead``
+    is the model's reaction, said first as its own paragraph, and the
+    question's clock restarts so small talk does not eat the warm-up's share.
+    """
     session_id = ctx.session_id
     current_turn_id = ctx.turn_id
     current_turn_index = ctx.turn_index
@@ -1542,6 +1751,14 @@ async def _release_frozen_question(
         "turnIndex": current_turn_index,
         "transitionAckConsumed": True,
     }
+    if purpose == "icebreaker_reply":
+        question_meta["icebreakerConsumed"] = True
+        question_meta["competency"] = (snap.get("taxonomyTarget") or {}).get("label") or "Giới thiệu & Khởi động"
+        await db.execute(
+            text("UPDATE interview_turns SET started_at = now(), updated_at = now() WHERE id = :turn_id"),
+            {"turn_id": current_turn_id},
+        )
+    spoken_text = f"{lead.strip()}\n\n{next_question_text}" if lead and lead.strip() else next_question_text
     if stage:
         question_meta["stage"] = stage
     if snap.get("projectName"):
@@ -1560,7 +1777,7 @@ async def _release_frozen_question(
             "id": ack_id,
             "sid": session_id,
             "content": cleaned_content,
-            "metadata": json.dumps({"purpose": "transition_ready"}),
+            "metadata": json.dumps({"purpose": purpose}),
             "turn_id": current_turn_id,
             "seq": ack_seq,
             "cid": client_message_id,
@@ -1577,7 +1794,7 @@ async def _release_frozen_question(
         {
             "id": question_message_id,
             "sid": session_id,
-            "content": next_question_text,
+            "content": spoken_text,
             "metadata": json.dumps(question_meta),
             "turn_id": current_turn_id,
             "seq": question_seq,
@@ -1590,7 +1807,7 @@ async def _release_frozen_question(
         stage=stage or "VALIDATE",
         turn_index=current_turn_index,
         action="ASK_MAIN",
-        message=next_question_text,
+        message=spoken_text,
         remaining_time=ctx.remaining_seconds(),
         probe_count=0,
         completed=False,
@@ -1600,7 +1817,7 @@ async def _release_frozen_question(
         ),
         assistant=_message_ref(
             message_id=question_message_id, role="assistant", message_type="MAIN_QUESTION",
-            turn_id=current_turn_id, sequence=question_seq, content=next_question_text, created_at=now_iso,
+            turn_id=current_turn_id, sequence=question_seq, content=spoken_text, created_at=now_iso,
         ),
         turn_status=_turn_status(current_turn_id, current_turn_index, is_follow_up=False, completed=False),
         session_status="OPEN",
@@ -1705,6 +1922,50 @@ async def _prepare_inference(
     session_state["recent_interviewer_lines"] = await _recent_interviewer_lines(
         db, session_id, limit=RECENT_LINES, call_name=candidate_short_name
     )
+    # Every follow-up of this warm-up, oldest first: the decider sees the
+    # exchange as pairs, and a follow-up that asks one of these again ends the
+    # warm-up (core.conversation.turn_rules).
+    session_state["warm_up_follow_ups"] = [
+        str(m["content"]) for m in all_probe_msgs
+        if m["turn_id"] == current_turn_id and m["message_type"] == "CLARIFY" and m.get("content")
+    ]
+    # The probes already asked on this question and the question's exchange
+    # in order (without the message being answered now): the decider judges
+    # the main question, and a probe that asks one of these again moves on.
+    session_state["question_follow_ups"] = [str(t) for t in current_turn_probe_texts]
+    # Every interviewer reply on this question that did not move it (CLARIFY
+    # messages of any kind: repeat, redirect, clarify, answer, decline).
+    try:
+        session_state["non_advancing_count"] = int(await db.scalar(
+            text(
+                "SELECT COUNT(*) FROM interview_chat_messages "
+                "WHERE session_id = :sid AND turn_id = :turn_id AND role = 'assistant' "
+                "AND message_type = 'CLARIFY'"
+            ),
+            {"sid": session_id, "turn_id": current_turn_id},
+        ) or 0)
+    except Exception:  # noqa: BLE001 - best effort: without it only the per-action bounds apply
+        session_state["non_advancing_count"] = 0
+    session_state["question_exchange"] = []
+    if current_turn_probe_texts:
+        try:
+            exchange_rows = await db.execute(
+                text(
+                    """
+                    SELECT id, role, content FROM interview_chat_messages
+                    WHERE session_id = :sid AND turn_id = :turn_id
+                    ORDER BY sequence
+                    """
+                ),
+                {"sid": session_id, "turn_id": current_turn_id},
+            )
+            session_state["question_exchange"] = [
+                {"role": str(row["role"]), "text": str(row["content"])}
+                for row in exchange_rows.mappings().all()
+                if str(row["id"]) != str(claim.user_msg_id) and str(row.get("content") or "").strip()
+            ]
+        except Exception:  # noqa: BLE001 - best effort: the decider still has the question and answer
+            session_state["question_exchange"] = []
     if _turn_stage(current_turn) == "CLOSING":
         session_state["job_context"] = await _get_job_context(db, session_row.get("job_id"))
         # Questions the candidate has sent on this closing turn, including this one.
@@ -2565,8 +2826,12 @@ async def process_candidate_message(
         db, session_row, content, elapsed_override_seconds=elapsed_override_seconds
     )
     marks["load"] = perf_counter()
+    # The icebreaker's reaction is written here, before the claim takes the
+    # session lock: no provider call runs under it.
+    icebreaker_lead = await _icebreaker_lead(ctx)
     claim = await _claim_candidate_message(
-        db, ctx, client_message_id=client_message_id, telemetry=telemetry, preview_key=preview_key
+        db, ctx, client_message_id=client_message_id, telemetry=telemetry, preview_key=preview_key,
+        icebreaker_lead=icebreaker_lead,
     )
     marks["claim"] = perf_counter()
     if claim.reply is not None:
@@ -2593,9 +2858,16 @@ async def process_candidate_message(
     )
     marks["prepare"] = perf_counter()
     asst_msg_id = str(uuid4())
-    core_output = await _run_authoritative_inference(
-        db, ctx, prepared, modality=modality, on_early_speech=on_early_speech
-    )
+    try:
+        core_output = await _run_authoritative_inference(
+            db, ctx, prepared, modality=modality, on_early_speech=on_early_speech
+        )
+    except Exception:
+        # Every transport, not only the chat route: an unanswered message left
+        # PROCESSING blocked the voice session for five minutes, then for good
+        # (session 1b264b67). FAILED lets the next message go through.
+        await _mark_message_failed(db, session_id=ctx.session_id, message_id=claim.user_msg_id)
+        raise
     marks["inference"] = perf_counter()
     await _persist_turn_counters(db, ctx, core_output, prepared.session_state)
     marks["persist"] = perf_counter()

@@ -119,11 +119,34 @@ def _is_non_lexical_noise(text: str) -> bool:
     return not phrase or phrase in _NON_LEXICAL_NOISE_MARKERS
 
 
+#: Listening noises and politeness particles (folded, no diacritics). A short
+#: utterance made only of these -- "em ừ", "dạ có thể", "ừ cảm ơn" -- is the
+#: candidate thinking aloud, not an answer. Session e52c0757 (26/11) sent
+#: five of them to Core as answers, each costing a call and a repeated
+#: question. A short utterance with any other word ("chưa ạ") stays content.
+_VI_FILLER_TOKENS = frozenset({
+    "u", "um", "uh", "uhm", "a", "o", "da", "vang", "em", "ok", "okay", "roi", "duoc", "alo", "hello",
+    "co", "the", "cam", "on", "nhi", "nhe", "ha", "hu", "hum", "va", "thi", "ay",
+})
+#: At least one of these must be present for the filler rule to apply ("có thể"
+#: alone can be a real answer; "dạ có thể" is not).
+_VI_FILLER_CORE = frozenset({"u", "um", "uh", "uhm", "a", "o", "da", "vang", "em", "alo", "hello"})
+_EN_FILLER_TOKENS = frozenset({"uh", "um", "uhm", "hmm", "mhm", "ok", "okay", "yes", "yeah", "yep", "right", "so", "well", "thanks", "thank", "you"})
+_EN_FILLER_CORE = frozenset({"uh", "um", "uhm", "hmm", "mhm", "yeah", "yep"})
+
+
+def _filler_only(tokens: list[str], *, vi: bool) -> bool:
+    allowed, core = (_VI_FILLER_TOKENS, _VI_FILLER_CORE) if vi else (_EN_FILLER_TOKENS, _EN_FILLER_CORE)
+    return all(t in allowed for t in tokens) and any(t in core for t in tokens)
+
+
 def classify_interruption(text: str, *, locale: str = "vi-VN") -> InterruptionIntent:
     """Classify only short overlap utterances; substantive speech stays content."""
     tokens = _normalized_tokens(text)
     if not tokens or len(tokens) > 3:
         return "content"
+    if _filler_only(tokens, vi=locale.lower().startswith("vi")):
+        return "backchannel"
 
     phrase = " ".join(tokens)
     if locale.lower().startswith("vi"):

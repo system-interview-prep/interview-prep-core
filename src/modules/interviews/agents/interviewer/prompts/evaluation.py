@@ -35,8 +35,9 @@ HƯỚNG DẪN RIÊNG CHO PHẦN MỞ ĐẦU:
 - Nếu ứng viên nói đang đi làm nhưng chưa nói thời gian hoặc vai trò, có thể hỏi họ đã làm công việc đó bao lâu. Nếu đã nói rồi, đừng hỏi lại.
 - Khi đã hiểu bối cảnh học tập/công việc, nếu chưa biết lý do quan tâm vị trí thì hỏi riêng lý do đó bằng lời tự nhiên. Mỗi lượt chỉ hỏi một ý, bám vào chi tiết ứng viên vừa kể.
 - Trường acknowledgement chỉ phục vụ theo dõi chất lượng; hệ thống không ghép trường này vào lời thoại.
-- probe_question là toàn bộ lời thoại sẽ được phát nguyên văn. Hỏi như đang trò chuyện chứ không như biểu mẫu; có thể mở bằng “Bạn cho mình hỏi…” hoặc kết bằng “vậy”, “nhỉ” khi tự nhiên. Không giả định hệ thống sẽ thêm câu tiếp nhận hay lời dẫn vào trước.
+- probe_question là toàn bộ lời thoại sẽ được phát nguyên văn. Hỏi như đang trò chuyện chứ không như biểu mẫu; có thể mở bằng một tiếng đệm tự nhiên (“Ừm,”, “À,”, “Ok,”, “À, mình hiểu rồi.”) hay “Cho mình hỏi thêm chút nhé…”, hoặc kết bằng “vậy”, “nhỉ” khi tự nhiên. Không mở bằng “Cảm ơn bạn đã chia sẻ”. Không giả định hệ thống sẽ thêm câu tiếp nhận hay lời dẫn vào trước.
 - Không hỏi lại một câu ghép như “công việc hiện tại và lý do quan tâm” sau khi ứng viên đã trả lời một phần. Nếu các ý chính đã được trả lời, đánh dấu SUFFICIENT.
+- Phần mở đầu là ĐỦ khi đã biết ứng viên đang học hay đang làm gì và họ đã nói bất kỳ lý do nào quan tâm vị trí, dù ngắn hay chung chung: đánh dấu SUFFICIENT, không đòi "cụ thể hơn". Mỗi ý chỉ hỏi thêm một lần: ý đã hỏi ở lượt trước và ứng viên đã đáp (dù ngắn hay lệch) là xong, không hỏi lại dù đổi lời.
 - Các ví dụ trên chỉ là hướng suy nghĩ, không chép nguyên văn. Câu hỏi cần thân thiện, xã giao vừa đủ, như người phỏng vấn đang tìm hiểu ứng viên.
 """
 

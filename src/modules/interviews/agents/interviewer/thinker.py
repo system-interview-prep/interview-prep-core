@@ -21,10 +21,16 @@ from src.modules.ai.facade import generate_tool_calls
 from src.modules.interviews.agents.interviewer.tools import (
     SEARCH_MEMORY,
     UNIFIED_TEXT_ACTIONS,
+    WARM_UP_EXIT_TEXT,
     tools_for,
     unified_enabled,
 )
+from src.modules.interviews.core.contracts.interview import InterviewStage
+from src.modules.interviews.core.conversation.turn_rules import warm_up_follow_up_repeats
+from src.modules.interviews.core.guardrails.input import mentions_stopping, mentions_the_system
 from src.modules.interviews.core.guardrails.output import (
+    acknowledgement_rejection_reason,
+    announces_process,
     checked_probe,
     clarify_rejection_reason,
     qna_rejection_reason,
@@ -32,7 +38,7 @@ from src.modules.interviews.core.guardrails.output import (
     validate_probe_text,
 )
 from src.modules.interviews.agents.interviewer.prompts.decide import decide_input, decide_prompt
-from src.modules.interviews.core.conversation.turn_context import Decision, TurnContext
+from src.modules.interviews.core.conversation.turn_context import Decision, TurnContext, deepening_allowed
 
 PURPOSE = "interviews.agent.decide"
 MemorySearch = Callable[[str], Awaitable[Sequence[Dict[str, Any]]]]
@@ -122,11 +128,13 @@ async def decide_by_model(
     max_steps: int = 2,
     reasoning_effort: str | None = "none",
     unified: Optional[bool] = None,
+    next_question: str = "",
 ) -> Decision:
     # Resolved at call time so a test can route the decider through a scripted caller.
     generate = generate or generate_tool_calls
     unified = unified_enabled() if unified is None else unified
-    tools = tools_for(allowed_actions, unified=unified)
+    in_warm_up = ctx.current_stage == InterviewStage.WARM_UP
+    tools = tools_for(allowed_actions, unified=unified, bridge=True)
     # §6.2 "Prefetch memory trước call": the runtime already loads this session's
     # candidate memory into the state before the turn runs, so hand it to the
     # model up front. ``search_candidate_memory`` then stays what the spec calls
@@ -137,6 +145,10 @@ async def decide_by_model(
     ]
     memory_hits: List[Dict[str, Any]] = list(prefetched)
     notes: List[str] = []
+    main_question = str(
+        ctx.current_question.get("spoken_prompt") or ctx.current_question.get("main_prompt") or ""
+    ).strip()
+    following_up = not in_warm_up and bool(ctx.question_follow_ups) and bool(ctx.question_exchange)
     items: Any = decide_input(
         question=ctx.active_prompt or ctx.question_prompt,
         candidate_text=ctx.candidate_text,
@@ -149,6 +161,23 @@ async def decide_by_model(
         allowed_actions=allowed_actions,
         interview_contract=ctx.session_state.get("interview_contract"),
         is_vi=ctx.is_vi,
+        warm_up_exchange=(
+            {
+                "follow_ups": list(ctx.warm_up_follow_ups),
+                "fragments": [p.strip() for p in ctx.candidate_text.split("\n") if p.strip()],
+                "used": int(ctx.clarify_count or 0),
+                "limit": int(getattr(ctx.blueprint.warm_up, "max_follow_ups", 2)),
+            }
+            if in_warm_up
+            else None
+        ),
+        question_exchange=(
+            {"main_question": main_question, "messages": ctx.question_exchange,
+             "probes": len(ctx.question_follow_ups)}
+            if following_up
+            else None
+        ),
+        next_question=next_question,
     )
     history: List[Dict[str, Any]] = [{"role": "user", "content": items}]
     for step in range(max_steps):
@@ -181,6 +210,17 @@ async def decide_by_model(
             continue
         if name not in allowed_actions:
             return _violation("outside_menu", name, calls)
+        if name == "decline_system_probe" and not mentions_the_system(ctx.candidate_text):
+            # Its line is fixed ("Mình không thể chia sẻ thông tin nội bộ."), so a
+            # wrong pick is heard verbatim: session 08a2ee58 answered "em đã
+            # trình bày rồi" with it. The input guard catches real probes before
+            # any model; the model's own pick needs the candidate to have said
+            # something about the system at all.
+            return _violation("unsupported_system_probe", "no mention of the system", calls)
+        if name == "confirm_abort" and not mentions_stopping(ctx.candidate_text):
+            # "Bạn có muốn kết thúc buổi phỏng vấn không?" after a real answer
+            # (session 1b264b67). Only the candidate starts an ending.
+            return _violation("unsupported_abort", "no mention of stopping", calls)
         if "_raw" in args:
             return _violation("parse", "arguments were not JSON", calls)
         reason = str(args.pop("rationale", "") or "").strip()
@@ -195,7 +235,38 @@ async def decide_by_model(
             )
             if not follow_up:
                 return _violation("invalid_follow_up", "missing or rejected warm-up utterance", calls)
+            # The same ask again, reworded, is how session e52c0757 looped:
+            # the candidate answered it already, so the warm-up is over
+            # (turn_rules reads ``warm_up_repeat``) and the rule moves on.
+            repeat = warm_up_follow_up_repeats(follow_up, ctx.warm_up_follow_ups)
+            if repeat:
+                ctx.warm_up_repeat = repeat
+                trace_event(
+                    "interviewer", "warm_up_follow_up_repeated", source="decision", repeat=repeat,
+                    text=follow_up[:160], session_id=str(ctx.session_id),
+                )
+                return _violation("repeated_follow_up", repeat, calls)
             args["follow_up_text"] = follow_up
+        if name == "acknowledge_and_probe" and args.get("kind") == "deepen" and not deepening_allowed(ctx):
+            # Pushing on a sufficient answer is the challenge tier's move; for
+            # anyone else the decider's point is a gap, and it is asked as one.
+            args["kind"] = "gap"
+            notes.append("deepen_downgraded")
+        if name == "move_to_next_question" and WARM_UP_EXIT_TEXT in args:
+            # The bridge out of the warm-up: one plain sentence or nothing.
+            bridge = str(args.pop(WARM_UP_EXIT_TEXT) or "").strip()
+            if bridge:
+                reason = acknowledgement_rejection_reason(
+                    bridge, recent=ctx.recent_lines, answer=ctx.candidate_text
+                ) or ("announces_process" if announces_process(bridge) else None)
+                if reason:
+                    notes.append("transition_text_rejected")
+                    trace_event(
+                        "interviewer", "unified_text_rejected", action=name, argument=WARM_UP_EXIT_TEXT,
+                        reason=reason, text=bridge[:160], session_id=str(ctx.session_id),
+                    )
+                else:
+                    args[WARM_UP_EXIT_TEXT] = bridge
         # Unified Thinker (§6.2): the utterance written in the deciding call.
         # Each action's text is checked by that action's own guard, never a
         # shared one -- a probe must be a question, a clarification must not

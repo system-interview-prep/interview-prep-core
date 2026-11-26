@@ -14,7 +14,7 @@ from typing import Protocol
 from src.core.config import get_settings
 from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
-from src.modules.interviews.agents.evaluator.answer_outcome import ANSWERED, NOT_GRADABLE, SKIPPED
+from src.modules.interviews.agents.evaluator.answer_outcome import ANSWERED, NOT_GRADABLE, SKIPPED, _content_words
 from src.modules.interviews.agents.evaluator.rubric_grading import (
     COVERED,
     INCORRECT,
@@ -41,7 +41,20 @@ logger = logging.getLogger("InterviewEvaluationEngine")
 
 # Part of every grading cache key: bump when a grading prompt or the meaning
 # of its output changes. Instruction text is also hashed into the key.
-GRADER_PROMPT_VERSION = "checklist-v1"
+GRADER_PROMPT_VERSION = "checklist-v2"
+
+#: Content words (fillers removed) from which a voice transcript counts as
+#: readable: the grader may still find it thin, but not unintelligible.
+READABLE_CONTENT_WORDS = 25
+READABLE_NOTE = (
+    "\n\nLƯU Ý CHO LẦN CHẤM NÀY: bản chép này đọc ra được ý (có thể có vài từ STT nhận sai). "
+    "Không dùng UNINTELLIGIBLE; chấm nội dung đã nêu như ANSWERED, hoặc NO_ATTEMPT nếu không có "
+    "nội dung nào liên quan tới câu hỏi."
+)
+
+
+def readable_transcript(text: str) -> bool:
+    return len(_content_words(str(text or ""))) >= READABLE_CONTENT_WORDS
 
 
 def grader_version() -> str:
@@ -116,6 +129,9 @@ class InterviewEvaluationEngine:
             "\"NO_ATTEMPT\". Chỉ với Answer source VOICE: nếu bản chép STT rời rạc, lặp vô nghĩa "
             "hoặc lẫn tạp âm đến mức không xác định được ứng viên định nói gì thì answer_status = "
             "\"UNINTELLIGIBLE\" (không dùng cho câu trả lời đọc được nhưng sai hoặc sơ sài). "
+            "Bản chép có vài từ bị nhận sai (tên trường, thuật ngữ) hoặc nhiều tiếng đệm (ờ, ừm, dạ) "
+            "nhưng vẫn đọc ra ý vẫn là ANSWERED; nội dung mỏng, chung chung hay thiếu chi tiết cũng là "
+            "ANSWERED với số điểm tương ứng. "
             "Còn lại answer_status = \"ANSWERED\".\n"
         )
 
@@ -237,7 +253,7 @@ class InterviewEvaluationEngine:
             "   Chỉ với Answer source VOICE: nếu bản chép STT rời rạc, lặp vô nghĩa hoặc lẫn tạp âm "
             "đến mức không xác định được ứng viên định nói gì thì answer_status = \"UNINTELLIGIBLE\" "
             "(lỗi âm thanh, không phải lỗi ứng viên). Không dùng giá trị này cho câu trả lời đọc "
-            "được nhưng sai hoặc sơ sài.\n"
+            "được nhưng sai hoặc sơ sài, hay có vài từ bị nhận sai.\n"
             "   Nếu Tiêu chí đánh giá có mục 'Ý cần có (EXPECTED POINTS)': chấm theo đúng danh sách đó. Đủ và "
             "đúng mọi ý cốt lõi thì được 9.0 trở lên; ý cộng thêm chỉ nâng điểm trong khoảng 9-10. Không trừ "
             "điểm vì thiếu những ý nằm ngoài danh sách; có thể nêu chúng trong feedback như gợi ý mở rộng.\n"
@@ -420,7 +436,12 @@ class InterviewEvaluationEngine:
         statuses = [str(vote.get("answer_status") or "").upper() for vote in votes]
         answer_status = max(set(statuses), key=statuses.count)
         has_evidence = any(v.status in (COVERED, PARTIAL, INCORRECT) for v in verdicts)
-        if answer_status == "UNINTELLIGIBLE" and turn_input.source_modality == "VOICE" and not has_evidence:
+        if (
+            answer_status == "UNINTELLIGIBLE"
+            and turn_input.source_modality == "VOICE"
+            and not has_evidence
+            and not readable_transcript(answer)
+        ):
             return self._not_gradable_result(turn_input, is_vi=is_vi)
         if answer_status == "NO_ATTEMPT" and not has_evidence:
             result = self._skipped_turn_result(turn_input, is_vi=is_vi)
@@ -457,6 +478,23 @@ class InterviewEvaluationEngine:
         # No usable score means the grader failed; never invent a midpoint.
         if "score" not in data:
             raise ValueError("Grader response has no score")
+        if (
+            str(data.get("answer_status") or "").upper() == "UNINTELLIGIBLE"
+            and turn_input.source_modality == "VOICE"
+            and readable_transcript(turn_input.candidate_answer)
+        ):
+            # Sessions 2678ce7b and 0e3c14c6 (26/11): every turn, the plainly
+            # readable warm-up included, came back UNINTELLIGIBLE with reasons
+            # like "thiếu thông tin cụ thể" -- a thin answer, not lost audio --
+            # and no report could be built. A readable transcript gets one more
+            # look with that said; only a second UNINTELLIGIBLE stands.
+            trace_event("interviewer", "grader_unintelligible_rechecked",
+                        content_words=len(_content_words(turn_input.candidate_answer)))
+            again = await self._ask_grader(
+                instructions + READABLE_NOTE, user_content
+            )
+            if isinstance(again, dict) and "score" in again:
+                data = again
         score = max(0.0, min(10.0, float(data["score"])))
         await self._store_verdict(store_key, data)
         answer_status = str(data.get("answer_status") or "").upper()

@@ -2047,7 +2047,9 @@ async def test_regression_cannot_complete_session_if_behavioral_unanswered():
     assert res_abort["endReason"] == "USER_ENDED"
 
 
-@pytest.mark.xfail(strict=True, reason="REAL: guard rejection raises out of the turn instead of a safe fallback (agent plan Pha 1 guards_out); tests/TRIAGE_2026-11-24.md")
+# Was xfail(strict) "REAL: guard rejection raises out of the turn". Fixed after
+# session 1b264b67 (26/11): a rejected closing answer is rewritten once, then
+# falls back, instead of failing the turn.
 @pytest.mark.asyncio
 async def test_regression_behavioral_answered_transitions_to_closing():
     """Requirement 5: Behavioral answered transitions to CLOSING Q&A invitation,
@@ -2998,3 +3000,38 @@ async def test_a_turn_that_advanced_between_the_read_and_the_lock_is_refused(moc
     assert len(db.messages) == before, "nothing was written"
     assert seen == [], "no inference ran"
 
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_does_not_lock_the_session(mock_session_data, monkeypatch):
+    """Session 1b264b67 (26/11): one turn failed, and every later voice answer
+    got 409 (IN_PROGRESS for five minutes, then RECOVERY_REQUIRED, which speech
+    can never satisfy); the agent answered everything with its error line. A
+    failed message is now marked FAILED on every transport, and a different
+    next message supersedes it and is processed."""
+    session_row, turns = mock_session_data
+    db = MockChatSession(session_row, turns)
+    await start_chat_session(db, session_row)
+
+    real = _chat_runtime._run_authoritative_inference
+    calls = {"n": 0}
+
+    async def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ValueError("closing answer rejected: asks_back")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(_chat_runtime, "_run_authoritative_inference", flaky)
+    with patch("src.modules.interviews.session.chat_runtime.generate_text", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = '{"decision": "PROBE", "reply_text": "Bạn dùng công cụ gì để đo?"}'
+        with pytest.raises(ValueError):
+            await process_candidate_message(db, session_row, client_message_id="v1", content="Em dùng RAG với vector DB.")
+        failed = [m for m in db.messages if m.get("client_message_id") == "v1"][0]
+        assert failed["metadata"]["processingStatus"] == "FAILED"
+
+        res = await process_candidate_message(
+            db, session_row, client_message_id="v2", content="Dạ em nói lại, em dùng RAG với Postgres pgvector ạ."
+        )
+    assert res["assistantResponse"]["content"]
+    assert calls["n"] == 2

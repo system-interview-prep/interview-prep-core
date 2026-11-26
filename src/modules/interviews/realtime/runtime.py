@@ -32,7 +32,7 @@ from src.modules.interviews.realtime.backchannel import (
 from src.modules.interviews.realtime.endpointing import (
     ANSWER_PAUSE_NUDGE_SECONDS, PROCESSING_FILLER_SECONDS, AnswerWindow,
     answer_pause_nudge_enabled, answer_pause_nudges,
-    backchannel_continue_text, commit_anchor, core_error_text, localize_particles, not_heard_lines,
+    commit_anchor, core_error_text, localize_particles, not_heard_lines,
     pick_answer_pause_nudge, pick_processing_filler,
     processing_filler_enabled, processing_fillers, remaining_commit_delay, reprompt_after_seconds,
     silence_reprompt, turn_taking_tip, unclear_transcript_text,
@@ -1405,11 +1405,11 @@ class VoiceLabAgent(Agent):
                 # "ừm", "vâng" while thinking mid-answer: not a turn of its own.
                 self._schedule_commit(self._answer.commit_delay())
                 return
-            self.speak(
-                backchannel_continue_text(self._locale),
-                allow_interruptions=True,
-                add_to_chat_ctx=False,
-            )
+            # Keep listening in silence. The fixed "Vâng, bạn cứ tiếp tục nhé."
+            # used to play here -- in session 61b17de5 (26/11) a one-character
+            # "ờ" while Core was working got it, five seconds before the next
+            # question; the user asked for every filler line off.
+            self.report("voice_listener_noise_ignored", core_in_flight=bool(self._core_in_flight))
             return
 
         if interruption.occurred:

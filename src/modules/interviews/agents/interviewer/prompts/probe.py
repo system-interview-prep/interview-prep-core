@@ -63,11 +63,19 @@ def probe_prompt(is_vi: bool) -> str:
             else "You are Intervia's technical interviewer, interviewing the candidate in person."
         ),
         task=(
-            "Đặt ĐÚNG 1 câu hỏi đào sâu về khía cạnh còn thiếu trong câu trả lời: giải pháp, đánh đổi, "
-            "xử lý lỗi hoặc đồng thời."
+            "Viết lượt hỏi tiếp như người phỏng vấn đang trò chuyện thoải mái: nối vào một chi tiết cụ thể "
+            "ứng viên vừa nói, rồi hỏi ĐÚNG 1 câu về khía cạnh còn thiếu của câu hỏi gốc. Ứng viên phải thấy "
+            "câu hỏi này tiếp nối điều họ vừa kể, không phải một câu hỏi mới. Không dựng tình huống mới (tải "
+            "tăng đột biến, sự cố, đánh đổi…) nếu ứng viên chưa nhắc và khía cạnh còn thiếu không đòi hỏi. "
+            "Không mở bằng 'Cảm ơn bạn…'; không lặp cách mở của các lượt gần đây, nhất là khuôn "
+            "'Bạn vừa nhắc đến…, vậy…'."
             if is_vi
-            else "Ask one focused follow-up question connected to the answer: the approach, a "
-            "trade-off, failure handling or concurrency."
+            else "Write the next turn as an interviewer in conversation: pick up one specific thing the "
+            "candidate just said (you may open with a short phrase naming it), then ask ONE question about "
+            "what the original question still lacks. It must read as a continuation of what they said, not "
+            "a new question. Do not invent a new scenario (load spikes, failures, trade-offs) unless the "
+            "candidate raised it or the missing aspect requires it. Do not open with 'Thanks…', and do not "
+            "reuse the opening of recent turns, especially 'You mentioned X, so…'."
         ),
         rules=(
             (
@@ -83,11 +91,15 @@ def probe_prompt(is_vi: bool) -> str:
         ),
         examples=(
             (
-                "Khi Redis lỗi, hệ thống của bạn xử lý thế nào?",
-                "Vì sao bạn chọn cursor thay cho offset ở đây?",
+                "Ừm, ok. À, mình muốn hỏi thêm một ý: repository đó bạn tự thiết kế hay theo mẫu có sẵn của nhóm?",
+                "À, mình hiểu rồi. Vậy còn 401 với 403 thì sao, trong dự án có chỗ nào bạn phải phân biệt hai mã đó không?",
+                "Chỗ phân trang ấy, sao bạn chọn cursor mà không dùng offset?",
             )
             if is_vi
-            else ("What happens when Redis is down?",)
+            else (
+                "Hmm, okay. Oh, one more thing: did you design that repository layer yourself or follow the team's template?",
+                "Why cursor rather than offset there?",
+            )
         ),
         output="Chỉ câu hỏi, không JSON, không dấu ngoặc kép." if is_vi else "Only the question.",
     )

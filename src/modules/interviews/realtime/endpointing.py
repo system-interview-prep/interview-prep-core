@@ -214,16 +214,21 @@ def remaining_commit_delay(
 
 
 def answer_pause_nudge_enabled() -> bool:
-    """``VOICE_ANSWER_PAUSE_NUDGE_ENABLED=0`` silences the mid-answer "mình đang nghe" line.
+    """``VOICE_ANSWER_PAUSE_NUDGE_ENABLED=1`` turns on the mid-answer "mình đang nghe" line.
 
-    On by default, as it always was. Off is the filler-disabled arm of the
+    Off by default since 26/11: in the real sessions e52c0757 and 2678ce7b it
+    fired at every answer (24 times in two sessions) 1.25 s into the pause
+    that ends the answer -- the commit follows at 1.8 s -- so the candidate,
+    having finished, heard "bạn cứ nói tiếp nhé" and then the next question.
+    The user asked for it off because the lines did not fit. Off is also the
+    filler-disabled arm of the
     §13 voice-output audit: in the pilot the nudge was the first audio after
     every answer (it fires 1.25 s after a fragment, the commit 1.8 s after),
     so "TTFA" measured the nudge, not the interviewer. See
     ``runtime.VoiceLabAgent._interrupt_filler`` for the other half: a nudge
     still playing is cut the moment the real reply is ready.
     """
-    return os.getenv("VOICE_ANSWER_PAUSE_NUDGE_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+    return os.getenv("VOICE_ANSWER_PAUSE_NUDGE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _env_seconds(name: str, default: float, *, minimum: float, maximum: float) -> float:

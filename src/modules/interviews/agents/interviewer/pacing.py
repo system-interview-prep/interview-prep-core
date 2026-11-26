@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from src.modules.interviews.core.contracts.interview import InterviewStage
-from src.modules.interviews.core.conversation.turn_context import TurnContext
+from src.modules.interviews.core.conversation.turn_context import TurnContext, probe_limit, question_time_budget
 from src.modules.interviews.core.conversation.turn_rules import TIME_THRESHOLDS
 
 # `behind` when the remaining plan needs more than this share over the time left;
@@ -116,6 +116,7 @@ def pacing_block(ctx: TurnContext) -> Dict[str, Any]:
         pace = "on_track"
 
     probes_used = int(ctx.current_turn_in_question)
+    budget = question_time_budget(ctx)
     return {
         "elapsed_ratio": elapsed_ratio,
         "time_remaining_seconds": int(ctx.time_remaining_seconds),
@@ -130,5 +131,10 @@ def pacing_block(ctx: TurnContext) -> Dict[str, Any]:
         "seconds_needed_for_remaining_plan": seconds_needed,
         "pace": pace,
         "probes_used_in_question": probes_used,
-        "probe_follow_ups": "continue while useful and within interview time",
+        "probes_left_in_question": max(0, probe_limit(ctx) - probes_used),
+        # 3bf4591 told the model to "continue while useful and within interview
+        # time"; session 2678ce7b took that literally (nine probes, one question).
+        # The model now sees the question's own share and what it has used.
+        "question_seconds_used": budget[0] if budget else None,
+        "question_seconds_budget": budget[1] if budget else None,
     }

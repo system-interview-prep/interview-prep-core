@@ -549,31 +549,50 @@ Hãy tạo một câu hỏi tiếp nối câu hỏi gốc, bám vào câu trả 
         system_prompt += "\n\n" + candidate_data_rule(is_vi)
         user_content = "Câu hỏi của ứng viên:\n" + candidate_block(candidate_text)
         reason: Optional[str] = None
-        try:
-            if hasattr(self.llm, "generate_text"):
-                answer = await self.llm.generate_text(system_prompt=system_prompt, user_content=user_content)
-            else:
-                answer = await self._generate_fn(
-                    instructions=system_prompt,
-                    input_text=user_content,
-                    max_output_tokens=800,
-                    **self._llm_options(speech=True),
+        # Session 1b264b67: the answer ended "…bạn còn câu hỏi nào không?",
+        # was rejected as asks_back and raised; the turn failed and the
+        # candidate waited 80 s in silence. A rejected answer is written once
+        # more with the reason; only a second failure falls back.
+        for attempt in range(2):
+            try:
+                content = user_content if attempt == 0 else (
+                    user_content + f"\n\nBản trước bị loại vì: {reason}. Viết lại, không đặt câu hỏi nào cho ứng viên; "
+                    "mời họ hỏi thêm bằng một câu trần thuật."
                 )
-            answer_text = normalize_candidate_pronoun(" ".join(str(answer).split()), is_vi)
-            reason = qna_rejection_reason(
-                answer_text,
-                job_context=job_context,
-                question=candidate_text,
-                rubric_leak=lambda value: not validate_probe_text(value),
-            )
-            if reason:
-                speech_checks.record("qna", "reject", reason, answer_text)
-                raise ValueError(f"closing answer rejected: {reason}")
-            generated_by = "llm"
-            speech_checks.record("qna", "pass")
-        except Exception as exc:
-            logger.exception("Closing Q&A answer generation failed")
-            speech_checks.record("qna", "error", type(exc).__name__)
-            trace_event("interviewer", "qna_answer_generation_failed", error_type=type(exc).__name__)
-            raise
-        return answer_text, generated_by, reason
+                if hasattr(self.llm, "generate_text"):
+                    answer = await self.llm.generate_text(system_prompt=system_prompt, user_content=content)
+                else:
+                    answer = await self._generate_fn(
+                        instructions=system_prompt,
+                        input_text=content,
+                        max_output_tokens=800,
+                        **self._llm_options(speech=True),
+                    )
+                answer_text = normalize_candidate_pronoun(" ".join(str(answer).split()), is_vi)
+                reason = qna_rejection_reason(
+                    answer_text,
+                    job_context=job_context,
+                    question=candidate_text,
+                    rubric_leak=lambda value: not validate_probe_text(value),
+                )
+                if reason:
+                    speech_checks.record("qna", "reject", reason, answer_text)
+                    trace_event("interviewer", "qna_answer_rejected", reason=reason, attempt=attempt + 1)
+                    continue
+                speech_checks.record("qna", "pass")
+                return answer_text, "llm", None
+            except Exception as exc:  # noqa: BLE001 - the candidate must hear an answer
+                logger.warning("Closing Q&A answer generation failed: %s", exc)
+                speech_checks.record("qna", "error", type(exc).__name__)
+                trace_event("interviewer", "qna_answer_generation_failed", error_type=type(exc).__name__)
+                reason = reason or type(exc).__name__
+                break
+        # Nothing usable: say plainly that this is not in the posting rather
+        # than leave the candidate in silence.
+        fallback = (
+            "Phần này trong thông tin tuyển dụng mình chưa có chi tiết, bạn có thể hỏi thêm nhà tuyển dụng ở vòng sau nhé."
+            if is_vi
+            else "The posting doesn't give details on that; it's a good one to ask the employer in a later round."
+        )
+        trace_event("interviewer", "qna_answer_fallback", reason=str(reason or ""))
+        return fallback, "fallback", reason

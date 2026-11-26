@@ -361,6 +361,29 @@ def qna_rejection_reason(
             if match.group(0).casefold() not in known:
                 return "unsupported_claim"
     return None
+# Only the robotic forms: "chuyển sang câu hỏi tiếp theo", "phần tiếp theo".
+# A casual shift ("Ok, mình nói qua chuyện khác chút nhé") is how people talk
+# and the user asked for that register (26/11).
+_PROCESS_ANNOUNCEMENT_RE = re.compile(
+    r"(câu hỏi (tiếp theo|kế tiếp|tiếp|sau)|câu (tiếp theo|kế tiếp)|phần tiếp theo|next question)",
+    re.IGNORECASE,
+)
+
+
+def announces_process(text_value: str) -> bool:
+    """A bridge that narrates the interview ("Giờ mình sẽ chuyển sang câu hỏi
+    tiếp theo nhé.", session 0e3c14c6) instead of closing the thread."""
+    return bool(_PROCESS_ANNOUNCEMENT_RE.search(str(text_value or "")))
+
+
+def has_lead_in(question: str) -> bool:
+    """The question opens with its own non-question sentence ("Tiếp theo, mình
+    muốn hỏi về dự án trong CV của bạn."): a bridge on top would be a second one."""
+    value = str(question or "").strip()
+    first = re.split(r"\n\n|(?<=[.!])\s+", value, maxsplit=1)[0].strip()
+    return bool(first) and first != value and not first.endswith("?")
+
+
 def recent_contains(text_value: str, recent: Iterable[str]) -> bool:
     """True khi ``text_value`` trùng nguyên văn một câu vừa nói."""
     needle = _normalize_words(text_value)

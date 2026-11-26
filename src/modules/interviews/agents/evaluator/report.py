@@ -264,6 +264,17 @@ async def _evaluate_closed_session(
             is_answer = (m.get("message_type") or "CANDIDATE_ANSWER") == "CANDIDATE_ANSWER" and not (
                 isinstance(metadata, dict) and metadata.get("abortRequest")
             )
+            # The live agent may have judged an answer off-topic or a system
+            # probe and redirected (session 1b264b67: the whole behavioural
+            # answer). That was a conversational call, not a grade: the grader
+            # still reads it and decides whether it answers the question.
+            if (
+                not is_answer
+                and m.get("message_type") == "CANDIDATE_QUESTION"
+                and isinstance(metadata, dict)
+                and metadata.get("candidateQuestionIntent") in ("OFF_TOPIC", "SYSTEM_PROBE")
+            ):
+                is_answer = True
             if is_answer:
                 msgs_by_turn.setdefault(t_id, []).append(m["content"])
             telemetry = metadata.get("telemetry") if isinstance(metadata, dict) else {}

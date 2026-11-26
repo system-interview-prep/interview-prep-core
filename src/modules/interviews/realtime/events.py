@@ -51,6 +51,7 @@ VOICE_EVENTS = frozenset(
         "voice_not_heard",
         "voice_unclear_transcript",
         "voice_answer_pause_nudge",
+        "voice_listener_noise_ignored",
         "voice_silence_reprompt",
         "voice_question_replayed",
         "voice_question_replay_deferred",

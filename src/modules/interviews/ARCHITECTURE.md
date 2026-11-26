@@ -832,6 +832,313 @@ The independent review of `1ac235f` left four items:
    sample-aligned. PCM handling was not changed; the defensive trim from
    the audit stays as a no-op guard.
 
+### Warm-up loop (business defect, session `e52c0757`, 2026-11-26)
+
+A real voice interview stayed on turn 0 for 6.5 minutes: twelve
+`continue_warm_up` decisions in a row, each asking for "lý do quan tâm vị
+trí", while the candidate had already given their study, direction and a
+project (answers of 137 and 119 words). The trace shows why nothing
+stopped it: the menu offered `move_to_next_question` every time, the pacing
+block reported the warm-up share spent from 0.10 on (the loop ran to 0.41),
+and the model chose `continue_warm_up` anyway; the rule ladder's warm-up
+branch has the same loop; no deterministic bound existed. Five of the
+twelve "answers" were filler ("em ừ.", "ừ Ừm.", "Dạ. có thể", "ừ cảm ơn",
+"Dạ dạ Dạ") that the transport sent to Core as answers, each a provider
+call and another repeat.
+
+Fixed as policy, not prompt: `WarmUpPolicy.max_follow_ups` (blueprint,
+default 2) and the stage's time share × 2 bound the warm-up
+(`turn_rules.warm_up_follow_ups_exhausted`); `build_menu` withdraws
+`continue_warm_up` past the bound, so a LIVE decider that insists is
+rejected as outside the menu and the rule moves on; `_decide_by_rule`
+applies the same bound. In the voice transport, a short utterance made only
+of listening noises and particles (with at least one of ừ / ừm / dạ / vâng /
+em / à / ờ) is a backchannel, not an answer ("chưa ạ", "có thể", "dạ không"
+stay answers). Tests: `test_warm_up_cap.py`, `test_interruption.py`. The
+35 behaviour snapshots are unchanged (no recorded turn reached the cap);
+the old menu test that asserted continuation after eight follow-ups was
+replaced, since that is the defect.
+
+The cap is the backstop; the second commit is what lets the interviewer
+*know* the introduction is complete. Re-reading the trace: at 15:00:13 the
+candidate said in so many words why they were interested, and the decider
+asked for it again at 15:01:36 and 15:01:50. It had received 1,559
+characters of concatenated speech fragments as one block, the last three
+interviewer lines, and no evaluation (unified path); it cited
+`answer:sent:0` ("Hello, hello, hello") as evidence. Three changes, none a
+new call or a template:
+
+- **The exchange, not a blob.** In WARM_UP the decider's input carries
+  "Diễn biến phần mở đầu": each follow-up it asked paired with the fragment
+  the candidate replied, plus the follow-up budget used/limit
+  (`prompts/decide.py::warm_up_exchange_block`; the follow-ups come from
+  the turn's CLARIFY messages via `session_state["warm_up_follow_ups"]`,
+  `TurnContext.warm_up_follow_ups`). The decide prompt, the
+  `continue_warm_up` tool and `WARM_UP_GUIDE_VI` now define *enough*
+  (studies/works + any reason, however brief; never "more detail") and
+  the asked-once rule (a point asked and replied to, even off the mark,
+  is closed).
+- **A repeated ask ends the warm-up.** `turn_rules.warm_up_follow_up_repeats`
+  compares the question sentences of a new follow-up with every earlier
+  follow-up of this warm-up on folded content words (function words such
+  as "bạn có thể cho mình biết thêm về … không" removed; Jaccard ≥ 0.6).
+  On the session's real lines the five rewordings of "lý do quan tâm" are
+  caught and "bạn học năm mấy?" passes. The Thinker rejects such a
+  decision as `repeated_follow_up`, sets `ctx.warm_up_repeat`, and
+  `warm_up_follow_ups_exhausted` then reports the warm-up over, so the
+  rule moves on; the rule path applies the same check to the evaluator's
+  probe.
+- **Leaving with a bridge.** In WARM_UP `move_to_next_question` is offered
+  with `transition_text` (`tools.py`, whatever the unified flag, like
+  `continue_warm_up`): one model-written sentence, checked by the
+  acknowledgement guard (no question, no verdict, no parroting) in the
+  Thinker and again in `act_move_to_next_question`, spoken as its own
+  paragraph before the frozen question, which is still said verbatim and
+  still plays from the prefetch cache. Outside the warm-up the frozen
+  question is asked without a confirmation beat, as before.
+
+Tests: `test_warm_up_exchange.py` (10, including a replay of the 15:01:36
+turn ending in NEXT_QUESTION). Snapshot 35/35 unchanged. What is *not*
+verified: the model's behaviour with the new input, which needs a paid
+session.
+
+### One question took the interview (business defect, session `2678ce7b`, 2026-11-26)
+
+With the warm-up fixed, the next real voice interview (15 minutes) spent ten
+minutes on its first CV question: nine `acknowledge_and_probe` decisions in
+a row, drifting from "your role in the project" to AI trade-offs, load,
+Redis failure, queues and rate limits. Pacing said `behind` from the fourth
+probe and the VALIDATE share (0.30) was passed at 0.35; the menu kept
+`acknowledge_and_probe` open throughout. Then the decider chose
+`clarify_question` for a real answer, the generated clarification was
+rejected as `evaluative`, `_generate_clarify_text` raised, the turn failed
+(`engine_turn_failed`), the session closed as `TECHNICAL_FAILURE` and the
+report failed (`NoGradableTurnsError`: the grader marked the one VALIDATE
+turn `UNINTELLIGIBLE`).
+
+Causes found in the code, not the prompt:
+
+- **No per-question measure.** 3bf4591 removed the probe budget; the only
+  time gate per question, `hard_answer_timeout`, is the length of *one
+  answer*, and each follow-up answer was about a minute. The pacing block
+  even told the model "continue while useful and within interview time".
+- **The decider lost the question.** After a follow-up, `decide_input`'s
+  "Câu hỏi" was the follow-up itself and the answer only the latest
+  fragment, so the model followed up on its own follow-ups.
+- **Rejected lines raised.** A probe or clarification no guard accepted
+  raised out of the turn (TRIAGE_2026-11-24 R1 had this as a known REAL
+  failure).
+
+Fixes:
+
+- `turn_context.question_time_budget`: seconds spent on the question (from
+  the turn's `started_at`, `session_state["question_started_at"]`) against
+  its share, `(used + time left before the closing reserve) / (1 + questions
+  not yet asked)`, recomputed each turn. `probe_window` closes with reason
+  `question_time` once the share is spent; the pacing block shows
+  `question_seconds_used` / `question_seconds_budget` instead of the
+  "continue while useful" line. On the session's own clock the window would
+  have closed at 15:48:44 (367 s of a 270 s share), after three probes.
+- `prompts/decide.py::question_exchange_block`: after the first follow-up the
+  decider sees "Diễn biến câu hỏi này" -- the main question and every turn of
+  the exchange in order (`session_state["question_exchange"]`, the current
+  message excluded) -- and the prompt says to follow up only on the main
+  question's missing core, each point once, not to press a point the
+  candidate says they have not done, and to move on near the share.
+- `turn_rules.follow_up_repeats` (the warm-up check, generalised): a probe
+  that asks an earlier probe of this question again moves on. Measured on
+  the session's ten probes it fires on none (they drifted rather than
+  repeated; the closest pair overlaps 0.48), so this is a guard for the
+  next shape of loop, not the fix for this one.
+- `act_acknowledge_and_probe`: a probe that no guard accepts moves on;
+  `act_clarify_question`: a rejected clarification says the pending
+  question again as heard. Neither raises out of the turn any more;
+  `test_probe_post_validator_safe_fallback` (strict xfail, R1) now passes.
+
+Not changed, reported: the grader's `UNINTELLIGIBLE` verdict on a 5,046-char
+VALIDATE answer that is mostly readable (Evaluator domain; its output is not
+stored, so the reason cannot be read back), and the decider's choice of
+`clarify_question` for a substantive answer. Tests:
+`test_question_budget.py` (14, including the session's timeline). Snapshot
+35/35 unchanged. Not verified with the model: needs a paid session.
+
+### Conversation flow review (session `0e3c14c6`, 2026-11-26)
+
+The next real voice interview (backchanneling on, Hybrid off) got through the
+warm-up and the CV question, then stuck on the third: a follow-up about "mã
+lỗi 404 khi tải tăng mạnh hoặc một thành phần gặp sự cố" the candidate could
+not place, rephrased twice, then repeated word for word after "em có thể
+chuyển câu hỏi khác không ạ?"; the candidate ended the session. The user
+also found every follow-up read like a separate question. A pass over the
+whole flow found, in the code:
+
+| Defect | Cause | Fix |
+|---|---|---|
+| Skip request ignored | `is_skip_request` matched the message, but the check lived only in `_decide_by_rule`; in LIVE the model chose `repeat_question` | the skip guard runs in `_guards_in`, every mode, same order as before (snapshot unchanged) |
+| Clarify loop | `clarify_question` always on the menu outside the warm-up | `MAX_CLARIFIES_PER_QUESTION = 2` in the menu and the rule ladder |
+| Off-topic follow-ups | the decider picked `kind=deepen` on the basic tier; `act_acknowledge_and_probe` then replaced its point ("ví dụ cho từng mã lỗi") with `DEEPEN_ASPECT`, whose load-and-failure example became the probe | `deepening_allowed` (challenge tier, technical stage, first follow-up) downgrades other deepens to `gap`; an agent's deepen keeps its own point; the deepen aspect no longer suggests a load or failure scenario |
+| Follow-ups unrelated to the answer | the probe prompt asked for "giải pháp, đánh đổi, xử lý lỗi hoặc đồng thời" with "Khi Redis lỗi…" as its example | the probe picks up a specific thing the candidate said, asks what the main question lacks, and invents no scenario; examples changed |
+| Cold or narrated transitions | only the warm-up exit carried a bridge, and it said "Giờ mình sẽ chuyển sang câu hỏi tiếp theo nhé" | every `move_to_next_question` may carry `transition_text`; `announces_process` rejects narration; `has_lead_in` drops the bridge when the question has its own lead-in |
+| No report, three sessions running | the grader returned `UNINTELLIGIBLE` for readable answers ("không rõ ràng, thiếu thông tin cụ thể") and the code trusted it | the prompt says thin or partly mis-transcribed answers are ANSWERED; a readable transcript (>= 25 content words) gets one recheck before UNINTELLIGIBLE stands; checklist grading keeps a readable turn; `GRADER_PROMPT_VERSION` bumped so cached verdicts are not reused |
+
+Reviewed and left: the backchannel spoke three lines in that session (two
+during processing, one while the candidate was speaking); their text is
+not logged, so their fit cannot be judged from the trace. Two Talker tests
+read `.env` and fail when `INTERVIEW_TALKER_MODEL` is set there (they fail
+on the code before this change too); the gates run with it cleared. Tests:
+`test_conversation_flow.py` (15). Snapshot 35/35 unchanged. Not verified
+with the model: needs a paid session.
+
+### Follow-up budget restored (session `61b17de5`, 2026-11-26)
+
+Question 2 (CV) was followed up four times, each asking for "nhiệm vụ cụ
+thể" again although the first reply already named the role, the .NET API,
+the database design and the indexes. The repeat check scored the pairs 0.22
+to 0.58: each probe now opens by picking up the candidate's words, which
+dilutes a lexical overlap, so it cannot be the stop. The time share was 236
+of 265 s when the candidate ended the session.
+
+Root cause across the three sessions of the day: 3bf4591 (25/11, "remove
+rigid dialogue limits") removed both `MAX_PROBES_PER_QUESTION = 2` and
+`MAX_WARMUP_CONTINUATIONS = 1`, made the runtime ignore the blueprint's
+`contract.maxProbesPerQuestion` (still stored as 2), and rewrote the tests
+that pinned the budget into "probes continue after two follow-ups".
+Restored: `probe_window` closes with `probe_budget` at the blueprint's
+value (`turn_context.probe_limit`, default 2); the pacing block shows
+`probes_left_in_question`; the decide prompt defines a main question as
+answered once the candidate answered it with their own content, and allows
+"more specific" on one point once. The two tests are back to their
+pre-3bf4591 intent; the snapshot reference was re-recorded on purpose for
+exactly those two turns (all other 33 unchanged; the previous file is kept
+in the session scratchpad).
+
+Also in that session: the fixed "Vâng, bạn cứ tiếp tục nhé." played when a
+one-character "ờ" arrived while Core was working, five seconds before the
+next question. It now never plays (`voice_listener_noise_ignored` is
+recorded instead): with backchanneling, the pause nudge and the processing
+filler off, the agent says nothing until it has something to say.
+
+Reported, not changed: the warm-up reply was cut at a pause ("em có cái
+niềm đam mê ờ để ờ") and committed as the answer; the decider asked for the
+reason again, the repeat check refused it, the rule moved on with the bare
+question, and the candidate's continuation landed on question 2 as
+off-topic. That is endpointing; adaptive endpointing stays off by decision.
+
+### Conversational voice (session `08a2ee58`, 2026-11-26)
+
+The follow-up budget held (two per question), but the interviewer sounded
+like a form: "Cảm ơn bạn đã chia sẻ…" opened the warm-up follow-ups and the
+redirect, every probe opened "Bạn vừa nhắc đến X, vậy bạn có thể…" (the
+probe example added for session 0e3c14c6 taught that frame), one bridge was
+the generic "những điều thú vị liên quan đến hệ thống", and "em đã trình bày
+rồi" got the fixed "Mình không thể chia sẻ thông tin nội bộ." because the
+decider picked `decline_system_probe`. Changed, words still model written:
+the shared style guide, the decide prompt (a section on the lines it
+writes) and the probe prompt ask for a relaxed conversation -- no "thanks
+for sharing" opener after an answer, a short reaction to what was said or
+the question itself, never the same opening as the recent lines; the probe
+examples no longer share one frame; `redirect_off_topic` is for unrelated
+speech only; a model-chosen `decline_system_probe` needs the candidate to
+have mentioned the system (`guardrails.input.mentions_the_system`),
+otherwise the rule decides. Tests in `test_conversation_flow.py` (18).
+
+### Replies that go nowhere (session `08a2ee58`, question 4)
+
+The behavioural answer (ending in a question through STT) got a redirect,
+"em đã trình bày rồi" got the fixed decline, and "em đã trình bày rồi ạ" got
+the question again. Each non-advancing action had its own bound or none;
+together they had none. `guardrails.input.says_already_answered` (a short
+message ending "…trình bày/trả lời/nói/kể … rồi") moves on in `_guards_in`,
+every mode, before any model; `turn_rules.MAX_NON_ADVANCING_PER_QUESTION = 3`
+counts every interviewer CLARIFY message on the question
+(`session_state["non_advancing_count"]`) and, once reached, the menu and the
+rule ladder leave only moving on (warm-up and closing excluded). Not fixed:
+an answer the decider routed as off-topic is stored as a candidate question
+and the report does not grade it.
+
+### A human register (user request, 2026-11-26)
+
+"Tôi muốn nó người hơn vì người thường có những câu như ừmmm, ok, mình hiểu
+rồi. À mình muốn hỏi bạn thêm 1 ý nữa…". The guards already let such lines
+through; the prompts asked against them ("tránh câu đệm", "hỏi luôn"). The
+shared style guide, the decide prompt, the probe prompt (examples) and the
+warm-up guide now ask for the spoken markers people use -- "Ừm,", "À,",
+"Ok,", "Ừ, mình hiểu rồi.", "À, mình muốn hỏi bạn thêm một ý nữa…" -- as a
+register, not a list: at most one per turn, varied, some turns without,
+written plainly for TTS ("Ừm", not "Ừmmm"). Every word is still model
+written; no line is chosen or inserted by code. The bridge guard
+`announces_process` now rejects only the robotic forms ("câu hỏi tiếp
+theo", "phần tiếp theo"), so a casual "Ok, mình nói qua chuyện khác chút
+nhé" can be said. Not verified with the model.
+
+### Getting acquainted before the warm-up (user request, 2026-11-26)
+
+Found first: the voice interview never spoke its greeting. `start_chat_session`
+stored the fixed opening and the warm-up question as two messages, and the
+voice start (`/livekit/runtime/start`) speaks only the last assistant
+message -- the warm-up question (99 characters in session 08a2ee58).
+
+Now, outside demos, the session opens with a model-written greeting and one
+small-talk question (`chat_runtime._icebreaker_opening`, purpose
+`opening_icebreaker`; the facts are the call name, the role, the length and
+the agenda): greet by name, say who you are and what today is, ask one light
+question, never the self-introduction yet. It is stored as the opening with
+`awaitingIcebreaker`, so the voice start speaks it and the warm-up question
+waits. The candidate's reply, if short (<= 30 words) and not a stop request,
+gets a model-written reaction (`_icebreaker_lead`, purpose
+`icebreaker_reply`, written before the claim takes the session lock), and
+`_release_frozen_question` says it, then the frozen warm-up question verbatim,
+restarting the question's clock; Core does not run and the reply is not the
+answer. A longer reply is the candidate introducing themselves and goes to
+Core as the warm-up answer. Guards: the greeting must end in a question that
+is not the warm-up's; the reaction must not ask. Any failure falls back to
+the previous fixed opening plus question. `INTERVIEW_ICEBREAKER_ENABLED=0`
+turns it off. Cost: one call at session start, one after the reply. Tests:
+`test_icebreaker.py` (8). Not verified with the model or in a room.
+
+### Session `1b264b67` (2026-11-26): blind bridges and the end of the interview
+
+- **Bridges were written blind.** The decider did not know the next
+  question, so its bridge summed up the warm-up ("Em đang là sinh viên năm
+  cuối và làm AI engineer, thật thú vị nhỉ!") or, rejected, left the next
+  question bare. The graph's decide node now resolves the next question
+  (`_get_next_stage_and_question`, no state change, kept on `ctx` for the
+  move) and the decider's input says "Nếu chuyển câu, câu hỏi kế tiếp sẽ
+  được đọc nguyên văn…"; the bridge closes the thread and leads into that
+  topic; one form of address ("mình/bạn") for the whole interview.
+- **"Mình không thể chia sẻ thông tin nội bộ." again.** My own
+  `mentions_the_system` (08a2ee58 fix) had a bare `ai` and matched "h-ai
+  bạn". Whole words only now, and no common answer words ("hệ thống", "AI").
+- **A false ending.** The decider chose `confirm_abort` for a real answer;
+  a model-chosen ending now needs the candidate to mention stopping
+  (`mentions_stopping`).
+- **Silence at the end.** A closing answer ending "…bạn còn câu hỏi nào
+  không?" was rejected (`asks_back`) and raised; the turn failed and the
+  candidate waited 80 s. It is rewritten once with the reason, then falls
+  back to a plain line; it never raises. Strict xfail
+  `test_regression_behavioral_answered_transitions_to_closing` (R1) passes.
+- **Ungraded answers.** Answers the live agent redirected as off-topic or
+  system probes were not grading evidence, so the behavioural question was
+  "uncovered". The report now hands them to the grader, which decides.
+
+Reported, not changed: the DEEP_DIVE answer naming the status codes was
+graded NO_ATTEMPT on recheck (a grader judgement on a garbled transcript).
+
+### One failed turn locked the voice session (session `1b264b67`)
+
+After the closing answer failed (19:08:10), every later utterance was
+refused with 409 in ~30 ms and the voice agent read its fixed
+`CORE_ERROR_VI` ("Mình chưa xử lý được câu trả lời vừa rồi. Bạn nói lại giúp
+mình nhé.") to each one -- whatever the candidate said, including "kết thúc".
+Not the prompt: only the chat route marked a failed message `FAILED`; the
+voice path left it `PROCESSING`, so the claim answered `IN_PROGRESS` for five
+minutes and `RECOVERY_REQUIRED` ("gửi lại đúng tin nhắn đó") after, which
+speech can never satisfy. Now `process_candidate_message` marks the message
+`FAILED` on any transport when inference raises, and a different next
+message supersedes a failed or stale one (`SUPERSEDED`, kept in the
+transcript) and is processed normally; resending the same text still
+recovers it. Test: `test_a_failed_turn_does_not_lock_the_session`.
+
 ### Remaining migration work
 
 | Brief | Outstanding |

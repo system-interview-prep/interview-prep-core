@@ -22,9 +22,14 @@ def test_t1_1_1_deep_dive_with_budget_offers_probe_next_and_conversation(ctx_fac
     assert "close_interview" not in menu.allowed and menu.reasons["close_interview"] == "questions remain"
 
 
-def test_probe_remains_available_after_multiple_followups(ctx_factory) -> None:
-    menu = build_menu(ctx_factory(probes_used=8))
-    assert "acknowledge_and_probe" in menu.allowed
+def test_follow_ups_on_one_question_are_bounded_by_the_blueprint(ctx_factory) -> None:
+    """3bf4591 asserted probes stayed open after eight follow-ups; that is the
+    defect of sessions 2678ce7b and 61b17de5. The blueprint's cap (2) holds."""
+    assert "acknowledge_and_probe" in build_menu(ctx_factory(probes_used=1)).allowed
+    menu = build_menu(ctx_factory(probes_used=2))
+    assert "acknowledge_and_probe" not in menu.allowed
+    assert "probe_budget" in menu.reasons["acknowledge_and_probe"]
+    assert "move_to_next_question" in menu.allowed
 
 
 def test_t1_1_3_behind_schedule_leaves_only_moving_on(ctx_factory) -> None:

@@ -238,6 +238,9 @@ def build_session_state_from_db(
         # CV–job match (planning.entry_gate). Challenge also probes good answers.
         "practice_tier": snap.get("practiceTier") or "standard",
         "started_at": session_row.get("started_at"),
+        # When the current question was put to the candidate: its time share
+        # (turn_context.question_time_budget) runs from here.
+        "question_started_at": current_turn.get("started_at") if current_turn else None,
         # The session clock, surfaced at the top level because that is where the
         # core engine reads it. Previously only `working_memory` carried it, so
         # the engine silently recomputed elapsed time from `turn_input`, which is
