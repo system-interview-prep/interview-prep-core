@@ -12,6 +12,7 @@ from time import perf_counter
 from typing import Any, Dict, Optional
 
 from src.core.trace_logging import trace_event
+from src.modules.interviews.agents.interviewer.tools import UNIFIED_TEXT_ACTIONS
 from src.modules.interviews.core.conversation.turn_context import Decision
 
 
@@ -75,7 +76,41 @@ def decision_record(
         "stage_before": stage_before,
         "stage_after": stage_after,
         "transition": transition,
+        "unified": _unified_outcome(agent_decision),
         "latency_ms": int((perf_counter() - started_at) * 1000),
+    }
+
+
+def _unified_outcome(agent_decision: Optional[Decision]) -> Optional[Dict[str, Any]]:
+    """Did the deciding call carry its own utterance, and did the guard keep it?
+
+    The Phase 3 exit gate asks for response-quality parity, which can only be
+    judged from live turns. This is what makes that judgeable: every turn
+    records whether §6.2's single inference supplied the line, which guard
+    rejected it when it did not, and how much memory it had without searching.
+    ``scripts/eval/interviews/agent_shadow_report.py`` aggregates it.
+
+    ``None`` when no model decision ran, so rule-mode turns add no noise.
+    """
+    if agent_decision is None or agent_decision.source != "agent":
+        return None
+    args = agent_decision.args or {}
+    spoken = {
+        argument: str(args[argument])[:400]
+        for argument in UNIFIED_TEXT_ACTIONS.values()
+        if args.get(argument)
+    }
+    rejected = [note for note in (agent_decision.path or []) if note.endswith("_rejected")]
+    evaluation = args.get("evaluation") if isinstance(args.get("evaluation"), dict) else None
+    return {
+        # True: the turn spoke the model's own line, so no second call was made.
+        "carried_text": bool(spoken),
+        "argument": next(iter(spoken), None),
+        "text": next(iter(spoken.values()), None),
+        "rejected": rejected or None,
+        "covered": (evaluation or {}).get("covered") or None,
+        "missing": (evaluation or {}).get("missing") or None,
+        "memory_prefetched": args.get("memory_prefetched"),
     }
 
 
@@ -99,6 +134,9 @@ def summary(record: Dict[str, Any]) -> Dict[str, Any]:
         "stage_after": record.get("stage_after"),
         "transition": record.get("transition"),
         "agent_validation": record.get("transition", {}).get("validation"),
+        # Whether §6.2's single inference supplied the spoken line on this turn.
+        "unified_carried_text": (record.get("unified") or {}).get("carried_text"),
+        "unified_rejected": (record.get("unified") or {}).get("rejected"),
         "latency_ms": record.get("latency_ms"),
     }
 
@@ -111,6 +149,12 @@ def scores(record: Dict[str, Any]) -> Dict[str, float]:
     out["agent.menu_violation"] = 1.0 if record.get("menu_violation") else 0.0
     out["agent.decide_error"] = 1.0 if record.get("decide_error") else 0.0
     out["agent.executed_by_agent"] = 1.0 if record.get("executed") == "agent" else 0.0
+    unified = record.get("unified")
+    if unified is not None:
+        # The Phase 3 gate in two numbers: how often the one inference spoke for
+        # itself, and how often its line was sent back by a guard.
+        out["agent.unified_carried_text"] = 1.0 if unified.get("carried_text") else 0.0
+        out["agent.unified_rejected"] = 1.0 if unified.get("rejected") else 0.0
     return out
 
 

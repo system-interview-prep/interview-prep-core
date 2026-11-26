@@ -509,7 +509,9 @@ class InterviewCoreEngine(InterviewResponseMixin):
     async def act_answer_candidate_question(self, ctx: TurnContext, decision: Decision) -> InterviewerTurnOutput:
         state = ctx.session_state
         candidate_question_intent = decision.args.get("intent")
-        reply = await self._generate_interviewer_line(
+        # Unified Thinker (§6.2): already past qna_rejection_reason, which keeps
+        # the answer inside the posting, when the decider supplied it.
+        reply = str(decision.args.get("answer_text") or "") or await self._generate_interviewer_line(
             purpose=f"candidate_question_{candidate_question_intent}",
             context=(
                 f"Ứng viên hỏi: {ctx.candidate_text}\n"
@@ -553,7 +555,9 @@ class InterviewCoreEngine(InterviewResponseMixin):
         )
 
     async def act_redirect_off_topic(self, ctx: TurnContext, decision: Decision) -> InterviewerTurnOutput:
-        reply = await self._generate_interviewer_line(
+        # Unified Thinker (§6.2): already past the acknowledgement guard in the
+        # decider when present, so no second call is needed.
+        reply = str(decision.args.get("redirect_text") or "") or await self._generate_interviewer_line(
             purpose="redirect_off_topic_answer",
             context=f"Ứng viên vừa nói: {ctx.candidate_text}\nNhắc nhẹ rồi quay lại câu hỏi: {ctx.active_prompt}",
             is_vi=ctx.is_vi,
@@ -573,7 +577,9 @@ class InterviewCoreEngine(InterviewResponseMixin):
         )
 
     async def act_clarify_question(self, ctx: TurnContext, decision: Decision) -> InterviewerTurnOutput:
-        clarify_msg = await self._generate_clarify_text(
+        # Unified Thinker (§6.2): the decider may carry the line it chose to
+        # say, already past clarify_rejection_reason. Otherwise generate it.
+        clarify_msg = str(decision.args.get("clarify_text") or "") or await self._generate_clarify_text(
             current_question=ctx.current_question,
             candidate_text=ctx.candidate_text,
             is_vi=ctx.is_vi,

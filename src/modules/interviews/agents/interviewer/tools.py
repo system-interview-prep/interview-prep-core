@@ -7,12 +7,13 @@ the matching ``act_*`` reads; nothing here lets the model name a question,
 a score or a rubric line.
 
 **Unified Thinker** (INTERVIA_INTERVIEW_AGENT_V2_SPEC §6.2): with
-``unified=True`` the speaking actions also ask for the line the candidate will
-hear, so one inference carries the evaluation, the decision and the response
-instead of a decider call followed by a speech call. ``continue_warm_up`` has
-always worked this way; the flag extends it to ``acknowledge_and_probe``. The
-text still goes through the same output guards, and a rejected one falls back
-to generating the line, so the turn is never lost to a bad utterance.
+``unified=True`` every speaking action also asks for the line the candidate
+will hear, so one inference carries the evaluation, the decision and the
+response instead of a decider call followed by a speech call.
+``continue_warm_up`` has always worked this way; the flag extends it to the
+rest. The text still goes through *that action's own* output guard -- a probe
+is checked as a probe, a clarification as a clarification -- and a rejected one
+falls back to generating the line, so the turn is never lost to a bad utterance.
 """
 
 from __future__ import annotations
@@ -24,8 +25,37 @@ from src.modules.interviews.core.conversation.turn_context import ACTIONS
 
 SEARCH_MEMORY = "search_candidate_memory"
 
-# The one place the model is asked for the probe in the deciding call.
-UNIFIED_TEXT_ACTIONS = ("acknowledge_and_probe",)
+# Each action that can carry its own utterance, and the argument it arrives in.
+# ``continue_warm_up`` is not listed: its ``follow_up_text`` is already required
+# in the plain schema, so there is no variant to add.
+UNIFIED_TEXT_ACTIONS: Dict[str, str] = {
+    "acknowledge_and_probe": "probe_text",
+    "clarify_question": "clarify_text",
+    "redirect_off_topic": "redirect_text",
+    "answer_candidate_question": "answer_text",
+}
+
+# What the model is told each utterance must be. The wording is deliberately
+# about content, never length: 3bf4591 removed the rigid dialogue limits.
+_UNIFIED_TEXT_DESCRIPTIONS: Dict[str, str] = {
+    "probe_text": (
+        "Câu hỏi đào sâu gửi nguyên văn cho ứng viên, đúng một câu hỏi, bám vào ý còn thiếu. "
+        "Không nhận xét đúng/sai, không gợi ý đáp án, không nhắc tiêu chí đánh giá."
+    ),
+    "clarify_text": (
+        "Nói lại câu hỏi đang chờ theo cách khác, gửi nguyên văn cho ứng viên. "
+        "Không giảng giải, không chê câu hỏi khó hay dễ, không tiết lộ đáp án mong đợi."
+    ),
+    "redirect_text": (
+        "Một lời nhắc nhẹ rồi quay lại câu hỏi đang chờ, gửi nguyên văn cho ứng viên. "
+        "Không phán xét ứng viên, không nhận xét đúng/sai."
+    ),
+    "answer_text": (
+        "Trả lời câu hỏi của ứng viên, gửi nguyên văn. Chỉ dùng thông tin tuyển dụng đã biết; "
+        "nếu thiếu dữ kiện thì nói rõ chưa có thông tin rồi nhắc lại câu phỏng vấn đang chờ. "
+        "Không hỏi ngược, không nêu con số mà tin tuyển dụng không có."
+    ),
+}
 
 
 def unified_enabled() -> bool:
@@ -109,23 +139,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "Câu trả lời còn thiếu một ý cốt lõi: hỏi đào sâu đúng ý đó.",
         {"kind": {"type": "string", "enum": ["gap", "deepen"]}, "missing_aspect": {"type": "string"}},
     ),
-    # Same action, asked to write the follow-up in the same call (unified mode).
-    "acknowledge_and_probe__unified": _tool(
-        "acknowledge_and_probe",
-        "Câu trả lời còn thiếu một ý cốt lõi: hỏi đào sâu đúng ý đó và tự viết câu hỏi ấy.",
-        {
-            "kind": {"type": "string", "enum": ["gap", "deepen"]},
-            "missing_aspect": {"type": "string"},
-            "probe_text": {
-                "type": "string",
-                "description": (
-                    "Câu hỏi đào sâu gửi nguyên văn cho ứng viên, đúng một câu hỏi, "
-                    "bám vào ý còn thiếu. Không nhận xét đúng/sai, không gợi ý đáp án, "
-                    "không nhắc tiêu chí đánh giá."
-                ),
-            },
-        },
-    ),
     "closing_qna": _tool("closing_qna", "Phần ứng viên hỏi ngược: trả lời từ thông tin tuyển dụng."),
     SEARCH_MEMORY: _tool(
         SEARCH_MEMORY,
@@ -135,18 +148,74 @@ TOOLS: Dict[str, Dict[str, Any]] = {
 }
 
 _UNIFIED_SUFFIX = "__unified"
-_UNIFIED_VARIANTS = {name for name in TOOLS if name.endswith(_UNIFIED_SUFFIX)}
 
-assert {name for name in TOOLS if name not in _UNIFIED_VARIANTS} == set(ACTIONS) | {SEARCH_MEMORY}, (
-    "every action needs a tool and vice versa"
+assert set(TOOLS) == set(ACTIONS) | {SEARCH_MEMORY}, "every action needs a tool and vice versa"
+assert set(UNIFIED_TEXT_ACTIONS) <= set(ACTIONS), "a unified action must be a real action"
+assert set(UNIFIED_TEXT_ACTIONS.values()) <= set(_UNIFIED_TEXT_DESCRIPTIONS), (
+    "every unified argument needs a description for the model"
 )
-assert {name[: -len(_UNIFIED_SUFFIX)] for name in _UNIFIED_VARIANTS} == set(UNIFIED_TEXT_ACTIONS), (
-    "a unified variant must name an action in UNIFIED_TEXT_ACTIONS"
+
+# §6.2 asks the one inference to carry the evaluation that steered the choice,
+# not just the choice. ``covered``/``missing`` are what the Interviewer needs to
+# route; the official score stays with the Evaluator, so no number is asked for
+# and none is accepted.
+_EVALUATION = {
+    "covered": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Những ý cốt lõi của câu hỏi mà câu trả lời đã nói rõ. Để trống nếu chưa có ý nào.",
+    },
+    "missing": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Những ý cốt lõi còn thiếu hoặc nói sai. Để trống nếu câu trả lời đã đủ.",
+    },
+}
+
+
+def _unified_variant(action: str, argument: str) -> Dict[str, Any]:
+    """The action's own schema plus the utterance it will speak, and the evaluation.
+
+    The tool keeps ``name == action`` so the menu check, the decision record and
+    every downstream reader stay unaware that the variant exists.
+    """
+    plain = TOOLS[action]
+    properties = {
+        **plain["parameters"]["properties"],
+        argument: {"type": "string", "description": _UNIFIED_TEXT_DESCRIPTIONS[argument]},
+        "evaluation": {
+            "type": "object",
+            "properties": _EVALUATION,
+            "required": sorted(_EVALUATION),
+            "additionalProperties": False,
+            "description": "Đối chiếu câu trả lời với các ý cốt lõi của câu hỏi. Không chấm điểm.",
+        },
+    }
+    return {
+        **plain,
+        "description": plain["description"] + " Tự viết luôn lời thoại gửi ứng viên.",
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "required": sorted(properties),
+            "additionalProperties": False,
+        },
+    }
+
+
+TOOLS.update(
+    {
+        f"{action}{_UNIFIED_SUFFIX}": _unified_variant(action, argument)
+        for action, argument in UNIFIED_TEXT_ACTIONS.items()
+    }
 )
+
 # A variant must keep the action's own name, or the model would call a tool the
 # menu check does not recognise and every unified turn would fall back.
-for _variant in _UNIFIED_VARIANTS:
-    assert TOOLS[_variant]["name"] == _variant[: -len(_UNIFIED_SUFFIX)], _variant
+for _action, _argument in UNIFIED_TEXT_ACTIONS.items():
+    _variant = TOOLS[f"{_action}{_UNIFIED_SUFFIX}"]
+    assert _variant["name"] == _action, _action
+    assert _argument in _variant["parameters"]["required"], _action
 
 
 def tools_for(allowed: List[str], *, unified: bool = False) -> List[Dict[str, Any]]:

@@ -296,3 +296,130 @@ def test_the_unified_thinker_is_off_unless_its_flag_is_set(monkeypatch) -> None:
     assert tools.unified_enabled() is False
     monkeypatch.setenv("INTERVIEW_UNIFIED_THINKER", "1")
     assert tools.unified_enabled() is True
+
+
+# Each unified action: the argument it speaks through, a line its own guard
+# accepts, and the session knobs that make the action reachable.
+UNIFIED_CASES = [
+    (
+        "acknowledge_and_probe",
+        "probe_text",
+        {"kind": "gap", "missing_aspect": "cache invalidation"},
+        "Khi dữ liệu trong database đổi, em xoá key cache theo cách nào?",
+    ),
+    (
+        "clarify_question",
+        "clarify_text",
+        {},
+        "Ý mình là em mô tả cách hệ thống của em giữ cache không bị cũ nhé.",
+    ),
+    (
+        "redirect_off_topic",
+        "redirect_text",
+        {},
+        "Mình quay lại câu hỏi vừa rồi nhé.",
+    ),
+    (
+        "answer_candidate_question",
+        "answer_text",
+        {"intent": "ABOUT_INTERVIEWER"},
+        "Mình là người phỏng vấn của buổi hôm nay, mình quay lại câu hỏi nhé.",
+    ),
+]
+
+
+@pytest.mark.parametrize("action,argument,extra,text", UNIFIED_CASES, ids=[c[0] for c in UNIFIED_CASES])
+@pytest.mark.asyncio
+async def test_every_unified_action_costs_one_call(
+    session_state_factory, action: str, argument: str, extra: dict, text: str
+) -> None:
+    """AC-05 across the speaking actions, not just the probe.
+
+    Phase 0 measured each of these at two calls: the decider picks the action,
+    then the handler generates the line. With §6.2 the deciding call carries the
+    line, so an ordinary turn needs no second round trip whichever action wins.
+    """
+    from src.modules.interviews.agents.interviewer import thinker as thinker_module
+
+    calls: list[dict] = []
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        return [
+            {
+                "name": action,
+                "arguments": {
+                    **extra,
+                    argument: text,
+                    "evaluation": {"covered": ["TTL"], "missing": ["cache invalidation"]},
+                    "rationale": "scripted",
+                    "evidence_refs": ["answer:sent:1"],
+                },
+                "call_id": f"call-{action}",
+            }
+        ]
+
+    llm = CountingLLM()
+    engine = InterviewCoreEngine(llm_client=llm)
+    state = session_state_factory(stage=InterviewStage.DEEP_DIVE)
+
+    async def decider(ctx, **kwargs):
+        kwargs.pop("unified", None)
+        kwargs["allowed_actions"] = sorted({*kwargs.get("allowed_actions", []), action})
+        return await thinker_module.decide_by_model(ctx, generate=generate, unified=True, **kwargs)
+
+    output = await _run(engine, state, mode=interview_agent.MODE_LIVE, decider=decider)
+
+    record = output.metadata["decision"]
+    assert record["executed"] == "agent", record
+    assert record["agent"]["action"] == action
+    assert len(calls) == 1, "the deciding call"
+    assert llm.calls == [], f"{action} still generated its line separately"
+    assert output.message_text == text
+
+
+@pytest.mark.asyncio
+async def test_prefetched_memory_reaches_the_decider_without_a_search_round_trip(
+    session_state_factory,
+) -> None:
+    """§6.2 "Prefetch memory trước call".
+
+    The runtime loads this session's memory before the turn. Handing it to the
+    model up front is what keeps ``search_candidate_memory`` an extra call only
+    when the model wants a skill the prefetch did not cover -- before this, a
+    decision that used memory always cost two calls.
+    """
+    from src.modules.interviews.agents.interviewer import thinker as thinker_module
+
+    hit = {"skill_key": "skill-python", "text": "Còn hở phần cache invalidation"}
+    calls: list[dict] = []
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        return [
+            {
+                "name": "move_to_next_question",
+                "arguments": {"reason": "sufficient", "rationale": "đủ ý", "evidence_refs": ["answer:sent:1"]},
+                "call_id": "call-next",
+            }
+        ]
+
+    async def memory_search(_skill):  # must not be reached
+        raise AssertionError("the decider searched although memory was prefetched")
+
+    engine = InterviewCoreEngine(llm_client=CountingLLM())
+    state = session_state_factory(stage=InterviewStage.DEEP_DIVE)
+    state["candidate_memory"] = [hit]
+
+    async def decider(ctx, **kwargs):
+        kwargs.pop("unified", None)
+        kwargs["memory_search"] = memory_search
+        return await thinker_module.decide_by_model(ctx, generate=generate, unified=True, **kwargs)
+
+    output = await _run(engine, state, mode=interview_agent.MODE_LIVE, decider=decider)
+
+    assert len(calls) == 1
+    # The memory topic was in the model's input, not fetched by a tool call.
+    assert hit["text"] in str(calls[0]["input_items"])
+    args = output.metadata["decision"]["agent"]["args"]
+    assert args["memory_prefetched"] == 1 and args["memory_hits"] == 1

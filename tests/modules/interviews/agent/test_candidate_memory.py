@@ -382,8 +382,12 @@ async def test_t3_5_1_memory_reaches_the_prompts_and_the_decider_but_is_never_re
     # the memory block reached the evaluation and probe prompts, as topics only
     assert any("Còn hở phần cache invalidation" in p for p in llm.prompts)
     assert not any("Bạn dùng Redis cache thế nào trong dự án" in p for p in llm.prompts)
-    # the decider searched memory and saw topics only
-    assert out.metadata["decision"]["agent"]["args"]["memory_hits"] == 1
+    # The decider saw the memory as topics only. §6.2 prefetches it into the
+    # deciding call, so the scripted search returns the item it already had:
+    # the count is distinct items, not round trips.
+    agent_args = out.metadata["decision"]["agent"]["args"]
+    assert agent_args["memory_hits"] == 1
+    assert agent_args["memory_prefetched"] == 1
     assert "search_candidate_memory" in out.metadata["decision"]["allowed_actions"]
     # the recited line was replaced and the rejection recorded
     assert out.action == TurnAction.PROBE

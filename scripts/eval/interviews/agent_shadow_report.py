@@ -62,7 +62,35 @@ def summarize(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "by_stage": rate("stage"),
         "by_pace": rate("pace"),
         "by_mode": dict(Counter(str(r.get("mode")) for r in rows)),
+        "unified": _unified(with_agent),
         "disagreements": disagreements,
+    }
+
+
+def _unified(with_agent: list[dict[str, Any]]) -> dict[str, Any]:
+    """The Phase 3 exit gate, from live turns.
+
+    "Action/response quality parity" cannot be read off a unit test: it is how
+    often the one inference of §6.2 produced a line the guards accepted, and
+    which guard sent back the rest. ``carried_text`` false with no rejection
+    means the flag was off or the action does not speak.
+    """
+    seen = [r for r in with_agent if r.get("unified_carried_text") is not None]
+    if not seen:
+        return {"turns": 0}
+    carried = [r for r in seen if r.get("unified_carried_text")]
+    rejected = [r for r in seen if r.get("unified_rejected")]
+    reasons: Counter = Counter()
+    for row in rejected:
+        for note in row.get("unified_rejected") or []:
+            reasons[str(note)] += 1
+    return {
+        "turns": len(seen),
+        # Share of decisions that spoke for themselves: one call, not two.
+        "carried_text_rate": round(len(carried) / len(seen), 3),
+        # Share whose text a guard refused, so the turn paid the second call.
+        "rejected_rate": round(len(rejected) / len(seen), 3),
+        "rejected_by": dict(reasons.most_common()),
     }
 
 
@@ -77,6 +105,13 @@ def render(report: dict[str, Any]) -> str:
         lines.append(title)
         for name, row in report[key].items():
             lines.append(f"  {name:<28} n={row['n']:<4} agreement={row['agreement']}")
+        lines.append("")
+    unified = report.get("unified") or {}
+    if unified.get("turns"):
+        lines.append(
+            f"unified thinker: n={unified['turns']}  carried its own line={unified['carried_text_rate']}  "
+            f"guard rejected={unified['rejected_rate']}  {unified['rejected_by'] or ''}"
+        )
         lines.append("")
     lines.append(f"disagreements ({len(report['disagreements'])}) — for the reviewer:")
     for d in report["disagreements"][:200]:

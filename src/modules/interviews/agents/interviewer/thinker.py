@@ -16,19 +16,82 @@ from __future__ import annotations
 import json
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 
+from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_tool_calls
 from src.modules.interviews.agents.interviewer.tools import (
     SEARCH_MEMORY,
+    UNIFIED_TEXT_ACTIONS,
     tools_for,
     unified_enabled,
 )
-from src.modules.interviews.core.guardrails.output import checked_probe
+from src.modules.interviews.core.guardrails.output import (
+    acknowledgement_rejection_reason,
+    checked_probe,
+    clarify_rejection_reason,
+    qna_rejection_reason,
+    validate_probe_text,
+)
 from src.modules.interviews.core.conversation.prompt.decide import decide_input, decide_prompt
 from src.modules.interviews.core.conversation.turn_context import Decision, TurnContext
 
 PURPOSE = "interviews.agent.decide"
 MemorySearch = Callable[[str], Awaitable[Sequence[Dict[str, Any]]]]
 ToolCaller = Callable[..., Awaitable[List[Dict[str, Any]]]]
+
+
+def _checked_unified_text(
+    ctx: TurnContext, *, action: str, argument: str, raw: Any
+) -> Optional[str]:
+    """The utterance the model wrote, if that action's own guard accepts it.
+
+    §6.2 lets one inference carry the response, but it does not relax what the
+    response has to be. Each action keeps the guard its separately generated
+    line has always passed, so unifying cannot widen what reaches a candidate.
+    """
+    text_value = str(raw or "").strip()
+    if not text_value:
+        return None
+    question = ctx.active_prompt or ctx.question_prompt
+    rubric = str(ctx.current_question.get("rubric_criteria") or "")
+
+    if argument == "probe_text":
+        return checked_probe(text_value, question=question, answer=ctx.candidate_text, rubric=rubric)
+
+    if argument == "clarify_text":
+        reason = clarify_rejection_reason(
+            text_value, question=question, answer=ctx.candidate_text, rubric=rubric
+        )
+    elif argument == "answer_text":
+        job_context = str(
+            ctx.session_state.get("job_description_text")
+            or ctx.session_state.get("job_context")
+            or ""
+        )
+        reason = qna_rejection_reason(
+            text_value,
+            job_context=job_context,
+            # The same leak predicate the engine passes for the closing Q&A.
+            rubric_leak=lambda value: not validate_probe_text(value),
+            question=ctx.candidate_text,
+        )
+    elif argument == "redirect_text":
+        # A redirect is a nudge back to the pending question: it must not grade
+        # the candidate or hand over the answer.
+        reason = acknowledgement_rejection_reason(text_value, answer=ctx.candidate_text)
+    else:  # pragma: no cover - UNIFIED_TEXT_ACTIONS and this dispatch agree
+        reason = "unknown_argument"
+
+    if reason:
+        trace_event(
+            "interviewer",
+            "unified_text_rejected",
+            action=action,
+            argument=argument,
+            reason=reason,
+            session_id=str(ctx.session_id),
+        )
+        return None
+    return text_value
 
 
 def _violation(kind: str, detail: str = "", calls: Optional[List[Dict[str, Any]]] = None) -> Decision:
@@ -54,7 +117,15 @@ async def decide_by_model(
     generate = generate or generate_tool_calls
     unified = unified_enabled() if unified is None else unified
     tools = tools_for(allowed_actions, unified=unified)
-    memory_hits: List[Dict[str, Any]] = []
+    # §6.2 "Prefetch memory trước call": the runtime already loads this session's
+    # candidate memory into the state before the turn runs, so hand it to the
+    # model up front. ``search_candidate_memory`` then stays what the spec calls
+    # a "tool call bổ sung chỉ khi cần" -- an extra round trip only when the
+    # model wants a skill the prefetch did not cover.
+    prefetched: List[Dict[str, Any]] = [
+        dict(hit) for hit in (ctx.session_state.get("candidate_memory") or ()) if isinstance(hit, dict)
+    ]
+    memory_hits: List[Dict[str, Any]] = list(prefetched)
     notes: List[str] = []
     items: Any = decide_input(
         question=ctx.active_prompt or ctx.question_prompt,
@@ -63,6 +134,7 @@ async def decide_by_model(
         evaluation=ctx.eval_result or None,
         assessment_criteria=str(ctx.current_question.get("rubric_criteria") or ""),
         recent_lines=ctx.recent_lines,
+        memory_hits=prefetched,
         pacing=pacing,
         allowed_actions=allowed_actions,
         interview_contract=ctx.session_state.get("interview_contract"),
@@ -114,23 +186,28 @@ async def decide_by_model(
             if not follow_up:
                 return _violation("invalid_follow_up", "missing or rejected warm-up utterance", calls)
             args["follow_up_text"] = follow_up
-        if "probe_text" in args:
-            # Unified Thinker (§6.2): the follow-up written in the deciding
-            # call. It passes the same output guards as a separately generated
-            # probe. A rejected one is dropped rather than failing the turn --
-            # the action handler then writes the probe as it always did, which
-            # costs the second call back but never costs the candidate a turn.
-            probe = checked_probe(
-                str(args.get("probe_text") or ""),
-                question=ctx.active_prompt or ctx.question_prompt,
-                answer=ctx.candidate_text,
-                rubric=str(ctx.current_question.get("rubric_criteria") or ""),
-            )
-            if probe:
-                args["probe_text"] = probe
+        # Unified Thinker (§6.2): the utterance written in the deciding call.
+        # Each action's text is checked by that action's own guard, never a
+        # shared one -- a probe must be a question, a clarification must not
+        # lecture, an answer to the candidate must stay inside the posting. A
+        # rejected text is dropped rather than failing the turn: the decision
+        # stands and the handler writes the line as it always did, which costs
+        # the second call back but never costs the candidate a turn.
+        argument = UNIFIED_TEXT_ACTIONS.get(name)
+        if argument and argument in args:
+            kept = _checked_unified_text(ctx, action=name, argument=argument, raw=args.get(argument))
+            if kept:
+                args[argument] = kept
             else:
-                args.pop("probe_text", None)
-                notes.append("probe_text_rejected")
+                args.pop(argument, None)
+                notes.append(f"{argument}_rejected")
+        # The evaluation is advisory context for the record, never a score.
+        evaluation = args.pop("evaluation", None)
+        if isinstance(evaluation, dict):
+            args["evaluation"] = {
+                "covered": [str(x) for x in (evaluation.get("covered") or [])],
+                "missing": [str(x) for x in (evaluation.get("missing") or [])],
+            }
         decision = Decision(
             name,
             args,
@@ -140,7 +217,13 @@ async def decide_by_model(
             path=["model"] + notes,
         )
         if memory_hits:
-            decision.args["memory_hits"] = len(memory_hits)
+            # Distinct items, not round trips: once memory is prefetched, a
+            # ``search_candidate_memory`` for the same skill returns what the
+            # model was already shown, and counting it twice would overstate
+            # how much the decision drew on.
+            seen = {(str(h.get("skill_key") or ""), str(h.get("text") or "")) for h in memory_hits}
+            decision.args["memory_hits"] = len(seen)
+            decision.args["memory_prefetched"] = len(prefetched)
         return decision
     return _violation("memory_loop", f"{max_steps} steps")
 

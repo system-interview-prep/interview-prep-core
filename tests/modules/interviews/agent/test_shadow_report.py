@@ -52,3 +52,44 @@ def test_the_report_tolerates_turns_without_an_agent_decision() -> None:
     rows = [{"rule_action": "clarify_question", "agent_action": None, "agreement": None, "mode": "rule", "executed": "rule"}]
     report = report_module.summarize(rows)
     assert report["turns"] == 1 and report["with_agent_decision"] == 0 and report["agreement"] is None
+
+
+def test_the_report_measures_the_unified_thinker_gate() -> None:
+    """Phase 3's exit gate asks for response-quality parity from live turns.
+
+    The report is where that becomes readable: how often §6.2's single
+    inference spoke for itself, and which guard sent the rest back.
+    """
+    from scripts.eval.interviews.agent_shadow_report import render, summarize
+
+    rows = [
+        {"mode": "live", "executed": "agent", "agent_action": "acknowledge_and_probe",
+         "rule_action": "acknowledge_and_probe", "agreement": True,
+         "unified_carried_text": True, "unified_rejected": None},
+        {"mode": "live", "executed": "agent", "agent_action": "clarify_question",
+         "rule_action": "clarify_question", "agreement": True,
+         "unified_carried_text": True, "unified_rejected": None},
+        {"mode": "live", "executed": "agent", "agent_action": "acknowledge_and_probe",
+         "rule_action": "acknowledge_and_probe", "agreement": True,
+         "unified_carried_text": False, "unified_rejected": ["probe_text_rejected"]},
+        # A rule-mode turn contributes nothing: no model decision ran.
+        {"mode": "rule", "executed": "rule", "rule_action": "move_to_next_question"},
+    ]
+
+    unified = summarize(rows)["unified"]
+
+    assert unified["turns"] == 3
+    assert unified["carried_text_rate"] == round(2 / 3, 3)
+    assert unified["rejected_rate"] == round(1 / 3, 3)
+    assert unified["rejected_by"] == {"probe_text_rejected": 1}
+    assert "unified thinker" in render(summarize(rows))
+
+
+def test_turns_without_a_unified_signal_report_nothing() -> None:
+    """With the flag off there is no gate to report, not a zero to misread."""
+    from scripts.eval.interviews.agent_shadow_report import summarize
+
+    rows = [{"mode": "live", "executed": "agent", "agent_action": "move_to_next_question",
+             "rule_action": "move_to_next_question", "agreement": True}]
+
+    assert summarize(rows)["unified"] == {"turns": 0}

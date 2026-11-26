@@ -37,20 +37,36 @@ def test_t1_2_1_every_action_has_one_strict_tool_and_one_act(ctx_factory) -> Non
     assert [t["name"] for t in tools_for(["clarify_question", "nope", "confirm_abort"])] == ["clarify_question", "confirm_abort"]
 
 
-def test_the_unified_variant_keeps_the_action_name_and_adds_only_the_probe() -> None:
-    """§6.2: one inference carries the decision and the line to say.
+def test_every_unified_variant_keeps_its_action_name_and_adds_text_plus_evaluation() -> None:
+    """§6.2: one inference carries the evaluation, the decision and the line.
 
-    The variant must be indistinguishable from the plain tool to the menu check
+    A variant must be indistinguishable from the plain tool to the menu check
     and the decision record, or every unified turn would be rejected as
     "outside_menu" and silently fall back.
     """
-    plain = TOOLS["acknowledge_and_probe"]
-    unified = TOOLS["acknowledge_and_probe__unified"]
+    from src.modules.interviews.agents.interviewer.tools import UNIFIED_TEXT_ACTIONS
 
-    assert unified["name"] == plain["name"] == "acknowledge_and_probe"
-    added = set(unified["parameters"]["properties"]) - set(plain["parameters"]["properties"])
-    assert added == {"probe_text"}
-    assert "probe_text" in unified["parameters"]["required"]
+    assert set(UNIFIED_TEXT_ACTIONS) == {
+        "acknowledge_and_probe",
+        "clarify_question",
+        "redirect_off_topic",
+        "answer_candidate_question",
+    }
+
+    for action, argument in UNIFIED_TEXT_ACTIONS.items():
+        plain = TOOLS[action]
+        unified = TOOLS[f"{action}__unified"]
+
+        assert unified["name"] == plain["name"] == action
+        added = set(unified["parameters"]["properties"]) - set(plain["parameters"]["properties"])
+        assert added == {argument, "evaluation"}, action
+        assert {argument, "evaluation"} <= set(unified["parameters"]["required"]), action
+
+        # The evaluation steers the choice; the score belongs to the Evaluator,
+        # so the model is never asked for one.
+        evaluation = unified["parameters"]["properties"]["evaluation"]
+        assert set(evaluation["properties"]) == {"covered", "missing"}, action
+        assert "score" not in str(evaluation).lower(), action
 
 
 def test_tools_for_offers_the_unified_variant_only_when_asked() -> None:
