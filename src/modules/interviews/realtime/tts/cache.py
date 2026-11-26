@@ -52,15 +52,24 @@ class GrowingClip:
     format as :class:`SpeechClip`; ``to_clip`` freezes it once complete.
     """
 
-    def __init__(self, *, sample_rate: int, channels: int) -> None:
+    #: Hard bound on what one growing clip may hold (30 s of 16 kHz mono 16-bit).
+    MAX_BYTES = 30 * 16000 * 2
+
+    def __init__(self, *, sample_rate: int, channels: int, max_bytes: int | None = None) -> None:
         self.sample_rate = sample_rate
         self.channels = channels
         self._pieces: list[bytes] = []
         self._bytes = 0
+        self._max_bytes = max(1, int(max_bytes or self.MAX_BYTES))
         self._finished = False
         self._failed = False
         self._event = asyncio.Event()
+        # Consumer-side waits for PCM that had not arrived yet: *generator*
+        # waits, not audible underruns -- whether the listener hears a gap
+        # depends on the player's own buffer, which this class cannot see.
         self.underruns = 0
+        self.wait_ms_total = 0
+        self.wait_ms_max = 0
         self.first_pcm_at: float | None = None
         self.finished_at: float | None = None
 
@@ -76,8 +85,28 @@ class GrowingClip:
     def failed(self) -> bool:
         return self._failed
 
+    @property
+    def has_pcm(self) -> bool:
+        return self._bytes > 0
+
+    @property
+    def usable(self) -> bool:
+        """Playable: has audio and did not fail (a finished clip or one still growing)."""
+        return self._bytes > 0 and not self._failed
+
     def append(self, pcm: bytes, *, now: float | None = None) -> None:
         if not pcm or self._finished:
+            return
+        # Whole samples only: a producer piece that splits a sample would
+        # shift every later sample by one byte.
+        sample = _SAMPLE_WIDTH * max(1, self.channels)
+        if len(pcm) % sample:
+            pcm = pcm[: len(pcm) - len(pcm) % sample]
+            if not pcm:
+                return
+        if self._bytes + len(pcm) > self._max_bytes:
+            # Bounded memory: a line this long is not a backchannel; finish as failed.
+            self.finish(failed=True, now=now)
             return
         if self.first_pcm_at is None:
             self.first_pcm_at = now
@@ -95,7 +124,15 @@ class GrowingClip:
         """What has arrived so far, in playout-sized pieces (complete clips only, normally)."""
         return SpeechClip(pcm=b"".join(self._pieces), sample_rate=self.sample_rate, channels=self.channels).chunks(frame_ms)
 
-    def to_clip(self) -> SpeechClip:
+    def to_clip(self) -> SpeechClip | None:
+        """The frozen clip, only once synthesis finished without failing.
+
+        A cancelled or failed synthesis never becomes a ``SpeechClip``: what
+        it holds is a truncated line, and a cached truncated line would be
+        replayed as if it were the whole one.
+        """
+        if not self._finished or self._failed or not self._pieces:
+            return None
         return SpeechClip(pcm=b"".join(self._pieces), sample_rate=self.sample_rate, channels=self.channels)
 
     async def stream(self, frame_ms: int = 20) -> AsyncIterator[bytes]:
@@ -115,7 +152,11 @@ class GrowingClip:
             self._event.clear()
             if index >= len(self._pieces):
                 self.underruns += 1
+                started = asyncio.get_running_loop().time()
                 await self._event.wait()
+                waited = round((asyncio.get_running_loop().time() - started) * 1000)
+                self.wait_ms_total += waited
+                self.wait_ms_max = max(self.wait_ms_max, waited)
         if buffer:
             yield buffer
 
@@ -139,8 +180,10 @@ class SpeechAudioCache:
     def get(self, text: str) -> "SpeechClip | GrowingClip | None":
         key = self._key(text)
         clip = self._memory.get(key)
-        if isinstance(clip, GrowingClip) and clip.failed:
-            self._memory.pop(key, None)
+        if isinstance(clip, GrowingClip) and (clip.failed or not clip.has_pcm):
+            # Failed, cancelled, or not a byte yet: not something to replay.
+            if clip.failed:
+                self._memory.pop(key, None)
             return None
         if clip is None:
             clip = self._read(key)
@@ -153,10 +196,35 @@ class SpeechAudioCache:
             self.saved_characters += len(text)
         return clip
 
+    def freeze(self, text: str, growing: "GrowingClip") -> bool:
+        """Replace ``growing`` by its frozen clip -- only if it is still the entry.
+
+        A producer that was superseded (the same line prepared again after
+        eviction) must not overwrite the newer entry, and a cancelled or
+        failed producer has nothing valid to freeze: then the entry is
+        removed instead. Returns whether a frozen clip is now cached.
+        """
+        key = self._key(text)
+        if self._memory.get(key) is not growing:
+            return False
+        frozen = growing.to_clip()
+        if frozen is None:
+            self._memory.pop(key, None)
+            return False
+        self._memory[key] = frozen
+        self._memory.move_to_end(key)
+        return True
+
+    def forget(self, text: str, growing: "GrowingClip | None" = None) -> None:
+        """Drop the entry for ``text`` (only if it is ``growing``, when given)."""
+        key = self._key(text)
+        if growing is None or self._memory.get(key) is growing:
+            self._memory.pop(key, None)
+
     def put(self, text: str, clip: "SpeechClip | GrowingClip", *, persist: bool) -> None:
         if isinstance(clip, GrowingClip):
-            # A clip still arriving: in memory only, replaced by its frozen
-            # form by whoever finishes it.
+            # A clip still arriving: in memory only; its producer freezes it
+            # through ``freeze`` when done.
             self._remember(self._key(text), clip)
             return
         if not clip.pcm:

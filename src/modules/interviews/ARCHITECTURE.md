@@ -761,6 +761,46 @@ human-speaker sessions (actual speech-end latency, VAD latency on a person,
 interruptions, false cuts, relevance, naturalness). Both need paid calls
 and are not authorized by this brief.
 
+### Pre-run-7 correctness audit (2026-11-26; zero paid calls)
+
+External review findings checked against `18b9adc`, with the outcome:
+
+| finding | verdict | evidence, before → after |
+|---|---|---|
+| `_prepare_task` has no owner; a new prepare overwrites the reference and the old pump keeps running | **confirmed** | `runtime._prepare_backchannel_audio` assigned `self._prepare_task = asyncio.create_task(pump())` with no cancel → now `_cancel_prepare` + `_drain_prepare` run before a new synthesis; `_prepare_closing` holds cancelled tasks until unwound (`test_at_most_one_synthesis_per_session…`) |
+| synthesis not cancelled on reply / new turn / replacement / shutdown | **confirmed** | nothing cancelled the pump → the coordinator calls `cancel_prepare` from `_drop_pending` (superseded, reply, new turn, expiry, close) and `on_reply_ready`; `release_session` awaits `agent.shutdown_backchannel()` (`…shutdown_leaves_no_synthesis…`, `…reply_and_a_superseding_line_cancel…`) |
+| `CancelledError` not handled; cancelled or failed partial PCM frozen as a valid clip | **confirmed** | the pump caught `Exception` only and its `finally` froze whatever it had → `except CancelledError` marks the outcome, `GrowingClip.to_clip()` returns None unless finished without failure, `SpeechAudioCache.freeze` only swaps the entry that is still this clip, `forget` drops it (`…cancellation_before_and_after_the_first_pcm…`, `…cancelled_or_failed_pcm_never_freezes…`) |
+| stale producer overwrites a newer cache entry | **confirmed** (reachable when the same line is prepared again after eviction) | `cache.put(key, clip.to_clip())` was unconditional → `freeze(text, growing)` is identity-checked (`…stale_producer_cannot_overwrite…`) |
+| cancellation could deadlock or block the reply | **rejected** as blocking (the reply path never awaits a prepare; `_interrupt_filler` cuts playback), **confirmed** as unbounded: the wait for the first PCM had no timeout and VieNeu's read timeout is `None` → `PREPARE_FIRST_PCM_TIMEOUT_SECONDS` (2.5 s), past it the synthesis is cancelled and the line falls back to synthesis at playback |
+| `_previous_interim` never reset; interims of different fragments or turns compared | **confirmed** | reset at every Qwen final (`on_final_transcript`), fragment end (`on_user_turn_completed`) and new answer (`on_user_speaking`); only interims of one utterance are compared (`…interims_of_different_fragments_and_turns_are_never_compared`) |
+| finalized fragments duplicated in the combined transcript | **rejected** | the interim is per Qwen utterance (one `request_id`, a new session after each final) and `_answer.text` holds only completed fragments; the test above asserts the exact combined text |
+| coordinator validates against a shorter stable prefix instead of the full transcript | **rejected** | `note_transcript` is fed the finished fragments plus the whole interim before the stable prefix is derived; the prefix is only what the Talker is *given*; the code now says so and the lone-first-interim case no longer offers an empty prefix |
+| `transcript_revised` tolerated one changed word (Redis → Kafka passed) | **confirmed** | one differing token was allowed → any changed word in the covered stretch is a revision; numbers, terms, insertions and deletions included; negations are recognized with punctuation and English contractions (`n't`); a negation or self-correction in the three words right after the stretch invalidates; **lexical, not semantic**, and the docstring says so |
+| first PCM readiness could be signalled on an empty frame | **confirmed** | readiness is signalled only once the clip `has_pcm`; `GrowingClip.append` keeps whole samples only and bounds memory (`MAX_BYTES`, finished as failed past it) |
+| measurement conflated "PCM available" with "PCM valid" and buffer waits with audible underruns | **confirmed** | `voice_backchannel_speech_end` reports `pcm_available` and `pcm_usable` (failed / cancelled clips are not usable; only usable counts as prepared audio), `voice_backchannel_spoken.prepared_audio` is the usable check, `voice_backchannel_playout` reports `waits`, `wait_ms_total`, `wait_ms_max` as generator waits (audibility depends on LiveKit's playout buffer, which the agent cannot see), `voice_backchannel_synthesized` carries `outcome` (complete / cancelled / failed) and `frozen`; the driver's first-received-frame number is renamed `client_first_frame_uncorrelated_ms` and labelled as a transport observation |
+
+Clock domains: the agent's events carry `agent_at` (the agent's wall clock) and
+intra-turn deltas measured on its monotonic clock; the API stores
+`created_at`; the driver measures on its own monotonic clock from the end of
+its answer audio. The report uses `agent_at` where present and never
+subtracts across domains; per-turn correlation is by submit windows with
+pre-submit backchannel events carried forward.
+
+Removed as obsolete: the hold loop and its constants (`HOLD_SECONDS`,
+`_HOLD_TICK`, `hold_seconds`), the `prepared_for` word count (superseded by
+the text check), the run-6 growing-partial commentary in `on_interim_transcript`.
+
+Architecture: every change is inside `realtime/` (`runtime.py`,
+`backchannel.py`) and the TTS cache (`tts/cache.py`); no new module, no new
+dependency, no change to Core, agents, graph, session, memory, the STT
+adapter or the TTS adapter's provider contract. `runtime.py` was not split.
+
+Remaining risks: the lexical revision check cannot see paraphrase or a
+reversal expressed beyond three words after the prepared stretch; a VieNeu
+hang still costs the 2.5 s bound once per line; generator waits are
+reported but audible underruns are not observable from the agent; none of
+this has run in a room since `18b9adc` — run 7 is the measurement.
+
 ### Remaining migration work
 
 | Brief | Outstanding |

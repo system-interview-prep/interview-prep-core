@@ -23,18 +23,33 @@ def test_the_stable_prefix_is_what_two_interims_agree_on() -> None:
 
 def test_revisions_replacements_and_negations_are_caught_not_only_drift() -> None:
     written_for = "em dùng redis làm cache và đặt ttl năm phút"
-    assert bc.transcript_revised(written_for, written_for + " cho từng key") is None
-    # One re-recognized token is tolerated...
-    assert bc.transcript_revised(written_for, "em dùng redis làm cash và đặt ttl năm phút cho") is None
-    # ...two are a revision, whatever the word count.
-    assert bc.transcript_revised(written_for, "em dùng mongo làm cash và đặt ttl năm phút cho") == "transcript_revised"
-    # A negation that appeared in the covered stretch flips the meaning.
-    assert bc.transcript_revised(written_for, "em không dùng redis làm cache và đặt ttl năm phút") == "transcript_revised"
-    assert bc.transcript_revised("em dùng redis", "em dùng redis không") is None  # after the stretch: drift only
-    assert bc.transcript_revised("em không dùng redis", "em có dùng redis thêm") == "transcript_revised"
-    assert bc.transcript_revised(written_for, "em dùng redis") == "transcript_shrank"
-    assert bc.transcript_revised("em dùng redis", "em dùng redis " + " ".join(["và"] * 13)) == "context_moved"
-    assert bc.transcript_revised("", "anything") is None
+    revised = bc.transcript_revised
+    assert revised(written_for, written_for + " cho từng key") is None
+    # Lexical and conservative: ONE changed word in the covered stretch is a revision.
+    assert revised(written_for, "em dùng kafka làm cache và đặt ttl năm phút cho") == "transcript_revised"   # Redis -> Kafka
+    assert revised(written_for, "em dùng redis làm cache và đặt ttl mười phút") == "transcript_revised"      # a number
+    assert revised(written_for, "em dùng redis làm queue và đặt ttl năm phút") == "transcript_revised"       # a term
+    assert revised(written_for, "em dùng redis làm cash và đặt ttl năm phút cho") == "transcript_revised"    # a re-recognized token
+    # Insertion and deletion shift the stretch: revisions too.
+    assert revised(written_for, "em có dùng redis làm cache và đặt ttl năm phút") == "transcript_revised"
+    assert revised(written_for, "em dùng redis cache và đặt ttl năm phút cho từng") == "transcript_revised"
+    # Case and punctuation are not revisions.
+    assert revised(written_for, "Em dùng Redis, làm cache và đặt TTL năm phút.") is None
+    # A negation inside the stretch, with or without punctuation.
+    assert revised(written_for, "em không dùng redis làm cache và đặt ttl năm phút") == "transcript_revised"
+    assert revised("em không dùng redis", "em không, dùng redis") is None  # punctuation only
+    assert revised("em không dùng redis", "em dùng không redis") == "transcript_revised"  # the negation moved
+    assert revised("em không dùng redis", "em có dùng redis thêm") == "transcript_revised"
+    # A negation or self-correction right after the stretch reverses it.
+    assert revised("em dùng redis", "em dùng redis không phải") == "negation_appended"
+    assert revised("em dùng redis", "em dùng redis à nhầm kafka") == "self_correction"
+    assert revised("i use redis", "i use redis, don't i") == "negation_appended"
+    assert revised("i use redis", "i use redis. Actually Kafka.") == "self_correction"
+    # Far after the stretch a negation is just the candidate going on.
+    assert revised("em dùng redis", "em dùng redis cho cache còn queue thì không") is None
+    assert revised(written_for, "em dùng redis") == "transcript_shrank"
+    assert revised("em dùng redis", "em dùng redis " + " ".join(["và"] * 13)) == "context_moved"
+    assert revised("", "anything") is None
 
 
 # ------------------------------------------------------------ growing clip
@@ -69,9 +84,51 @@ def test_the_cache_keeps_a_growing_clip_in_memory_and_forgets_a_failed_one() -> 
     cache = SpeechAudioCache(voice_signature="v", directory=None)
     clip = GrowingClip(sample_rate=16000, channels=1)
     cache.put("À, TTL theo key.", clip, persist=False)
+    assert cache.get("À, TTL theo key.") is None, "not a byte yet: nothing to replay"
+    clip.append(b"\x01\x00" * 320)
     assert cache.get("À, TTL theo key.") is clip
     clip.finish(failed=True)
     assert cache.get("À, TTL theo key.") is None, "a failed synthesis is not replayed as silence"
+
+
+def test_cancelled_or_failed_pcm_never_freezes_into_a_valid_clip() -> None:
+    cache = SpeechAudioCache(voice_signature="v", directory=None)
+    growing = GrowingClip(sample_rate=16000, channels=1)
+    cache.put("line", growing, persist=False)
+    growing.append(b"\x01\x00" * 320)
+    assert growing.to_clip() is None, "unfinished"
+    growing.finish(failed=True)
+    assert growing.to_clip() is None, "failed: truncated audio is not a clip"
+    assert cache.freeze("line", growing) is False and cache.get("line") is None
+    ok = GrowingClip(sample_rate=16000, channels=1)
+    cache.put("line", ok, persist=False)
+    ok.append(b"\x02\x00" * 320)
+    ok.finish()
+    assert cache.freeze("line", ok) is True and isinstance(cache.get("line"), SpeechClip)
+
+
+def test_a_stale_producer_cannot_overwrite_a_newer_cache_entry() -> None:
+    cache = SpeechAudioCache(voice_signature="v", directory=None)
+    old = GrowingClip(sample_rate=16000, channels=1)
+    cache.put("line", old, persist=False)
+    old.append(b"\x01\x00" * 320)
+    new = GrowingClip(sample_rate=16000, channels=1)
+    cache.put("line", new, persist=False)  # the same line prepared again
+    new.append(b"\x02\x00" * 320)
+    old.finish()
+    assert cache.freeze("line", old) is False and cache.get("line") is new
+    cache.forget("line", old)
+    assert cache.get("line") is new, "forgetting the old producer leaves the new entry"
+
+
+def test_pcm_pieces_are_sample_aligned_and_memory_is_bounded() -> None:
+    clip = GrowingClip(sample_rate=16000, channels=1, max_bytes=1000)
+    clip.append(b"\x01\x00\x02")  # an odd byte at the end is dropped, never shifts later samples
+    assert clip.audio_ms == 0 and clip._bytes == 2
+    clip.append(b"\x00" * 998)
+    assert clip._bytes == 1000 and not clip.failed
+    clip.append(b"\x00" * 2)       # over the bound: finished as failed, nothing more kept
+    assert clip.failed and clip.finished and clip._bytes == 1000 and clip.to_clip() is None
 
 
 # ----------------------------------------------------- progressive prepare
@@ -128,7 +185,163 @@ async def test_prepared_audio_is_ready_at_the_first_pcm_and_keeps_synthesizing_d
     kinds = [e for e, _ in events.items]
     assert "voice_backchannel_synthesized" in kinds and "voice_backchannel_playout" in kinds
     playout = events.of("voice_backchannel_playout")[0]
-    assert playout["complete"] is True and playout["audio_ms"] == 80 and playout["underruns"] >= 1
+    assert playout["complete"] is True and playout["audio_ms"] == 80 and playout["waits"] >= 1
+    assert playout["wait_ms_total"] >= playout["wait_ms_max"] >= 0
+    synthesized_event = events.of("voice_backchannel_synthesized")[0]
+    assert synthesized_event["outcome"] == "complete" and synthesized_event["frozen"] is True
+
+
+class _ForeverStream:
+    """A synthesis that never ends (a hung provider), optionally after some PCM."""
+
+    def __init__(self, log: list[str], *, pieces_before_hang: int = 0, closed: list[str] | None = None) -> None:
+        self._n = pieces_before_hang
+        self._closed = closed if closed is not None else []
+        log.append("start")
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._n > 0:
+            self._n -= 1
+            return SimpleNamespace(frame=_Frame(b"\x01\x00" * 320))
+        await asyncio.sleep(3600)
+        raise StopAsyncIteration
+
+    async def aclose(self) -> None:
+        self._closed.append("closed")
+
+
+@pytest.mark.asyncio
+async def test_at_most_one_synthesis_per_session_and_the_previous_one_is_cancelled_and_awaited(monkeypatch) -> None:
+    from src.modules.interviews.realtime import runtime as livekit_agent
+    from tests.modules.voice.test_backchannel_runtime import _agent
+
+    monkeypatch.setattr(livekit_agent, "PREPARE_FIRST_PCM_TIMEOUT_SECONDS", 1.0)
+    agent, _events, _client, _spoken = _agent()
+    agent._speech_cache = SpeechAudioCache(voice_signature="vieneu|test", directory=None)
+    log: list[str] = []
+    closed: list[str] = []
+    agent._prepare_tts = SimpleNamespace(synthesize=lambda text: _ForeverStream(log, pieces_before_hang=1, closed=closed))
+    assert await agent._prepare_backchannel_audio("Câu một.") is True
+    first_task = agent._prepare_task
+    assert first_task is not None and not first_task.done()
+    assert await agent._prepare_backchannel_audio("Câu hai.") is True
+    assert agent._prepare_task is not first_task and first_task.cancelled(), "the earlier synthesis was cancelled and awaited"
+    assert closed == ["closed"], "its TTS stream was closed"
+    assert agent._speech_cache.get("Câu một.") is None, "its truncated PCM was forgotten, not frozen"
+    assert agent._prepare_closing == set()
+    agent._cancel_prepare("test")
+    await agent._drain_prepare()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_before_and_after_the_first_pcm_never_leaves_a_valid_clip(monkeypatch) -> None:
+    from src.modules.interviews.realtime import runtime as livekit_agent
+    from tests.modules.voice.test_backchannel_runtime import _agent
+
+    monkeypatch.setattr(livekit_agent, "PREPARE_FIRST_PCM_TIMEOUT_SECONDS", 0.05)
+    agent, events, _client, _spoken = _agent()
+    agent._speech_cache = SpeechAudioCache(voice_signature="vieneu|test", directory=None)
+    log: list[str] = []
+    # Before the first PCM: a hung provider -> bounded wait, cancelled, nothing cached.
+    agent._prepare_tts = SimpleNamespace(synthesize=lambda text: _ForeverStream(log))
+    assert await agent._prepare_backchannel_audio("Chưa có gì.") is False
+    await agent._drain_prepare()
+    assert agent._speech_cache.get("Chưa có gì.") is None and agent._prepare_task is None
+    assert events.of("voice_backchannel_synthesized")[-1]["outcome"] == "cancelled"
+    # After the first PCM: cancelled by the reply -> the partial clip is failed and forgotten.
+    agent._prepare_tts = SimpleNamespace(synthesize=lambda text: _ForeverStream(log, pieces_before_hang=2))
+    assert await agent._prepare_backchannel_audio("Có một chút.") is True
+    growing = agent._speech_cache.get("Có một chút.")
+    assert isinstance(growing, GrowingClip) and growing.has_pcm
+    agent._cancel_prepare("reply_ready")
+    await agent._drain_prepare()
+    assert growing.failed and growing.to_clip() is None
+    assert agent._speech_cache.get("Có một chút.") is None
+    assert events.of("voice_backchannel_synthesized")[-1]["outcome"] == "cancelled"
+    assert events.of("voice_backchannel_synthesized")[-1]["frozen"] is False
+
+
+@pytest.mark.asyncio
+async def test_shutdown_leaves_no_synthesis_or_inference_task_alive() -> None:
+    from tests.modules.voice.test_backchannel_runtime import _agent
+
+    agent, _events, _client, _spoken = _agent()
+    agent._speech_cache = SpeechAudioCache(voice_signature="vieneu|test", directory=None)
+    log: list[str] = []
+    agent._prepare_tts = SimpleNamespace(synthesize=lambda text: _ForeverStream(log, pieces_before_hang=1))
+    assert await agent._prepare_backchannel_audio("Một câu.") is True
+    task = agent._prepare_task
+    agent.on_user_speaking()
+    agent._backchannel.observe("Em dùng Redis làm cache và đặt TTL năm phút cho từng key", phase="listening")
+    inference = agent._backchannel._task
+    await agent.shutdown_backchannel()
+    assert task.done() and (inference is None or inference.done())
+    assert agent._prepare_task is None and agent._prepare_closing == set()
+    assert agent._backchannel._task is None and agent._backchannel._closing == set()
+    assert agent._backchannel._pending is None
+    assert agent._speech_cache.get("Một câu.") is None
+
+
+@pytest.mark.asyncio
+async def test_the_reply_and_a_superseding_line_cancel_a_running_synthesis() -> None:
+    cancelled: list[str] = []
+    prepared: list[str] = []
+
+    async def prepare(text: str) -> bool:
+        prepared.append(text)
+        return True
+
+    talker_lines = iter(["Câu một.", "Câu hai."])
+
+    async def talker(request):
+        line = next(talker_lines)
+        yield {"type": "unit", "text": line, "kind": "contextual", "index": 1, "ttft_ms": 300, "at_ms": 400}
+        yield {"type": "done", "kind": "contextual", "ttft_ms": 300, "total_ms": 500, "units": 1, "rejected": [], "reason": None}
+
+    coordinator = bc.BackchannelCoordinator(
+        talker, lambda text, kind: SimpleNamespace(done=lambda: False), enabled=True, min_gap_seconds=0.0,
+        calls_per_turn=3, prepare=prepare, cancel_prepare=lambda reason: cancelled.append(reason),
+    )
+    coordinator.on_user_speaking()
+    coordinator.observe("Em dùng Redis làm cache và đặt TTL năm phút cho từng key", phase="listening")
+    await coordinator._task
+    coordinator.observe("Em dùng Redis làm cache và đặt TTL năm phút cho từng key còn khi dữ liệu đổi thì bên ghi bắn event", phase="listening")
+    await coordinator._task
+    assert cancelled == ["superseded"], "the older line's synthesis was cancelled when replaced"
+    coordinator.on_reply_ready()
+    assert cancelled[1:] == ["reply_ready", "reply_ready"], "pending drop and the standalone cancel, both"
+
+
+@pytest.mark.asyncio
+async def test_speech_end_counts_usable_pcm_not_merely_available_pcm() -> None:
+    async def talker(request):
+        yield {"type": "unit", "text": "Ừ.", "kind": "minimal", "index": 1, "ttft_ms": 300, "at_ms": 400}
+        yield {"type": "done", "kind": "minimal", "ttft_ms": 300, "total_ms": 500, "units": 1, "rejected": [], "reason": None}
+
+    async def prepare(_text: str) -> bool:
+        return True
+
+    usable = {"value": True}
+    events: list[tuple[str, dict]] = []
+    played: list[str] = []
+    coordinator = bc.BackchannelCoordinator(
+        talker, lambda text, kind: played.append(text) or SimpleNamespace(done=lambda: False), enabled=True,
+        min_gap_seconds=0.0, prepare=prepare, audio_usable=lambda text: usable["value"],
+        on_event=lambda e, **f: events.append((e, f)),
+    )
+    coordinator.on_user_speaking()
+    coordinator.observe("Em dùng Redis làm cache và đặt TTL năm phút cho từng key", phase="listening")
+    await coordinator._task
+    usable["value"] = False  # the synthesis failed after the first PCM
+    coordinator.on_user_stopped()
+    speech_end = [f for e, f in events if e == "backchannel_speech_end"][0]
+    assert speech_end == {"pcm_available": True, "pcm_usable": False, "pending": True}
+    assert coordinator.stats.speech_ends_with_audio == 0
+    assert played == ["Ừ."], "still spoken -- synthesized at playback"
+    assert [f for e, f in events if e == "backchannel_spoken"][0]["prepared_audio"] is False
 
 
 @pytest.mark.asyncio

@@ -262,7 +262,9 @@ def measure_turn(turn: dict[str, Any]) -> dict[str, Any]:
         "backchannel_spoken_prepared": sum(1 for p in spoken_units if p.get("prepared_audio")),
         "backchannel_wasted": sum(1 for p in discards if p.get("prepared_audio")),
         "backchannel_speech_ends": len(speech_ends),
-        "backchannel_speech_ends_with_audio": sum(1 for p in speech_ends if p.get("prepared_available")),
+        # usable PCM only (failed / cancelled / expired clips are not prepared audio)
+        "backchannel_speech_ends_with_audio": sum(1 for p in speech_ends if p.get("pcm_usable", p.get("prepared_available"))),
+        "backchannel_speech_ends_with_pcm": sum(1 for p in speech_ends if p.get("pcm_available", p.get("prepared_available"))),
         "backchannel_audio_since_vad_ms": _payload(backchannel_audio).get("since_speech_end_ms") if backchannel_audio else None,
         "pcm_end_to_vad_ms": pcm_end_to_vad,
         "prefetch_ms": _payload(prefetch).get("ms") if prefetch else None,

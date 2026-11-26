@@ -130,6 +130,10 @@ def _session_stt_language(locale: str) -> str:
 #: first byte is not a cold start (tts/vieneu.py ``warm``). Measured
 #: 2026-11-26: warm at 4 s idle (0.46 s), cold at 6 s (1.07 s).
 TTS_KEEPALIVE_SECONDS = 3.0
+#: A prepared backchannel whose first PCM has not arrived by then is not
+#: worth waiting for: the synthesis is cancelled and the line, if it is
+#: still wanted at the pause, is synthesized at playback.
+PREPARE_FIRST_PCM_TIMEOUT_SECONDS = 2.5
 
 
 def _delta_ms(start: float | None, end: float | None) -> int | None:
@@ -185,6 +189,12 @@ class VoiceLabAgent(Agent):
         # candidate speaks*, into the speech cache, so playing it at the VAD
         # end of speech is a cache hit (tts_node). None: synthesize at playback.
         self._prepare_tts = prepare_tts
+        # The one progressive synthesis this session may have running, the
+        # line it is for, and cancelled ones still unwinding (awaited before
+        # a new one starts and at shutdown). Owned here, nowhere else.
+        self._prepare_task: asyncio.Task | None = None
+        self._prepare_key: str | None = None
+        self._prepare_closing: set[asyncio.Task] = set()
         # ``await warm_tts()`` keeps the TTS connection open (VieNeu); None for
         # providers that do not need it.
         self._warm_tts = warm_tts
@@ -264,6 +274,8 @@ class VoiceLabAgent(Agent):
             min_gap_seconds=backchannel_min_gap_seconds,
             on_event=lambda event, **fields: self.report(f"voice_{event}", **fields),
             prepare=self._prepare_backchannel_audio,
+            cancel_prepare=self._cancel_prepare,
+            audio_usable=self._prepared_audio_usable,
         )
         self._core_in_flight = False
         self._repeat_after_core = False
@@ -333,6 +345,54 @@ class VoiceLabAgent(Agent):
                 if raw.strip():
                     yield json.loads(raw)
 
+    def _cancel_prepare(self, reason: str = "cancelled") -> None:
+        """Cancel the running progressive synthesis, if any. Never awaits.
+
+        Called when the pending line is dropped or replaced, when the
+        authoritative reply is ready, when a new answer starts, and at
+        shutdown. The task is kept in ``_prepare_closing`` until it has
+        unwound, so the next synthesis (and the shutdown) can await it.
+        """
+        task, self._prepare_task = getattr(self, "_prepare_task", None), None
+        self._prepare_key = None
+        if task is not None and not task.done():
+            task.cancel()
+            closing = getattr(self, "_prepare_closing", None)
+            if closing is None:
+                closing = self._prepare_closing = set()
+            closing.add(task)
+            task.add_done_callback(closing.discard)
+            logger.info("backchannel synthesis cancelled", extra={"reason": reason})
+
+    async def _drain_prepare(self) -> None:
+        """Wait for cancelled syntheses to unwind (their TTS streams to close)."""
+        closing = [t for t in getattr(self, "_prepare_closing", set()) if not t.done()]
+        if closing:
+            await asyncio.gather(*closing, return_exceptions=True)
+
+    def _prepared_audio_usable(self, text: str) -> bool:
+        """Is there cached audio for this line that may be played right now?
+
+        Separates "PCM available" from "PCM valid": a growing clip that failed
+        or was cancelled, or has no byte yet, is not usable; a frozen clip or
+        a growing one with audio is.
+        """
+        cache = getattr(self, "_speech_cache", None)
+        if cache is None:
+            return False
+        clip = cache.get(localize_particles(text))
+        if clip is None:
+            return False
+        return clip.usable if isinstance(clip, GrowingClip) else bool(clip.pcm)
+
+    async def shutdown_backchannel(self) -> None:
+        """Session end: no synthesis task and no Talker inference survive it."""
+        self._cancel_prepare("shutdown")
+        await self._drain_prepare()
+        coordinator = getattr(self, "_backchannel", None)
+        if coordinator is not None:
+            await coordinator.aclose()
+
     async def _prepare_backchannel_audio(self, text: str) -> bool:
         """Synthesize a validated backchannel into the speech cache, progressively.
 
@@ -340,28 +400,41 @@ class VoiceLabAgent(Agent):
         ``speak()`` of this exact text replays the clip instead of calling
         VieNeu. In memory only (never on disk: the line is this answer's).
 
-        Progressive (brief 2026-11-26): a :class:`GrowingClip` goes into the
-        cache as soon as the **first PCM** arrives (~0.45 s on a warm
-        connection) and this returns True then; the rest of the synthesis
-        continues in its own task and keeps appending, also while the clip is
-        already playing. Readiness therefore no longer waits for the whole
-        line (2-3 s). Returns False when there is nothing to prepare with or
-        no audio came, so the caller synthesizes at playback instead.
+        A :class:`GrowingClip` goes into the cache on the **first non-empty
+        PCM** (~0.45 s on a warm connection) and this returns True then; the
+        synthesis continues in its own task -- the one this session may have
+        (a previous one is cancelled and awaited first) -- also while the
+        clip is already playing. On completion the clip is frozen only if it
+        is still the cache entry; on cancellation or failure it is marked
+        failed and forgotten, never frozen. The wait for the first PCM is
+        bounded; past it the synthesis is cancelled and the line will be
+        synthesized at playback instead. Returns False in every case where
+        nothing usable is cached.
         """
         cache = getattr(self, "_speech_cache", None)
         tts = getattr(self, "_prepare_tts", None)
         if cache is None or tts is None:
             return False
         key = localize_particles(text)
-        if cache.get(key) is not None:
+        existing = cache.get(key)
+        if existing is not None and (existing.usable if isinstance(existing, GrowingClip) else bool(existing.pcm)):
             return True
+        # One synthesis per session: whatever was running is for a line that
+        # is no longer pending.
+        self._cancel_prepare("replaced")
+        await self._drain_prepare()
         stream = tts.synthesize(speakable_text(key, locale=self._locale))
         started = perf_counter()
         clip: GrowingClip | None = None
         first_pcm = asyncio.get_running_loop().create_future()
 
+        def settle(ready: bool) -> None:
+            if not first_pcm.done():
+                first_pcm.set_result(ready)
+
         async def pump() -> None:
             nonlocal clip
+            outcome = "complete"
             try:
                 async for event in stream:
                     frame = getattr(event, "frame", None)
@@ -371,32 +444,55 @@ class VoiceLabAgent(Agent):
                         clip = GrowingClip(sample_rate=frame.sample_rate, channels=frame.num_channels)
                         cache.put(key, clip, persist=False)
                     clip.append(bytes(frame.data), now=perf_counter())
-                    if not first_pcm.done():
-                        first_pcm.set_result(True)
+                    if clip.has_pcm:
+                        settle(True)
+                    if clip.failed:  # over the size bound
+                        outcome = "failed"
+                        break
+            except asyncio.CancelledError:
+                outcome = "cancelled"
+                raise
             except Exception:  # noqa: BLE001 - a failed prepare means synthesis at playback
+                outcome = "failed"
                 logger.debug("progressive backchannel synthesis failed", exc_info=True)
-                if clip is not None:
-                    clip.finish(failed=True, now=perf_counter())
             finally:
                 aclose = getattr(stream, "aclose", None)
                 if callable(aclose):
                     with contextlib.suppress(Exception):
                         await aclose()
-                if clip is not None and not clip.finished:
-                    clip.finish(now=perf_counter())
-                    with contextlib.suppress(Exception):
-                        cache.put(key, clip.to_clip(), persist=False)
-                    self.report(
-                        "voice_backchannel_synthesized",
-                        first_pcm_ms=round(((clip.first_pcm_at or started) - started) * 1000),
-                        total_ms=round((perf_counter() - started) * 1000),
-                        audio_ms=clip.audio_ms,
-                    )
-                if not first_pcm.done():
-                    first_pcm.set_result(False)
+                frozen = False
+                if clip is not None:
+                    if outcome == "complete" and not clip.failed:
+                        clip.finish(now=perf_counter())
+                        frozen = cache.freeze(key, clip)
+                    else:
+                        clip.finish(failed=True, now=perf_counter())
+                        cache.forget(key, clip)
+                settle(False)
+                self.report(
+                    "voice_backchannel_synthesized",
+                    outcome=outcome,
+                    frozen=frozen,
+                    first_pcm_ms=round(((clip.first_pcm_at or started) - started) * 1000) if clip and clip.first_pcm_at else None,
+                    total_ms=round((perf_counter() - started) * 1000),
+                    audio_ms=clip.audio_ms if clip else 0,
+                )
 
-        self._prepare_task = asyncio.create_task(pump())
-        return bool(await first_pcm)
+        task = asyncio.create_task(pump())
+        self._prepare_task, self._prepare_key = task, key
+        try:
+            ready = bool(await asyncio.wait_for(asyncio.shield(first_pcm), PREPARE_FIRST_PCM_TIMEOUT_SECONDS))
+        except asyncio.TimeoutError:
+            self._cancel_prepare("first_pcm_timeout")
+            return False
+        except asyncio.CancelledError:
+            # The caller (the coordinator's task) was cancelled: take the
+            # synthesis down with it rather than leave it running for nobody.
+            self._cancel_prepare("caller_cancelled")
+            raise
+        if not ready:
+            self._prepare_task, self._prepare_key = None, None
+        return ready
 
     def _speak_backchannel(self, text: str, kind: str):
         """Play one validated unit: interruptible, outside the chat context,
@@ -408,6 +504,8 @@ class VoiceLabAgent(Agent):
     def on_final_transcript(self) -> None:
         """A final transcript arrived from STT (before LiveKit ends the turn)."""
         self._last_final_at = perf_counter()
+        # The next interim belongs to a new Qwen utterance: nothing to agree with yet.
+        self._previous_interim = ""
 
     def on_user_away(self) -> None:
         self.report_state("candidate_away")
@@ -465,6 +563,7 @@ class VoiceLabAgent(Agent):
             self._turn_generation += 1
             self._anticipation.reset_turn()
             self._bc().reset_turn()
+            self._previous_interim = ""
         self._start_prefetch()
         # With backchanneling on, a prepared line is synthesized *during* the
         # answer: keep the TTS connection warm from the first word, not only
@@ -580,30 +679,23 @@ class VoiceLabAgent(Agent):
         # still waits for the pause (audit 2026-11-26, item 1-2).
         if self._bc().enabled:
             interim = " ".join(str(text or "").split())
-            partial = " ".join(part for part in (self._answer.text, interim) if part)
-            self._bc().note_transcript(partial)
-            # What the Talker is given while the candidate talks is the
-            # *stable prefix* of the interim -- the words two successive
-            # interims agree on -- not the tail Qwen is still revising
-            # (measured: the tail of 18 of 21 interims changes later).
+            # The coordinator validates against the latest *complete* text:
+            # the finished fragments plus the whole current interim.
+            self._bc().note_transcript(" ".join(part for part in (self._answer.text, interim) if part))
+            # What the Talker is given while the candidate talks is the words
+            # two successive interims *of this utterance* agree on; the tail
+            # Qwen is still revising is left out. ``_previous_interim`` is
+            # reset at every fragment and answer boundary, so interims of
+            # different utterances are never compared.
             previous = getattr(self, "_previous_interim", "")
             self._previous_interim = interim
             stable = stable_prefix(previous, interim) if previous else ""
-            partial = " ".join(part for part in (self._answer.text, stable) if part)
-        # Run 6 (2026-11-26) measured the stable-partial trigger as a pause
-        # trigger in disguise: Qwen revises the tail of 18 of 21 interims while
-        # the candidate talks, so an interim repeats only in a pause -- and
-        # then the VAD stops too, the line is written after the pause and the
-        # audio arrives ~1.9 s later. Prepared audio was available at 1 of 16
-        # speech ends. So a *growing* partial is also offered: the coordinator
-        # asks only after enough new words (its cost bound), the model is told
-        # the transcript is partial, and the line is re-checked for drift
-        # before it is played.
-        if self._bc().enabled and (self._answer.transcript_stable or self._bc().grew_enough(partial)):
-            self._bc().observe(
-                partial, phase=PHASE_LISTENING, answer_seconds=self._answer.duration_seconds,
-                fragments=len(self._answer.fragments),
-            )
+            offered = " ".join(part for part in (self._answer.text, stable) if part)
+            if stable and (self._answer.transcript_stable or self._bc().grew_enough(offered)):
+                self._bc().observe(
+                    offered, phase=PHASE_LISTENING, answer_seconds=self._answer.duration_seconds,
+                    fragments=len(self._answer.fragments),
+                )
         if not self._enable_speculative_preview:
             return
         transcript = normalize_transcript_for_locale(
@@ -1070,7 +1162,10 @@ class VoiceLabAgent(Agent):
                         num_channels=clip.channels,
                         samples_per_channel=len(piece) // (2 * clip.channels),
                     )
-                self.report("voice_backchannel_playout", underruns=clip.underruns, audio_ms=clip.audio_ms,
+                # ``waits`` are the generator's waits for PCM not yet arrived;
+                # whether any was audible depends on LiveKit's playout buffer.
+                self.report("voice_backchannel_playout", waits=clip.underruns, wait_ms_total=clip.wait_ms_total,
+                            wait_ms_max=clip.wait_ms_max, audio_ms=clip.audio_ms,
                             complete=clip.finished and not clip.failed)
                 return
             for piece in clip.chunks():
@@ -1122,6 +1217,7 @@ class VoiceLabAgent(Agent):
 
     async def on_user_turn_completed(self, _turn_ctx, new_message) -> None:
         self._turn_completed_at = perf_counter()
+        self._previous_interim = ""  # fragment boundary: the next interim starts a new utterance
         raw_transcript = new_message.text_content
         logger.info(
             "LiveKit user turn completed",
@@ -1786,6 +1882,9 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
                 "Voice session released",
                 extra={"session_id": session_id, "room_name": ctx.room.name, "reason": reason},
             )
+            # No Talker inference and no backchannel synthesis outlive the session.
+            with contextlib.suppress(Exception):
+                await agent.shutdown_backchannel()
             with contextlib.suppress(Exception):
                 await session.aclose()
             ctx.shutdown(reason=reason)

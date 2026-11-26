@@ -163,7 +163,7 @@ async def test_a_line_that_arrives_while_the_candidate_talks_is_prepared_and_pla
     spoken = [f for e, f in events if e == "backchannel_spoken"][0]
     assert spoken["prepared_audio"] is True and spoken["trigger"] == "vad_stop"
     speech_end = [f for e, f in events if e == "backchannel_speech_end"][0]
-    assert speech_end == {"prepared_available": True, "pending": True}
+    assert speech_end == {"pcm_available": True, "pcm_usable": True, "pending": True}
     stats = coordinator.stats.as_dict()
     assert stats["prepared"] == 1 and stats["spoken_prepared"] == 1 and stats["wasted"] == 0
     assert stats["speech_ends"] == 1 and stats["speech_ends_with_audio"] == 1
@@ -194,9 +194,9 @@ async def test_a_prepared_line_is_dropped_as_wasted_when_the_turn_moves_on_or_it
     coordinator2.on_user_stopped()
     assert played2 == [] and [f for e, f in events2 if e == "backchannel_discarded"][-1]["reason"] == "expired"
     # A speech end with nothing prepared is counted too: coverage, not just hits.
-    assert [f for e, f in events2 if e == "backchannel_speech_end"][-1]["prepared_available"] is True
+    assert [f for e, f in events2 if e == "backchannel_speech_end"][-1]["pcm_usable"] is True
     coordinator2.on_user_stopped()
-    assert [f for e, f in events2 if e == "backchannel_speech_end"][-1] == {"prepared_available": False, "pending": False}
+    assert [f for e, f in events2 if e == "backchannel_speech_end"][-1] == {"pcm_available": False, "pcm_usable": False, "pending": False}
 
 
 @pytest.mark.asyncio
@@ -238,7 +238,7 @@ async def test_while_speaking_the_talker_is_asked_only_after_enough_new_words() 
     assert coordinator.stats.reasons.get("skipped:few_new_words") == 1
     assert coordinator.observe("Em dùng Redis làm cache và đặt TTL năm phút cho", phase="listening")
     await _settle(coordinator)
-    assert talker.requests[-1]["speaking"] is True and talker.requests[-1]["prepared_for_words"] == 11
+    assert talker.requests[-1]["speaking"] is True and talker.requests[-1]["transcript"].endswith("năm phút cho")
 
 
 @pytest.mark.asyncio

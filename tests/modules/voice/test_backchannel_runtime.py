@@ -148,9 +148,15 @@ def _agent(*, enabled: bool = True, core_delay: float = 0.0, backchannel_delay: 
 
     agent.speak = speak
     agent._backchannel = BackchannelCoordinator(
-        agent._backchannel_infer, agent._speak_backchannel, enabled=enabled, min_gap_seconds=0.0, hold_seconds=0.2,
+        agent._backchannel_infer, agent._speak_backchannel, enabled=enabled, min_gap_seconds=0.0,
         on_event=lambda event, **fields: agent.report(f"voice_{event}", **fields),
+        prepare=agent._prepare_backchannel_audio, cancel_prepare=agent._cancel_prepare,
+        audio_usable=agent._prepared_audio_usable,
     )
+    agent._prepare_tts = None
+    agent._prepare_task = None
+    agent._prepare_key = None
+    agent._prepare_closing = set()
     return agent, events, client, spoken
 
 
@@ -276,6 +282,45 @@ async def test_without_a_tts_or_cache_nothing_is_prepared_and_playback_synthesiz
     agent, *_ = _agent()
     agent._speech_cache = None
     assert await agent._prepare_backchannel_audio("À, TTL theo từng key.") is False
+
+
+@pytest.mark.asyncio
+async def test_interims_of_different_fragments_and_turns_are_never_compared(monkeypatch) -> None:
+    """P1 stable-prefix lifecycle: reset at each Qwen final, each fragment end, each new answer."""
+    monkeypatch.setattr(livekit_agent, "processing_filler_enabled", lambda: False)
+    agent, _events, client, _spoken = _agent()
+    agent._enable_speculative_preview = False
+    agent.on_user_speaking()
+    first = "Em làm backend ba năm ở một công ty thương mại điện tử và phụ trách"
+    agent.on_interim_transcript(first)
+    agent.on_interim_transcript(first + " phần thanh toán")
+    await asyncio.sleep(0.01)
+    assert len(client.streams) == 1 and client.streams[0][1]["transcript"] == first
+    # Qwen finalizes this utterance; the fragment ends; the next utterance's
+    # first interim must not be compared with the previous utterance's last.
+    agent.on_final_transcript()
+    assert agent._previous_interim == ""
+    agent.on_user_stopped()
+    await agent._backchannel._task
+    await agent.on_user_turn_completed(None, _message(first + " phần thanh toán"))
+    assert agent._previous_interim == ""
+    agent._commit_task.cancel()
+    await agent._backchannel._task  # the fragment-end request (the candidate paused)
+    assert len(client.streams) == 2 and client.streams[1][1]["transcript"] == first + " phần thanh toán"
+    agent.on_user_speaking()
+    second = "Em dùng Redis làm cache và đặt TTL năm phút cho từng key"
+    agent.on_interim_transcript(second)
+    await asyncio.sleep(0.01)
+    assert len(client.streams) == 2, "a lone first interim of the new utterance has nothing to agree with"
+    agent.on_interim_transcript(second + " còn khi")
+    await asyncio.sleep(0.01)
+    assert len(client.streams) == 3
+    assert client.streams[-1][1]["transcript"] == first + " phần thanh toán " + second, "finished fragment + this utterance's agreed prefix, no duplication"
+    # A new answer resets too.
+    agent._answer.take()
+    agent._backchannel.on_reply_ready()
+    agent.on_user_speaking()
+    assert agent._previous_interim == "" and agent._backchannel._pending is None
 
 
 @pytest.mark.asyncio

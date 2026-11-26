@@ -237,8 +237,9 @@ class Candidate:
             frame = event.frame
             frames += 1
             level = _rms(bytes(frame.data))
-            # First frame *received* after the answer, audible or not: the
-            # transport leg before the audible one (speech-end chain, P3).
+            # First frame *received* after the answer, audible or not. An
+            # uncorrelated transport observation: the client cannot tell which
+            # utterance the frame belongs to; it is reported as such.
             received_now = time.perf_counter()
             current_rx = self.current
             if (
@@ -359,7 +360,7 @@ class Candidate:
         if "speech_end_at" in t and "reply_audio_at" in t:
             t["client_ttmr_ms"] = round((t["reply_audio_at"] - t["speech_end_at"]) * 1000)
         if "speech_end_at" in t and "first_frame_at" in t:
-            t["client_first_frame_ms"] = round((t["first_frame_at"] - t["speech_end_at"]) * 1000)
+            t["client_first_frame_uncorrelated_ms"] = round((t["first_frame_at"] - t["speech_end_at"]) * 1000)
         if t is self.current:
             self.log(f"turn {t.get('turn')}: client TTFA {t.get('client_ttfa_ms')} ms")
 
@@ -448,8 +449,11 @@ async def pilot(args: argparse.Namespace) -> dict[str, Any]:
         record["voice_session_started"] = (started_events[0].get("payload") if started_events else None)
         ttfa = [t["client_ttfa_ms"] for t in candidate.turns if t.get("client_ttfa_ms") is not None]
         record["client_ttfa_ms"] = {"n": len(ttfa), "values": ttfa, "p50": metrics.percentile([float(v) for v in ttfa], 50), "max": max(ttfa) if ttfa else None}
-        rx = [t["client_first_frame_ms"] for t in candidate.turns if t.get("client_first_frame_ms") is not None]
-        record["client_first_frame_ms"] = {"n": len(rx), "values": rx, "p50": metrics.percentile([float(v) for v in rx], 50)}
+        rx = [t["client_first_frame_uncorrelated_ms"] for t in candidate.turns if t.get("client_first_frame_uncorrelated_ms") is not None]
+        record["client_first_frame_uncorrelated_ms"] = {
+            "n": len(rx), "values": rx, "p50": metrics.percentile([float(v) for v in rx], 50),
+            "note": "first frame received after the answer, any utterance: a transport observation, not a backchannel measure",
+        }
         ttmr = [t["client_ttmr_ms"] for t in candidate.turns if t.get("client_ttmr_ms") is not None]
         record["client_ttmr_ms"] = {"n": len(ttmr), "values": ttmr, "p50": metrics.percentile([float(v) for v in ttmr], 50), "max": max(ttmr) if ttmr else None}
         record["client_speech_end_to_processing_ms"] = [t.get("client_speech_end_to_processing_ms") for t in candidate.turns]

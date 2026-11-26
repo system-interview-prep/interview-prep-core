@@ -39,7 +39,31 @@ __all__ = ["BackchannelCoordinator", "BackchannelStats", "stable_prefix", "trans
 
 #: Words that flip the meaning of what was said; a prepared line written
 #: before one appeared (or disappeared) in the part it covered is stale.
-_NEGATIONS = frozenset({"không", "chưa", "chẳng", "đâu", "ko", "not", "never", "no", "n't"})
+_NEGATIONS = frozenset({
+    "không", "chưa", "chẳng", "đâu", "ko", "chả", "nope",
+    "not", "never", "no", "none", "neither", "nor", "n't", "cannot",
+})
+#: How many words right after the prepared stretch are read for a negation
+#: or a self-correction that reverses what the line was written for.
+_AFTER_WORDS = 3
+_CORRECTIONS = frozenset({"nhầm", "à", "ý", "sorry", "actually", "mean", "correction"})
+_PUNCT = ".,;:!?…\"'()[]“”‘’-"
+
+
+def _norm(word: str) -> str:
+    """Case-folded, punctuation-stripped; keeps the apostrophe of a contraction."""
+    w = word.casefold().strip(_PUNCT)
+    return w
+
+
+def _is_negation(word: str) -> bool:
+    w = _norm(word)
+    if not w:
+        return False
+    if w in _NEGATIONS:
+        return True
+    # English contractions: don't, can't, won't, isn't, didn't, wouldn't...
+    return w.endswith("n't") or w.endswith("n’t")
 
 
 def stable_prefix(previous: str, current: str) -> str:
@@ -61,29 +85,39 @@ def stable_prefix(previous: str, current: str) -> str:
 def transcript_revised(prepared_for: str, current: str, *, max_drift_words: int = 12) -> str | None:
     """Why a line written for ``prepared_for`` no longer fits ``current``, or None.
 
-    Checks, in order: the current transcript still *starts with* what the
-    line was written for (a replacement or re-recognition of those words is
-    a revision, whatever the word count); a negation did not appear in, or
-    vanish from, that stretch; and the candidate has not gone on for more
-    than ``max_drift_words`` since. Deterministic -- a scheduling check, not
-    a judgement of the line.
+    **Lexical, not semantic.** Deterministic word comparison, nothing more:
+    it cannot know that two different words mean the same thing, so it is
+    conservative instead -- any changed word in the covered stretch is a
+    revision. In order:
+
+    * the current transcript must still *start with* the words the line was
+      written for, word for word (case and punctuation aside). One replaced
+      token is a revision -- "Redis" → "Kafka", a changed number, a changed
+      technical term -- as are an insertion or a deletion, which shift
+      everything after them;
+    * a negation (``không``, ``chưa``, ``not``, a contraction in ``n't``,
+      with or without punctuation) must not have appeared in or vanished
+      from that stretch;
+    * the first few words *after* the stretch must not be a negation or a
+      self-correction ("à không", "nhầm", "actually") that reverses it;
+    * the candidate must not have gone on for more than ``max_drift_words``.
     """
-    before = str(prepared_for or "").split()
-    now = str(current or "").split()
+    before = [_norm(w) for w in str(prepared_for or "").split()]
+    before = [w for w in before if w]
+    now_raw = str(current or "").split()
+    now = [w for w in (_norm(w) for w in now_raw) if w]
     if not before:
         return None
     if len(now) < len(before):
         return "transcript_shrank"
     covered = now[: len(before)]
-    if [w.casefold() for w in covered] != [w.casefold() for w in before]:
-        # Allow a single differing word (Qwen re-recognizing one token) unless it is a negation.
-        diffs = [i for i, (x, y) in enumerate(zip(before, covered)) if x.casefold() != y.casefold()]
-        if len(diffs) > 1 or any(before[i].casefold() in _NEGATIONS or covered[i].casefold() in _NEGATIONS for i in diffs):
-            return "transcript_revised"
-    neg_before = sum(1 for w in before if w.casefold() in _NEGATIONS)
-    neg_now = sum(1 for w in covered if w.casefold() in _NEGATIONS)
-    if neg_before != neg_now:
-        return "negation_changed"
+    if covered != before:
+        return "transcript_revised"
+    after = now[len(before): len(before) + _AFTER_WORDS]
+    if any(_is_negation(w) for w in after):
+        return "negation_appended"
+    if any(w in _CORRECTIONS for w in after):
+        return "self_correction"
     if len(now) - len(before) > max_drift_words:
         return "context_moved"
     return None
@@ -91,12 +125,6 @@ def transcript_revised(prepared_for: str, current: str, *, max_drift_words: int 
 PHASE_LISTENING = "listening"
 PHASE_PROCESSING = "processing"
 
-#: How long a ready unit waits for the candidate to pause before it is dropped.
-#: Long enough for a line prepared *during* speech to be played at the next
-#: natural pause (audit 2026-11-26: generation is separate from playback).
-HOLD_SECONDS = 6.0
-#: How often the hold re-checks the candidate's state.
-_HOLD_TICK = 0.1
 #: A prepared line is stale when the candidate has said this many more words
 #: since the transcript it was written for (revalidation against the current
 #: context before playback). A scheduling constraint, not a content rule.
@@ -112,6 +140,10 @@ Play = Callable[[str, str], Any]
 #: ``await prepare(text) -> bool``: synthesize the validated line into the
 #: audio cache now, so playing it later costs no TTS round trip.
 Prepare = Callable[[str], Awaitable[bool]]
+#: ``cancel_prepare(reason)``: stop the synthesis of a line no longer wanted.
+CancelPrepare = Callable[[str], Any]
+#: ``audio_usable(text) -> bool``: is the cached audio for this line playable now?
+AudioUsable = Callable[[str], bool]
 
 
 class BackchannelStats:
@@ -161,14 +193,17 @@ class BackchannelCoordinator:
         enabled: bool = False,
         calls_per_turn: int = 3,
         min_gap_seconds: float = 4.0,
-        hold_seconds: float = HOLD_SECONDS,
         on_event: Callable[..., None] | None = None,
         prepare: Prepare | None = None,
         pending_lifetime_seconds: float = PENDING_LIFETIME_SECONDS,
+        cancel_prepare: CancelPrepare | None = None,
+        audio_usable: AudioUsable | None = None,
     ) -> None:
         self._infer = infer
         self._play = play
         self._prepare = prepare
+        self._cancel_prepare = cancel_prepare
+        self._audio_usable = audio_usable
         self._lifetime = max(1.0, float(pending_lifetime_seconds))
         # The one prepared backchannel waiting for a pause (text, audio in the
         # cache, the transcript it was written for). Bounded: one item, one
@@ -177,7 +212,6 @@ class BackchannelCoordinator:
         self.enabled = enabled
         self._calls_per_turn = max(1, int(calls_per_turn))
         self._min_gap = max(0.0, float(min_gap_seconds))
-        self._hold = max(0.0, float(hold_seconds))
         self._on_event = on_event
         self._task: asyncio.Task | None = None
         self._closing: set[asyncio.Task] = set()
@@ -229,22 +263,46 @@ class BackchannelCoordinator:
         self._speaking = False
         if self.enabled:
             self.stats.speech_ends += 1
-            available = self._pending is not None and bool(self._pending.get("audio_ready"))
-            if available:
+            pending = self._pending
+            # "available": PCM arrived for the pending line; "usable": it is
+            # still valid audio (not failed, not cancelled). Only the second
+            # counts as prepared audio at this speech end.
+            available = pending is not None and bool(pending.get("audio_ready"))
+            usable = available and self._usable(pending)
+            if usable:
                 self.stats.speech_ends_with_audio += 1
-            self._emit("backchannel_speech_end", prepared_available=available, pending=self._pending is not None)
+            self._emit("backchannel_speech_end", pcm_available=available, pcm_usable=usable,
+                       pending=pending is not None)
         self._play_pending(trigger="vad_stop")
+
+    def _usable(self, pending: dict[str, Any]) -> bool:
+        if not pending.get("audio_ready"):
+            return False
+        if self._audio_usable is None:
+            return True
+        try:
+            return bool(self._audio_usable(str(pending.get("text") or "")))
+        except Exception:  # noqa: BLE001
+            return False
 
     def on_reply_ready(self) -> None:
         """The authoritative reply exists: nothing pending may be played after it."""
         self._reply_ready = True
         self._cancel("reply_ready")
         self._drop_pending("reply_ready")
+        if self._cancel_prepare is not None:
+            # Also a synthesis whose line was never pending (prepare in flight).
+            with contextlib.suppress(Exception):
+                self._cancel_prepare("reply_ready")
 
     def _drop_pending(self, reason: str) -> None:
         pending, self._pending = self._pending, None
         if pending is None:
             return
+        # Its synthesis, if still running, is for a line nobody will play.
+        if self._cancel_prepare is not None:
+            with contextlib.suppress(Exception):
+                self._cancel_prepare(reason)
         self.stats.discarded += 1
         self.stats.note(reason)
         if pending.get("audio_ready"):
@@ -275,7 +333,7 @@ class BackchannelCoordinator:
             return False
         self._pending = None
         self._speak(pending["unit"], pending["phase"], held=perf_counter() - pending["ready_at"],
-                    prepared_audio=bool(pending.get("audio_ready")), trigger=trigger,
+                    prepared_audio=self._usable(pending), trigger=trigger,
                     prepare_ms=pending.get("prepare_ms"))
         return True
 
@@ -370,7 +428,6 @@ class BackchannelCoordinator:
             "transcript": text,
             "phase": phase,
             "speaking": self._speaking,
-            "prepared_for_words": len(text.split()),
             "signals": {
                 "seconds_since_last_backchannel": round(now - self._last_spoken_at, 1) if self._last_spoken_at else None,
                 "answer_seconds": round(answer_seconds, 1) if answer_seconds is not None else None,
@@ -408,8 +465,7 @@ class BackchannelCoordinator:
                         break
                     if kind != "unit":
                         continue
-                    if await self._deliver(item, generation, phase, prepared_for=int(request.get("prepared_for_words") or 0),
-                                           request_text=str(request.get("transcript") or "")):
+                    if await self._deliver(item, generation, phase, request_text=str(request.get("transcript") or "")):
                         spoken += 1
             finally:
                 # Leaving the loop early (done, cancelled) must close the
@@ -442,8 +498,7 @@ class BackchannelCoordinator:
             spoken=spoken,
         )
 
-    async def _deliver(self, unit: dict[str, Any], generation: int, phase: str, *, prepared_for: int = 0,
-                       request_text: str = "") -> bool:
+    async def _deliver(self, unit: dict[str, Any], generation: int, phase: str, *, request_text: str = "") -> bool:
         text = str(unit.get("text") or "").strip()
         if not text:
             return False
@@ -480,7 +535,7 @@ class BackchannelCoordinator:
         self.stats.prepared += 1
         self._pending = {
             "unit": unit, "text": text, "kind": unit.get("kind"), "phase": phase, "generation": generation,
-            "prepared_for": prepared_for, "prepared_for_text": prepared_for_text, "ready_at": perf_counter(),
+            "prepared_for_text": prepared_for_text, "ready_at": perf_counter(),
             "audio_ready": audio_ready, "prepare_ms": prepare_ms,
         }
         self._emit("backchannel_prepared", phase=phase, kind=unit.get("kind"), words=len(text.split()),
@@ -502,11 +557,14 @@ class BackchannelCoordinator:
             self._on_event(event, **fields)
 
     async def aclose(self) -> None:
+        """Shutdown: cancel the inference, drop the pending line (and its synthesis), wait."""
         task = self._task
         self._cancel("close")
+        self._drop_pending("close")
         if task is not None:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
+        await self._drain_closing()
 
 
 def _done(handle: Any) -> bool:
