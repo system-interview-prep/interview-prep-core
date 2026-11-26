@@ -179,6 +179,12 @@ class VoiceLabAgent(Agent):
         self._active_speech_text = ""
         self._active_speech_kind = "question"
         self._last_answer_metrics: dict[str, float] = {}
+        # Turn clock for the §13 metrics (TTFA, TTMR): when the candidate's
+        # speech ended, when the answer was submitted, when Core answered.
+        # Read by on_agent_speaking() when the next utterance starts playing.
+        self._speech_ended_at: float | None = None
+        self._submitted_at: float | None = None
+        self._core_completed_at: float | None = None
         self._last_interview_speech_text = ""
         self._held_speech_text = ""
         self._held_resume_text = ""
@@ -229,10 +235,28 @@ class VoiceLabAgent(Agent):
             return "answer_pending"
         return "waiting_answer"
 
+    def _ms_since(self, mark: str) -> int | None:
+        started = getattr(self, mark, None)
+        return None if started is None else round((perf_counter() - started) * 1000)
+
     def on_agent_speaking(self) -> None:
         self.report_state("ai_speaking", kind=self._active_speech_kind)
+        # V2 spec §13: TTFA is speech end → first audio, TTMR is speech end →
+        # the official reply. Both are read off this event by kind
+        # (early_ack / filler count for TTFA only; question / closing for
+        # both) in scripts/eval/interviews/voice/livekit_turn_metrics.py.
+        # Measured at the agent, when LiveKit starts playing the utterance;
+        # client playback adds the network leg this process cannot see.
+        self.report(
+            "voice_reply_started",
+            kind=self._active_speech_kind,
+            since_speech_end_ms=self._ms_since("_speech_ended_at"),
+            since_submit_ms=self._ms_since("_submitted_at"),
+            since_core_ms=self._ms_since("_core_completed_at"),
+        )
 
     def on_user_stopped(self) -> None:
+        self._speech_ended_at = perf_counter()
         self.report_state(self._resting_state())
 
     def on_user_away(self) -> None:
@@ -506,8 +530,11 @@ class VoiceLabAgent(Agent):
         preview_token = self._anticipation.take(self._preview_key(answer.text))
         self._core_in_flight = True
         self._cancel_task(self._reprompt_task)
+        self._submitted_at = perf_counter()
+        self._core_completed_at = None
         self.report(
             "voice_answer_submitted",
+            since_speech_end_ms=self._ms_since("_speech_ended_at"),
             words=len(answer.text.split()),
             fragments=answer.fragment_count,
             duration_s=answer.duration_seconds,
@@ -584,6 +611,7 @@ class VoiceLabAgent(Agent):
         is_terminal = bool(
             response_payload.get("sessionStatus") == "CLOSED" or response_payload.get("completed")
         )
+        self._core_completed_at = perf_counter()
         self.report(
             "voice_core_completed",
             core_ms=round((perf_counter() - core_started) * 1000),
@@ -1283,9 +1311,18 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
     @tts.on("metrics_collected")
     def on_tts_metrics(metric) -> None:
         mark_provider_recovered("tts")
+        # Which utterance this synthesis was for (question / early_ack / filler /
+        # replay ...), so VieNeu first-byte can be read per kind (§13). The
+        # agent is created further down this function; a metric that fires
+        # before that (there is none today) simply has no kind.
+        try:
+            speech_kind = agent._active_speech_kind
+        except (NameError, AttributeError):
+            speech_kind = None
         with contextlib.suppress(Exception):
             voice_events.emit(
                 "voice_tts_metrics",
+                kind=speech_kind,
                 provider=str(getattr(getattr(metric, "metadata", None), "provider", "") or "")[:40] or None,
                 ttfb_ms=round(float(metric.ttfb) * 1000),
                 audio_ms=round(float(metric.audio_duration) * 1000),

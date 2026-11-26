@@ -64,6 +64,9 @@ VOICE_EVENTS = frozenset(
         "voice_anticipation_discarded",
         "voice_anticipation_reused",
         "voice_tts_metrics",
+        # V2 spec §13: an utterance started playing; TTFA/TTMR are read off
+        # its since_speech_end_ms by kind (livekit_turn_metrics.py).
+        "voice_reply_started",
         "voice_stt_diagnostic",
         "voice_tts_fallback",
         "voice_provider_degraded",
