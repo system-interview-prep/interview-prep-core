@@ -567,7 +567,9 @@ def test_probe_post_validator():
     assert _validate_probe_text("Theo rubric đánh giá của chúng tôi...") is False
 
 
-@pytest.mark.xfail(strict=True, reason="REAL: guard rejection raises out of the turn instead of a safe fallback (agent plan Pha 1 guards_out); tests/TRIAGE_2026-11-24.md")
+# Was xfail(strict) "REAL: guard rejection raises out of the turn instead of a
+# safe fallback". Fixed after session 2678ce7b (26/11) lost its report that way:
+# a probe no guard accepts now moves the interview on.
 @pytest.mark.asyncio
 async def test_probe_post_validator_safe_fallback(mock_session_data):
     session_row, turns = mock_session_data

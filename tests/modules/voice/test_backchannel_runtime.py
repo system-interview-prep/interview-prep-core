@@ -171,7 +171,8 @@ def test_the_events_are_in_the_vocabulary() -> None:
 @pytest.mark.asyncio
 async def test_a_finished_fragment_asks_the_talker_and_the_unit_is_spoken_not_a_nudge(monkeypatch) -> None:
     monkeypatch.setattr(livekit_agent, "processing_filler_enabled", lambda: False)
-    monkeypatch.delenv("VOICE_ANSWER_PAUSE_NUDGE_ENABLED", raising=False)
+    # Even with the nudge on, backchanneling replaces it.
+    monkeypatch.setenv("VOICE_ANSWER_PAUSE_NUDGE_ENABLED", "1")
     agent, events, client, spoken = _agent()
     agent.on_user_stopped()
     await agent.on_user_turn_completed(None, _message("Em dùng Redis làm cache và đặt TTL năm phút cho từng key."))
@@ -373,7 +374,7 @@ async def test_a_new_answer_resets_the_turn_and_a_core_failure_also_ends_the_bac
 
 @pytest.mark.asyncio
 async def test_disabled_backchanneling_leaves_the_nudge_path_alone(monkeypatch) -> None:
-    monkeypatch.delenv("VOICE_ANSWER_PAUSE_NUDGE_ENABLED", raising=False)
+    monkeypatch.setenv("VOICE_ANSWER_PAUSE_NUDGE_ENABLED", "1")
     agent, _, client, _ = _agent(enabled=False)
     agent._answer.add("Em đang nghĩ", message_id="m1")
     agent._schedule_answer_pause_nudge()

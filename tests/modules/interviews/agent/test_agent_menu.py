@@ -43,16 +43,13 @@ def test_t1_1_4_warm_up_offers_continuation_never_probe(ctx_factory) -> None:
     assert "clarify_question" not in menu.allowed
 
 
-def test_warm_up_allows_continuation_after_multiple_followups(ctx_factory) -> None:
-    menu = build_menu(
-        ctx_factory(
-            stage=InterviewStage.WARM_UP,
-            clarify_used=8,
-            elapsed_ratio=0.05,
-        )
-    )
-
-    assert "continue_warm_up" in menu.allowed
+def test_warm_up_continuation_is_bounded_by_the_blueprint_cap(ctx_factory) -> None:
+    """Replaced on 2026-11-26: this used to assert continuation after eight
+    follow-ups. Session e52c0757 showed where that leads (twelve repeats of
+    one question); the cap is the blueprint's warm_up.max_follow_ups."""
+    menu = build_menu(ctx_factory(stage=InterviewStage.WARM_UP, clarify_used=8, elapsed_ratio=0.05))
+    assert "continue_warm_up" not in menu.allowed
+    assert "move_to_next_question" in menu.allowed
 
 
 def test_clarification_remains_available_after_multiple_requests(ctx_factory) -> None:

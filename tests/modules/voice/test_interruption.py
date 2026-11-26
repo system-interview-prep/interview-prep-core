@@ -51,6 +51,17 @@ def test_substantive_overlap_is_forwarded_to_interview_core(text: str) -> None:
     assert classify_interruption(text, locale="vi-VN") == "content"
 
 
+@pytest.mark.parametrize("text", ["em ừ.", "ừ Ừm.", "Dạ. có thể", "ừ cảm ơn", "Dạ dạ Dạ"])
+def test_filler_only_short_utterances_are_listening_noises_not_answers(text: str) -> None:
+    """Session e52c0757 (2026-11-26) sent each of these to Core as an answer."""
+    assert classify_interruption(text, locale="vi-VN") == "backchannel"
+
+
+@pytest.mark.parametrize("text", ["Chưa ạ.", "có thể", "Redis ạ", "Dạ không", "em chưa làm"])
+def test_a_short_utterance_with_a_real_word_stays_an_answer(text: str) -> None:
+    assert classify_interruption(text, locale="vi-VN") == "content"
+
+
 @pytest.mark.parametrize("text", ["mhm", "okay", "right", "uh huh"])
 def test_english_backchannels(text: str) -> None:
     assert classify_interruption(text, locale="en-US") == "backchannel"

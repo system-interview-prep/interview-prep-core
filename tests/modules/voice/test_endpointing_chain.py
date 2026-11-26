@@ -58,11 +58,12 @@ def test_the_nominal_windows_are_untouched(monkeypatch) -> None:
     assert (window.commit_silence, window.short_commit_silence) == (1.8, 2.2)
 
 
-def test_the_pause_nudge_is_on_by_default_and_can_be_silenced(monkeypatch) -> None:
+def test_the_pause_nudge_is_off_by_default_and_can_be_turned_on(monkeypatch) -> None:
+    """Off since 26/11: it said "bạn cứ nói tiếp nhé" at the end of every answer."""
     monkeypatch.delenv("VOICE_ANSWER_PAUSE_NUDGE_ENABLED", raising=False)
-    assert endpointing.answer_pause_nudge_enabled()
-    monkeypatch.setenv("VOICE_ANSWER_PAUSE_NUDGE_ENABLED", "0")
     assert not endpointing.answer_pause_nudge_enabled()
+    monkeypatch.setenv("VOICE_ANSWER_PAUSE_NUDGE_ENABLED", "1")
+    assert endpointing.answer_pause_nudge_enabled()
 
 
 def test_the_new_events_are_accepted_by_the_reporter() -> None:

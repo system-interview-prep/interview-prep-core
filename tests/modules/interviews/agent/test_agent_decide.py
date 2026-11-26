@@ -24,7 +24,8 @@ PACING = {"pace": "on_track", "questions_remaining_by_stage": {"DEEP_DIVE": 1}}
 def test_t1_2_1_every_action_has_one_strict_tool_and_one_act(ctx_factory) -> None:
     # A "__unified" key is a second schema for an action it already covers
     # (V2 spec §6.2), not a new action.
-    variants = {name for name in TOOLS if name.endswith("__unified")}
+    # "__bridge" likewise: move_to_next_question with its bridging sentence.
+    variants = {name for name in TOOLS if name.endswith(("__unified", "__bridge"))}
     assert set(TOOLS) - variants == set(ACTIONS) | {SEARCH_MEMORY}
     for name, tool in TOOLS.items():
         assert tool["strict"] is True and tool["parameters"]["additionalProperties"] is False
