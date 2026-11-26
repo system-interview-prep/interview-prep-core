@@ -79,13 +79,20 @@ VOICE_ANSWER_PAUSE_NUDGE_ENABLED=1
 INTERVIEW_TURN_CALL_BUDGET=6
 INTERVIEW_PREVIEW_CALL_BUDGET=2
 INTERVIEW_SESSION_CALL_BUDGET=120
+# Context-aware streaming backchanneling (the Talker, INTERVIEW_TALKER_MODEL).
+INTERVIEW_BACKCHANNEL_ENABLED=0
+INTERVIEW_BACKCHANNEL_CALLS_PER_TURN=3
+INTERVIEW_BACKCHANNEL_MIN_GAP_SECONDS=4.0
+INTERVIEW_BACKCHANNEL_MAX_WORDS=14
 ```
 
 Internal worker → API endpoints under `/ai/voice-lab/livekit/runtime/`:
 `start`, `message` (the canonical turn), `preview` (speculation: provider
 calls, under the preview budget), `prefetch` (deterministic warm-up while the
 candidate speaks: candidate memory, interviewer playbook; **zero** call
-budget), `events`, `left`.
+budget), `backchannel` (the Talker's streamed, guarded conversational
+acknowledgment for the answer in progress; one call, NDJSON units), `events`,
+`left`.
 
 When the LiveKit worker runs in a separate container or service, set `VOICE_RUNTIME_API_BASE_URL` to an address it can use, such as `http://backend:5000`. The interview voice path does not require an OpenAI LLM in the LiveKit worker. `OPENAI_API_KEY` is still used by the separate `/transcribe`, `/speak`, and Realtime configuration endpoints.
 

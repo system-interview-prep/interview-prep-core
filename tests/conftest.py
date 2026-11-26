@@ -91,6 +91,7 @@ def _no_live_interview_model(monkeypatch: pytest.MonkeyPatch) -> None:
         raise RuntimeError("live model call blocked in tests (set LIVE_LLM_TESTS=1 to allow)")
 
     monkeypatch.setattr(facade, "_client", _blocked)
+    monkeypatch.setattr(facade, "_async_client", _blocked)
 
     # The candidate-memory extractor (langmem) calls the provider through
     # LangChain, not the facade: block its chat model the same way. Tests pass

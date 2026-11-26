@@ -26,6 +26,7 @@ from livekit.plugins import elevenlabs
 
 from src.core.config import get_settings
 from src.modules.interviews.realtime.anticipation import AnticipationEngine, PreviewKey, preview_key
+from src.modules.interviews.realtime.backchannel import PHASE_LISTENING, PHASE_PROCESSING, BackchannelCoordinator
 from src.modules.interviews.realtime.endpointing import (
     ANSWER_PAUSE_NUDGE_SECONDS, PROCESSING_FILLER_SECONDS, AnswerWindow,
     answer_pause_nudge_enabled, answer_pause_nudges,
@@ -172,6 +173,9 @@ class VoiceLabAgent(Agent):
         on_interview_closed=None,
         events: VoiceEventReporter | None = None,
         warm_tts=None,
+        enable_backchannel: bool = False,
+        backchannel_calls_per_turn: int = 3,
+        backchannel_min_gap_seconds: float = 4.0,
     ) -> None:
         super().__init__(instructions=AGENT_INSTRUCTIONS)
         # ``await warm_tts()`` keeps the TTS connection open (VieNeu); None for
@@ -241,6 +245,18 @@ class VoiceLabAgent(Agent):
             # outside VOICE_EVENTS, so they are prefixed here to be kept.
             on_event=lambda event, **fields: self.report(f"voice_{event}", **fields),
         )
+        # Context-aware backchanneling (brief 2026-11-26): the Talker decides
+        # to speak or not; the coordinator decides when it is asked and
+        # whether its answer may still be played. When it is on, the fixed
+        # nudge and processing-filler lines are not used: they are templates.
+        self._backchannel = BackchannelCoordinator(
+            self._backchannel_infer,
+            self._speak_backchannel,
+            enabled=enable_backchannel,
+            calls_per_turn=backchannel_calls_per_turn,
+            min_gap_seconds=backchannel_min_gap_seconds,
+            on_event=lambda event, **fields: self.report(f"voice_{event}", **fields),
+        )
         self._core_in_flight = False
         self._repeat_after_core = False
         self._reprompt_task: asyncio.Task | None = None
@@ -285,9 +301,36 @@ class VoiceLabAgent(Agent):
             since_core_ms=self._ms_since("_core_completed_at"),
         )
 
+    def _bc(self) -> BackchannelCoordinator:
+        """The coordinator, or a disabled one on an instance built without __init__ (tests)."""
+        coordinator = getattr(self, "_backchannel", None)
+        if coordinator is None:
+            coordinator = self._backchannel = BackchannelCoordinator(self._backchannel_infer, self._speak_backchannel, enabled=False)
+        return coordinator
+
     def on_user_stopped(self) -> None:
         self._speech_ended_at = perf_counter()
+        self._bc().on_user_stopped()
         self.report_state(self._resting_state())
+
+    # ── Backchanneling ───────────────────────────────────────────────────────
+
+    async def _backchannel_infer(self, request: dict):
+        """The Talker's streamed units, from the API (NDJSON). Read-only; writes no state."""
+        async with self._runtime_client.stream(
+            "POST", "/ai/voice-lab/livekit/runtime/backchannel", json=request
+        ) as response:
+            response.raise_for_status()
+            async for raw in response.aiter_lines():
+                if raw.strip():
+                    yield json.loads(raw)
+
+    def _speak_backchannel(self, text: str, kind: str):
+        """Play one validated unit: interruptible, outside the chat context,
+        and cut by the authoritative reply like any filler (``_interrupt_filler``)."""
+        handle = self.speak(text, allow_interruptions=True, add_to_chat_ctx=False, kind="backchannel")
+        self._filler_handle = handle
+        return handle
 
     def on_final_transcript(self) -> None:
         """A final transcript arrived from STT (before LiveKit ends the turn)."""
@@ -342,11 +385,13 @@ class VoiceLabAgent(Agent):
         self._cancel_task(self._commit_task)
         self._cancel_task(self._answer_pause_nudge_task)
         self._cancel_task(self._reprompt_task)
+        self._bc().on_user_speaking()
         if self._answer.is_empty:
             # A new answer is starting: drop the previous turn's speculation
             # and give this turn a fresh budget.
             self._turn_generation += 1
             self._anticipation.reset_turn()
+            self._bc().reset_turn()
         self._start_prefetch()
 
     # ── Deterministic warm-up while the candidate speaks ─────────────────────
@@ -406,7 +451,7 @@ class VoiceLabAgent(Agent):
     def _schedule_answer_pause_nudge(self) -> None:
         if self._answer_pause_nudged or self._core_in_flight or self._answer.is_empty:
             return
-        if not answer_pause_nudge_enabled():
+        if not answer_pause_nudge_enabled() or self._bc().enabled:
             return
         self._cancel_task(self._answer_pause_nudge_task)
         # Same clock as the commit: a nudge is "you paused", so it is counted
@@ -677,11 +722,19 @@ class VoiceLabAgent(Agent):
         if getattr(self, "_warm_tts", None) is not None:
             self._tts_keepalive_task = asyncio.create_task(self._tts_keepalive())
 
+        # The processing backchannel: the Talker sees the whole answer and the
+        # phase, and says something about *it* -- or nothing -- while the
+        # Thinker works. Runs beside the submit, never awaited by it.
+        self._bc().observe(
+            answer.text, phase=PHASE_PROCESSING, answer_seconds=answer.duration_seconds, fragments=answer.fragment_count,
+        )
+
         # Keep the local processing filler opt-in; default remains silent while
-        # Core works, as the pulled branch specified.
+        # Core works, as the pulled branch specified. Not with backchanneling:
+        # those lines are templates.
         filler_spoken = False
         filler_task: asyncio.Task | None = None
-        if processing_filler_enabled():
+        if processing_filler_enabled() and not self._bc().enabled:
             async def filler() -> None:
                 nonlocal filler_spoken
                 await asyncio.sleep(PROCESSING_FILLER_SECONDS)
@@ -713,6 +766,7 @@ class VoiceLabAgent(Agent):
         except Exception as exc:
             self._cancel_task(filler_task)
             self._cancel_task(getattr(self, "_tts_keepalive_task", None))
+            self._bc().on_reply_ready()
             self._core_in_flight = False
             self._repeat_after_core = False
             self.report(
@@ -729,6 +783,9 @@ class VoiceLabAgent(Agent):
             return
         self._cancel_task(filler_task)
         self._cancel_task(getattr(self, "_tts_keepalive_task", None))
+        # The authoritative reply exists: a backchannel still being generated
+        # is stale, and one still playing is cut below (_interrupt_filler).
+        self._bc().on_reply_ready()
         logger.info(
             "Interview Core voice turn completed",
             extra={
@@ -1169,6 +1226,12 @@ class VoiceLabAgent(Agent):
         )
         self._schedule_answer_pause_nudge()
         self._schedule_preview(self._answer.text)
+        # A fragment just ended: the candidate paused. A safe moment for the
+        # Talker to read what they said so far and decide whether to react.
+        self._bc().observe(
+            self._answer.text, phase=PHASE_LISTENING, answer_seconds=self._answer.duration_seconds,
+            fragments=len(self._answer.fragments),
+        )
         self._cancel_task(self._reprompt_task)
         self._publish_turn_state("answering")
         if not self._core_in_flight:
@@ -1619,6 +1682,11 @@ async def voice_lab_session(ctx: agents.JobContext) -> None:
         on_interview_closed=release_session,
         events=voice_events,
         warm_tts=primary_tts.warm if use_vieneu else None,
+        # Context-aware backchanneling: the API also checks the setting and the
+        # Talker model; the agent's flag only decides whether it asks.
+        enable_backchannel=_bool_env("INTERVIEW_BACKCHANNEL_ENABLED", False),
+        backchannel_calls_per_turn=_int_env("INTERVIEW_BACKCHANNEL_CALLS_PER_TURN", 3) or 3,
+        backchannel_min_gap_seconds=_float_env("INTERVIEW_BACKCHANNEL_MIN_GAP_SECONDS", 4.0),
     )
 
     abandon_grace = _float_env("VOICE_LAB_ABANDON_GRACE_SECONDS", 20.0)

@@ -1,6 +1,7 @@
 """Public OpenAI adapter shared by business modules."""
 
 import time
+from collections.abc import AsyncIterator
 from functools import lru_cache
 from typing import Any, TypedDict
 
@@ -8,6 +9,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from src.infrastructure import langfuse
 from src.core.config import get_settings
+from src.core import pipeline_events
 from src.core.pipeline_events import ai_call_timer, caller_purpose
 from src.modules.ai import budget
 from src.modules.ai.cache_store import (  # noqa: F401 - re-exported for other modules
@@ -59,6 +61,22 @@ def _client():
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured")
     return _build_client(api_key, settings.ai_request_timeout_seconds)
+
+
+def _build_async_client(api_key: str, timeout: float):
+    from openai import AsyncOpenAI
+
+    return AsyncOpenAI(api_key=api_key, timeout=timeout, max_retries=SDK_MAX_RETRIES)
+
+
+@lru_cache
+def _async_client():
+    """The async SDK client, for streaming only (the sync one runs in a threadpool)."""
+    settings = get_settings()
+    api_key = settings.openai_api_key
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+    return _build_async_client(api_key, settings.ai_request_timeout_seconds)
 
 
 def _retryable_transport_error(exc: BaseException) -> bool:
@@ -116,6 +134,148 @@ def _responses_create(options: dict, model: str, *, purpose: str = "") -> Any:
             else:
                 raise
     raise RuntimeError("model call failed after dropping unsupported options")
+
+
+def _drop_refused_option(exc: Exception, options: dict, model: str) -> bool:
+    """Forget the option the provider refused, so the next attempt omits it. False when it was not that."""
+    message = str(exc).lower()
+    if "temperature" in message and "temperature" in options:
+        _NO_TEMPERATURE_MODELS.add(model)
+        options.pop("temperature", None)
+        return True
+    if "reasoning" in message and "reasoning" in options:
+        _NO_REASONING_MODELS.add(model)
+        options.pop("reasoning", None)
+        return True
+    if ("schema" in message or "format" in message) and "text" in options:
+        _NO_SCHEMA_MODELS.add(model)
+        options.pop("text", None)
+        return True
+    return False
+
+
+async def _responses_stream(options: dict, model: str, *, purpose: str) -> AsyncIterator[Any]:
+    """``responses.create(stream=True)`` with the same budget and option-drop rules as the sync path.
+
+    Every attempt is charged before it is sent. A refused option or a
+    transport error is retried only while nothing has been yielded yet: once
+    tokens have flowed, an error ends the stream and the caller sees it. The
+    Responses API keeps no state between requests here (``store`` is false,
+    no ``previous_response_id``): there is no persistent incremental input,
+    only incremental *output*, which is what this streams.
+    """
+    transport_retried = False
+    for _ in range(5):
+        budget.charge(purpose)
+        yielded = False
+        try:
+            stream = await _async_client().responses.create(**options, stream=True)
+            async for event in stream:
+                yielded = True
+                yield event
+            return
+        except Exception as exc:
+            if yielded:
+                raise
+            if _drop_refused_option(exc, options, model):
+                continue
+            if not transport_retried and _retryable_transport_error(exc):
+                transport_retried = True
+                time.sleep(0)  # no blocking sleep on the event loop; the retry is immediate
+                continue
+            raise
+    raise RuntimeError("model call failed after dropping unsupported options")
+
+
+async def generate_text_stream(
+    *,
+    instructions: str,
+    input_text: str,
+    max_output_tokens: int = 160,
+    temperature: float | None = None,
+    purpose: str | None = None,
+    reasoning_effort: str | None = None,
+    model: str | None = None,
+) -> AsyncIterator[str]:
+    """One model call whose text arrives as it is generated (token deltas).
+
+    Same door as :func:`generate_text`: one ``ai_call_logs`` row (written when
+    the stream ends, with the usage the provider reports in
+    ``response.completed``), one Langfuse generation, the call budget charged
+    before the request, the dropped-option memory. The caller decides what a
+    *unit* is -- this yields raw deltas and never speaks them.
+    """
+    settings = get_settings()
+    purpose = purpose or caller_purpose()
+    model = model or settings.llm_model
+    options: dict = {
+        "model": model,
+        "instructions": instructions,
+        "input": input_text,
+        "max_output_tokens": max_output_tokens,
+        "store": False,
+    }
+    if temperature is not None and _takes_temperature(model):
+        options["temperature"] = temperature
+    if reasoning_effort and model not in _NO_REASONING_MODELS:
+        options["reasoning"] = {"effort": reasoning_effort}
+    generation = langfuse.Generation(
+        purpose,
+        model=model,
+        instructions=instructions,
+        input_text=input_text,
+        options={"max_output_tokens": max_output_tokens, "reasoning_effort": reasoning_effort or "", "stream": "1"},
+    )
+    started = time.perf_counter()
+    pieces: list[str] = []
+    usage: Any = None
+    error: BaseException | None = None
+    try:
+        async for event in _responses_stream(options, model, purpose=purpose):
+            kind = str(getattr(event, "type", "") or "")
+            if kind == "response.output_text.delta":
+                delta = str(getattr(event, "delta", "") or "")
+                if delta:
+                    pieces.append(delta)
+                    yield delta
+            elif kind == "response.completed":
+                usage = getattr(getattr(event, "response", None), "usage", None)
+            elif kind in ("response.failed", "response.incomplete", "error"):
+                detail = getattr(event, "message", None) or getattr(getattr(event, "response", None), "status", kind)
+                raise RuntimeError(f"model stream ended with {kind}: {detail}")
+    except BaseException as exc:
+        error = exc
+        raise
+    finally:
+        output = "".join(pieces)
+        # Through the module, like ai_call_timer does, so a test that patches
+        # pipeline_events.record_ai_call sees this row too.
+        pipeline_events.record_ai_call(
+            purpose=purpose,
+            provider="openai",
+            model=model,
+            status="error" if error is not None else "ok",
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            input_tokens=_int_or_none(getattr(usage, "input_tokens", None)),
+            output_tokens=_int_or_none(getattr(usage, "output_tokens", None)),
+            input_chars=len(input_text),
+            output_chars=len(output),
+            error_type=type(error).__name__ if error is not None else None,
+            error_message=str(error) if error is not None else None,
+            input_text=input_text,
+            output_text=output,
+        )
+        if error is not None:
+            generation.end(error=error)
+        else:
+            generation.end(output=output, usage=usage)
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 class ToolCall(TypedDict):

@@ -158,6 +158,16 @@ class Settings(BaseSettings):
     interview_turn_call_budget: int = Field(default=6, ge=1, le=50)
     interview_preview_call_budget: int = Field(default=2, ge=1, le=10)
     interview_session_call_budget: int = Field(default=120, ge=1, le=5000)
+    # Context-aware streaming backchanneling (brief 2026-11-26): the existing
+    # Talker (`interview_talker_model`, the Luna model on the same provider)
+    # writes short conversational acknowledgments while the candidate speaks
+    # or the Thinker works -- never a decision, never state. Off by default;
+    # needs the Talker model. Calls per candidate turn and the gap between two
+    # are cost bounds, not generation rules: the model decides to speak or not.
+    interview_backchannel_enabled: bool = False
+    interview_backchannel_calls_per_turn: int = Field(default=3, ge=1, le=10)
+    interview_backchannel_min_gap_seconds: float = Field(default=4.0, ge=0.0, le=60.0)
+    interview_backchannel_max_words: int = Field(default=14, ge=3, le=40)
     # Dynamic interview planning is opt-in because its time-allocation values
     # are Product policy. When enabled, the JSON must satisfy PlannerPolicyConfig.
     interview_dynamic_planner_enabled: bool = False

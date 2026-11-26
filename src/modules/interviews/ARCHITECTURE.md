@@ -442,6 +442,88 @@ model's decisions and the rule ladder needs a SHADOW period (3 calls per
 turn) or the human benchmark's sessions; neither was authorized here.
 
 
+### Context-aware streaming backchanneling (brief 2026-11-26)
+
+The Talker is repurposed, not redesigned: the same Luna model through the
+same facade, the same acknowledgement guard, the same playback queue and the
+same cut-on-reply rule, doing a different job. The prediction path
+(`predict_by_talker`, Hybrid) stays in the code and stays off.
+
+**Responsibility split, as built.** The Thinker (`gpt-4o-mini`) keeps
+evaluation, decision, probe target, the authoritative line and every state
+transition — nothing in it changed. The Talker
+(`talker.backchannel_by_talker`) sees a compact rolling context
+(`BackchannelContext`: the current question, the interviewer's last four
+lines, the stable transcript so far, the phase `listening | processing`,
+whether the candidate is speaking, seconds since it last spoke, answer
+seconds, fragments, the backchannels already said this turn) and nothing
+else — no rubric, no CV or JD text, no action menu, no probe target, no
+evaluation. It answers on one line with a *decision*, `kind: silence |
+minimal | reflective | contextual | processing`, then at most one short
+line. There is no template and no selection: silence is a kind the model
+chooses, and the prompt names kinds, never utterances. Every unit passes
+`arbiter.arbitrate_backchannel` — the acknowledgement guard (no verdict,
+praise, hint, question, parroting, rubric or system leak, house style) plus
+a length cap and a no-repeat check — before it leaves the API.
+
+**Streaming, inspected (what each hop supports, 2026-11-26):**
+
+| hop | input | output | used |
+|---|---|---|---|
+| LiveKit audio in | frames, streamed | — | as before |
+| Qwen STT | 1 s chunks (HTTP, serial) | interim transcript per chunk, final after 0.8 s silence | the *stable* segments only: a finished fragment (the candidate paused) and the submit |
+| Talker context | **no persistent incremental input**: the Responses API keeps no state here (`store` false, no `previous_response_id`); each call carries the whole compact context | token deltas (`stream=True`, `response.output_text.delta`; `facade.generate_text_stream`) | bounded incremental inference over stable segments: at most one in flight per session, ≤ 3 calls per turn, ≥ 4 s between listening-phase calls, never per interim |
+| Thinker | — | tool-call argument deltas exist in the SDK (`response.function_call_arguments.delta`) | **not streamed**: the action must be in the menu and the line must pass its guard as a whole before anything is spoken; streaming a strict-JSON tool call would start TTS on text that may yet be rejected. Reported as unsupported-by-design, not as a gap in the provider. |
+| VieNeu TTS | one complete text per request (no incremental text) | PCM over SSE | a validated unit is one request; playback starts on its first SSE chunk (~450 ms warm) |
+| LiveKit playback | `say(text)` per unit | streamed frames | one speech handle per unit, interruptible, outside the chat context, cut by the authoritative reply |
+
+Luna's acceptance of `stream=True` is a code-level fact of the SDK, not yet
+a live-verified one: the probe is one paid call and was not authorized.
+
+**Where it runs.** The voice agent asks at two safe moments only: when a
+Qwen fragment ends (the candidate paused — `on_user_turn_completed`, phase
+`listening`) and at the submit (phase `processing`, beside the canonical
+POST, never awaited by it). `realtime/backchannel.py` holds the bounds and
+the staleness rules: one inference in flight, the turn cap, the minimum gap,
+a unit that arrives while the candidate is talking waits ≤ 1.5 s for a pause
+and is otherwise dropped, anything after the authoritative reply or after a
+new answer is dropped, and the candidate starting to talk over a playing
+backchannel is counted (`voice_backchannel_overlap`). The API endpoint
+`POST /livekit/runtime/backchannel` streams NDJSON units under a one-call
+budget scope (and the session cap). When the feature is on, the template
+nudge and the processing filler are not used. Barge-in handling, the echo
+filter and `add_to_chat_ctx=False` apply to backchannels as to any filler;
+the same VieNeu voice speaks both roles.
+
+**Cost bounds.** `INTERVIEW_BACKCHANNEL_CALLS_PER_TURN` (3) and
+`INTERVIEW_BACKCHANNEL_MIN_GAP_SECONDS` (4) are spend bounds, not pacing
+rules — the model is told how long ago it last spoke and chooses silence
+itself. Each call is ≤ 80 output tokens on a ~400-token input.
+
+**Benchmark, prepared and not run.** `livekit_pilot.py --config backchannel`
+and the human-benchmark arm `unified_backchannel` (against
+`unified_no_nudge`, the same configuration with no backchannel at all);
+`livekit_turn_metrics.py` reports Talker time to first token, generation
+latency, units spoken / discarded (stale rate), candidate overlaps,
+processing acks, Talker calls and tokens, and treats a backchannel as first
+audio for TTFA — **which is why TTFA will not be quoted as a latency gain**:
+a backchannel playing earlier moves TTFA, not TTMR. The listener's labels
+(`backchannel_relevance`, `backchannel_naturalness`,
+`backchannel_interrupted_person`, 1–5 and yes/no per turn) are the only
+measure of relevance and naturalness; the record also carries the
+Evaluator's report so answer quality can be compared across arms. Not run:
+the synthetic session (~16 Thinker + ≤ 24 Talker calls) and the human
+sessions need paid calls and were not authorized.
+
+**Limitations, stated.** No persistent incremental input to the Talker (each
+call re-sends the context; cost grows with the answer); the Thinker's output
+is not streamed (by design, see above); Qwen's interims are serial 1 s
+chunks, so the "stable segment" granularity is a fragment, not a word; a
+backchannel can still start up to ~0.5 s after a pause began (Talker TTFT +
+TTS first byte) and will be dropped if the candidate resumes in the meantime
+— its real hit rate is unmeasured; relevance and naturalness are human
+judgements and have none yet.
+
 ### Remaining migration work
 
 | Brief | Outstanding |
@@ -465,6 +547,7 @@ turn) or the human benchmark's sessions; neither was authorized here.
 | `VOICE_ANSWER_COMMIT_ANCHOR` | `transcript` (default) or `speech_end`: the clock the 1.8 / 2.2 s window counts from (run 4). **Keep `transcript`** until the human benchmark labels false cuts under `speech_end`. |
 | `VOICE_ANSWER_PAUSE_NUDGE_ENABLED` | Default on. `0` silences the mid-answer nudge: the filler-off arm of the voice-output audit. |
 | `INTERVIEW_TURN_CALL_BUDGET` / `INTERVIEW_PREVIEW_CALL_BUDGET` / `INTERVIEW_SESSION_CALL_BUDGET` | Hard provider-call caps charged at dispatch (6 / 2 / 120). Not flags: always on. |
+| `INTERVIEW_BACKCHANNEL_ENABLED` (+ `_CALLS_PER_TURN`, `_MIN_GAP_SECONDS`, `_MAX_WORDS`) | The Talker as a context-aware streaming backchanneler; needs `INTERVIEW_TALKER_MODEL`. **Off** until the benchmark above has run. |
 
 ## Change rule
 

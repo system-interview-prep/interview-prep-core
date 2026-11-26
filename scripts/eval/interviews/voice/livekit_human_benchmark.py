@@ -37,7 +37,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-CONFIGS = ("baseline", "unified", "unified_speech_end", "unified_no_nudge")
+CONFIGS = ("baseline", "unified", "unified_speech_end", "unified_no_nudge", "unified_backchannel")
 
 #: Per configuration: the flags the containers must carry. The first two are
 #: the pilot's; the last two are the two changes this profile proposes,
@@ -55,6 +55,11 @@ FLAGS: dict[str, dict[str, str]] = {
     "unified_no_nudge": {"INTERVIEW_UNIFIED_THINKER": "1", "VOICE_LLM_SPECULATIVE_PREVIEW": "0",
                          "VOICE_ADAPTIVE_ENDPOINTING": "0", "VOICE_ANSWER_COMMIT_ANCHOR": "transcript",
                          "VOICE_ANSWER_PAUSE_NUDGE_ENABLED": "0"},
+    # The context-aware streaming Talker (brief 2026-11-26), against `unified_no_nudge`,
+    # which is the same configuration with no backchannel at all.
+    "unified_backchannel": {"INTERVIEW_UNIFIED_THINKER": "1", "VOICE_LLM_SPECULATIVE_PREVIEW": "0",
+                            "VOICE_ADAPTIVE_ENDPOINTING": "0", "VOICE_ANSWER_COMMIT_ANCHOR": "transcript",
+                            "VOICE_ANSWER_PAUSE_NUDGE_ENABLED": "0", "INTERVIEW_BACKCHANNEL_ENABLED": "1"},
 }
 ALWAYS = {"INTERVIEW_TALKER_ENABLED": "false", "INTERVIEW_AGENT_MODE": "live"}
 
@@ -76,6 +81,10 @@ LABEL_FIELDS = {
     "cut_pause_s": None,      # the pause (seconds) that was cut, if any
     "interrupted_filler": None,  # true: the nudge/filler was audibly cut by the reply (expected, not a defect)
     "reply_overlapped_speech": None,  # true: the reply started over the person's speech
+    # Backchannels (brief 2026-11-26), rated by the listener per turn, 1-5:
+    "backchannel_relevance": None,   # did it fit what the person had just said?
+    "backchannel_naturalness": None,  # did it sound like an attentive listener, at a natural moment?
+    "backchannel_interrupted_person": None,  # true: it started while the person was still talking
     "notes": "",
 }
 
@@ -103,6 +112,19 @@ def budget_check(calls: int, budget: int) -> dict[str, Any]:
 def labels_template(per_turn: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"turn_index": t.get("turn_index"), "words": t.get("words"),
              "speech_end_to_submit_ms": t.get("speech_end_to_submit_ms"), **LABEL_FIELDS} for t in per_turn]
+
+
+def labelled_backchannels(labels: list[dict[str, Any]]) -> dict[str, Any]:
+    """Relevance and naturalness as the listener rated them; the metrics cannot."""
+    rated = [l for l in labels if isinstance(l.get("backchannel_relevance"), (int, float))]
+    natural = [l for l in labels if isinstance(l.get("backchannel_naturalness"), (int, float))]
+    interrupted = [l for l in labels if l.get("backchannel_interrupted_person") is True]
+    return {
+        "rated": len(rated),
+        "relevance_mean": round(sum(float(l["backchannel_relevance"]) for l in rated) / len(rated), 2) if rated else None,
+        "naturalness_mean": round(sum(float(l["backchannel_naturalness"]) for l in natural) / len(natural), 2) if natural else None,
+        "interrupted_person": len(interrupted),
+    }
 
 
 def labelled_false_cuts(labels: list[dict[str, Any]]) -> dict[str, Any]:
@@ -176,6 +198,7 @@ async def report(args: argparse.Namespace) -> int:
         "models": sorted({str(c.get("model")) for c in calls if c.get("model")}),
         "purposes": sorted({str(c.get("purpose")) for c in calls}),
         "metrics": summary,
+        "evaluation": await _evaluation_summary(session_id),
         "human_labels": labels_template(summary["per_turn"]),
         "note": "one person, one session: a pilot measurement, not a P95",
     }
@@ -183,6 +206,7 @@ async def report(args: argparse.Namespace) -> int:
         labelled = json.loads(Path(args.labels).read_text(encoding="utf-8"))
         record["human_labels"] = labelled.get("human_labels") or []
         record["labelled_false_cuts"] = labelled_false_cuts(record["human_labels"])
+        record["labelled_backchannels"] = labelled_backchannels(record["human_labels"])
     Path(args.out).write_text(json.dumps(record, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     print(f"session: {session_id}")
     print(metrics.render(summary))
@@ -191,6 +215,30 @@ async def report(args: argparse.Namespace) -> int:
         print("labelled false cuts:", record["labelled_false_cuts"])
     print(f"record: {args.out}")
     return 0 if record["budget"]["within"] else 2
+
+
+async def _evaluation_summary(session_id: str) -> dict[str, Any] | None:
+    """The Evaluator's report for the session, if it was scored: the quality side of the comparison."""
+    from sqlalchemy import text
+
+    from src.infrastructure.database import StandaloneSessionFactory
+
+    try:
+        async with StandaloneSessionFactory() as db:
+            row = (
+                await db.execute(
+                    text("SELECT created_at, report FROM interview_evaluations WHERE session_id = :sid "
+                         "ORDER BY created_at DESC LIMIT 1"),
+                    {"sid": session_id},
+                )
+            ).mappings().first()
+    except Exception as exc:  # noqa: BLE001 - the record says why instead of failing
+        return {"error": type(exc).__name__}
+    if row is None:
+        return None
+    report = row["report"] if isinstance(row["report"], dict) else json.loads(row["report"] or "{}")
+    keep = {k: report.get(k) for k in ("overall_score", "overallScore", "score", "summary", "competencies") if k in report}
+    return {"created_at": str(row["created_at"]), **keep}
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -15,6 +15,8 @@ processes must see the same values):
     unified       INTERVIEW_UNIFIED_THINKER=1 VOICE_LLM_SPECULATIVE_PREVIEW=0 VOICE_ADAPTIVE_ENDPOINTING=0
     anticipation  INTERVIEW_UNIFIED_THINKER=1 VOICE_LLM_SPECULATIVE_PREVIEW=1 VOICE_ADAPTIVE_ENDPOINTING=0
     endpointing   INTERVIEW_UNIFIED_THINKER=1 VOICE_LLM_SPECULATIVE_PREVIEW=1 VOICE_ADAPTIVE_ENDPOINTING=1
+    backchannel   unified + INTERVIEW_BACKCHANNEL_ENABLED=1 (the Talker as a
+                  context-aware backchanneler), VOICE_ANSWER_PAUSE_NUDGE_ENABLED=0
 
 Hybrid (``INTERVIEW_TALKER_ENABLED``) stays off in every configuration.
 
@@ -63,6 +65,11 @@ CONFIGS: dict[str, dict[str, str]] = {
     "unified": {"INTERVIEW_UNIFIED_THINKER": "1", "VOICE_LLM_SPECULATIVE_PREVIEW": "0", "VOICE_ADAPTIVE_ENDPOINTING": "0"},
     "anticipation": {"INTERVIEW_UNIFIED_THINKER": "1", "VOICE_LLM_SPECULATIVE_PREVIEW": "1", "VOICE_ADAPTIVE_ENDPOINTING": "0"},
     "endpointing": {"INTERVIEW_UNIFIED_THINKER": "1", "VOICE_LLM_SPECULATIVE_PREVIEW": "1", "VOICE_ADAPTIVE_ENDPOINTING": "1"},
+    # Brief 2026-11-26: Unified Thinker with the context-aware streaming Talker.
+    # Hybrid (the Talker as a predictor) stays off; the Talker only backchannels.
+    "backchannel": {"INTERVIEW_UNIFIED_THINKER": "1", "VOICE_LLM_SPECULATIVE_PREVIEW": "0",
+                    "VOICE_ADAPTIVE_ENDPOINTING": "0", "INTERVIEW_BACKCHANNEL_ENABLED": "1",
+                    "VOICE_ANSWER_PAUSE_NUDGE_ENABLED": "0"},
 }
 ALWAYS_OFF = {"INTERVIEW_TALKER_ENABLED": "false"}
 ORDER = ("baseline", "unified", "anticipation", "endpointing")

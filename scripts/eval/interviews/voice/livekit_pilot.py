@@ -72,6 +72,8 @@ API_VOICE = "/ai/voice-lab"
 FLAG_NAMES = (
     "PILOT_CONFIG", "INTERVIEW_UNIFIED_THINKER", "VOICE_LLM_SPECULATIVE_PREVIEW",
     "VOICE_ADAPTIVE_ENDPOINTING", "INTERVIEW_TALKER_ENABLED", "INTERVIEW_AGENT_MODE",
+    "INTERVIEW_BACKCHANNEL_ENABLED", "INTERVIEW_TALKER_MODEL", "VOICE_ANSWER_COMMIT_ANCHOR",
+    "VOICE_ANSWER_PAUSE_NUDGE_ENABLED",
     "LIVEKIT_STT_PROVIDER", "QWEN_STT_MODEL", "VOICE_LAB_TTS_PROVIDER", "VIENEU_TTS_MODEL",
     "VIENEU_TTS_VOICE", "LLM_MODEL",
 )
@@ -425,7 +427,8 @@ async def pilot(args: argparse.Namespace) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--config", required=True, choices=("baseline", "unified", "anticipation", "endpointing"))
+    parser.add_argument("--config", required=True,
+                        choices=("baseline", "unified", "anticipation", "endpointing", "backchannel"))
     parser.add_argument("--api", default="http://localhost:5000")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--user", required=True)

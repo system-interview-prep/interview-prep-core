@@ -38,7 +38,11 @@ from src.modules.interviews.session.voice_facade import (
 from src.modules.interviews.agents.interviewer.engine import InterviewCoreEngine
 from src.modules.interviews.agents.interviewer.menu import build_menu
 from src.modules.interviews.agents.interviewer.pacing import pacing_block
+from src.modules.interviews.agents.interviewer.talker import (
+    BackchannelContext, backchannel_by_talker, backchannel_enabled,
+)
 from src.modules.interviews.agents.interviewer.thinker import decide_by_model, is_violation
+from src.modules.interviews.session.chat_runtime import _recent_interviewer_lines as recent_interviewer_lines
 from src.modules.interviews.agents.interviewer.tools import unified_enabled
 from src.modules.interviews.core.contracts.interview import CandidateTurnInput
 from src.modules.interviews.core.conversation.turn_context import build_turn_context
@@ -85,6 +89,13 @@ class LabSpeechRequest(LabSessionRequest):
 
 class VoiceRuntimePreview(BaseModel):
     transcript: str = Field(min_length=1, max_length=20000)
+
+
+class VoiceRuntimeBackchannel(BaseModel):
+    transcript: str = Field(default="", max_length=20000)
+    phase: str = Field(default="listening", pattern=r"^(listening|processing)$")
+    speaking: bool = False
+    signals: dict[str, Any] = Field(default_factory=dict)
 
 
 class CandidateVoicePreview(BaseModel):
@@ -396,6 +407,72 @@ async def prefetch_livekit_runtime_context(
         "activeTurn": current_turn is not None,
         "ms": round((perf_counter() - started) * 1000),
     }
+
+
+@router.post("/livekit/runtime/backchannel")
+async def backchannel_livekit_runtime(
+    payload: VoiceRuntimeBackchannel,
+    claims: dict[str, str] = Depends(_voice_runtime_claims),
+    db: AsyncSession = Depends(get_db),
+):
+    """The Talker's streamed backchannel for the answer in progress (NDJSON).
+
+    Brief 2026-11-26. One line per validated unit (``{"type": "unit", ...}``)
+    as it is generated, then one ``{"type": "done", ...}``. The Talker sees
+    the current question, the interviewer's last lines, the stable transcript
+    the worker sends, the phase and the signals -- never the rubric, the CV
+    or JD, the action menu or a probe target -- and writes nothing to the
+    interview. One call per request, under the session's budget. When the
+    feature is off or no Talker model is configured, one ``done`` line says
+    so and nothing is called.
+    """
+    session = await _runtime_session(db, claims)
+    session_id = str(session["id"])
+    current_session_id.set(session_id)
+    if not backchannel_enabled():
+        return StreamingResponse(
+            iter([json.dumps({"type": "done", "enabled": False, "reason": "disabled"}) + "\n"]),
+            media_type="application/x-ndjson",
+        )
+    turns = await _load_turns(db, session_id)
+    current_turn = _only_asked_turn(turns)
+    question = ""
+    if current_turn is not None:
+        state = build_session_state_from_db(session, turns, current_turn, False)
+        context = state.get("current_question_context") or {}
+        question = str(context.get("follow_up_prompt") or context.get("spoken_prompt") or context.get("main_prompt") or "")
+    recent = await recent_interviewer_lines(db, session_id)
+    signals = payload.signals or {}
+    ctx = BackchannelContext(
+        session_id=session_id,
+        question=question,
+        transcript=payload.transcript.strip(),
+        phase=payload.phase,
+        speaking=bool(payload.speaking),
+        is_vi=str(session.get("locale") or "vi").lower().startswith("vi"),
+        recent_lines=recent,
+        last_backchannels=[str(x) for x in (signals.get("last_backchannels") or []) if x][-3:],
+        seconds_since_last=_float_or_none(signals.get("seconds_since_last_backchannel")),
+        answer_seconds=_float_or_none(signals.get("answer_seconds")),
+        fragments=int(signals.get("fragments") or 0),
+    )
+    settings = get_settings()
+
+    async def lines():
+        # One Talker call, charged like every other; the session cap holds.
+        with budget_scope(f"backchannel:{session_id}", limit=1, session_id=session_id,
+                          session_limit=settings.interview_session_call_budget):
+            async for item in backchannel_by_talker(ctx):
+                yield json.dumps(item, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson")
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 @router.post("/livekit/runtime/preview")

@@ -24,12 +24,42 @@ from src.modules.interviews.agents.interviewer.talker import TalkerOutput
 from src.modules.interviews.agents.interviewer.tools import UNIFIED_TEXT_ACTIONS
 from src.modules.interviews.core.conversation.turn_context import Decision, TurnContext
 from src.modules.interviews.core.guardrails.output import (
+    acknowledgement_rejection_reason,
     checked_probe,
     clarify_rejection_reason,
     redirect_rejection_reason,
 )
 
-__all__ = ["ArbiterResult", "arbitrate"]
+__all__ = ["ArbiterResult", "arbitrate", "arbitrate_backchannel"]
+
+
+def arbitrate_backchannel(
+    text: str,
+    *,
+    recent: Any = (),
+    answer: str = "",
+    max_words: int = 14,
+    last_backchannels: Any = (),
+) -> Optional[str]:
+    """Why a Talker backchannel unit may not be spoken, or ``None`` when it may.
+
+    Deterministic, no model call -- the same stance the Arbiter takes on the
+    Talker's prediction. The unit faces the acknowledgement guard the early
+    line always faced (no verdict, no praise, no hint, no question, no
+    parroting, no rubric or system leak, house style) plus two things a
+    streamed backchannel adds: a hard length cap, so a "line" cannot become
+    a speech, and no repeat of a backchannel already said this turn.
+    """
+    value = " ".join(str(text or "").split())
+    if not value:
+        return "empty"
+    if len(value.split()) > max_words:
+        return "too_long"
+    folded = value.casefold().rstrip(".!…")
+    for earlier in last_backchannels or ():
+        if str(earlier or "").casefold().rstrip(".!…") == folded:
+            return "repeats_backchannel"
+    return acknowledgement_rejection_reason(value, recent=recent, answer=answer)
 
 
 @dataclass(frozen=True)

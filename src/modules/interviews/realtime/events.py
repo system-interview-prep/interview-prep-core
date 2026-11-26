@@ -75,6 +75,14 @@ VOICE_EVENTS = frozenset(
         # The deterministic context warm-up made while the candidate speaks
         # (no provider call); its round trip.
         "voice_prefetch",
+        # Context-aware backchanneling (brief 2026-11-26): one event per Talker
+        # inference (kind, ttft, total, units, spoken), one per unit spoken,
+        # one per unit discarded as stale, one when the candidate talks over
+        # a playing backchannel.
+        "voice_backchannel",
+        "voice_backchannel_spoken",
+        "voice_backchannel_discarded",
+        "voice_backchannel_overlap",
         "voice_stt_diagnostic",
         "voice_tts_fallback",
         "voice_provider_degraded",

@@ -54,6 +54,22 @@ def test_labelled_false_cuts_come_from_the_listener_not_the_proxy() -> None:
     assert bench.labelled_false_cuts([])["rate"] is None
 
 
+def test_the_backchannel_arm_and_its_listener_ratings() -> None:
+    arm = bench.FLAGS["unified_backchannel"]
+    assert arm["INTERVIEW_BACKCHANNEL_ENABLED"] == "1" and arm["VOICE_ANSWER_PAUSE_NUDGE_ENABLED"] == "0"
+    assert {k: v for k, v in arm.items() if k != "INTERVIEW_BACKCHANNEL_ENABLED"} == bench.FLAGS["unified_no_nudge"], (
+        "the comparison arm is the same configuration with no backchannel at all"
+    )
+    template = bench.labels_template([{"turn_index": 0}])[0]
+    assert template["backchannel_relevance"] is None and template["backchannel_naturalness"] is None
+    rated = bench.labelled_backchannels([
+        {"backchannel_relevance": 4, "backchannel_naturalness": 5, "backchannel_interrupted_person": False},
+        {"backchannel_relevance": 2, "backchannel_naturalness": 3, "backchannel_interrupted_person": True},
+        {"false_cut": False},
+    ])
+    assert rated == {"rated": 2, "relevance_mean": 3.0, "naturalness_mean": 4.0, "interrupted_person": 1}
+
+
 def test_the_checklist_makes_the_person_leave_the_warm_up_and_pause_on_purpose() -> None:
     text = bench.render_checklist("unified")
     assert "self-introduction" in text and "thinking pauses" in text and "INTERVIEW_UNIFIED_THINKER=1" in text

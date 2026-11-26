@@ -18,8 +18,14 @@ metrics = bench._metrics_module()
 
 
 def test_the_four_configurations_differ_only_in_the_three_flags_and_hybrid_is_always_off() -> None:
-    keys = {tuple(sorted(c)) for c in bench.CONFIGS.values()}
-    assert keys == {("INTERVIEW_UNIFIED_THINKER", "VOICE_ADAPTIVE_ENDPOINTING", "VOICE_LLM_SPECULATIVE_PREVIEW")}
+    three = ("INTERVIEW_UNIFIED_THINKER", "VOICE_ADAPTIVE_ENDPOINTING", "VOICE_LLM_SPECULATIVE_PREVIEW")
+    keys = {tuple(sorted(c)) for name, c in bench.CONFIGS.items() if name != "backchannel"}
+    assert keys == {three}
+    # The fifth configuration (brief 2026-11-26) adds the streaming Talker on
+    # top of `unified` and silences the template nudge; Hybrid stays off.
+    backchannel = bench.CONFIGS["backchannel"]
+    assert {k: backchannel[k] for k in three} == bench.CONFIGS["unified"]
+    assert backchannel["INTERVIEW_BACKCHANNEL_ENABLED"] == "1" and backchannel["VOICE_ANSWER_PAUSE_NUDGE_ENABLED"] == "0"
     assert bench.CONFIGS["baseline"] == {"INTERVIEW_UNIFIED_THINKER": "0", "VOICE_LLM_SPECULATIVE_PREVIEW": "0", "VOICE_ADAPTIVE_ENDPOINTING": "0"}
     assert bench.CONFIGS["endpointing"] == {"INTERVIEW_UNIFIED_THINKER": "1", "VOICE_LLM_SPECULATIVE_PREVIEW": "1", "VOICE_ADAPTIVE_ENDPOINTING": "1"}
     assert bench.ALWAYS_OFF == {"INTERVIEW_TALKER_ENABLED": "false"}

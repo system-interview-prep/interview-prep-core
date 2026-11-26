@@ -271,6 +271,40 @@ def test_the_endpointing_chain_and_pre_submit_events_belong_to_the_answer_they_p
     assert "VAD end → final transcript" in text and "commit anchor" in text
 
 
+def test_backchannel_inferences_and_units_are_measured_per_answer() -> None:
+    """Brief 2026-11-26: Talker time to first token, generation latency, stale
+    rate, candidate overlaps, processing acks and the Talker's own calls."""
+    events = [
+        _ev(0, "voice_session_started", 0),
+        _ev(1, "voice_reply_started", 0, kind="question", since_speech_end_ms=None),
+        # listening-phase backchannel: before the submit, belongs to this answer
+        _ev(2, "voice_backchannel_spoken", 0, phase="listening", kind="reflective", words=4, ttft_ms=320, ready_ms=410, held_ms=0),
+        _ev(3, "voice_reply_started", 0, kind="backchannel", since_speech_end_ms=900),
+        _ev(4, "voice_backchannel", 0, phase="listening", kind="reflective", ok=True, ttft_ms=320, total_ms=480, units=1, rejected=0, spoken=1),
+        _ev(5, "voice_backchannel_overlap", 0),
+        _ev(6, "voice_answer_submitted", 0, since_speech_end_ms=2000, words=40, fragments=2),
+        _ev(7, "voice_backchannel_discarded", 0, reason="reply_ready", kind="processing", held_ms=0),
+        _ev(8, "voice_backchannel", 0, phase="processing", kind="processing", ok=True, ttft_ms=350, total_ms=700, units=1, rejected=0, spoken=0),
+        _ev(9, "voice_core_completed", 0, core_ms=3000, action="PROBE"),
+        _ev(10, "voice_reply_started", 1, kind="question", since_speech_end_ms=6000, since_submit_ms=4000, since_core_ms=450),
+    ]
+    calls = [_call(4, "interviews.agent.talker.backchannel", 480, tokens=(400, 12)),
+             _call(8, "interviews.agent.talker.backchannel", 700, tokens=(420, 10)),
+             _call(9, "interviews.agent.decide", 2800, tokens=(2500, 150))]
+    report = metrics.summarize(events, calls)
+    turn = report["per_turn"][0]
+    assert turn["ttfa_ms"] == 900 and turn["ttfa_kind"] == "backchannel", "the listening backchannel is this answer's first audio"
+    assert turn["ttmr_ms"] == 6000
+    assert turn["backchannel_inferences"] == 2 and turn["backchannel_spoken"] == 1 and turn["backchannel_discarded"] == 1
+    bc = report["backchannel"]
+    assert bc["inferences"] == 2 and bc["spoken"] == 1 and bc["discarded"] == 1 and bc["stale_rate"] == 0.5
+    assert bc["overlaps"] == 1 and bc["processing_spoken"] == 0 and bc["kinds"] == {"reflective": 1}
+    assert bc["ttft_ms"]["p50"] == 320 and bc["total_ms"]["n"] == 2
+    assert bc["talker_calls"] == 2 and bc["talker_tokens"] == {"in": 820, "out": 22}
+    text = metrics.render(report)
+    assert "Talker time to first token" in text and "stale rate" in text
+
+
 def test_percentiles_are_nearest_rank_and_empty_is_none() -> None:
     assert metrics.percentile([], 50) is None
     assert metrics.percentile([5.0], 99) == 5.0

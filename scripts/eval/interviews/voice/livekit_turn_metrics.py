@@ -52,7 +52,7 @@ from datetime import datetime
 from typing import Any
 
 #: Utterance kinds that count as "first audio" (TTFA) after an answer.
-FIRST_AUDIO_KINDS = frozenset({"early_ack", "filler", "question", "closing"})
+FIRST_AUDIO_KINDS = frozenset({"early_ack", "filler", "backchannel", "question", "closing"})
 #: Utterance kinds that are the official reply (TTMR).
 REPLY_KINDS = frozenset({"question", "closing"})
 #: ai_call_logs purposes that are speculation (anticipation), by substring.
@@ -114,7 +114,11 @@ def _is_anticipation(event: dict[str, Any]) -> bool:
 
 #: Events that happen *before* the submit they belong to: while the candidate
 #: is still speaking or pausing. Carried forward to that submit's turn.
-_PRE_SUBMIT_EVENTS = frozenset({"voice_stt_diagnostic", "voice_answer_pause_nudge", "voice_prefetch"})
+_PRE_SUBMIT_EVENTS = frozenset({
+    "voice_stt_diagnostic", "voice_answer_pause_nudge", "voice_prefetch",
+    # Listening-phase backchannels happen before the submit they belong to.
+    "voice_backchannel", "voice_backchannel_spoken", "voice_backchannel_discarded", "voice_backchannel_overlap",
+})
 
 
 def _belongs_to_next_turn(event: dict[str, Any]) -> bool:
@@ -124,7 +128,7 @@ def _belongs_to_next_turn(event: dict[str, Any]) -> bool:
     # The pause nudge's audio (kind=filler) also plays before the submit; the
     # pilot's "TTFA" was read off it, so it must sit in the turn it preceded.
     if name in ("voice_reply_started", "voice_tts_metrics"):
-        return str(_payload(event).get("kind") or "") == "filler"
+        return str(_payload(event).get("kind") or "") in ("filler", "backchannel")
     return False
 
 
@@ -192,6 +196,8 @@ def measure_turn(turn: dict[str, Any]) -> dict[str, Any]:
     ]
     qwen_final = _payload(finishes[-1]).get("pcm_speech_end_to_final_ms") if finishes else None
     prefetch = _first(turn, "voice_prefetch")
+    inferences = [_payload(e) for e in turn["events"] if e.get("event") == "voice_backchannel"]
+    spoken_units = [_payload(e) for e in turn["events"] if e.get("event") == "voice_backchannel_spoken"]
     tts_by_kind: dict[str, list[float]] = {}
     for event in turn["events"]:
         if event.get("event") == "voice_tts_metrics":
@@ -221,6 +227,17 @@ def measure_turn(turn: dict[str, Any]) -> dict[str, Any]:
         "nudged": chain_payload.get("nudged"),
         "qwen_pcm_end_to_final_ms": qwen_final,
         "filler_interrupted": _count(turn, "voice_filler_interrupted"),
+        # The Talker as a backchanneler (brief 2026-11-26).
+        "backchannel_inferences": len(inferences),
+        "backchannel_ttft_ms": [float(p["ttft_ms"]) for p in inferences if p.get("ttft_ms") is not None],
+        "backchannel_total_ms": [float(p["total_ms"]) for p in inferences if p.get("total_ms") is not None],
+        "backchannel_silent": sum(1 for p in inferences if p.get("kind") == "silence"),
+        "backchannel_errors": sum(1 for p in inferences if p.get("ok") is False),
+        "backchannel_spoken": len(spoken_units),
+        "backchannel_kinds": Counter(str(p.get("kind") or "?") for p in spoken_units),
+        "backchannel_discarded": _count(turn, "voice_backchannel_discarded"),
+        "backchannel_overlaps": _count(turn, "voice_backchannel_overlap"),
+        "backchannel_processing_spoken": sum(1 for p in spoken_units if p.get("phase") == "processing"),
         "prefetch_ms": _payload(prefetch).get("ms") if prefetch else None,
         "prefetch_ok": _payload(prefetch).get("ok") if prefetch else None,
         "words": submitted.get("words"),
@@ -324,6 +341,7 @@ def summarize(events: list[dict[str, Any]], calls: list[dict[str, Any]]) -> dict
             "nudged_turns": sum(1 for t in measured if t["nudged"]),
         },
         "filler_interrupted": sum(t["filler_interrupted"] for t in measured),
+        "backchannel": _backchannel_summary(measured, calls),
         "prefetch_ms": summary([t["prefetch_ms"] for t in measured if t["prefetch_ok"]]),
         "prefetch_failed": sum(1 for t in measured if t["prefetch_ok"] is False),
         "early_ack_ms": summary([t["early_ack_ms"] for t in measured]),
@@ -357,6 +375,33 @@ def summarize(events: list[dict[str, Any]], calls: list[dict[str, Any]]) -> dict
             {k: (dict(v) if isinstance(v, Counter) else v) for k, v in t.items() if k != "tts_ttfb_ms_by_kind"}
             for t in measured
         ],
+    }
+
+
+def _backchannel_summary(measured: list[dict[str, Any]], calls: list[dict[str, Any]]) -> dict[str, Any]:
+    spoken = sum(t["backchannel_spoken"] for t in measured)
+    discarded = sum(t["backchannel_discarded"] for t in measured)
+    kinds: Counter = Counter()
+    for t in measured:
+        kinds.update(t["backchannel_kinds"])
+    talker_calls = [c for c in calls if "talker" in str(c.get("purpose") or "")]
+    return {
+        "inferences": sum(t["backchannel_inferences"] for t in measured),
+        "silent": sum(t["backchannel_silent"] for t in measured),
+        "errors": sum(t["backchannel_errors"] for t in measured),
+        "spoken": spoken,
+        "discarded": discarded,
+        "stale_rate": round(discarded / (spoken + discarded), 3) if (spoken + discarded) else None,
+        "overlaps": sum(t["backchannel_overlaps"] for t in measured),
+        "processing_spoken": sum(t["backchannel_processing_spoken"] for t in measured),
+        "kinds": dict(kinds),
+        "ttft_ms": summary([v for t in measured for v in t["backchannel_ttft_ms"]]),
+        "total_ms": summary([v for t in measured for v in t["backchannel_total_ms"]]),
+        "talker_calls": len(talker_calls),
+        "talker_tokens": {
+            "in": sum(int(c.get("input_tokens") or 0) for c in talker_calls),
+            "out": sum(int(c.get("output_tokens") or 0) for c in talker_calls),
+        },
     }
 
 
@@ -404,6 +449,20 @@ def render(report: dict[str, Any]) -> str:
         f"early ack available: {report['early_ack_available']}/{report['turns']}  "
         f"first audio by kind: {report['ttfa_by_kind']}"
     )
+    bc = report["backchannel"]
+    if bc["inferences"]:
+        lines.append(
+            f"backchannel: inferences {bc['inferences']}  silent {bc['silent']}  spoken {bc['spoken']}  "
+            f"discarded {bc['discarded']}  stale rate {_fmt(bc['stale_rate'] * 100) + '%' if bc['stale_rate'] is not None else '—'}  "
+            f"candidate talked over {bc['overlaps']}  processing acks {bc['processing_spoken']}  kinds {bc['kinds']}"
+        )
+        lines.append(
+            f"{'Talker time to first token':38} {bc['ttft_ms']['n']:>3} {_fmt(bc['ttft_ms']['p50']):>7} {_fmt(bc['ttft_ms']['p95']):>7} {_fmt(bc['ttft_ms']['p99']):>7}"
+        )
+        lines.append(
+            f"{'Talker generation (to last unit)':38} {bc['total_ms']['n']:>3} {_fmt(bc['total_ms']['p50']):>7} {_fmt(bc['total_ms']['p95']):>7} {_fmt(bc['total_ms']['p99']):>7}"
+        )
+        lines.append(f"talker calls: {bc['talker_calls']}  talker tokens in/out: {bc['talker_tokens']['in']}/{bc['talker_tokens']['out']}")
     ep = report["endpointing"]
     lines.append(
         f"commit anchor: {ep['anchors'] or '—'}  nudged turns: {ep['nudged_turns']}/{report['turns']}  "
