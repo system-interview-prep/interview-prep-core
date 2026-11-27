@@ -164,6 +164,7 @@ async def decide(state: TurnGraphState) -> dict:
                 pacing=state.get("pacing", {}),
                 memory_search=state.get("memory_search"),
                 next_question=next_question_text,
+                menu_reasons=state.get("menu_reasons", {}),
             )
         except Exception as exc:  # noqa: BLE001 - the model decider must never cost the candidate a turn
             error = type(exc).__name__

@@ -152,9 +152,14 @@ def is_evaluative(text_value: str) -> bool:
     return any(re.search(pattern, text_value, re.IGNORECASE) for pattern in ACK_EVALUATIVE_PATTERNS)
 def is_judgmental(text_value: str) -> bool:
     return any(re.search(pattern, text_value, re.IGNORECASE) for pattern in ACK_JUDGMENT_PATTERNS)
+_MAIN_CLAUSE_RE = re.compile(r"\b(?:nên|thì|so|then)\b", re.IGNORECASE)
+
+
 def is_incomplete_clause(text_value: str) -> bool:
+    """"Ừm, khi network partition xảy ra." is a fragment; "Vì thời lượng có hạn
+    nên mình chuyển sang chuyện khác nhé." has its main clause after "nên"."""
     rest = _INTERJECTION_RE.sub("", str(text_value or "")).strip()
-    return bool(_INCOMPLETE_OPENING_RE.match(rest)) and "," not in rest
+    return bool(_INCOMPLETE_OPENING_RE.match(rest)) and "," not in rest and not _MAIN_CLAUSE_RE.search(rest)
 def is_keyword_fragment(text_value: str) -> bool:
     rest = _INTERJECTION_RE.sub("", str(text_value or "")).strip(" .!…")
     words = rest.split()

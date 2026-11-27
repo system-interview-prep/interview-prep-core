@@ -12,7 +12,12 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from src.modules.interviews.core.contracts.interview import InterviewStage
-from src.modules.interviews.core.conversation.turn_context import TurnContext, probe_limit, question_time_budget
+from src.modules.interviews.core.conversation.turn_context import (
+    TurnContext,
+    expected_answer_seconds,
+    probe_limit,
+    question_time_budget,
+)
 from src.modules.interviews.core.conversation.turn_rules import TIME_THRESHOLDS
 
 # `behind` when the remaining plan needs more than this share over the time left;
@@ -137,4 +142,7 @@ def pacing_block(ctx: TurnContext) -> Dict[str, Any]:
         # The model now sees the question's own share and what it has used.
         "question_seconds_used": budget[0] if budget else None,
         "question_seconds_budget": budget[1] if budget else None,
+        "question_seconds_left": max(0, budget[1] - budget[0]) if budget else None,
+        # About how long one more answer from this candidate takes.
+        "expected_answer_seconds": expected_answer_seconds(ctx),
     }

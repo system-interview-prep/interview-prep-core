@@ -37,7 +37,8 @@ def decide_prompt(is_vi: bool) -> str:
             "- Số lần hỏi thêm còn lại ở câu này là pacing.probes_left_in_question; hết thì chỉ còn chuyển câu.\n"
             "- Đào sâu chỉ để lấy ý cốt lõi còn thiếu của CÂU HỎI CHÍNH, không đào tiếp từ câu hỏi thêm bạn vừa hỏi. Đọc Diễn biến câu hỏi này: khi các ý chính của câu hỏi chính đã có, chọn `move_to_next_question`.\n"
             "- Mỗi ý chỉ hỏi thêm một lần, không hỏi lại dù đổi lời. Ứng viên nói chưa làm hoặc không biết thì không hỏi tiếp ý đó.\n"
-            "- Mỗi câu có phần thời gian riêng (pacing.question_seconds_budget); đã dùng gần hết thì chuyển câu.\n"
+            "- Mỗi câu có phần thời gian riêng (pacing.question_seconds_budget, còn pacing.question_seconds_left) trong thời lượng cả buổi (pacing.time_remaining_seconds). Chỉ hỏi thêm khi câu trả lời cho nó (khoảng pacing.expected_answer_seconds giây) còn vừa trong phần thời gian đó; không thì chuyển câu.\n"
+            "- Khi chuyển câu vì thời gian (xem 'Không còn hỏi thêm được ở câu này vì…'), câu nối có thể nói nhẹ nhàng lý do bằng lời của bạn, ví dụ 'Vì thời lượng buổi mình có hạn nên mình xin phép chuyển sang chuyện khác nhé.' Chỉ nói khi đúng là vì thời gian, đừng lần nào cũng nói.\n"
             "- `kind=deepen` chỉ dành cho câu trả lời đã đủ ý; còn thiếu ý thì là `gap`.\n"
             "- Ứng viên nói không hiểu câu hỏi hoặc không trả lời được sau khi bạn đã nói lại, hoặc xin đổi câu: chọn `move_to_next_question`.\n\n"
             "# Lời thoại bạn tự viết (follow_up_text, transition_text, các *_text)\n"
@@ -81,7 +82,8 @@ def decide_prompt(is_vi: bool) -> str:
         "- The follow-ups left on this question are pacing.probes_left_in_question; at zero, only moving on remains.\n"
         "- Follow up only to obtain a core point the MAIN question still lacks; never follow up on your own previous follow-up. Read this question's exchange: once the main question's core is there, choose `move_to_next_question`.\n"
         "- Ask each point at most once, never again in other words. If the candidate says they have not done it or do not know, do not press that point.\n"
-        "- Each question has its own time share (pacing.question_seconds_budget); when it is nearly used, move on.\n"
+        "- Each question has its own time share (pacing.question_seconds_budget, pacing.question_seconds_left left) within the interview's time (pacing.time_remaining_seconds). Follow up only if its answer (about pacing.expected_answer_seconds s) still fits in that share; otherwise move on.\n"
+        "- When you move on because of time (see 'No more follow-ups on this question because…'), the bridge may say so gently in your own words, e.g. 'Since our time is limited, let's move on to something else.' Only when time really is the reason, not every time.\n"
         "- `kind=deepen` is only for an answer that already has the core; anything missing is a `gap`.\n"
         "- If the candidate says they do not understand or cannot answer after you rephrased, or asks to move on: choose `move_to_next_question`.\n\n"
         "# Lines you write yourself (follow_up_text, transition_text, the *_text fields)\n"
@@ -179,6 +181,7 @@ def decide_input(
     warm_up_exchange: Dict[str, Any] | None = None,
     question_exchange: Dict[str, Any] | None = None,
     next_question: str = "",
+    follow_up_closed: str = "",
 ) -> str:
     """The model's private decision input; it is never shown to the candidate."""
     ev = evaluation or {}
@@ -216,6 +219,11 @@ def decide_input(
         lines.append(warm_up_exchange_block(warm_up_exchange, is_vi=is_vi))
     if question_exchange:
         lines.append(question_exchange_block(question_exchange, is_vi=is_vi))
+    if follow_up_closed:
+        lines.append(
+            ("Không còn hỏi thêm được ở câu này vì: " if is_vi else "No more follow-ups on this question because: ")
+            + follow_up_closed
+        )
     if next_question and "move_to_next_question" in allowed_actions:
         lines.append(
             ("Nếu chuyển câu, câu hỏi kế tiếp sẽ được đọc nguyên văn ngay sau câu nối của bạn: "

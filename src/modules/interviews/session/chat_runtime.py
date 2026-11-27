@@ -66,6 +66,7 @@ from src.modules.interviews.core.contracts.interview import (
     TurnAction,
 )
 from src.modules.user_cvs.facade import candidate_name_from_text
+from src.modules.users.facade import account_display_name
 from src.modules.interviews.realtime.anticipation.validator import PreviewKey, validate_preview
 from src.modules.interviews.session.preview_authority import authoritative_preview_key
 
@@ -335,13 +336,20 @@ def _candidate_name_parts(raw_name: Any) -> tuple[str | None, str | None]:
 
 
 async def _candidate_names(
-    db: AsyncSession, session_id: str
+    db: AsyncSession, session_row: dict[str, Any]
 ) -> tuple[str | None, str | None]:
-    # The candidate is addressed by the name on the CV being interviewed, so a
-    # demo account interviewing a demo CV is not called by the account owner's
-    # name. Matching still receives a PII-free CanonicalResume: the name is read
-    # from the CV's raw text here, only to address the candidate. The account
-    # name is the fallback when the CV has no recognisable name.
+    # The candidate is addressed by the account's name (the product owner's
+    # call, 27/11: "phải theo tên tài khoản"). The name on the CV is the
+    # fallback for an account without one; it is read from the CV's raw text
+    # only to address the candidate -- matching still gets a PII-free resume.
+    # Until 27/11 the CV name came first, so a CV opening with the heading
+    # "KỸ NĂNG" had the account "Phi Trường" called "Năng".
+    session_id = session_row["id"]
+    full_name, short_name = _candidate_name_parts(
+        await account_display_name(db, session_row.get("user_id"))
+    )
+    if full_name:
+        return _speakable_names(full_name, short_name)
     cv_text = await db.scalar(
         text(
             "SELECT c.raw_text FROM interview_sessions s "
@@ -352,17 +360,7 @@ async def _candidate_names(
     cv_name = candidate_name_from_text(cv_text) if isinstance(cv_text, str) else None
     if cv_name and cv_name.isupper():
         cv_name = " ".join(word.capitalize() for word in cv_name.split())
-    full_name, short_name = _candidate_name_parts(cv_name)
-    if full_name:
-        return _speakable_names(full_name, short_name)
-    raw_name = await db.scalar(
-        text(
-            "SELECT NULLIF(BTRIM(u.name), '') FROM interview_sessions s "
-            "JOIN users u ON u.id = s.user_id WHERE s.id = :sid"
-        ),
-        {"sid": session_id},
-    )
-    return _speakable_names(*_candidate_name_parts(raw_name))
+    return _speakable_names(*_candidate_name_parts(cv_name))
 
 
 # Vietnamese letters with diacritics; a Vietnamese name written without them
@@ -457,7 +455,7 @@ async def _displayed_question_text(
     question = snapshot.get("questionText")
     if not question or not (session_row.get("locale") or "vi").lower().startswith("vi"):
         return question
-    _, short_name = await _candidate_names(db, session_row["id"])
+    _, short_name = await _candidate_names(db, session_row)
     if snapshot.get("stableKey") == "warmup-intro" or snapshot.get("stage") == "WARM_UP":
         # New sessions ask the warm-up without a greeting (the opening greets);
         # older snapshots still begin "Chào bạn".
@@ -990,7 +988,7 @@ async def start_chat_session(
 
     is_vi = (session_row.get("locale") or "vi").lower().startswith("vi")
     job_title = await _get_job_title(db, session_row.get("job_id"))
-    _, candidate_short_name = await _candidate_names(db, session_id)
+    _, candidate_short_name = await _candidate_names(db, session_row)
 
     # Keep the opening and the frozen first question in separate messages.
     q_snapshot = first_turn.get("question_snapshot") or {}
@@ -1846,7 +1844,7 @@ async def _prepare_inference(
     turns = ctx.turns
 
     job_title = await _get_job_title(db, session_row.get("job_id"))
-    candidate_full_name, candidate_short_name = await _candidate_names(db, session_id)
+    candidate_full_name, candidate_short_name = await _candidate_names(db, session_row)
     # Masked out of every payload sent to Langfuse.
     langfuse.register_names(candidate_full_name, candidate_short_name)
 

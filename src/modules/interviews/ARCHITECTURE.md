@@ -1139,6 +1139,41 @@ message supersedes a failed or stale one (`SUPERSEDED`, kept in the
 transcript) and is processed normally; resending the same text still
 recovers it. Test: `test_a_failed_turn_does_not_lock_the_session`.
 
+### The agent knows its time (user request, 2026-11-27)
+
+"Agent có hiểu ngân sách thời gian của một câu… gần hết giờ thì nói 'vì thời
+lượng… nên mình xin phép đổi câu khác nhé'… follow-up không vượt ngân sách
+từng câu và cả buổi." What it had: the pacing block (question used/share,
+time left, pace) and a probe gate that closed only once the share was spent
+-- a follow-up at 266 of 271 s was still allowed -- and the decider was never
+told why a follow-up was off its menu. Now:
+
+- `probe_window` offers a follow-up only if one more answer fits:
+  `used + expected_answer_seconds(ctx) <= share`, where the expected answer is
+  this answer's measured length (20-120 s) or 45 s. The share already comes
+  from the whole interview's remaining time, so both budgets hold.
+- The pacing block adds `question_seconds_left` and `expected_answer_seconds`.
+- `thinker.follow_up_closed_reason` turns the menu's reason into words
+  ("phần thời gian của câu này gần hết (còn khoảng 20 giây…)", "thời lượng cả
+  buổi gần hết…", "đã hỏi thêm đủ số lần…") and the decider's input says
+  "Không còn hỏi thêm được ở câu này vì: …"; the prompt lets the bridge say
+  so in its own words when time really is the reason.
+- `is_incomplete_clause` no longer rejects "Vì … nên …" (it has its main
+  clause), which would have refused exactly that kind of bridge.
+
+### The candidate's name (product owner's call, 2026-11-27)
+
+The account "Phi Trường" was greeted "Chào Năng": the interviewed CV opens
+with the heading "KỸ NĂNG", `candidate_name_from_text` took it for a name
+("Kỹ Năng"), and `_candidate_names` preferred the CV's name to the account's
+by design. Now the account name comes first and the CV name is only the
+fallback for an account without one; and CV section headings ("kỹ năng",
+"thông tin cá nhân", "skills", …) are never names
+(`user_cvs/parsing/domain/deterministic._SECTION_HEADINGS`). The account name
+is read through `src/modules/users/facade.account_display_name(db, user_id)`
+(the session's `user_id` is passed in) instead of `chat_runtime` joining the
+`users` table itself.
+
 ### Remaining migration work
 
 | Brief | Outstanding |

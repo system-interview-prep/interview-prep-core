@@ -64,8 +64,8 @@ def test_a_question_without_a_start_time_keeps_the_old_behaviour(ctx_factory) ->
     ("on_question", "elapsed_ratio", "open_"),
     [
         (97, 0.164, True),    # 15:44:14, first follow-up
-        (190, 0.27, True),    # 15:45:47
-        (266, 0.353, True),   # 15:47:03, third follow-up: 266 s of a 271 s share
+        (190, 0.27, True),    # 15:45:47 again: 190 + a 45 s answer fits in 270
+        (266, 0.353, False),  # 15:47:03: 266 s of 271 -- one more answer would not fit
         (367, 0.466, False),  # 15:48:44: the share is spent, the fourth is not allowed
         (617, 0.744, False),  # 15:52:54, where the session actually was
     ],
@@ -189,3 +189,51 @@ async def test_a_rejected_clarification_repeats_the_question_instead_of_ending_t
     output = await engine.act_clarify_question(ctx, Decision("clarify_question", {}, source="agent"))
     assert output.action == TurnAction.CLARIFY
     assert output.message_text == ctx.heard_prompt and output.message_text
+
+
+# ------------------------------------------------------------- the agent knows its time (27/11)
+
+def test_a_follow_up_must_fit_an_answer_of_this_candidates_length(ctx_factory) -> None:
+    from src.modules.interviews.core.conversation.turn_context import expected_answer_seconds
+
+    ctx = _validate_ctx(ctx_factory, on_question=180, elapsed_ratio=0.25)
+    used, share = question_time_budget(ctx)
+    assert expected_answer_seconds(ctx) == 45  # nothing measured: the default
+    assert probe_window(ctx).reasons["question_time"] is (used + 45 > share)
+    ctx.turn_input.duration_seconds = 300  # a very long talker: bounded at 120 s
+    assert expected_answer_seconds(ctx) == 120
+    assert probe_window(ctx).reasons["question_time"] is True
+
+
+def test_the_decider_is_told_why_it_cannot_follow_up() -> None:
+    from src.modules.interviews.agents.interviewer.thinker import follow_up_closed_reason
+
+    pacing = {"question_seconds_left": 20}
+    assert "còn khoảng 20 giây" in follow_up_closed_reason({"acknowledge_and_probe": "question_time"}, pacing, is_vi=True)
+    assert "cả buổi" in follow_up_closed_reason({"acknowledge_and_probe": "behind_schedule"}, pacing, is_vi=True)
+    assert "đủ số lần" in follow_up_closed_reason({"acknowledge_and_probe": "probe_budget"}, pacing, is_vi=True)
+    assert follow_up_closed_reason({"acknowledge_and_probe": "warm-up never probes"}, pacing, is_vi=True) == ""
+    assert follow_up_closed_reason({}, pacing, is_vi=True) == ""
+
+
+@pytest.mark.asyncio
+async def test_a_move_for_time_can_say_so_in_its_own_words(ctx_factory) -> None:
+    ctx = _validate_ctx(ctx_factory, on_question=266, elapsed_ratio=0.353)
+    caller = FakeToolCaller([tool_call(
+        "move_to_next_question", reason="budget",
+        transition_text="Vì thời lượng buổi mình có hạn nên mình xin phép chuyển sang chuyện khác nhé.",
+    )])
+    decision = await decide_by_model(
+        ctx, allowed_actions=["clarify_question", "move_to_next_question"], pacing={"question_seconds_left": 5},
+        generate=caller, menu_reasons={"acknowledge_and_probe": "question_time"},
+    )
+    sent = caller.inputs[0]["input_items"]
+    assert "Không còn hỏi thêm được ở câu này vì: phần thời gian của câu này gần hết" in sent
+    assert decision.args.get("transition_text", "").startswith("Vì thời lượng")
+    assert "Chỉ nói khi đúng là vì thời gian" in decide_prompt_vi()
+
+
+def decide_prompt_vi() -> str:
+    from src.modules.interviews.agents.interviewer.prompts.decide import decide_prompt
+
+    return decide_prompt(True)

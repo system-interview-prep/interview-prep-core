@@ -110,6 +110,40 @@ def _checked_unified_text(
     return text_value
 
 
+_TIME_REASONS = ("question_time", "behind_schedule", "closing_reserve", "behavioral_reserve", "hard_answer_timeout")
+
+
+def follow_up_closed_reason(menu_reasons: Dict[str, str], pacing: Dict[str, Any], *, is_vi: bool) -> str:
+    """Why a follow-up is not on the menu, in words the decider can act on.
+
+    Only the reasons a candidate could be told about: time (this question's
+    share, the whole interview's) and the follow-up count. Stage rules
+    ("warm-up never probes") are not news to anyone.
+    """
+    raw = str(menu_reasons.get("acknowledge_and_probe") or "")
+    codes = {code.strip() for code in raw.replace(";", ",").split(",") if code.strip()}
+    if not codes:
+        return ""
+    if "question_time" in codes:
+        left = pacing.get("question_seconds_left")
+        return (
+            f"phần thời gian của câu này gần hết (còn khoảng {left} giây, không đủ cho thêm một câu trả lời)"
+            if is_vi else f"this question's time share is nearly used (about {left} s left, not enough for another answer)"
+        )
+    if codes & {"behind_schedule", "closing_reserve", "behavioral_reserve"}:
+        return (
+            "thời lượng cả buổi phỏng vấn gần hết, cần giữ thời gian cho các phần còn lại"
+            if is_vi else "the interview's overall time is nearly used; the remaining parts need it"
+        )
+    if "hard_answer_timeout" in codes:
+        return "câu trả lời vừa rồi đã rất dài" if is_vi else "the last answer already ran very long"
+    if "probe_budget" in codes:
+        return (
+            "đã hỏi thêm đủ số lần cho câu này" if is_vi else "the follow-ups for this question are used up"
+        )
+    return ""
+
+
 def _violation(kind: str, detail: str = "", calls: Optional[List[Dict[str, Any]]] = None) -> Decision:
     d = Decision("", {}, reason=detail, source="agent", path=["model"])
     d.args["violation"] = kind
@@ -129,6 +163,7 @@ async def decide_by_model(
     reasoning_effort: str | None = "none",
     unified: Optional[bool] = None,
     next_question: str = "",
+    menu_reasons: Optional[Dict[str, str]] = None,
 ) -> Decision:
     # Resolved at call time so a test can route the decider through a scripted caller.
     generate = generate or generate_tool_calls
@@ -178,6 +213,7 @@ async def decide_by_model(
             else None
         ),
         next_question=next_question,
+        follow_up_closed=follow_up_closed_reason(menu_reasons or {}, pacing, is_vi=ctx.is_vi),
     )
     history: List[Dict[str, Any]] = [{"role": "user", "content": items}]
     for step in range(max_steps):

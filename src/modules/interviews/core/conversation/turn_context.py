@@ -257,6 +257,17 @@ def question_time_budget(ctx: "TurnContext") -> Optional[Tuple[int, int]]:
 
 
 DEFAULT_MAX_PROBES_PER_QUESTION = 2
+#: How long the answer to one more follow-up is expected to take: this
+#: answer's own length when the transport measured it, else this default,
+#: kept within these bounds.
+EXPECTED_ANSWER_SECONDS = 45
+EXPECTED_ANSWER_BOUNDS = (20, 120)
+
+
+def expected_answer_seconds(ctx: "TurnContext") -> int:
+    measured = float(getattr(ctx.turn_input, "duration_seconds", 0) or 0)
+    low, high = EXPECTED_ANSWER_BOUNDS
+    return int(min(high, max(low, measured))) if measured > 0 else EXPECTED_ANSWER_SECONDS
 
 
 def probe_limit(ctx: "TurnContext") -> int:
@@ -326,7 +337,10 @@ def probe_window(ctx: TurnContext) -> ProbeWindow:
         ctx.elapsed_seconds > (ctx.target_duration_seconds * blueprint.pacing.behind_schedule_ratio)
     ) and ctx.current_stage in [InterviewStage.VALIDATE, InterviewStage.DEEP_DIVE]
     budget = question_time_budget(ctx)
-    is_question_time_spent = bool(budget and budget[0] >= budget[1])
+    # A follow-up must fit: its answer, about as long as this one, has to end
+    # inside the question's share (session 2678ce7b ran a follow-up at 266 of
+    # 271 s and its answer took a minute more).
+    is_question_time_spent = bool(budget and budget[0] + expected_answer_seconds(ctx) > budget[1])
     stage_probes_enabled = (
         blueprint.validate_cv.probe_enabled
         if ctx.current_stage == InterviewStage.VALIDATE

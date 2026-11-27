@@ -99,7 +99,7 @@ class MockChatSession:
             return self.job_title
         if "JOIN user_cvs c ON c.id = s.resume_id" in sql:
             return self.cv_text
-        if "JOIN users u ON u.id = s.user_id" in sql:
+        if "JOIN users u ON u.id = s.user_id" in sql or "FROM users WHERE id = :user_id" in sql:
             return self.candidate_name
         if "SELECT status FROM interview_sessions" in sql:
             return self.session_row.get("status")
@@ -357,28 +357,32 @@ async def test_opening_greets_by_call_name_and_keeps_it(mock_session_data):
 
 
 @pytest.mark.asyncio
-async def test_opening_uses_the_name_on_the_cv_not_the_account(mock_session_data):
+async def test_opening_uses_the_account_name_not_the_cv(mock_session_data):
+    """Product owner's call (27/11): the candidate is called by the account's
+    name. It used to be the CV's, and a CV opening "KỸ NĂNG" turned the
+    account "Phi Trường" into "Năng"."""
     session_row, turns = mock_session_data
     db = MockChatSession(session_row, turns)
-    db.candidate_name = "Nguyễn Thị Thanh Hiền"  # account owner running a demo CV
-    db.cv_text = "NGUYỄN MINH KHOA\nBackend Developer (Node.js / TypeScript)\nEmail: khoa@example.com"
+    db.candidate_name = "Phi Trường"
+    db.cv_text = "KỸ NĂNG\n0388277806\nNGUYỄN MINH KHOA\nBackend Developer (Node.js / TypeScript)"
 
     runtime = await start_chat_session(db, session_row)
 
     opening = runtime["messages"][0]["content"]
-    assert opening.startswith("Chào Khoa")
-    assert "Hiền" not in opening
+    assert opening.startswith("Chào Trường")
+    assert "Năng" not in opening and "Khoa" not in opening
 
 
 @pytest.mark.asyncio
-async def test_account_name_is_the_fallback_when_the_cv_has_no_name(mock_session_data):
+async def test_the_cv_name_is_the_fallback_when_the_account_has_none(mock_session_data):
     session_row, turns = mock_session_data
     db = MockChatSession(session_row, turns)
-    db.candidate_name = "Nguyễn Văn Nam"
-    db.cv_text = "Backend Developer\nKinh nghiệm 3 năm Node.js"
+    db.candidate_name = None
+    db.cv_text = "KỸ NĂNG\nNGUYỄN VĂN NAM\nBackend Developer\nKinh nghiệm 3 năm Node.js"
 
     runtime = await start_chat_session(db, session_row)
 
+    # The heading "KỸ NĂNG" is not a name; the next name line is.
     assert runtime["messages"][0]["content"].startswith("Chào Nam")
 
 
