@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -67,9 +68,47 @@ _NUMBER_RE = re.compile(r"(?<![\w])\d+(?:[.,]\d+)*(?![\w])")
 _PROPER_TERM_RE = re.compile(r"\b(?:[A-Z][A-Za-z0-9]*|[A-Z]{2,}[A-Z0-9]*)\b")
 _QUESTION_MARKS = ("?", "？")
 _MAX_GENERATION_ATTEMPTS = 3
-_VIETNAMESE_QUESTION_STARTERS = {
-    "anh", "bạn", "chị", "em", "hãy", "nếu", "trong", "với", "ở", "khi", "đối"
+# A capitalised ASCII token the sources never carried is how a fabricated
+# tool, an injected credential or a leaked key would reach the candidate, so
+# the check below stays. What it may not do is read an ordinary Vietnamese
+# word as one of those. Vietnamese capitalises the first word of a sentence
+# like any language, and the eleven-word list this replaces held only the
+# accented openers: "Theo", "Vui", "Cho", "Xin", "Sau" and every other
+# unaccented word carries no diacritic for _PROPER_TERM_RE to trip over, so
+# a usable draft was refused for its first word and the candidate was handed
+# the template floor instead. These are the plain words a Vietnamese
+# question is built from, folded to bare ASCII so "Bạn" and "Ban" are one
+# entry, and none of them doubles as a technology name. A token whose
+# *shape* marks it as a named term - an acronym, a digit-bearing name, an
+# internal capital - is never excused by this list, so AWS, S3 and
+# PostgreSQL are still caught, and so is a leaked key.
+_VIETNAMESE_COMMON_WORDS = {
+    "anh", "ban", "bao", "biet", "bo", "ca", "cac", "cach", "chi", "cho",
+    "chua", "chung", "co", "con", "cu", "cua", "cung", "da", "dang", "dau",
+    "de", "den", "di", "doi", "dong", "du", "duoc", "em", "gi", "gia",
+    "hay", "hien", "hoac", "hon", "khi", "khong", "kinh", "la", "lam",
+    "lan", "long", "luc", "ma", "mang", "minh", "moi", "mot", "muc", "nam",
+    "nao", "nay", "neu", "nghiem", "nhu", "nhung", "noi", "nua", "o",
+    "phai", "phan", "qua", "quy", "ra", "rang", "rieng", "sao", "sau",
+    "se", "sinh", "su", "ta", "tai", "tap", "the", "theo", "thi", "thoi",
+    "tien", "toi", "trinh", "trong", "truoc", "tu", "tung", "va", "vai",
+    "van", "ve", "vi", "viec", "voi", "vui", "vua", "xin", "y", "yeu",
 }
+# A secret, a token or a link is not a named term and carries no standalone
+# number, so neither check above sees it: a lower-case key pasted into a CV
+# by a prompt injection ("mã xác thực sk_a5d4..., đúng chứ?") used to reach
+# the candidate intact. What such a string does have is shape - long, and
+# either mixing letters with digits or simply far longer than a word - and
+# an origin the sources cannot vouch for.
+_URL_RE = re.compile(r"(?:https?://|www\.|\S+@\S+\.[A-Za-z]{2,})\S*", re.IGNORECASE)
+_OPAQUE_TOKEN_RE = re.compile(r"[A-Za-z0-9_\-+./=]{12,}")
+_OPAQUE_TOKEN_MAX_WORD_LENGTH = 20
+
+# Shapes a real named term has and an ordinary Vietnamese word does not:
+# an all-capital acronym, a name carrying a digit, or an internal capital.
+_NAMED_TERM_SHAPE_RE = re.compile(
+    r"^(?:[A-Z]{2,}[A-Z0-9]*|[A-Za-z]*\d[A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*)$"
+)
 MissingDimension = Literal[
     "duration",
     "proficiency",
@@ -106,6 +145,31 @@ def _note_attempt(rejection: str | None = None) -> None:
         stats["attempts"] += 1
     else:
         stats["rejections"][rejection] += 1
+
+
+def _fold_ascii(term: str) -> str:
+    """Bare lower-case ASCII, so an accented word matches its unaccented twin."""
+    decomposed = unicodedata.normalize("NFKD", term)
+    return "".join(char for char in decomposed if not unicodedata.combining(char)).casefold()
+
+
+def _unsupported_opaque_tokens(question: str, sources: str) -> bool:
+    """True when the question carries a key-like or link-like string the sources lack."""
+    folded_sources = sources.casefold()
+    for match in _OPAQUE_TOKEN_RE.findall(question):
+        has_letter = any(char.isalpha() for char in match)
+        has_digit = any(char.isdigit() for char in match)
+        looks_opaque = (has_letter and has_digit) or len(match) >= _OPAQUE_TOKEN_MAX_WORD_LENGTH
+        if looks_opaque and match.casefold() not in folded_sources:
+            return True
+    return False
+
+
+def _is_ordinary_vietnamese_word(term: str) -> bool:
+    """True for a plain Vietnamese word, never for something shaped like a name."""
+    if _NAMED_TERM_SHAPE_RE.match(term):
+        return False
+    return _fold_ascii(term) in _VIETNAMESE_COMMON_WORDS
 
 
 class ClarificationPlan(CanonicalModel):
@@ -418,17 +482,38 @@ class ClarificationQuestionService:
         if not set(_NUMBER_RE.findall(question)).issubset(allowed_numbers):
             return "unsupported_number"
 
+        # A link or an address the sources never carried is an instruction to
+        # the candidate, not a question about their experience.
+        sources = " ".join([plan.requirement_text, candidate_evidence])
+        if any(
+            match.casefold() not in sources.casefold() for match in _URL_RE.findall(question)
+        ):
+            return "unsupported_link"
+        if _unsupported_opaque_tokens(question, sources):
+            return "unsupported_opaque_token"
+
         # Catch newly introduced named tools/acronyms (for example, adding AWS
-        # to a React-only CV). Common Vietnamese question openers are allowed.
-        source_terms = {
-            term.casefold()
-            for term in _PROPER_TERM_RE.findall(" ".join([plan.requirement_text, candidate_evidence]))
+        # to a React-only CV), and with them any credential, key or instruction
+        # token a prompt injection in the CV or posting tried to route through
+        # the question. A term the sources already carried is fine, and so is a
+        # plain Vietnamese word; anything shaped like a named term is judged on
+        # the sources alone.
+        source_terms = {term.casefold() for term in _PROPER_TERM_RE.findall(sources)}
+        unsupported_terms = {
+            term
+            for term in _PROPER_TERM_RE.findall(question)
+            if term.casefold() not in source_terms and not _is_ordinary_vietnamese_word(term)
         }
-        question_terms = {term.casefold() for term in _PROPER_TERM_RE.findall(question)}
-        unsupported_terms = question_terms - source_terms - _VIETNAMESE_QUESTION_STARTERS
         if unsupported_terms:
             return "unsupported_named_term"
-        if any(term.casefold() not in question.casefold() for term in plan.subject_terms if term.strip()):
+        # One subject term is enough to point the question at the right thing.
+        # Demanding every one of them meant a five-technology requirement could
+        # only be asked about by reciting all five, which refused every natural
+        # draft and left the recital as the one thing that passed.
+        subject_terms = [term for term in plan.subject_terms if term.strip()]
+        if subject_terms and not any(
+            term.casefold() in question.casefold() for term in subject_terms
+        ):
             return "missing_subject_term"
         return None
 

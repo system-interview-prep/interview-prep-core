@@ -106,15 +106,23 @@ def evaluate_with_readings(
     if not refs:
         return rule_result
     quotes = "; ".join(f"“{item.quote}”" for item in reading.selected if item.evidence_id in present)
+    sources = {ref: present[ref].evidence_source for ref in refs}
+    # A quote from the candidate's reply is not "the CV", and the reader must
+    # not be told it is.  Document-only readings keep their original wording.
+    origin = (
+        "Câu trả lời của ứng viên có nội dung đáp ứng yêu cầu"
+        if "candidate_self_report" in sources.values()
+        else "CV có nội dung đáp ứng yêu cầu"
+    )
     return RequirementResult(
         requirementId=requirement.requirement_id,
         status="met",
         score=1.0,
         confidence=JUDGE_CONFIDENCE,
         evidenceRefs=refs,
-        evidenceSources={ref: present[ref].evidence_source for ref in refs},
+        evidenceSources=sources,
         reasonCode=JUDGE_REASON_CODE,
-        evidenceExplanation=f"CV có nội dung đáp ứng yêu cầu: {quotes}.",
+        evidenceExplanation=f"{origin}: {quotes}.",
         groupOperator=rule_result.group_operator,
     )
 

@@ -13,6 +13,7 @@ a grounded ``satisfies`` may raise a verdict (see ``judge_evaluators``).
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 
 from src.core.config import Settings, get_settings
 from src.core.trace_logging import trace_event
@@ -135,7 +136,15 @@ def build_reading_set(
     judge: GroundedJudge | None = None,
     numeric_judge: NumericJudge | None = None,
     settings: Settings | None = None,
+    clarification_prompts: Mapping[str, str] | None = None,
 ) -> ReadingSet | None:
+    """One reading per unresolved requirement.
+
+    ``clarification_prompts`` maps a requirement id to the question the
+    candidate answered, when the resume carries that answer.  Only the rescore
+    path has one; a first-pass match passes nothing and the judge is called
+    exactly as before.
+    """
     settings = settings or get_settings()
     if not settings.matching_judge_enabled:
         return None
@@ -167,7 +176,10 @@ def build_reading_set(
                 readings.fallbacks[requirement.requirement_id] = numeric.fallback
             continue
         outcome = judge.judge(
-            requirement_id=requirement.requirement_id, requirement_text=text, candidates=candidates
+            requirement_id=requirement.requirement_id,
+            requirement_text=text,
+            candidates=candidates,
+            asked=(clarification_prompts or {}).get(requirement.requirement_id),
         )
         if outcome.reading is not None:
             readings.entailments[requirement.requirement_id] = outcome.reading

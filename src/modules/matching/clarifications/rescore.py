@@ -2,6 +2,7 @@
 
 import time
 from collections import Counter
+from collections.abc import Mapping
 
 from fastapi.concurrency import run_in_threadpool
 
@@ -10,6 +11,7 @@ from src.modules.matching.application.facade import get_matching_facade
 from src.modules.matching.clarifications.answer_evidence import (
     build_candidate_answer_evidence,
     candidate_negative_result,
+    candidate_self_report_result,
     is_explicit_negative,
     language_claim_from_answer,
     skill_claim_from_answer,
@@ -20,7 +22,6 @@ from src.modules.matching.clarifications.models import (
     MatchClarificationRescoreResult,
 )
 from src.modules.matching.domain.schemas import (
-    LanguageRequirement,
     RequirementResult,
     SkillRequirement,
 )
@@ -29,8 +30,18 @@ from src.modules.user_cvs.schemas import EvidenceSpan, LanguageClaim, SkillClaim
 
 async def rescore_match_with_clarification_answers(
     payload: MatchClarificationRescoreRequest,
+    *,
+    trusted_questions: Mapping[str, str] | None = None,
 ) -> MatchClarificationRescoreResult:
-    """Re-run matching with requirement-scoped, explicitly self-reported evidence."""
+    """Re-run matching with requirement-scoped, explicitly self-reported evidence.
+
+    ``trusted_questions`` maps a requirement id to the question this server
+    asked for it, taken from the server's own record - never from the request
+    body, whose ``initial_analysis`` the client wrote.  The judge reads each
+    answer beside its question; a bare "Dạ rồi" is unreadable without one and
+    the judge was right to say so.  Only the pass that holds the answers gets
+    them; the baseline and the final pass see the CV alone, as before.
+    """
     started = time.perf_counter()
     request = payload.match_request
     facade = get_matching_facade()
@@ -99,19 +110,46 @@ async def rescore_match_with_clarification_answers(
         if requirement_id not in answer_ids:
             overrides[requirement_id] = original_result
 
+    answered_prompts = {
+        requirement_id: question
+        for requirement_id, question in (trusted_questions or {}).items()
+        if requirement_id in evidence_by_requirement
+    }
     rescored = await run_in_threadpool(
         facade.match,
         rescoring_request,
         requirement_overrides=overrides,
+        clarification_prompts=answered_prompts or None,
     )
     self_report_refs = {item.evidence_id for item in answer_evidence}
     final_by_id = {item.requirement_id: item for item in rescored.requirement_results}
     final_overrides = dict(initial_by_id)
     used_self_report = False
+    unused_answers: list[str] = []
     for answer in payload.answers:
         result = final_by_id[answer.requirement_id]
         evidence = evidence_by_requirement[answer.requirement_id]
-        if evidence.evidence_id not in result.evidence_refs:
+        if evidence.evidence_id not in result.evidence_refs or result.status == "unknown":
+            # The requirement's own evaluator could not use this answer.  Four
+            # evaluator families read structured CV fields alone - the
+            # employment timeline, a GPA, a certification list, a degree - so
+            # an answer about any of them was never cited and the requirement
+            # came back exactly as it went in.  Falling through to the initial
+            # result here is what made the whole step look broken: a question
+            # was asked, an answer was typed, and nothing moved.  A self-report
+            # verdict is the floor for that, capped and tagged so it can never
+            # pass for a read of the CV.
+            fallback = candidate_self_report_result(
+                requirements_by_id[answer.requirement_id], answer.answer_text, evidence
+            )
+            if fallback is not None:
+                final_overrides[answer.requirement_id] = fallback
+                if fallback.reason_code != "candidate_self_report_unclear":
+                    used_self_report = True
+                else:
+                    unused_answers.append(answer.requirement_id)
+                continue
+            unused_answers.append(answer.requirement_id)
             continue
         evidence_sources = {
             ref: "candidate_self_report" if ref in self_report_refs else "document"
@@ -152,12 +190,15 @@ async def rescore_match_with_clarification_answers(
         final_match = final_match.model_copy(
             update={"warnings": list(dict.fromkeys([*final_match.warnings, "candidate_self_report_used"]))}
         )
-    final_statuses = {item.requirement_id: item.status for item in final_match.requirement_results}
+    final_rows = {item.requirement_id: item for item in final_match.requirement_results}
+    final_statuses = {key: row.status for key, row in final_rows.items()}
     outcomes = [
         ClarificationAnswerOutcome(
             requirementId=answer.requirement_id,
             evidenceRef=evidence_by_requirement[answer.requirement_id].evidence_id,
             status=final_statuses[answer.requirement_id],
+            reasonCode=final_rows[answer.requirement_id].reason_code,
+            explanation=final_rows[answer.requirement_id].evidence_explanation,
         )
         for answer in payload.answers
     ]
@@ -177,6 +218,7 @@ async def rescore_match_with_clarification_answers(
         fit_band_after=final_match.fit_band,
         passes=3,
         self_report_used=used_self_report,
+        unusable_answer_count=len(unused_answers),
         duration_ms=int((time.perf_counter() - started) * 1000),
     )
     return MatchClarificationRescoreResult(

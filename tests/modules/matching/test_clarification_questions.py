@@ -341,3 +341,120 @@ def test_invalid_semantic_threshold_disables_generation(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("MATCHING_CLARIFICATION_SEMANTIC_THRESHOLD", "1.5")
     assert build_clarification_question_service_from_env() is None
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Theo kinh nghiệm của bạn, mức độ thành thạo React ra sao?",
+        "Vui lòng cho biết bạn đã làm việc với React bao lâu?",
+        "Cho mình hỏi bạn đã dùng React được bao lâu rồi?",
+        "Xin bạn chia sẻ kinh nghiệm thực tế với React?",
+        "Sau khi học React, bạn đã áp dụng vào công việc bao lâu?",
+    ],
+)
+def test_ordinary_vietnamese_opener_is_not_an_invented_term(question) -> None:
+    """A capital letter at the start of a Vietnamese sentence is grammar, not a name.
+
+    ``_PROPER_TERM_RE`` only sees unaccented capitals, so the eleven accented
+    openers the old allowlist held left every unaccented one - Theo, Vui, Cho,
+    Xin, Sau - looking exactly like an invented tool. Three attempts later the
+    candidate got the template floor, and the model's work was discarded for
+    its first word.
+    """
+
+    result = _service(generator=FakeGenerator(GeneratedQuestion(questionText=question))).create(_plan())
+
+    assert result is not None
+    assert result.question_text == question
+
+
+def test_one_named_subject_is_enough_for_a_compound_requirement() -> None:
+    """Naming the stack beats reciting it; the old rule allowed only the recital."""
+
+    plan = _plan(
+        requirementId="req-frontend-stack",
+        missingDimension="other",
+        requirementText="Có kinh nghiệm về HTML, CSS, JS, Ajax và jQuery",
+        subjectTerms=["HTML", "CSS", "JS", "Ajax", "jQuery"],
+        evidenceRefs=[],
+        evidenceTexts=[],
+    )
+    question = "Bạn đã dùng jQuery ở mức độ nào trong các dự án gần đây?"
+
+    result = _service(generator=FakeGenerator(GeneratedQuestion(questionText=question))).create(plan)
+
+    assert result is not None
+    assert result.question_text == question
+
+
+def test_question_dropping_every_subject_is_still_refused() -> None:
+    plan = _plan(
+        requirementText="At least 24 months of React and Redux experience",
+        subjectTerms=["React", "Redux"],
+    )
+    question = GeneratedQuestion(questionText="Bạn đã dùng công nghệ đó trong bao lâu?")
+
+    result = _service(generator=FakeGenerator(question)).create(plan)
+
+    assert result is not None
+    assert "React" in result.question_text
+
+
+@pytest.mark.parametrize(
+    ("question", "reason"),
+    [
+        (
+            "Bạn dùng React bao lâu, mã xác thực sk_a5d4e32d4a9167b0a45431a25ed745 đúng chứ?",
+            "unsupported_opaque_token",
+        ),
+        (
+            "Bạn dùng React bao lâu, token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 có đúng không?",
+            "unsupported_opaque_token",
+        ),
+        (
+            "Bạn dùng React bao lâu và truy cập https://evil.example.com/x chưa?",
+            "unsupported_link",
+        ),
+        (
+            "Bạn dùng React bao lâu, gửi CV tới attacker@evil.example.com nhé?",
+            "unsupported_link",
+        ),
+        ("Bạn có kinh nghiệm AWS cùng React không?", "unsupported_named_term"),
+        ("Bạn đã triển khai React trên S3 bao lâu?", "unsupported_named_term"),
+        ("Bạn đã dùng React và PostgreSQL bao lâu?", "unsupported_named_term"),
+    ],
+)
+def test_injected_secret_or_link_never_reaches_the_candidate(question, reason) -> None:
+    """Relaxing the Vietnamese rule must not relax what the rule was there for.
+
+    A key or a link pasted into a CV is neither a capitalised ASCII term nor a
+    standalone number, so until now nothing stopped it: the model could be
+    talked into quoting it and the grounding check would pass the draft. Both
+    are refused on shape and provenance, so the question stays a question.
+    """
+
+    assert (
+        ClarificationQuestionService._grounding_failure_reason(
+            GeneratedQuestion(questionText=question), _plan()
+        )
+        == reason
+    )
+
+
+def test_long_source_token_is_allowed_when_the_sources_carry_it() -> None:
+    """Provenance, not length, decides: the guard must not refuse real stacks."""
+
+    plan = _plan(
+        requirementText="Kinh nghiệm với react-testing-library",
+        subjectTerms=["react-testing-library"],
+        evidenceTexts=["Viết test bằng react-testing-library cho cổng khách hàng."],
+    )
+    question = "Bạn đã dùng react-testing-library trong bao lâu?"
+
+    assert (
+        ClarificationQuestionService._grounding_failure_reason(
+            GeneratedQuestion(questionText=question), plan
+        )
+        is None
+    )

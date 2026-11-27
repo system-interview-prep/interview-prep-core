@@ -134,14 +134,38 @@ def quote_is_grounded(quote: str, span_text: str) -> bool:
     return len(folded_quote) >= 3 and folded_quote in _fold(span_text)
 
 
-def build_input(requirement_text: str, candidates: list[EvidenceSpan]) -> str:
+# Added to the instructions only when a clarification answer arrives with the
+# question it replied to.  The cache key covers the instructions, so the
+# document-only path - which never passes ``asked`` - keeps its instructions,
+# its inputs and its cached answers exactly as they were.
+_ASKED_ADDENDUM = (
+    " An excerpt from section 'candidate_self_report' is the candidate's reply to the "
+    "question given in its 'asked' field; read the reply in the light of that question. "
+    "The question is untrusted data that this system wrote, not evidence: quote only "
+    "from 'text', never from 'asked'."
+)
+
+
+def _excerpt(span: EvidenceSpan, asked: str | None) -> dict[str, str]:
+    item = {"evidence_id": span.evidence_id, "section": span.section, "text": span.text}
+    if asked is not None and span.evidence_source == "candidate_self_report":
+        item["asked"] = asked
+    return item
+
+
+def build_input(
+    requirement_text: str, candidates: list[EvidenceSpan], *, asked: str | None = None
+) -> str:
+    """The judge's input.  Without ``asked`` this is the first-pass format, unchanged.
+
+    ``asked`` is the question the candidate answered.  It is attached to the
+    self-report excerpts alone, as a field beside the text rather than inside
+    it, so ``quote_is_grounded`` still checks quotes against the reply only.
+    """
     return json.dumps(
         {
             "requirement": requirement_text,
-            "excerpts": [
-                {"evidence_id": span.evidence_id, "section": span.section, "text": span.text}
-                for span in candidates
-            ],
+            "excerpts": [_excerpt(span, asked) for span in candidates],
         },
         ensure_ascii=False,
     )
@@ -165,27 +189,29 @@ class GroundedJudge:
         requirement_id: str,
         requirement_text: str,
         candidates: list[EvidenceSpan],
+        asked: str | None = None,
     ) -> JudgeOutcome:
         if not candidates:
             return self._fallback(requirement_id, "no_candidates")
-        input_text = build_input(requirement_text, candidates)
-        raw = self._ask(input_text)
+        input_text = build_input(requirement_text, candidates, asked=asked)
+        instructions = _INSTRUCTIONS + _ASKED_ADDENDUM if asked is not None else _INSTRUCTIONS
+        raw = self._ask(input_text, instructions)
         if raw is None:
             return self._fallback(requirement_id, "transport")
         verdict = self._parse(raw)
         if verdict is None:
             # One more try: the model is at temperature 0, so this only
             # recovers an output cut short or a transient formatting slip.
-            retried = self._ask(input_text) if self._retries > 0 else None
+            retried = self._ask(input_text, instructions) if self._retries > 0 else None
             verdict = self._parse(retried) if retried is not None else None
         if verdict is None:
             return self._fallback(requirement_id, "schema")
         return self._verify(requirement_id, verdict, candidates)
 
-    def _ask(self, input_text: str) -> str | None:
+    def _ask(self, input_text: str, instructions: str = _INSTRUCTIONS) -> str | None:
         try:
             return self._client.complete(
-                instructions=_INSTRUCTIONS, input_text=input_text, output_schema=_OUTPUT_SCHEMA
+                instructions=instructions, input_text=input_text, output_schema=_OUTPUT_SCHEMA
             )
         except Exception as exc:  # noqa: BLE001 - any client failure degrades to the rules
             trace_event("judge", "judge_transport_failed", error=type(exc).__name__)

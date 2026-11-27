@@ -4,16 +4,25 @@ import json
 import httpx
 import pytest
 
-from src.modules.matching.clarifications.ambiguity import (
-    JevAmbiguityAnalyzer,
-    NoopAmbiguityAnalyzer,
-    build_clarification_requests,
-)
+from src.modules.matching.application.facade import MatchingFacade
 from src.modules.matching.clarifications import (
     CandidateClarificationAnswer,
     MatchClarificationAnalysis,
     MatchClarificationRescoreRequest,
     rescore_match_with_clarification_answers,
+)
+from src.modules.matching.clarifications import rescore as clarification_rescore_module
+from src.modules.matching.clarifications import router as clarification_router_module
+from src.modules.matching.clarifications import service as clarification_module
+from src.modules.matching.clarifications.ambiguity import (
+    JevAmbiguityAnalyzer,
+    NoopAmbiguityAnalyzer,
+    build_clarification_requests,
+)
+from src.modules.matching.clarifications.models import (
+    MatchClarificationIdsRequest,
+    MatchClarificationRescoreIdsRequest,
+    MatchClarificationRescoreResult,
 )
 from src.modules.matching.clarifications.question_generation import (
     ClarificationPlan,
@@ -21,16 +30,7 @@ from src.modules.matching.clarifications.question_generation import (
     ClarificationQuestionService,
     GeneratedQuestion,
 )
-from src.modules.matching.clarifications import rescore as clarification_rescore_module
-from src.modules.matching.clarifications import router as clarification_router_module
-from src.modules.matching.clarifications import service as clarification_module
 from src.modules.matching.clarifications.service import _encode_clarification_plans
-from src.modules.matching.clarifications.models import (
-    MatchClarificationIdsRequest,
-    MatchClarificationRescoreIdsRequest,
-    MatchClarificationRescoreResult,
-)
-from src.modules.matching.application.facade import MatchingFacade
 from src.modules.matching.domain.schemas import MatchRequest
 
 SHA256 = "a" * 64
@@ -586,8 +586,8 @@ async def test_rescore_by_ids_resolves_match_request_before_forwarding_answers(m
     async def resolve(_payload, _db, _user):
         return request
 
-    async def rescore(rescore_request):
-        captured.append(rescore_request)
+    async def rescore(rescore_request, *, trusted_questions=None):
+        captured.append((rescore_request, trusted_questions))
         return expected
 
     async def persist(*_args, **_kwargs):
@@ -606,5 +606,8 @@ async def test_rescore_by_ids_resolves_match_request_before_forwarding_answers(m
     response = await clarification_router_module.rescore_after_clarifications_by_ids(payload, db=object(), user=_USER)
 
     assert response is expected
-    assert captured[0].match_request == request
-    assert captured[0].answers == answers
+    assert captured[0][0].match_request == request
+    assert captured[0][0].answers == answers
+    # No run id, so the server holds no record of what it asked: the body's
+    # question is the client's word and is not handed to the judge.
+    assert captured[0][1] == {}

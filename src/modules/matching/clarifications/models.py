@@ -86,10 +86,20 @@ class MatchClarificationRescoreRequest(CanonicalModel):
 
 
 class MatchClarificationIdsRequest(CanonicalModel):
-    """Resolve the canonical CV/JD server-side for browser callers."""
+    """Resolve the canonical CV/JD server-side for browser callers.
+
+    ``fitAttemptId`` names the matching run these clarifications belong to -
+    the ``candidate_job_fit_attempts`` row the assessment wrote. Without it a
+    second assessment of the same CV against the same posting would restore
+    the previous run's questions and answers instead of asking afresh.
+
+    It is optional because not every caller records a run: the admin matching
+    view writes no attempt, and simply keeps no clarification record.
+    """
 
     candidate_id: str = Field(min_length=1)
     job_id: str = Field(min_length=1)
+    fit_attempt_id: str | None = Field(default=None, min_length=1)
     matching_policy: MatchingPolicy = Field(default_factory=MatchingPolicy)
     candidate_preferences: CandidatePreferences = Field(default_factory=CandidatePreferences)
 
@@ -102,15 +112,48 @@ class MatchClarificationQuestionsIdsRequest(MatchClarificationIdsRequest):
 
 
 class MatchClarificationRescoreIdsRequest(MatchClarificationIdsRequest):
-    initial_analysis: MatchClarificationAnalysis
+    """Answers for questions this server asked.
+
+    ``initialAnalysis`` is optional because the server stores what it asked.
+    A browser that has just generated its questions still sends the analysis it
+    holds; one restoring a saved session after a reload has no analysis to
+    send, and the server rebuilds it from the stored questions instead. Either
+    way the baseline scores are recomputed from the canonical CV and JD, so the
+    field is never trusted for anything a verdict rests on.
+    """
+
+    initial_analysis: MatchClarificationAnalysis | None = None
     answers: list[CandidateClarificationAnswer] = Field(min_length=1, max_length=30)
 
 
 class ClarificationAnswerOutcome(CanonicalModel):
+    """What became of one answer, and - when nothing did - why.
+
+    ``status`` alone could not tell a candidate apart from a system that had
+    ignored them: an answer that named no quantity came back ``unknown``, which
+    is also what the requirement looked like before they typed anything. The
+    reason code and the explanation are what make the difference visible.
+    """
+
     requirement_id: str
     evidence_ref: str
     evidence_source: str = "candidate_self_report"
     status: str
+    reason_code: str | None = None
+    explanation: str | None = None
+
+
+class StoredClarificationSession(CanonicalModel):
+    """What a reload gets back: the questions as asked, and what was answered.
+
+    Regenerating these on every reload cost two provider calls and could word
+    the same requirement differently each time, while the answers themselves
+    were simply gone. Reading them back costs neither.
+    """
+
+    questions: list[ClarificationQuestion] = Field(default_factory=list)
+    answers: dict[str, str] = Field(default_factory=dict)
+    processed_answers: list[ClarificationAnswerOutcome] = Field(default_factory=list)
 
 
 class MatchClarificationRescoreResult(CanonicalModel):

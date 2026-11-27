@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import time
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from functools import lru_cache
 
 from src.core.trace_logging import trace_event
@@ -172,6 +172,12 @@ _INCONCLUSIVE_ABSENCE_CONFIDENCE = 0.2
 # well enough to conclude absence".  Such a finding is reported and scored, but
 # it may not by itself disqualify a candidate; it routes the pair to review.
 _INCONCLUSIVE_ABSENCE_REASON_CODES = frozenset({"skill_evidence_missing"})
+# A "met" the candidate asserted about themselves and nobody has checked.
+# It counts where a met counts - the requirement is no longer an open question
+# and the coverage factors read it as answered - but it is not a reading of the
+# CV, so it may not be the thing that carries a must-have past the gate. A
+# must-have resting on one goes to a human instead of clearing itself.
+_SELF_REPORT_MET_REASON_CODES = frozenset({"candidate_self_report_meets_requirement"})
 
 
 def _fold(value: str | None) -> str:
@@ -316,12 +322,15 @@ class MatchingFacade:
         payload: MatchRequest,
         *,
         requirement_overrides: dict[str, RequirementResult] | None = None,
+        clarification_prompts: Mapping[str, str] | None = None,
     ) -> MatchResult:
         payload = payload.model_copy(
             update={"resume": reparse_partial_resume(payload.resume, payload.job)}
         )
         started = time.perf_counter()
-        requirements = self._evaluate_requirements(payload.resume, payload.job)
+        requirements = self._evaluate_requirements(
+            payload.resume, payload.job, clarification_prompts=clarification_prompts
+        )
         requirements = self._apply_requirement_overrides(requirements, requirement_overrides)
         self._trace_requirements(payload, requirements, requirement_overrides, started)
         eligibility = self._eligibility(payload, requirements)
@@ -461,14 +470,20 @@ class MatchingFacade:
         return [span for span in resume.evidence if span.evidence_id in cited]
 
     @staticmethod
-    def _evaluate_requirements(resume: CanonicalResume, job: CanonicalJob) -> list[RequirementResult]:
+    def _evaluate_requirements(
+        resume: CanonicalResume,
+        job: CanonicalJob,
+        *,
+        clarification_prompts: Mapping[str, str] | None = None,
+    ) -> list[RequirementResult]:
         document_evidence = [
             item for item in resume.evidence if item.evidence_source == "document"
         ]
         # The judge reads every unresolved requirement once, up front, so the
         # evaluators below stay synchronous and see a fixed set of readings.
-        # None unless Settings.matching_judge_enabled.
-        readings = build_reading_set(resume, job)
+        # None unless Settings.matching_judge_enabled.  The prompts exist only
+        # on the clarification rescore; a first-pass match passes none.
+        readings = build_reading_set(resume, job, clarification_prompts=clarification_prompts)
         results: list[RequirementResult] = []
         for requirement in job.requirements:
             # A line a CV cannot answer must not be answered. Gating already
@@ -885,10 +900,25 @@ class MatchingFacade:
             if result.status == "not_met"
             and result.reason_code in _INCONCLUSIVE_ABSENCE_REASON_CODES
         ]
+        # Provenance decides, not the reason code alone.  The judge files a
+        # ``met`` it reached from the candidate's own answer under its usual
+        # code, ``requirement_judged_satisfied``, and that code is not in the
+        # set - so a must-have resting on an unverified reply went straight
+        # through the gate it was meant to stop at.  The sources map already
+        # names the answer; the gate reads it.
+        self_reported = [
+            result
+            for result in must
+            if result.status == "met"
+            and (
+                result.reason_code in _SELF_REPORT_MET_REASON_CODES
+                or "candidate_self_report" in result.evidence_sources.values()
+            )
+        ]
         if payload.matching_policy.must_have_mode == "strict" and disqualifying:
             return "ineligible"
         if payload.matching_policy.unknown_handling == "manual_review" and (
-            any(result.status == "unknown" for result in must) or inconclusive
+            any(result.status == "unknown" for result in must) or inconclusive or self_reported
         ):
             return "review_required"
         return "eligible"
