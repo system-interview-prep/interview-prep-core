@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -71,10 +72,27 @@ _LANGUAGE_RE = re.compile(
 _NAME_WORD_RE = re.compile(r"[A-Za-zÀ-ỹĐđ'.-]+")
 
 
+# CV section headings look like two capitalised words ("KỸ NĂNG" became the
+# candidate "Kỹ Năng", called "Năng", 26/11). They are never a name.
+_SECTION_HEADINGS = frozenset(
+    unicodedata.normalize("NFC", heading)
+    for heading in (
+        "kỹ năng", "thông tin cá nhân", "thông tin liên hệ", "kinh nghiệm", "kinh nghiệm làm việc",
+        "học vấn", "trình độ học vấn", "dự án", "dự án cá nhân", "mục tiêu", "mục tiêu nghề nghiệp",
+        "chứng chỉ", "giải thưởng", "sở thích", "hoạt động", "hoạt động ngoại khoá", "hoạt động ngoại khóa",
+        "giới thiệu", "giới thiệu bản thân", "tóm tắt", "người tham chiếu", "ngoại ngữ", "liên hệ",
+        "skills", "technical skills", "experience", "work experience", "education", "projects",
+        "summary", "profile", "contact", "certifications", "objective", "career objective",
+        "personal information", "awards", "interests", "languages", "references", "activities",
+    )
+)
+
+
 def _looks_like_person_name(value: str) -> bool:
     words = value.split()
     return (
         2 <= len(words) <= 5
+        and unicodedata.normalize("NFC", value.strip().casefold()) not in _SECTION_HEADINGS
         and all(_NAME_WORD_RE.fullmatch(word) for word in words)
         and not _NAME_TITLE_WORDS.intersection(word.casefold() for word in words)
     )
