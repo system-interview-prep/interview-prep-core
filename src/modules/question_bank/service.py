@@ -32,6 +32,7 @@ from src.modules.question_bank.schemas import (
     ReviewRequest,
     UpdateQuestionDraftRequest,
 )
+from src.modules.question_bank.trust import SYSTEM_ACTOR_PREFIX, VERIFICATION_REVIEW_TYPE
 
 # Career codes are taxonomy specializations, which the taxonomy seed stores as
 # kind `competency`; no `job_role` concepts exist. TARGET_ROLE must accept both
@@ -321,6 +322,34 @@ class QuestionBankService:
         self.db.add(QuestionApproval(question_version_id=version.id, approver_id=approver_id, approval_policy_version=policy_version))
         await self.db.flush()
         return version
+
+    async def verify(self, version_id: UUID, reviewer_id: str, comment: str | None = None) -> QuestionReview:
+        """A person confirms an already-approved version nobody reviewed (``trust.py``, tier 1 -> 2).
+
+        The seeded bank is approved by a system actor, and ``record_review``
+        only takes versions still in review, so this is the one way a person
+        can vouch for such a question without starting a new revision.
+        """
+        version = await self._version_or_404(version_id)
+        if version.created_by == reviewer_id:
+            raise HTTPException(403, "Author cannot verify their own version.")
+        if version.status not in {"APPROVED", "CALIBRATED"}:
+            raise HTTPException(409, "Only approved versions can be verified.")
+        question = await self.db.get(InterviewQuestion, version.question_id)
+        if question is None or question.retired_at is not None:
+            raise HTTPException(409, "A retired question cannot be verified.")
+        if question.current_approved_version_id != version.id:
+            raise HTTPException(409, "Only the current approved version can be verified.")
+        reviewed = await self.db.scalar(select(func.count()).select_from(QuestionReview).where(
+            QuestionReview.question_version_id == version.id, QuestionReview.decision == "APPROVE",
+            func.left(QuestionReview.reviewer_id, len(SYSTEM_ACTOR_PREFIX)) != SYSTEM_ACTOR_PREFIX))
+        if reviewed:
+            raise HTTPException(409, "This version was already reviewed by a person.")
+        review = QuestionReview(question_version_id=version.id, reviewer_id=reviewer_id,
+            review_type=VERIFICATION_REVIEW_TYPE, decision="APPROVE", comment=comment)
+        self.db.add(review)
+        await self.db.flush()
+        return review
 
     async def _version_or_404(self, version_id: UUID) -> InterviewQuestionVersion:
         version = await self.db.get(InterviewQuestionVersion, version_id)

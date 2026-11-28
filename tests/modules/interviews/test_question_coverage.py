@@ -51,11 +51,13 @@ def test_near_duplicate_detection_is_lexical() -> None:
 
 @pytest.mark.asyncio
 async def test_gate_counts_every_rejection_reason(monkeypatch) -> None:
+    passed = {"level": "intermediate", "verbal": True, "sound": True, "concise": True}
+
     async def judge(*, questions, **_):
         # Reject the second surviving question.
         return [
-            {"index": 0, "on_skill": True, "difficulty_ok": True, "verbal": True, "sound": True, "concise": True},
-            {"index": 1, "on_skill": False, "difficulty_ok": True, "verbal": True, "sound": True, "concise": True},
+            {"index": 0, "on_skill": True, **passed},
+            {"index": 1, "on_skill": False, **passed},
         ]
 
     monkeypatch.setattr(question_generation, "judge_question_payloads", judge)
@@ -79,7 +81,50 @@ async def test_gate_counts_every_rejection_reason(monkeypatch) -> None:
     )
 
     assert [item["text"] for item in accepted] == [VI_QUESTION["text"]]
-    assert stats == {"structure": 1, "language": 1, "duplicate": 1, "judge": 1}
+    assert stats == {"structure": 1, "language": 1, "duplicate": 1, "judge": 1, "level": 0}
+
+
+@pytest.mark.asyncio
+async def test_gate_drops_a_question_judged_at_another_level(monkeypatch) -> None:
+    """The judge names the level it sees; a mismatch or a missing level is rejected, not relabelled."""
+    second = _question(
+        "Tấn công XXE hoạt động ra sao và bạn cấu hình parser thế nào để chặn?", "Đánh giá bảo mật."
+    )
+    third = _question("Khi nào bạn chọn SAX thay cho DOM để đọc tệp XML rất lớn?", "Đánh giá parser.")
+    checks = {"on_skill": True, "verbal": True, "sound": True, "concise": True}
+
+    async def judge(*, questions, **_):
+        return [
+            {"index": 0, **checks, "level": "Intermediate"},
+            {"index": 1, **checks, "level": "advanced"},
+            {"index": 2, **checks},
+        ]
+
+    monkeypatch.setattr(question_generation, "judge_question_payloads", judge)
+
+    accepted, stats = await question_generation.gate_questions(
+        payloads=[VI_QUESTION, second, third],
+        existing_texts=[],
+        skill_label="XML",
+        competency_label="Backend Engineering",
+        difficulty="intermediate",
+        locale="vi-VN",
+    )
+
+    assert [item["text"] for item in accepted] == [VI_QUESTION["text"]]
+    assert stats["level"] == 2 and stats["judge"] == 0
+
+
+def test_generation_and_judge_prompts_carry_the_level_definitions() -> None:
+    from src.modules.question_bank.difficulty import difficulty_guide, difficulty_prompt_block
+
+    block = difficulty_prompt_block()
+    assert block in question_generation._INSTRUCTIONS
+    assert block in question_generation._JUDGE_INSTRUCTIONS
+    bands = [item["band"] for item in difficulty_guide("vi-VN")]
+    assert bands == ["foundational", "intermediate", "advanced"]
+    assert difficulty_guide("vi-VN")[0]["label"] == "Cơ bản"
+    assert difficulty_guide("en-US")[0]["label"] == "Foundational"
 
 
 def _patch_generation_db(monkeypatch, filed: list) -> AsyncMock:

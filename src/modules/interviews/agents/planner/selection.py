@@ -32,7 +32,12 @@ from src.modules.interviews.agents.planner.evidence import (
     project_evidence_from_dict,
     select_best_project,
 )
-from src.modules.question_bank.facade import GENERATED_QUESTION_AUTHOR
+from src.modules.question_bank.facade import (
+    GENERATED_QUESTION_AUTHOR,
+    TRUST_GENERATED,
+    TRUST_INITIAL,
+    trust_tier_sql,
+)
 
 SELECTOR_POLICY_VERSION = "interview-question-selector-v2"
 _ELIGIBLE_STATUSES = {"APPROVED", "CALIBRATED"}
@@ -99,6 +104,10 @@ class _Candidate:
     canonical_snapshot: dict[str, Any] = field(default_factory=dict)
     # question_bank | broader_skill | role | generated_unreviewed
     source: str = "question_bank"
+    # How far the version has been checked (question_bank/trust.py): 0 generated,
+    # 1 approved but never reviewed by a person (the seeded bank), 2 reviewed,
+    # 3 calibrated on real answers.
+    trust_tier: int = TRUST_INITIAL
     # Set when question_text is an approved localization in the session locale;
     # holds the canonical text's locale (the rubric stays canonical).
     localized_from: str | None = None
@@ -193,8 +202,10 @@ def _candidate_rank(
     # Rotation: among equally suitable questions (same locale, difficulty and
     # purpose) the candidate has not been asked before goes first, then the one
     # asked longest ago. Relevance only orders questions within that.
+    # Between two questions the candidate has (or has not) seen, the one checked
+    # further goes first: a reviewed question before a seeded one nobody read.
     last_seen = (exposure or {}).get(candidate.question_version_id)
-    exposure_rank = (0, "") if last_seen is None else (1, last_seen)
+    exposure_rank = (int(last_seen is not None), -candidate.trust_tier, last_seen or "")
     asked_locale = locale if candidate.localized_from else candidate.canonical_locale
     return (
         _locale_rank(asked_locale, locale),
@@ -250,6 +261,7 @@ async def _load_candidates(
                    qv.canonical_snapshot,
                    map.purpose AS mapping_purpose, map.relevance,
                    qvr.rubric_version_id,
+                   {trust_tier_sql('qv')} AS trust_tier,
                    loc.question_text AS localized_text
             FROM interview_questions q
             JOIN interview_question_versions qv
@@ -399,6 +411,7 @@ async def _load_candidates(
                 thinking_seconds=int(row.get("thinking_seconds") or 0),
                 canonical_snapshot=dict(row.get("canonical_snapshot") or {}),
                 source="generated_unreviewed" if generated else "question_bank",
+                trust_tier=TRUST_GENERATED if generated else int(row.get("trust_tier") or TRUST_INITIAL),
                 localized_from=row["canonical_locale"] if localized else None,
                 rubric={
                     "rubricVersionId": str(rubric_row["id"]),

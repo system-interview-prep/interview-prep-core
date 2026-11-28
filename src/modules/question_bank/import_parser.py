@@ -14,6 +14,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 from pydantic import ValidationError
 
+from src.modules.question_bank.difficulty import difficulty_summary
 from src.modules.question_bank.schemas import (
     DEFAULT_TAXONOMY_VERSION,
     DIFFICULTY_BANDS,
@@ -66,7 +67,10 @@ _COLUMN_GUIDE = {
     "canonical_text": ("Nội dung câu hỏi hỏi ứng viên.", "Bạn dùng Redis làm cache cho API như thế nào?"),
     "objective": ("Câu hỏi này kiểm tra điều gì.", "Hiểu cache-aside, TTL và vô hiệu hóa cache"),
     "question_type": (f"Loại câu hỏi. Chọn trong danh sách: {', '.join(QUESTION_TYPES)}.", "technical"),
-    "difficulty_band": (f"Độ khó. Chọn trong danh sách: {', '.join(DIFFICULTY_BANDS)}.", "intermediate"),
+    "difficulty_band": (
+        f"Độ khó. Chọn trong danh sách: {', '.join(DIFFICULTY_BANDS)}.\n{difficulty_summary('vi-VN')}",
+        "intermediate",
+    ),
     "thinking_seconds": (f"Số giây suy nghĩ. Để trống sẽ là {DEFAULT_SECONDS['thinking_seconds']}.", "30"),
     "soft_answer_seconds": (f"Thời gian trả lời gợi ý (giây). Để trống sẽ là {DEFAULT_SECONDS['soft_answer_seconds']}.", "150"),
     "hard_answer_seconds": (f"Thời gian trả lời tối đa (giây), không nhỏ hơn thời gian gợi ý. Để trống sẽ là {DEFAULT_SECONDS['hard_answer_seconds']}.", "240"),

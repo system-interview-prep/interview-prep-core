@@ -31,6 +31,7 @@ from src.modules.interviews.agents.evaluator.evaluation_types import (
     TurnEvaluationInput,
 )
 from src.modules.interviews.agents.evaluator.grading_cache import DatabaseVerdictCache
+from src.modules.question_bank.facade import trust_summary, trust_tiers
 
 logger = logging.getLogger("InterviewEvaluationService")
 
@@ -740,6 +741,17 @@ async def get_session_evaluation(db: AsyncSession, session_id: str) -> dict[str,
     )
     turn_rows = [dict(r) for r in turns_res.mappings().all()]
 
+    # How far each Question Bank question was checked (question_bank/trust.py),
+    # read now rather than from the snapshot: a version is immutable, so a
+    # review recorded after the interview still vouches for what was asked,
+    # and sessions planned before the tier existed are covered too. Warm-up,
+    # CV and behavioural templates are not bank questions and carry no tier.
+    version_ids = [
+        str((tr.get("question_snapshot") or {}).get("questionVersionId") or "") for tr in turn_rows
+    ]
+    tiers = await trust_tiers(db, [item for item in version_ids if item])
+    asked_tiers: list[str] = []
+
     turn_evaluations = []
     for tr in turn_rows:
         snapshot = tr.get("question_snapshot") or {}
@@ -748,6 +760,9 @@ async def get_session_evaluation(db: AsyncSession, session_id: str) -> dict[str,
         q_text = snapshot.get("questionText") or ""
         t_index = (tr.get("turn_index") + 1) if tr.get("turn_index") is not None else 1
         star_data = tr.get("star_analysis") or {}
+        question_trust = tiers.get(str(snapshot.get("questionVersionId") or ""))
+        if question_trust:
+            asked_tiers.append(question_trust)
 
         item = {
             "id": tr["id"],
@@ -770,6 +785,7 @@ async def get_session_evaluation(db: AsyncSession, session_id: str) -> dict[str,
             "outcome": tr.get("outcome") or ANSWERED,
             "rubric_points": tr.get("rubric_points") or [],
             "rubricPoints": tr.get("rubric_points") or [],
+            "questionTrust": question_trust,
         }
         turn_evaluations.append(item)
 
@@ -798,4 +814,6 @@ async def get_session_evaluation(db: AsyncSession, session_id: str) -> dict[str,
         "evaluatedAt": eval_at_str,
         "turn_evaluations": turn_evaluations,
         "turnEvaluations": turn_evaluations,
+        # {"total": bank questions graded, "reviewed": of those, checked by a person}.
+        "questionTrustSummary": trust_summary(asked_tiers),
     }

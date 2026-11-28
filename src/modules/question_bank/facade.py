@@ -13,13 +13,22 @@ from uuid import UUID
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.modules.question_bank.difficulty import difficulty_prompt_block
 from src.modules.question_bank.schemas import (
     AttachRubricRequest,
     CreateQuestionDraftRequest,
     RubricCriterionInput,
 )
 from src.modules.question_bank.service import QuestionBankService
+from src.modules.question_bank.trust import (
+    GENERATED,
+    INITIAL,
+    trust_summary,
+    trust_tier_sql,
+    trust_tiers,
+)
 
+TRUST_GENERATED, TRUST_INITIAL = GENERATED, INITIAL
 GENERATED_QUESTION_AUTHOR = "system-question-generator"
 
 
@@ -81,4 +90,14 @@ async def file_generated_question(
     return version.id
 
 
-__all__ = ["GENERATED_QUESTION_AUTHOR", "GeneratedQuestionRejected", "file_generated_question"]
+__all__ = [
+    "GENERATED_QUESTION_AUTHOR",
+    "TRUST_GENERATED",
+    "TRUST_INITIAL",
+    "GeneratedQuestionRejected",
+    "difficulty_prompt_block",
+    "file_generated_question",
+    "trust_summary",
+    "trust_tier_sql",
+    "trust_tiers",
+]

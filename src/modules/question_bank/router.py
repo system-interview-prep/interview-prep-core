@@ -15,6 +15,7 @@ from src.core.roles import QUESTION_AUTHOR
 from src.core.security import require_admin, require_roles
 from src.infrastructure.database import get_db
 from src.modules.question_bank import insights
+from src.modules.question_bank.difficulty import GUIDE_VERSION, difficulty_guide
 from src.modules.question_bank.facade import GENERATED_QUESTION_AUTHOR
 from src.modules.question_bank.import_parser import csv_template, xlsx_template
 from src.modules.question_bank.import_service import QuestionImportService
@@ -33,12 +34,45 @@ from src.modules.question_bank.schemas import (
     UpdateQuestionDraftRequest,
 )
 from src.modules.question_bank.service import QuestionBankService
+from src.modules.question_bank.trust import (
+    CALIBRATION_MIN_SAMPLE,
+    INITIAL,
+    TIER_BY_NAME,
+    tier_name,
+    trust_tier_sql,
+)
 
 router = APIRouter(prefix="/admin/question-bank", tags=["question-bank"])
 
 
 class RetireQuestionsRequest(BaseModel):
     question_ids: list[UUID] = Field(alias="questionIds", min_length=1, max_length=100)
+
+
+class VerifyRequest(BaseModel):
+    comment: str | None = Field(default=None, max_length=2000)
+
+
+# The approved wording candidates hear in a Vietnamese session (question_localizations);
+# NULL when the question is written in Vietnamese already or has no translation.
+_LOCALIZED_TEXT_SQL = (
+    "(SELECT loc.question_text FROM question_localizations loc WHERE loc.question_version_id = qv.id "
+    "AND lower(loc.locale) = 'vi-vn' AND loc.status = 'APPROVED' "
+    "AND lower(qv.canonical_locale) <> 'vi-vn' LIMIT 1)"
+)
+# The concept's display label; ids are stable across taxonomy versions, the active one wins.
+_CONCEPT_LABEL_SQL = (
+    "(SELECT tc.label FROM taxonomy_concepts tc WHERE tc.concept_id = m.concept_id "
+    "ORDER BY tc.is_active DESC LIMIT 1)"
+)
+
+# How many turns asked this question (any version): the review queue puts
+# the questions candidates meet most first.
+_ASKED_COUNT_SQL = (
+    "(SELECT count(*) FROM interview_turns t JOIN interview_question_versions av "
+    "ON CAST(av.id AS TEXT) = t.question_snapshot ->> 'questionVersionId' "
+    "WHERE av.question_id = q.id)"
+)
 
 
 def _import_response(import_run: object) -> dict:
@@ -182,7 +216,12 @@ def _version_response(version: object) -> dict:
 def _taxonomy_summary(mappings) -> dict:
     taxonomy = {"roles": [], "skills": [], "primaryCompetency": None}
     for mapping in mappings:
-        item = {"conceptId": mapping["concept_id"], "relevance": float(mapping["relevance"])}
+        item = {
+            "conceptId": mapping["concept_id"],
+            # The id is what the selector matches on; the label is what a person reads.
+            "label": mapping.get("label") or mapping["concept_id"],
+            "relevance": float(mapping["relevance"]),
+        }
         if mapping["purpose"] == "TARGET_ROLE":
             taxonomy["roles"].append(item)
         elif mapping["purpose"] == "TARGET_SKILL":
@@ -203,13 +242,19 @@ async def _question_summary(row: dict, taxonomy_mappings=()) -> dict:
             "version": row["version"],
             "status": row["status"],
             "canonicalText": row["canonical_text"],
+            # Approved Vietnamese wording of a question written in another language, else None.
+            "localizedText": row.get("localized_text"),
             "canonicalLocale": row["canonical_locale"],
             "questionType": row["question_type"],
             "difficultyBand": row["difficulty_band"],
             "softAnswerSeconds": row["soft_answer_seconds"],
             # Drafts the selector generated for a skill the bank lacked (question_generation).
             "generated": created_by == GENERATED_QUESTION_AUTHOR,
+            # How far this version has been checked (trust.py):
+            # generated | initial | reviewed | calibrated.
+            "trust": tier_name(row.get("trust_tier")),
         },
+        "askedCount": int(row.get("asked_count") or 0),
         "taxonomy": _taxonomy_summary(taxonomy_mappings),
         "updatedAt": row["created_at"].isoformat(),
     }
@@ -263,13 +308,17 @@ async def list_questions(
     difficulty_band: str | None = Query(default=None, alias="difficultyBand"),
     mine: Literal["drafts", "changes", "review", "approve"] | None = Query(default=None),
     source: Literal["ai", "human"] | None = Query(default=None),
+    trust: Literal["generated", "initial", "reviewed", "calibrated"] | None = Query(default=None),
+    sort: Literal["recent", "asked"] = Query(default="recent"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, alias="pageSize", ge=1, le=100),
 ) -> dict:
     """Paginated admin read model. A question appears once with its newest version.
 
     ``mine`` narrows to the signed-in person's work (permissions.work_filter);
-    ``source=ai`` to drafts the system generated.
+    ``source=ai`` to drafts the system generated; ``trust`` to one trust tier
+    (``trust=initial`` is the approved-but-never-reviewed queue). ``sort=asked``
+    puts the questions candidates were asked most first.
     """
     filters = ["q.retired_at IS NULL"]
     params: dict[str, object] = {"limit": page_size, "offset": (page - 1) * page_size}
@@ -281,7 +330,10 @@ async def list_questions(
         filters.append("qv.created_by " + ("=" if source == "ai" else "<>") + " :generator")
         params["generator"] = GENERATED_QUESTION_AUTHOR
     if q:
-        filters.append("(q.stable_key ILIKE :q OR qv.canonical_text ILIKE :q)")
+        filters.append(
+            "(q.stable_key ILIKE :q OR qv.canonical_text ILIKE :q "
+            f"OR {_LOCALIZED_TEXT_SQL} ILIKE :q)"
+        )
         params["q"] = f"%{q.strip()}%"
     if status_filter:
         filters.append("qv.status = :status")
@@ -289,6 +341,10 @@ async def list_questions(
     if difficulty_band:
         filters.append("qv.difficulty_band = :difficulty_band")
         params["difficulty_band"] = difficulty_band
+    if trust:
+        filters.append(f"{trust_tier_sql('qv')} = :trust_tier")
+        params["trust_tier"] = TIER_BY_NAME[trust]
+    order = "asked_count DESC, qv.created_at DESC" if sort == "asked" else "qv.created_at DESC"
     where = " AND ".join(filters)
     base = (
         " FROM interview_questions q JOIN LATERAL ("
@@ -300,9 +356,11 @@ async def list_questions(
         text(
             "SELECT q.id AS question_id, q.stable_key, qv.id AS question_version_id, qv.version, "
             "qv.status, qv.canonical_text, qv.canonical_locale, qv.question_type, "
-            "qv.difficulty_band, qv.soft_answer_seconds, qv.created_at, qv.created_by"
+            "qv.difficulty_band, qv.soft_answer_seconds, qv.created_at, qv.created_by, "
+            f"{trust_tier_sql('qv')} AS trust_tier, {_ASKED_COUNT_SQL} AS asked_count, "
+            f"{_LOCALIZED_TEXT_SQL} AS localized_text"
             + base
-            + " ORDER BY qv.created_at DESC LIMIT :limit OFFSET :offset"
+            + f" ORDER BY {order} LIMIT :limit OFFSET :offset"
         ),
         params,
     )
@@ -312,8 +370,9 @@ async def list_questions(
     if version_ids:
         mappings = await db.execute(
             text(
-                "SELECT question_version_id, concept_id, purpose, relevance "
-                "FROM question_version_taxonomy_concepts "
+                "SELECT m.question_version_id, m.concept_id, m.purpose, m.relevance, "
+                f"{_CONCEPT_LABEL_SQL} AS label "
+                "FROM question_version_taxonomy_concepts m "
                 "WHERE question_version_id = ANY(:version_ids) ORDER BY question_version_id, purpose, concept_id"
             ),
             {"version_ids": version_ids},
@@ -349,7 +408,14 @@ async def work_summary(
         text(base + "qv.created_by = :generator AND qv.status IN ('IN_REVIEW', 'PILOT_READY')"),
         {"generator": GENERATED_QUESTION_AUTHOR},
     )
-    return {"buckets": counts, "generatedInReview": int(generated or 0), "roles": actor.get("roles") or []}
+    # Approved questions nobody reviewed (the seeded bank): the verification queue.
+    unverified = await db.scalar(text(base + f"{trust_tier_sql('qv')} = {INITIAL}"))
+    return {
+        "buckets": counts,
+        "generatedInReview": int(generated or 0),
+        "unverified": int(unverified or 0),
+        "roles": actor.get("roles") or [],
+    }
 
 
 async def _reviews(db: AsyncSession, version_id: object) -> list[dict]:
@@ -398,7 +464,9 @@ async def get_question(
             "SELECT q.id AS question_id, q.stable_key, qv.id AS question_version_id, qv.version, "
             "qv.status, qv.canonical_text, qv.canonical_locale, qv.question_type, "
             "qv.difficulty_band, qv.soft_answer_seconds, qv.created_at, qv.objective, qv.created_by, "
-            "qv.thinking_seconds, qv.hard_answer_seconds, q.current_approved_version_id "
+            "qv.thinking_seconds, qv.hard_answer_seconds, q.current_approved_version_id, "
+            f"{trust_tier_sql('qv')} AS trust_tier, {_ASKED_COUNT_SQL} AS asked_count, "
+            f"{_LOCALIZED_TEXT_SQL} AS localized_text "
             "FROM interview_questions q JOIN LATERAL (SELECT * FROM interview_question_versions v "
             "WHERE v.question_id = q.id ORDER BY v.created_at DESC LIMIT 1) qv ON true WHERE q.id = :id"
         ),
@@ -409,7 +477,8 @@ async def get_question(
         raise HTTPException(status_code=404, detail="Question not found.")
     mappings = await db.execute(
         text(
-            "SELECT concept_id, purpose, relevance FROM question_version_taxonomy_concepts "
+            f"SELECT m.concept_id, m.purpose, m.relevance, {_CONCEPT_LABEL_SQL} AS label "
+            "FROM question_version_taxonomy_concepts m "
             "WHERE question_version_id = :version_id ORDER BY purpose, concept_id"
         ),
         {"version_id": item["question_version_id"]},
@@ -432,6 +501,7 @@ async def get_question(
         roles=actor.get("roles") or [],
         has_rubric=summary["rubric"] is not None,
         approve_reviews=sum(1 for r in reviews if r["decision"] == "APPROVE"),
+        trust_tier=item["trust_tier"],
     )
     summary["reviewTypes"] = list(REVIEW_TYPES)
     return summary
@@ -625,6 +695,35 @@ async def approve(
     await db.commit()
     await record_admin_action(db, actor, "APPROVE_QUESTION", target_id=version_id)
     return _version_response(version)
+
+
+@router.post("/question-versions/{version_id}/verify", status_code=status.HTTP_201_CREATED)
+async def verify(
+    version_id: UUID,
+    payload: VerifyRequest | None = None,
+    actor: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """A person vouches for an approved version nobody reviewed (the seeded bank)."""
+    review_record = await QuestionBankService(db).verify(
+        version_id, str(actor["sub"]), payload.comment if payload else None
+    )
+    await db.commit()
+    await record_admin_action(db, actor, "VERIFY_QUESTION", target_id=version_id)
+    return {"reviewId": str(review_record.id), "trust": "reviewed"}
+
+
+@router.get("/difficulty-guide")
+async def get_difficulty_guide(
+    _: dict = Depends(require_roles(QUESTION_AUTHOR)),
+    locale: str = Query(default="vi-VN", max_length=35),
+) -> dict:
+    """What each difficulty band means, for the authoring and review screens."""
+    return {
+        "version": GUIDE_VERSION,
+        "levels": difficulty_guide(locale),
+        "calibrationMinSample": CALIBRATION_MIN_SAMPLE,
+    }
 
 
 @router.get("/active")

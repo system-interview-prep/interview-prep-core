@@ -8,7 +8,10 @@ allows them, but never creates them during session preparation.
 
 Every draft passes an automatic quality gate before it is filed: rubric
 structure, language, no near-duplicate of a question the skill already has,
-and a second LLM call that judges skill fit, difficulty and soundness. The gate
+and a second LLM call that judges skill fit, soundness and which difficulty
+level the question really is (``question_bank/difficulty.py`` defines the levels
+for every skill). A draft whose judged level differs from the requested one is
+dropped rather than relabelled. The gate
 fails closed -- if the judge is unavailable nothing is filed -- because drafts
 are asked and scored before a human reviews them.
 """
@@ -29,7 +32,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.config import get_settings
 from src.core.trace_logging import trace_event
 from src.modules.ai.facade import generate_text
-from src.modules.question_bank.facade import GeneratedQuestionRejected, file_generated_question
+from src.modules.question_bank.facade import (
+    GeneratedQuestionRejected,
+    difficulty_prompt_block,
+    file_generated_question,
+)
 from src.modules.question_bank.schemas import RubricCriterionInput
 from src.modules.taxonomy.facade import load_active_skill_taxonomy
 
@@ -52,24 +59,30 @@ Return ONLY JSON: {"questions": [{"text": str, "objective": str, "criteria": [
    "anchors": [{"level": 0, "description": str}, {"level": 1, ...}, {"level": 2, ...}, {"level": 3, ...}]}
 ]}]}
 Rules:
-- Each question tests practical understanding of the given skill at the given difficulty,
-  answerable in about 3 minutes of speech, no code writing.
+- Each question tests practical understanding of the given skill and matches the
+  definition of the given difficulty level below, answerable in about 3 minutes of
+  speech, no code writing.
 - Phrase it the way an interviewer says it out loud: one question, at most 25 words,
   no preamble, no multi-part lists of sub-questions.
 - 2 or 3 criteria per question; weights are positive and sum to 1.
 - Anchors describe answers scoring 0 (missing/wrong) to 3 (complete, with trade-offs).
 - Write text, objective, names, descriptions and anchors in the requested language.
-- Questions in one response must not overlap."""
+- Questions in one response must not overlap.
+
+""" + difficulty_prompt_block()
 
 _JUDGE_INSTRUCTIONS = """You review machine-written technical interview questions before candidates see them.
 For each question decide:
 - on_skill: it tests the given skill itself, within the given specialisation;
-- difficulty_ok: it fits the given difficulty;
+- level: which difficulty level it really is (foundational, intermediate or advanced),
+  judged from the question alone against the definitions below, whatever level was requested;
 - verbal: it can be answered by speaking for about 3 minutes, without writing code;
 - sound: the question, objective and rubric are technically correct and unambiguous;
 - concise: it is one spoken question of at most about 25 words, not a list of sub-questions.
-Return ONLY JSON: {"verdicts": [{"index": int, "on_skill": bool, "difficulty_ok": bool,
-"verbal": bool, "sound": bool, "concise": bool, "reason": str}]} with one verdict per question, same order."""
+Return ONLY JSON: {"verdicts": [{"index": int, "on_skill": bool, "level": str,
+"verbal": bool, "sound": bool, "concise": bool, "reason": str}]} with one verdict per question, same order.
+
+""" + difficulty_prompt_block()
 
 _VI_CHARS = re.compile(
     r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", re.IGNORECASE
@@ -201,9 +214,13 @@ def is_near_duplicate(text_value: str, existing: list[str]) -> bool:
 
 
 def _verdict_passes(verdict: dict[str, Any] | None) -> bool:
-    return bool(verdict) and all(
-        verdict.get(key) is True for key in ("on_skill", "difficulty_ok", "verbal", "sound", "concise")
-    )
+    checks = ("on_skill", "verbal", "sound", "concise")
+    return bool(verdict) and all(verdict.get(key) is True for key in checks)
+
+
+def _level_matches(verdict: dict[str, Any] | None, difficulty: str) -> bool:
+    """The judge must name the requested level; a missing level fails closed."""
+    return bool(verdict) and str(verdict.get("level") or "").strip().lower() == difficulty
 
 
 async def gate_questions(
@@ -219,7 +236,7 @@ async def gate_questions(
 
     Raises when the judge call fails, so the caller files nothing (fail closed).
     """
-    stats = {"structure": 0, "language": 0, "duplicate": 0, "judge": 0}
+    stats = {"structure": 0, "language": 0, "duplicate": 0, "judge": 0, "level": 0}
     candidates: list[dict[str, Any]] = []
     seen = list(existing_texts)
     for payload in payloads:
@@ -245,10 +262,13 @@ async def gate_questions(
     by_index = {verdict["index"]: verdict for verdict in verdicts if isinstance(verdict.get("index"), int)}
     accepted = []
     for index, question in enumerate(candidates):
-        if _verdict_passes(by_index.get(index)):
-            accepted.append(question)
-        else:
+        verdict = by_index.get(index)
+        if not _verdict_passes(verdict):
             stats["judge"] += 1
+        elif not _level_matches(verdict, difficulty):
+            stats["level"] += 1
+        else:
+            accepted.append(question)
     return accepted, stats
 
 
@@ -336,7 +356,7 @@ async def generate_and_file(
     existing_texts = await _existing_question_texts(db, concept_id)
 
     accepted: list[dict[str, Any]] = []
-    rejected = {"structure": 0, "language": 0, "duplicate": 0, "judge": 0}
+    rejected = {"structure": 0, "language": 0, "duplicate": 0, "judge": 0, "level": 0}
     for _attempt in range(_GATE_ATTEMPTS):
         missing = count - len(accepted)
         if missing <= 0:

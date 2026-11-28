@@ -26,13 +26,13 @@ import json
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.seeds.question_bank_expected_points_vi import EXPECTED_POINTS_VI
+from src.seeds.question_bank_rubric_vi import SEED_CRITERIA, localize_seed_rubrics, seed_anchor_records
 from src.seeds.question_bank_seed_vi import QUESTION_TEXT_VI
 
 # The taxonomy_version used by the JD/CV parsers and stored in
@@ -1315,56 +1315,20 @@ def _build_rubric_records(question_stable_key: str, version_id: uuid.UUID) -> di
     rubric_id = _det_uuid("rubric", question_stable_key)
     rubric_version_id = _det_uuid("rubric-version", question_stable_key)
 
+    # Wording lives in question_bank_rubric_vi (Vietnamese, like every session).
     criteria = [
         {
-            "id": _det_uuid("criterion-relevance", question_stable_key),
-            "stable_key": "relevance",
-            "name": "Relevance",
-            "description": "Answer addresses the question directly and completely.",
-            "weight": Decimal("0.35"),
-            "critical": False,
-            "display_order": 1,
-        },
-        {
-            "id": _det_uuid("criterion-depth", question_stable_key),
-            "stable_key": "technical_depth",
-            "name": "Technical Depth",
-            "description": "Demonstrates accurate, detailed technical knowledge.",
-            "weight": Decimal("0.35"),
-            "critical": True,
-            "display_order": 2,
-        },
-        {
-            "id": _det_uuid("criterion-clarity", question_stable_key),
-            "stable_key": "clarity",
-            "name": "Clarity",
-            "description": "Explanation is clear, structured, and easy to follow.",
-            "weight": Decimal("0.30"),
-            "critical": False,
-            "display_order": 3,
-        },
+            "id": _det_uuid(item["id_namespace"], question_stable_key),
+            "stable_key": item["stable_key"],
+            "name": item["name"],
+            "description": item["description"],
+            "weight": item["weight"],
+            "critical": item["critical"],
+            "display_order": item["display_order"],
+        }
+        for item in SEED_CRITERIA
     ]
-
-    anchors_by_criterion: dict[str, list[dict[str, Any]]] = {
-        "relevance": [
-            {"level": 0, "description": "Off-topic or does not address the question.", "positive": [], "negative": ["Ignores the question"]},
-            {"level": 1, "description": "Partially addresses the question with gaps.", "positive": ["Attempts to answer"], "negative": ["Missing key aspects"]},
-            {"level": 2, "description": "Addresses the question adequately.", "positive": ["Covers main points"], "negative": []},
-            {"level": 3, "description": "Comprehensively addresses all aspects.", "positive": ["Complete coverage", "Adds relevant depth"], "negative": []},
-        ],
-        "technical_depth": [
-            {"level": 0, "description": "No meaningful technical content.", "positive": [], "negative": ["No technical detail"]},
-            {"level": 1, "description": "Basic technical understanding only.", "positive": ["Knows surface concepts"], "negative": ["Cannot explain mechanisms"]},
-            {"level": 2, "description": "Solid technical knowledge with correct detail.", "positive": ["Correct terminology", "Explains mechanisms"], "negative": []},
-            {"level": 3, "description": "Expert-level technical depth with nuance.", "positive": ["Trade-off awareness", "Edge case handling", "Practical experience"], "negative": []},
-        ],
-        "clarity": [
-            {"level": 0, "description": "Incoherent or extremely difficult to follow.", "positive": [], "negative": ["Cannot follow the explanation"]},
-            {"level": 1, "description": "Some structure but hard to follow in places.", "positive": ["Attempts structure"], "negative": ["Loses the thread"]},
-            {"level": 2, "description": "Clear and reasonably well-structured.", "positive": ["Logical flow"], "negative": []},
-            {"level": 3, "description": "Exceptionally clear, concise, and structured.", "positive": ["Excellent structure", "Analogies used well"], "negative": []},
-        ],
-    }
+    anchors_by_criterion = seed_anchor_records()
 
     return {
         "rubric_id": rubric_id,
@@ -1414,6 +1378,9 @@ async def seed_question_bank(session_factory: Callable[[], AsyncSession]) -> dic
 
             summary[concept_id] = seeded
 
+        # Databases seeded before the rubric was translated still hold the
+        # English wording; only untouched seed text is replaced.
+        await localize_seed_rubrics(db)
         await db.commit()
 
     return summary
@@ -1728,7 +1695,6 @@ async def _seed_one_question(
         )
 
         for anchor in rubric_data["anchors_by_criterion"][crit_key]:
-            anchor_id = _det_uuid(f"anchor-{crit_key}-{anchor['level']}", stable_key)
             await db.execute(
                 text(
                     "INSERT INTO rubric_anchors "

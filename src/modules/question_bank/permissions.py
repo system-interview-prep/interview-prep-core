@@ -10,7 +10,8 @@ Roles (``src/core/roles.py``):
 * QUESTION_AUTHOR: write drafts, edit and submit their own, start revisions.
 * ADMIN: also reviews someone else's version in review and gives the final
   approval (needs at least one APPROVE review), but never on their own version
-  (four-eyes rule). Since 28/10 the former QUESTION_REVIEWER and
+  (four-eyes rule). ADMIN also verifies an approved version nobody reviewed
+  (the seeded bank; ``trust.py`` tier 1). Since 28/10 the former QUESTION_REVIEWER and
   QUESTION_BANK_ADMIN roles are folded into ADMIN and grant nothing.
 """
 
@@ -20,6 +21,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from src.core.roles import ADMIN, QUESTION_AUTHOR
+from src.modules.question_bank.trust import INITIAL
 
 EDITABLE_STATUSES = frozenset({"DRAFT", "NEEDS_REVISION"})
 REVIEW_STATUSES = frozenset({"IN_REVIEW", "PILOT_READY"})
@@ -52,12 +54,14 @@ def version_actions(
     roles: Iterable[str],
     has_rubric: bool,
     approve_reviews: int,
+    trust_tier: int | None = None,
 ) -> dict[str, dict[str, Any]]:
     """One entry per action: ``{"allowed": bool, "reason": code | None}``.
 
     Reason codes: ``no_role``, ``not_author``, ``own_question``,
     ``not_editable``, ``not_in_review``, ``needs_rubric``,
-    ``needs_approve_review``, ``not_finished``.
+    ``needs_approve_review``, ``not_finished``, ``not_approved``,
+    ``already_reviewed``.
     """
     roles = list(roles)
     status = str(status or "").upper()
@@ -103,12 +107,24 @@ def version_actions(
     else:
         revise = _allowed()
 
+    if not reviewer:
+        verify = _locked("no_role")
+    elif status not in {"APPROVED", "CALIBRATED"}:
+        verify = _locked("not_approved")
+    elif trust_tier != INITIAL:
+        verify = _locked("already_reviewed")
+    elif own:
+        verify = _locked("own_question")
+    else:
+        verify = _allowed()
+
     return {
         "edit": author_action(needs_rubric=False),
         "submit": author_action(needs_rubric=True),
         "review": review,
         "approve": approve,
         "revise": revise,
+        "verify": verify,
     }
 
 
